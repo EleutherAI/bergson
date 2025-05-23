@@ -12,6 +12,7 @@ license = {text = "MIT License"}
 dependencies = [
     "accelerate",   # For device_map in from_pretrained
     "datasets",
+    "faiss-cpu>=1.11.0",
     "torch",
     "transformers",
 ]
