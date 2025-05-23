@@ -14,6 +14,7 @@ dependencies = [
     "datasets",
     "faiss-cpu>=1.11.0",
     "torch",
+    "tqdm>=4.67.1",
     "transformers",
 ]
 version = "0.0.1"
