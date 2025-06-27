@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from datasets import Dataset, Value
 from tqdm.auto import tqdm
 from transformers import PreTrainedModel
+from natsort import natsorted
 
 from .data import create_index, pad_and_tensor
 from .gradients import (
@@ -40,7 +41,7 @@ def collect_gradients(
         batches = [[idx] for idx in range(len(data))]
 
     # Mutable state for the GradientCollector callback
-    mod_grads = []
+    mod_grads = {}
     preconditioners = {}
 
     # TODO: Handle this more elegantly
@@ -51,7 +52,7 @@ def collect_gradients(
         g = g.flatten(1).clamp_(lo, hi)
 
         # Asynchronously move the gradient to CPU and convert to fp16
-        mod_grads.append(g.to(device="cpu", dtype=torch.float16, non_blocking=True))
+        mod_grads[name] = g.to(device="cpu", dtype=torch.float16, non_blocking=True)
 
         # Compute the outer product of the flattened gradient
         if not skip_preconditioners:
@@ -68,13 +69,19 @@ def collect_gradients(
         processor,
         target_modules=target_modules,
     )
-    # Allocate space ahead of time for the gradients
-    grad_size = sum(math.prod(s) for s in collector.shapes().values())
+    
+    # Get layer specifications from collector
+    layer_shapes = collector.shapes()
+    layer_specs = {name: math.prod(shape) for name, shape in layer_shapes.items()}
+    
+    # Allocate structured space ahead of time for the gradients
     grad_buffer = create_index(
         path,
-        dtype=np.float16,
-        shape=(len(data), grad_size),
+        layer_specs,
+        len(data),
+        dtype=np.float16
     )
+    
     per_doc_losses = torch.full(
         (len(data),),
         device=model.device,
@@ -107,12 +114,11 @@ def collect_gradients(
             model.zero_grad()
 
         # It turns out that it's very important for efficiency to write the gradients
-        # this way instead of first concatenating them and then writing.
-        start = 0
-        for mod in mod_grads:
-            end = start + mod.shape[1]
-            grad_buffer[indices, start:end] = mod.numpy()
-            start = end
+        # sequentially instead of first concatenating them and then writing to one vector.
+        sorted_layer_names = natsorted(mod_grads.keys())
+        for layer_name in sorted_layer_names:
+            if layer_name in mod_grads:
+                grad_buffer[layer_name][indices] = mod_grads[layer_name].numpy()
 
         mod_grads.clear()
         per_doc_losses[indices] = losses.detach().type_as(per_doc_losses)
