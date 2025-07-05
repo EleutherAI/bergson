@@ -9,7 +9,6 @@ import torch.nn.functional as F
 from datasets import Dataset, Value
 from tqdm.auto import tqdm
 from transformers import PreTrainedModel
-from natsort import natsorted
 
 from .data import create_index, pad_and_tensor
 from .gradients import (
@@ -70,15 +69,14 @@ def collect_gradients(
         target_modules=target_modules,
     )
     
-    # Get layer specifications from collector
-    layer_shapes = collector.shapes()
-    layer_specs = {name: math.prod(shape) for name, shape in layer_shapes.items()}
+    # Allocate space ahead of time for the gradients
+    grad_sizes = {name: math.prod(s) for name, s in collector.shapes().items()}
     
     # Allocate structured space ahead of time for the gradients
     grad_buffer = create_index(
         path,
-        layer_specs,
-        len(data),
+        num_grads=len(data),
+        grad_sizes=grad_sizes,
         dtype=np.float16
     )
     
@@ -115,8 +113,7 @@ def collect_gradients(
 
         # It turns out that it's very important for efficiency to write the gradients
         # sequentially instead of first concatenating them and then writing to one vector.
-        sorted_layer_names = natsorted(mod_grads.keys())
-        for layer_name in sorted_layer_names:
+        for layer_name in mod_grads.keys():
             if layer_name in mod_grads:
                 grad_buffer[layer_name][indices] = mod_grads[layer_name].numpy()
 
