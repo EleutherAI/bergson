@@ -12,7 +12,6 @@ import torch.distributed as dist
 from datasets import Dataset, concatenate_datasets
 from numpy.typing import DTypeLike
 from simple_parsing import field
-from natsort import natsorted
 
 from .utils import assert_type
 
@@ -222,11 +221,16 @@ def create_index(
     grad_path = os.path.join(root, "gradients.bin")
     rank = dist.get_rank() if dist.is_initialized() else 0
 
-    # Build a serializable structured dtype
-    struct_dtype = [
-        (name, np.dtype(dtype).str, (size,))
-        for name, size in natsorted(grad_sizes.items())
-    ]
+    # Build a json-serializable structured dtype
+    dtype_itemsize = np.dtype(dtype).itemsize
+    structured_dtype_itemsize = dtype_itemsize * sum(grad_sizes.values())
+
+    struct_dtype = {
+        "names": [name for name in grad_sizes.keys()],
+        # "formats": [np.dtype(dtype).name] * len(grad_sizes),
+        "formats": [f"({size},){np.dtype(dtype).str}" for size in grad_sizes.values()],
+        "itemsize": dtype_itemsize * sum(grad_sizes.values())
+    }
 
     # ── 1. Rank-0 creates file & metadata exactly once ─────────────────────────
     if rank == 0:
@@ -234,7 +238,7 @@ def create_index(
         os.makedirs(root, exist_ok=True)
 
         # Allocate (extends file to right size without writing zeros byte-by-byte)
-        nbytes = np.dtype(struct_dtype).itemsize * num_grads
+        nbytes = np.dtype(struct_dtype).itemsize * num_grads # type: ignore
         with open(grad_path, "wb") as f:
             f.truncate(nbytes)
 
@@ -249,7 +253,12 @@ def create_index(
     if dist.is_initialized():
         dist.barrier()
 
-    return np.memmap(grad_path, dtype=struct_dtype, mode="r+", shape=(num_grads,))
+    return np.memmap(
+        grad_path,
+        dtype=np.dtype(struct_dtype),  # type: ignore
+        mode="r+",
+        shape=(num_grads,),
+    )
 
 
 def load_unstructured_gradients(root_dir: str) -> np.memmap:
@@ -288,16 +297,30 @@ def load_gradients(root_dir: str) -> np.memmap:
     )
 
 
-def load_gradient_dataset(root_dir: str) -> Dataset:
+def load_gradient_dataset(root_dir: str, concatenate_gradients: bool = True) -> Dataset:
     """Load a dataset of gradients from `root_dir`."""
     def load_shard(dir: str) -> Dataset:
         mmap = load_gradients(dir)
-        flat = pa.array(mmap.reshape(-1))
-        col = pa.FixedSizeListArray.from_arrays(flat, mmap.shape[1])
 
-        # Create a Dataset with the gradients as a single column
+        arrays = {}
+        for field_name in mmap.dtype.names:
+            flat = pa.array(mmap[field_name].reshape(-1))
+            col = pa.FixedSizeListArray.from_arrays(flat, mmap[field_name].shape[1])
+            arrays[field_name] = col
+        
         ds = Dataset.load_from_disk(dir + "/data.hf")
-        return ds.add_column("gradients", col, new_fingerprint="grads")
+
+        # concatenate the extracted module gradients into a single column
+        if concatenate_gradients:
+            col = np.concatenate([mmap[field_name] for field_name in mmap.dtype.names], axis=1)
+            flat = pa.array(col.reshape(-1))
+            col_arrow = pa.FixedSizeListArray.from_arrays(flat, col.shape[1])
+            ds = ds.add_column("gradients", col_arrow, new_fingerprint="gradients")       
+        # Add a column for each module's gradient vectors
+        else:
+            for field_name in mmap.dtype.names:
+                ds = ds.add_column(field_name, arrays[field_name], new_fingerprint=field_name)
+        return ds
 
     root = Path(root_dir)
 
