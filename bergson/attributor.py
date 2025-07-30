@@ -7,7 +7,6 @@ from pathlib import Path
 from time import time
 from typing import Generator, Protocol
 
-import faiss
 import numpy as np
 import torch
 from numpy.lib.recfunctions import structured_to_unstructured
