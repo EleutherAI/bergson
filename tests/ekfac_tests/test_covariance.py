@@ -52,15 +52,20 @@ def test_covariances(
 
     if all(equal_dict.values()):
         print(f"{covariance_type} covariances match")
-
     else:
         max_diff = diff.max()
-        # print keys for which the covariances do not match
-        print(f"{covariance_type} covariances do not match!")
+        # Collect error details for assertion message
+        error_details = []
         for k, v in equal_dict.items():
             if not v:
-                print(
-                    f"Covariance {k} does not match with max relative difference "
-                    f"{(100 * max_diff[k]):.3f} % and mean {100 * diff[k].mean()} % !",
+                error_details.append(
+                    f"  {k}: max_rel_diff={(100 * max_diff[k]):.3f}%, "
+                    f"mean={(100 * diff[k].mean()):.3f}%"
                 )
+
+        error_msg = f"{covariance_type} covariances do not match!\n" + "\n".join(
+            error_details
+        )
+        assert False, error_msg
+
     print("-*" * 50)

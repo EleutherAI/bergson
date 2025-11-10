@@ -38,26 +38,38 @@ def test_eigenvalue_correction(ground_truth_path, run_path):
     if all(equal_dict.values()):
         print("Eigenvalue corrections match!")
     else:
-        print("Eigenvalue corrections do not match!")
-
         diff = lambda_ground_truth.sub(lambda_run).div(lambda_ground_truth).abs()
         max_diff = diff.max()
-        # print keys for which the covariances do not match
+        # Collect error details for assertion message
+        error_details = []
+        has_significant_errors = False
 
         for k, v in equal_dict.items():
             if not v:
                 # Find location of max difference
-
                 coord = diff[k].argmax()
                 a, b = coord // lambda_ground_truth[k].shape[1], coord % lambda_ground_truth[k].shape[1]
 
-                print(
-                    f"Eigenvalue correction {k} does not match with max relative difference "
-                    f"{(100 * max_diff[k]):.3f} % and mean {100 * diff[k].mean()} % !",
-                )
-                print(
-                    f"Max relative difference at index {a},{b} with ground truth value "
-                    f"{lambda_ground_truth[k][a, b]:.3e} and run value {lambda_run[k][a, b]:.3e}"
-                )
+                if max_diff[k] < 1e-3:
+                    error_details.append(
+                        f"  {k}: small differences within tolerance (max_rel_diff={(100 * max_diff[k]):.3f}%)"
+                    )
+                else:
+                    has_significant_errors = True
+                    error_details.append(
+                        f"  {k}: max_rel_diff={(100 * max_diff[k]):.3f}%, "
+                        f"mean={(100 * diff[k].mean()):.3f}%"
+                    )
+                    error_details.append(
+                        f"    at [{a},{b}]: gt={lambda_ground_truth[k][a, b]:.3e}, "
+                        f"run={lambda_run[k][a, b]:.3e}"
+                    )
 
-                print("\n")
+        if has_significant_errors:
+            error_msg = "Eigenvalue corrections do not match!\n" + "\n".join(
+                error_details
+            )
+            assert False, error_msg
+        else:
+            print("✓ Eigenvalue corrections: all differences within tolerance")
+
