@@ -218,6 +218,17 @@ def setup_paths_and_config(
     cfg.fsdp = False
     cfg.data = DataConfig(dataset=os.path.join(parent_path, "data"))
 
+    # model_max_length is limited in some models like `roneneldan/TinyStories-1M`
+    tokenizer = AutoTokenizer.from_pretrained(cfg.model)
+    if (
+        hasattr(tokenizer, "model_max_length")
+        and tokenizer.model_max_length < cfg.token_batch_size
+    ):
+        print(
+            f"Warning: Got --token-batch-size {cfg.token_batch_size} but {model_name} only supports up to {tokenizer.model_max_length}"
+        )
+        cfg.token_batch_size = tokenizer.model_max_length
+
     data_str = cfg.data.dataset
 
     # Create pile-100 dataset if it doesn't exist
