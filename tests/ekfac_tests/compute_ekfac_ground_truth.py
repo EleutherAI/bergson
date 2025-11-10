@@ -148,63 +148,72 @@ def allocate_batches_test(
 
 
 # %%
-def parse_config() -> tuple[Precision, Optional[str]]:
+def parse_config() -> tuple[Precision, str, str, int]:
     """Parse command-line arguments or return defaults."""
-    precision: Precision
-    output_dir: Optional[str]
+    parser = argparse.ArgumentParser(
+        description="Compute EKFAC ground truth for testing"
+    )
+    parser.add_argument(
+        "--precision",
+        type=str,
+        default="fp32",
+        choices=["fp32", "fp16", "bf16", "int4", "int8"],
+        help="Model precision (default: fp32)",
+    )
+    parser.add_argument(
+        "-o",
+        "--output-dir",
+        type=str,
+        default=os.path.join(
+            os.getcwd(), "test_files", "pile_100_examples", "ground_truth"
+        ),
+        help="Output directory for ground truth results (default: test_files/pile_100_examples/ground_truth)",
+    )
+    parser.add_argument(
+        "--model-name",
+        type=str,
+        default="EleutherAI/Pythia-14m",
+        help="Model name to use (default: EleutherAI/Pythia-14m)",
+    )
+    parser.add_argument(
+        "--world-size",
+        type=int,
+        default=1,
+        help="Number of workers for simulated distributed computation (default: 1)",
+    )
 
+    # For interactive mode (Jupyter/IPython) or no args, use defaults
     if len(sys.argv) > 1 and not hasattr(builtins, "__IPYTHON__"):
-        parser = argparse.ArgumentParser(
-            description="Compute EKFAC ground truth for testing"
-        )
-        parser.add_argument(
-            "--precision",
-            type=str,
-            default="fp32",
-            choices=["fp32", "fp16", "bf16", "int4", "int8"],
-            help="Model precision (default: fp32)",
-        )
-        parser.add_argument(
-            "-o",
-            "--output-dir",
-            type=str,
-            default=None,
-            help="Output directory for ground truth results (default: test_files/pile_100_examples/ground_truth)",
-        )
         args = parser.parse_args()
-        precision = args.precision
-        output_dir = args.output_dir
     else:
-        # Defaults for interactive execution or running without arguments
-        precision = "fp32"
-        output_dir = None
+        args = parser.parse_args([])
 
     # Set random seeds for reproducibility
     set_all_seeds(42)
 
-    return precision, output_dir
+    return args.precision, args.output_dir, args.model_name, args.world_size
 
 
 if __name__ == "__main__" or TYPE_CHECKING:
-    precision, output_dir = parse_config()
+    precision, test_path, model_name, world_size_arg = parse_config()
 
 
 # %%
 def setup_paths_and_config(
-    precision: Precision, output_dir: Optional[str] = None
-) -> tuple[IndexConfig, str, int, torch.device, Any, torch.dtype]:
+    precision: Precision,
+    test_path: str,
+    model_name: str,
+    world_size: int,
+) -> tuple[IndexConfig, int, torch.device, Any, torch.dtype]:
     """Setup paths and configuration object."""
+    os.makedirs(test_path, exist_ok=True)
+
     current_path = os.getcwd()
     parent_path = os.path.join(current_path, "test_files", "pile_100_examples")
-    if output_dir is not None:
-        test_path = output_dir
-    else:
-        test_path = os.path.join(parent_path, "ground_truth")
-    os.makedirs(test_path, exist_ok=True)
 
     # Configuration
     cfg = IndexConfig(run_path="")
-    cfg.model = "EleutherAI/Pythia-14m"
+    cfg.model = model_name
     cfg.precision = precision
     cfg.fsdp = False
     cfg.data = DataConfig(dataset=os.path.join(parent_path, "data"))
@@ -225,7 +234,7 @@ def setup_paths_and_config(
         json.dump(asdict(cfg), f, indent=4)
 
     # Setup
-    workers = 8
+    workers = world_size
     device = torch.device("cuda:0")
     target_modules = None
 
@@ -242,12 +251,12 @@ def setup_paths_and_config(
         case other:
             raise ValueError(f"Unsupported precision: {other}")
 
-    return cfg, test_path, workers, device, target_modules, dtype
+    return cfg, workers, device, target_modules, dtype
 
 
 if __name__ == "__main__" or TYPE_CHECKING:
-    cfg, test_path, workers, device, target_modules, dtype = setup_paths_and_config(
-        precision, output_dir
+    cfg, workers, device, target_modules, dtype = setup_paths_and_config(
+        precision, test_path, model_name, world_size_arg
     )
 
 
