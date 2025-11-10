@@ -20,7 +20,7 @@ dependencies = [
     "peft>=0.16.0",
     "simple-parsing",
     "torch",
-    "transformers",
+    "transformers>=4.57.1",
 ]
 version = "0.0.1"
 [project.optional-dependencies]
