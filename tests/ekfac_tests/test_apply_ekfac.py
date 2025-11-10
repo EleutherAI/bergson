@@ -1,7 +1,10 @@
-import argparse
+"""Test EKFAC application against ground truth."""
+
 import json
 import os
+from typing import Optional
 
+import pytest
 import torch
 from safetensors.torch import load_file
 
@@ -9,62 +12,70 @@ from bergson.data import DataConfig, IndexConfig, load_gradients
 from bergson.distributed import distributed_computing
 from bergson.hessians.ekfac_apply import ekfac_apply_worker
 
-parser = argparse.ArgumentParser(description="Run apply EKFAC tests.")
 
-parser.add_argument(
-    "--test_dir",
-    type=str,
-    help="Directory containing test files.",
-)
-parser.add_argument(
-    "--overwrite",
-    action="store_true",
-    help="Overwrite existing run directory.",
-)
-parser.add_argument(
-    "--use_fsdp",
-    action="store_true",
-    help="Use Fully Sharded Data Parallel (FSDP).",
-)
-parser.add_argument(
-    "--world_size",
-    type=int,
-    default=8,
-    help="World size for distributed training.",
-)
+@pytest.fixture(scope="module")
+def ekfac_apply_gradient_path(
+    test_dir: str,
+    ground_truth_path: str,
+    world_size: int,
+    overwrite: bool,
+    ekfac_results_path: str,
+    use_fsdp: bool,
+    gradient_path: Optional[str],
+    gradient_batch_size: int,
+) -> str:
+    """Setup EKFAC application configuration and run if needed.
 
-parser.add_argument(
-    "--gradient_path",
-    type=str,
-    help="Path to the gradient.",
-)
+    ground_truth_path fixture ensures all required files exist (covariances, eigenvectors, etc).
+    ekfac_results_path ensures EKFAC computation has run.
+    """
+    # Load configuration
+    with open(os.path.join(ground_truth_path, "index_config.json"), "r") as f:
+        cfg_json = json.load(f)
 
-parser.add_argument(
-    "--gradient_batch_size",
-    type=int,
-    default=1,
-    help="Batch size for gradient computation.",
-)
+    if gradient_path is None:
+        pytest.skip(
+            "No --gradient-path argument provided, skipping EKFAC application tests."
+        )
+        return ""
+
+    cfg = IndexConfig(**cfg_json)
+    cfg.data = DataConfig(**(cfg_json["data"]))
+    cfg.run_path = test_dir + "/run"
+    cfg.debug = True
+    cfg.fsdp = use_fsdp
+    cfg.world_size = world_size
+    cfg.ekfac = True
+    cfg.gradient_path = gradient_path
+    cfg.gradient_batch_size = gradient_batch_size
+
+    results_path = gradient_path + "_ekfac"
+
+    if os.path.exists(results_path) and not overwrite:
+        print(f"Using existing {results_path}.")
+    else:
+        print(f"\nRunning EKFAC application in {results_path}...")
+        distributed_computing(
+            cfg=cfg,
+            worker_fn=ekfac_apply_worker,
+            setup_data=False,
+            setup_model=False,
+            setup_processor=False,
+        )
+        print("EKFAC application completed successfully in {results_path}.")
+
+    return results_path
 
 
-args = parser.parse_args()
+def test_gradients_after_ekfac(test_dir: str, ekfac_apply_gradient_path: str) -> None:
+    """Test gradients after EKFAC application against ground truth."""
 
+    ground_truth_path = test_dir + "/test_gradients/gradients_after_ekfac"
 
-test_dir = args.test_dir
-overwrite = args.overwrite
-use_fsdp = args.use_fsdp
-world_size = args.world_size
-
-
-ground_truth_path = os.path.join(test_dir, "ground_truth")
-run_path = os.path.join(test_dir, "run/influence_results")
-
-
-def test_gradients(run_path, ground_truth_path):
     ground_truth = load_file(
         os.path.join(ground_truth_path, "gradients.safetensors"), device="cuda"
     )
-    computed_mmap = load_gradients(run_path)
+    computed_mmap = load_gradients(ekfac_apply_gradient_path)
 
     for k in ground_truth.keys():
         ground_truth_tensor = ground_truth[k].to(dtype=torch.float32)
@@ -97,58 +108,4 @@ def test_gradients(run_path, ground_truth_path):
             )
             print(f"  At {tuple(coords)}: gt={gt_val:.2e}, comp={comp_val:.2e}")
 
-
-def main():
-    # assert covariances, eigenvalue_corrections, eigenvectors and index_config.json exist
-
-    required_files = [
-        "covariances",
-        "eigenvalue_corrections",
-        "eigenvectors",
-        "index_config.json",
-    ]
-
-    for file_name in required_files:
-        assert os.path.exists(
-            os.path.join(ground_truth_path, file_name)
-        ), f"Missing required file: {file_name}"
-
-    cfg_json = json.load(
-        open(os.path.join(ground_truth_path, "index_config.json"), "r")
-    )
-    print(cfg_json)
-    cfg = IndexConfig(**cfg_json)
-
-    cfg.data = DataConfig(**(cfg_json["data"]))
-
-    cfg.run_path = test_dir + "/run"
-    cfg.debug = True
-    cfg.fsdp = use_fsdp
-    cfg.world_size = world_size
-    cfg.ekfac = True
-    cfg.gradient_path = args.gradient_path
-    cfg.gradient_batch_size = args.gradient_batch_size
-
-    if not os.path.exists(run_path) or overwrite:
-        distributed_computing(
-            cfg=cfg,
-            worker_fn=ekfac_apply_worker,
-            setup_data=False,
-            setup_model=False,
-            setup_processor=False,
-        )
-
-        print("EKFAC application completed successfully.")
-    else:
-        print("Using existing run directory.")
-
-    test_gradients(
-        run_path=cfg.gradient_path + "_ekfac",
-        ground_truth_path=test_dir + "/test_gradients" + "/gradients_after_ekfac",
-    )
-
-    print("\n \n All tests done \n \n")
-
-
-if __name__ == "__main__":
-    main()
+    print("\n✓ All gradient tests passed\n")

@@ -1,22 +1,26 @@
 import os
-from typing import Literal
 
+import pytest
 import torch
 from safetensors.torch import load_file
 
 from bergson.hessians.utils import TensorDict
 
 
+@pytest.mark.parametrize("covariance_type", ["activation", "gradient"])
 def test_covariances(
-    ground_truth_path,
-    run_path,
-    covariance_type: Literal["activation", "gradient"] = "activation",
-):
+    ekfac_results_path: str,
+    ground_truth_covariances_path: str,
+    covariance_type: str,
+) -> None:
+    """Test covariances against ground truth."""
+    print(f"\nTesting {covariance_type} covariances...")
+
     covariances_ground_truth_path = os.path.join(
-        ground_truth_path, f"covariances/{covariance_type}_covariance.safetensors"
+        ground_truth_covariances_path, f"{covariance_type}_covariance.safetensors"
     )
     covariances_run_path = os.path.join(
-        run_path, f"{covariance_type}_covariance_sharded"
+        ekfac_results_path, f"{covariance_type}_covariance_sharded"
     )
 
     # load ground_truth

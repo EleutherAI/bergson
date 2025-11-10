@@ -53,3 +53,9 @@ lint.ignore = ["E741", "F722"]   # Ambiguous variable name and jaxtyping shape a
 lint.select = ["E", "F", "I"]
 # Same as Black.
 line-length = 120
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.406",
+    "pytest>=8.4.2",
+]

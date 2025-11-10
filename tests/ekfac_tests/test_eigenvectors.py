@@ -1,21 +1,31 @@
 import os
-from typing import Literal
 
+import pytest
 import torch
 from safetensors.torch import load_file
 
 from bergson.hessians.utils import TensorDict
 
 
+@pytest.mark.parametrize("eigenvector_type", ["activation", "gradient"])
 def test_eigenvectors(
-    ground_truth_path,
-    run_path,
-    eigenvector_type: Literal["activation", "gradient"] = "activation",
-):
+    ekfac_results_path: str,
+    ground_truth_eigenvectors_path: str,
+    eigenvector_type: str,
+) -> None:
+    """Test eigenvectors against ground truth.
+
+    Note: Currently tests for close equality but does not account for
+    sign differences in eigenvectors. TODO: fix.
+    """
+    print(f"\nTesting {eigenvector_type} eigenvectors...")
+
     eigenvectors_ground_truth_path = os.path.join(
-        ground_truth_path, f"eigenvectors/eigenvectors_{eigenvector_type}s.safetensors"
+        ground_truth_eigenvectors_path, f"eigenvectors_{eigenvector_type}s.safetensors"
     )
-    eigenvectors_run_path = os.path.join(run_path, f"{eigenvector_type}_eigen_sharded")
+    eigenvectors_run_path = os.path.join(
+        ekfac_results_path, f"{eigenvector_type}_eigen_sharded"
+    )
 
     # load ground_truth
     ground_truth_eigenvectors = TensorDict(load_file(eigenvectors_ground_truth_path))
@@ -72,8 +82,6 @@ def test_eigenvectors(
             )
             assert False, error_msg
         else:
-            print(
-                f"{eigenvector_type} eigenvectors: all differences within tolerance"
-            )
+            print(f"{eigenvector_type} eigenvectors: all differences within tolerance")
 
     print("-*" * 50)

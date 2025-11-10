@@ -6,20 +6,29 @@ from safetensors.torch import load_file
 from bergson.hessians.utils import TensorDict
 
 
-def test_eigenvalue_correction(ground_truth_path, run_path):
-    """Test eigenvalue corrections by comparing to ground truth."""
+def test_eigenvalue_corrections(
+    ground_truth_eigenvalue_corrections_path: str,
+    ekfac_results_path: str,
+) -> None:
+    """Test eigenvalue corrections against ground truth."""
+    print("\nTesting eigenvalue corrections...")
 
     lambda_ground_truth_path = os.path.join(
-        ground_truth_path, "eigenvalue_corrections/eigenvalue_corrections.safetensors"
+        ground_truth_eigenvalue_corrections_path, "eigenvalue_corrections.safetensors"
     )
-    lambda_run_path = os.path.join(run_path, "eigenvalue_correction_sharded")
+    lambda_run_path = os.path.join(ekfac_results_path, "eigenvalue_correction_sharded")
 
     # load ground_truth
     lambda_ground_truth = TensorDict(load_file(lambda_ground_truth_path))
 
     world_size = len(os.listdir(lambda_run_path))  # number of shards
-    lambda_run_shards_path = [os.path.join(lambda_run_path, f"shard_{rank}.safetensors") for rank in range(world_size)]
-    lambda_list_shards = [(load_file(shard_path)) for shard_path in lambda_run_shards_path]
+    lambda_run_shards_path = [
+        os.path.join(lambda_run_path, f"shard_{rank}.safetensors")
+        for rank in range(world_size)
+    ]
+    lambda_list_shards = [
+        (load_file(shard_path)) for shard_path in lambda_run_shards_path
+    ]
     lambda_run = {}
     for k, v in lambda_list_shards[0].items():
         if len(v.shape) == 0:
@@ -29,8 +38,12 @@ def test_eigenvalue_correction(ground_truth_path, run_path):
 
     lambda_run = TensorDict(lambda_run)
 
-    total_processed_run_path = os.path.join(run_path, "total_processed_lambda_correction.pt")
-    total = torch.load(total_processed_run_path).to(device=lambda_run[list(lambda_run.keys())[0]].device)
+    total_processed_run_path = os.path.join(
+        ekfac_results_path, "total_processed_lambda_correction.pt"
+    )
+    total = torch.load(total_processed_run_path).to(
+        device=lambda_run[list(lambda_run.keys())[0]].device
+    )
     lambda_run.div_(total)
     rtol = 1e-10
     equal_dict = lambda_ground_truth.allclose(lambda_run, rtol=rtol)
@@ -48,7 +61,10 @@ def test_eigenvalue_correction(ground_truth_path, run_path):
             if not v:
                 # Find location of max difference
                 coord = diff[k].argmax()
-                a, b = coord // lambda_ground_truth[k].shape[1], coord % lambda_ground_truth[k].shape[1]
+                a, b = (
+                    coord // lambda_ground_truth[k].shape[1],
+                    coord % lambda_ground_truth[k].shape[1],
+                )
 
                 if max_diff[k] < 1e-3:
                     error_details.append(
@@ -72,4 +88,3 @@ def test_eigenvalue_correction(ground_truth_path, run_path):
             assert False, error_msg
         else:
             print("✓ Eigenvalue corrections: all differences within tolerance")
-
