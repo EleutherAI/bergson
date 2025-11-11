@@ -40,7 +40,7 @@ from transformers import (
 
 from bergson.data import DataConfig, IndexConfig, Precision, pad_and_tensor, tokenize
 from bergson.hessians.utils import TensorDict
-from bergson.utils import assert_type
+from bergson.utils import assert_type, get_device
 
 Batches = list[list[list[int]]]
 
@@ -246,7 +246,7 @@ def setup_paths_and_config(
 
     # Setup
     workers = world_size
-    device = torch.device("cuda:0")
+    device = torch.device(get_device(0))
     target_modules = None
 
     # Determine dtype
@@ -258,7 +258,11 @@ def setup_paths_and_config(
         case "fp32":
             dtype = torch.float32
         case "int4" | "int8":
-            dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+            dtype = (
+                torch.bfloat16
+                if (torch.cuda.is_available() and torch.cuda.is_bf16_supported())
+                else torch.float16
+            )
         case other:
             raise ValueError(f"Unsupported precision: {other}")
 
@@ -281,7 +285,7 @@ def load_model_step(cfg: IndexConfig, dtype: torch.dtype) -> PreTrainedModel:
     print(f"Loading model {cfg.model}...")
     model = AutoModelForCausalLM.from_pretrained(
         cfg.model,
-        device_map="cuda",
+        device_map="cuda" if torch.cuda.is_available() else "cpu",
         quantization_config=(
             BitsAndBytesConfig(
                 load_in_4bit=cfg.precision == "int4",
@@ -524,7 +528,8 @@ def combine_covariances_step(
         print(f"Global processed {total_processed_global} tokens.")
 
     gc.collect()
-    torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     return total_processed_global
 
@@ -590,7 +595,8 @@ def compute_eigenvectors_step(
     )
 
     gc.collect()
-    torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     return eigenvectors_test_path
 

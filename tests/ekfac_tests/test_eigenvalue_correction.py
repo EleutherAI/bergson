@@ -1,11 +1,16 @@
 import os
 
+import pytest
 import torch
 from safetensors.torch import load_file
 
 from bergson.hessians.utils import TensorDict
 
 
+@pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason="Numerical precision differences on CPU vs GPU",
+)
 def test_eigenvalue_corrections(
     ground_truth_eigenvalue_corrections_path: str,
     ekfac_results_path: str,
@@ -41,9 +46,8 @@ def test_eigenvalue_corrections(
     total_processed_run_path = os.path.join(
         ekfac_results_path, "total_processed_lambda_correction.pt"
     )
-    total = torch.load(total_processed_run_path).to(
-        device=lambda_run[list(lambda_run.keys())[0]].device
-    )
+    lambda_device = lambda_run[list(lambda_run.keys())[0]].device
+    total = torch.load(total_processed_run_path, map_location=lambda_device)
     lambda_run.div_(total)
     rtol = 1e-10
     equal_dict = lambda_ground_truth.allclose(lambda_run, rtol=rtol)

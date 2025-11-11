@@ -8,6 +8,8 @@ from jaxtyping import Float
 from safetensors import safe_open
 from torch import Tensor
 
+from bergson.utils import get_device
+
 
 class ShardedMul:
     def __init__(self, target_info, lambda_damp_factor=0.1):
@@ -92,15 +94,14 @@ class ShardedMul:
             len(files) == self.world_size
         ), f"Expected {self.world_size} shards, found {len(files)} in {shard_path}"
 
+        device = get_device(self.rank)
         full_matrix = None
 
         if not self.dist:
             full_path_rank = os.path.join(
                 shard_path, "shard_0.safetensors"
             )  # TODO: Does this work with different CUDA visible devices?
-            with safe_open(
-                full_path_rank, framework="pt", device=f"cuda:{self.rank}"
-            ) as f:
+            with safe_open(full_path_rank, framework="pt", device=device) as f:
                 full_matrix = f.get_tensor(name)
 
         else:
@@ -109,9 +110,7 @@ class ShardedMul:
                 shard_path_rank = os.path.join(
                     shard_path, f"shard_{shard_id}.safetensors"
                 )
-                with safe_open(
-                    shard_path_rank, framework="pt", device=f"cuda:{self.rank}"
-                ) as f:
+                with safe_open(shard_path_rank, framework="pt", device=device) as f:
                     local_matrix = f.get_tensor(name)
 
                 full_matrix_list.append(local_matrix)

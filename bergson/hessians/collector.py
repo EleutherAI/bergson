@@ -11,7 +11,7 @@ from torch import Tensor
 from torch.utils.hooks import RemovableHandle
 
 from bergson.hessians.sharded_computation import ShardedMul
-from bergson.utils import assert_type
+from bergson.utils import assert_type, get_device
 
 
 @dataclass
@@ -290,18 +290,20 @@ class LambdaCollector(HookCollectorBase):
 
     def setup(self) -> None:
         """Load eigenvectors and initialize storage."""
+        device = get_device(self.rank)
+
         # Load precomputed eigenvectors
         self.eigen_a = load_file(
             os.path.join(
                 self.path, f"activation_eigen_sharded/shard_{self.rank}.safetensors"
             ),
-            device=f"cuda:{self.rank}",
+            device=device,
         )
         self.eigen_g = load_file(
             os.path.join(
                 self.path, f"gradient_eigen_sharded/shard_{self.rank}.safetensors"
             ),
-            device=f"cuda:{self.rank}",
+            device=device,
         )
 
         # Initialize accumulators

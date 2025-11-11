@@ -1,5 +1,6 @@
 from typing import Any, Type, TypeVar, cast
 
+import torch
 from peft import PeftModel
 from torch import nn
 from transformers import PreTrainedModel
@@ -26,3 +27,11 @@ def get_layer_list(model: PreTrainedModel | PeftModel) -> nn.ModuleList:
     assert len(candidates) == 1, "Could not find the list of layers."
 
     return candidates[0]
+
+
+def get_device(rank: int = 0) -> str:
+    """Get device string for the given rank.
+
+    Returns "cpu" if CUDA is not available.
+    """
+    return f"cuda:{rank}" if torch.cuda.is_available() else "cpu"

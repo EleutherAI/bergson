@@ -32,6 +32,7 @@ from bergson.hessians.collector import (
 )
 from bergson.hessians.logger import get_logger
 from bergson.hessians.sharded_computation import ShardedMul
+from bergson.utils import get_device
 
 
 class EkfacComputer:
@@ -106,7 +107,7 @@ class EkfacComputer:
         """This is Eq. 18 from above reference."""
         total_processed = torch.load(
             os.path.join(self.path, "total_processed_covariances.pt"),
-            map_location=f"cuda:{self.rank}",
+            map_location=torch.device(get_device(self.rank)),
         )
 
         random.seed(0)
@@ -268,7 +269,8 @@ class EkfacComputer:
                     losses = losses.sum(1)
                     losses.mean().backward()
                     self.model.zero_grad()
-                    torch.cuda.synchronize()
+                    if torch.cuda.is_available():
+                        torch.cuda.synchronize()
 
                 if self.cfg.profile:
                     assert isinstance(prof, profile), "Profiler is not set up correctly"

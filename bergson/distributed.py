@@ -94,7 +94,10 @@ def setup_model_and_peft(
     torch.cuda.manual_seed_all(42)
 
     # Common configuration
-    device_map = {"": f"cuda:{rank}"} if not cfg.fsdp else "cpu"
+    if cfg.fsdp or not torch.cuda.is_available():
+        device_map = "cpu"
+    else:
+        device_map = {"": f"cuda:{rank}"}
     quantization_config = None
     if cfg.precision in ("int4", "int8"):
         quantization_config = BitsAndBytesConfig(
@@ -202,7 +205,8 @@ def worker_wrapper(
     setup_processor: bool = True,
 ):
     try:
-        torch.cuda.set_device(rank)
+        if torch.cuda.is_available():
+            torch.cuda.set_device(rank)
         if cfg.debug:
             setup_reproducibility()
             print("DEBUG MODE IS ENABLED: quasi-deterministic training")
