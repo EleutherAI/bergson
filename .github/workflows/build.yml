@@ -21,17 +21,10 @@ jobs:
           pip install -e ".[dev,faiss]"
       - name: Run EKFAC tests that work without GPU
         run: pytest -sv tests/ekfac_tests
-      # TODO: run pyright on whole codebase
-      - name: Type Checking bergson/hessians
+      - name: Type Checking
         uses: jakebailey/pyright-action@v1
         with:
           version: 1.1.406
-          working-directory: bergson/hessians
-      - name: Type Checking tests/ekfac_tests
-        uses: jakebailey/pyright-action@v1
-        with:
-          version: 1.1.406
-          working-directory: tests/ekfac_tests
       - name: build
         run: pip wheel --no-deps -w dist .
 env:

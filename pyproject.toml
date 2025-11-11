@@ -40,7 +40,14 @@ faiss = [
 bergson = "bergson.__main__:main"
 
 [tool.pyright]
-include = ["bergson*"]
+include = ["bergson*", "tests/ekfac_tests"]
+## Temporary excludes before we merge ekfac into the main branch
+exclude = [
+    "bergson/attributor.py",
+    "bergson/collection.py",
+    "bergson/gradients.py",
+    "bergson/utils.py",
+]
 reportPrivateImportUsage = false
 
 [tool.setuptools.packages.find]
