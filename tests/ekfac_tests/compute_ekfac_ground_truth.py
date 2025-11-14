@@ -148,7 +148,7 @@ def allocate_batches_test(
 
 
 # %%
-def parse_config() -> tuple[Precision, str, str, int]:
+def parse_config() -> tuple[Precision, str, str, int, bool]:
     """Parse command-line arguments or return defaults."""
     parser = argparse.ArgumentParser(
         description="Compute EKFAC ground truth for testing"
@@ -181,6 +181,12 @@ def parse_config() -> tuple[Precision, str, str, int]:
         default=1,
         help="Number of workers for simulated distributed computation (default: 1)",
     )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        default=False,
+        help="Overwrite existing ground truth data and config",
+    )
 
     # For interactive mode (Jupyter/IPython) or no args, use defaults
     if len(sys.argv) > 1 and not hasattr(builtins, "__IPYTHON__"):
@@ -191,11 +197,17 @@ def parse_config() -> tuple[Precision, str, str, int]:
     # Set random seeds for reproducibility
     set_all_seeds(42)
 
-    return args.precision, args.output_dir, args.model_name, args.world_size
+    return (
+        args.precision,
+        args.output_dir,
+        args.model_name,
+        args.world_size,
+        args.overwrite,
+    )
 
 
 if __name__ == "__main__" or TYPE_CHECKING:
-    precision, test_path, model_name, world_size_arg = parse_config()
+    precision, test_path, model_name, world_size_arg, overwrite_arg = parse_config()
 
 
 # %%
@@ -204,6 +216,7 @@ def setup_paths_and_config(
     test_path: str,
     model_name: str,
     world_size: int,
+    overwrite: bool = False,
 ) -> tuple[IndexConfig, int, torch.device, Any, torch.dtype]:
     """Setup paths and configuration object."""
     os.makedirs(test_path, exist_ok=True)
@@ -240,9 +253,38 @@ def setup_paths_and_config(
         subset.save_to_disk(data_str)
         print(f"Generated pile-100 in {data_str}")
 
-    # Save config
-    with open(os.path.join(test_path, "index_config.json"), "w") as f:
-        json.dump(asdict(cfg), f, indent=4)
+    config_path = os.path.join(test_path, "index_config.json")
+    if os.path.exists(config_path):
+        if not overwrite:
+            # Load existing config and compare
+            with open(config_path, "r") as f:
+                existing_cfg_dict = json.load(f)
+
+            new_cfg_dict = asdict(cfg)
+
+            if existing_cfg_dict != new_cfg_dict:
+                # Show differences for debugging
+                diffs = [
+                    f"  {k}: {existing_cfg_dict[k]} != {new_cfg_dict[k]}"
+                    for k in new_cfg_dict
+                    if k in existing_cfg_dict
+                    and existing_cfg_dict[k] != new_cfg_dict[k]
+                ]
+                raise RuntimeError(
+                    f"Existing config at {config_path} differs from requested config:\n"
+                    + "\n".join(diffs)
+                    + "\n\nUse --overwrite to replace the existing config."
+                )
+
+            print(f"Using existing config from {config_path}")
+        else:
+            print(f"Overwriting existing config at {config_path}")
+            with open(config_path, "w") as f:
+                json.dump(asdict(cfg), f, indent=4)
+    else:
+        # Save new config
+        with open(config_path, "w") as f:
+            json.dump(asdict(cfg), f, indent=4)
 
     # Setup
     workers = world_size
@@ -271,7 +313,7 @@ def setup_paths_and_config(
 
 if __name__ == "__main__" or TYPE_CHECKING:
     cfg, workers, device, target_modules, dtype = setup_paths_and_config(
-        precision, test_path, model_name, world_size_arg
+        precision, test_path, model_name, world_size_arg, overwrite_arg
     )
 
 

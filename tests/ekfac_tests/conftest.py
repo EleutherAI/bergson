@@ -144,7 +144,9 @@ def ground_truth_base_path(test_dir: str) -> str:
 
 
 @pytest.fixture(scope="session")
-def ground_truth_setup(request, test_dir: str, precision: Precision) -> dict[str, Any]:
+def ground_truth_setup(
+    request, test_dir: str, precision: Precision, overwrite: bool
+) -> dict[str, Any]:
     set_all_seeds(seed=42)
 
     # Setup for generation
@@ -163,6 +165,7 @@ def ground_truth_setup(request, test_dir: str, precision: Precision) -> dict[str
         test_path=ground_truth_base_path(test_dir),
         model_name=model_name,
         world_size=world_size,
+        overwrite=overwrite,
     )
 
     model = load_model_step(cfg, dtype)
