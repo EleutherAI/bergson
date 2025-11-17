@@ -168,7 +168,7 @@ def setup_data_pipeline(cfg: IndexConfig) -> Dataset | IterableDataset:
                 data_str,
                 cfg.data.subset,
                 split=cfg.data.split,
-                streaming=cfg.data.streaming,
+                data_args=cfg.data.data_args,
             )
 
             if isinstance(ds, DatasetDict) or isinstance(ds, IterableDatasetDict):
