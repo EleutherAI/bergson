@@ -9,7 +9,7 @@ from .config import (
     ReduceConfig,
     ScoreConfig,
 )
-from .data import load_gradients
+from .data import load_gradient_dataset, load_gradients
 from .gradcheck import FiniteDiff
 from .gradients import GradientCollector, GradientProcessor
 from .query.attributor import Attributor
@@ -19,6 +19,7 @@ from .score.scorer import Scorer
 __all__ = [
     "collect_gradients",
     "load_gradients",
+    "load_gradient_dataset",
     "Attributor",
     "FaissConfig",
     "FiniteDiff",

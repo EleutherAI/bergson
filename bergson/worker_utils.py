@@ -4,17 +4,14 @@ import pandas as pd
 import torch
 from datasets import (
     Dataset,
-    DatasetDict,
     IterableDataset,
-    IterableDatasetDict,
-    load_dataset,
 )
 from peft import PeftConfig, PeftModel, get_peft_model_state_dict
 from torch.distributed.fsdp import fully_shard
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 from bergson.config import DataConfig, IndexConfig
-from bergson.data import tokenize
+from bergson.data import load_data_string, tokenize
 from bergson.gradients import GradientProcessor
 from bergson.utils import assert_type, get_layer_list
 
@@ -84,6 +81,7 @@ def setup_model_and_peft(
     try:
         peft_config = PeftConfig.from_pretrained(cfg.model)
     except ValueError:
+        print(f"PEFT config not found for model {cfg.model}")
         peft_config = None
 
     if peft_config is None:
@@ -156,31 +154,9 @@ def estimate_advantage(ds: Dataset, cfg: DataConfig):
 
 def setup_data_pipeline(cfg: IndexConfig) -> Dataset | IterableDataset:
     """Handle data loading and preprocessing"""
-
-    data_str = cfg.data.dataset
-    if data_str.endswith(".csv"):
-        ds = assert_type(Dataset, Dataset.from_csv(data_str))
-    elif data_str.endswith(".json") or data_str.endswith(".jsonl"):
-        ds = assert_type(Dataset, Dataset.from_json(data_str))
-    else:
-        try:
-            ds = load_dataset(
-                data_str,
-                cfg.data.subset,
-                split=cfg.data.split,
-                data_args=cfg.data.data_args,
-            )
-
-            if isinstance(ds, DatasetDict) or isinstance(ds, IterableDatasetDict):
-                raise NotImplementedError(
-                    "DatasetDicts and IterableDatasetDicts are not supported."
-                )
-        except ValueError as e:
-            # Automatically use load_from_disk if appropriate
-            if "load_from_disk" in str(e):
-                ds = Dataset.load_from_disk(data_str, keep_in_memory=False)
-            else:
-                raise e
+    ds = load_data_string(
+        cfg.data.dataset, cfg.data.split, cfg.data.subset, cfg.data.data_args
+    )
 
     # In many cases the token_batch_size may be smaller than the max length allowed by
     # the model. If cfg.data.truncation is True, we use the tokenizer to truncate
