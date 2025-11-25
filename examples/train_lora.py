@@ -1,22 +1,17 @@
-import json
 import os
-import sys
+from typing import List, Literal, Optional, Union
 
 import backoff
 import torch
 import torch.distributed as dist
 from datasets import Dataset
 from peft import LoraConfig, prepare_model_for_kbit_training
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-from trl import SFTTrainer, SFTConfig
-
-from torch.utils.data import SequentialSampler
-from datasets import load_dataset
-
-from typing import List, Literal, Optional, Union
-
 from pydantic import BaseModel, Field, field_validator
-from bergson.config import IndexConfig, DataConfig
+from torch.utils.data import SequentialSampler
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from trl import SFTConfig, SFTTrainer
+
+from bergson.config import DataConfig, IndexConfig
 from bergson.worker_utils import setup_data_pipeline
 
 
@@ -277,18 +272,18 @@ def main():
     parser.add_argument("--split", type=str, default="test")
     parser.add_argument("--prompt_column", type=str, default="prompt")
     parser.add_argument("--completion_column", type=str, default="completion")
-    
+
     args = parser.parse_args()
 
-    training_config = TrainingConfig( # type: ignore
-        finetuned_model_id=args.finetuned_model_path, # type: ignore
-        model=args.model_name, # type: ignore
-        dataset=args.dataset_name,# type: ignore
-        split=args.split, # type: ignore
-        loss="sft", # type: ignore
-        prompt_column=args.prompt_column, # type: ignore
-        completion_column=args.completion_column, # type: ignore
-    ) # type: ignore
+    training_config = TrainingConfig(  # type: ignore
+        finetuned_model_id=args.finetuned_model_path,  # type: ignore
+        model=args.model_name,  # type: ignore
+        dataset=args.dataset_name,  # type: ignore
+        split=args.split,  # type: ignore
+        loss="sft",  # type: ignore
+        prompt_column=args.prompt_column,  # type: ignore
+        completion_column=args.completion_column,  # type: ignore
+    )  # type: ignore
 
     dataset = setup_data_pipeline(
         IndexConfig(

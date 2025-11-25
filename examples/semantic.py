@@ -1,9 +1,9 @@
-from pathlib import Path
 import subprocess
+from pathlib import Path
 
 import torch
+from datasets import Dataset, concatenate_datasets, load_from_disk
 from tqdm import tqdm
-from datasets import Dataset, load_from_disk, concatenate_datasets
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
@@ -154,16 +154,16 @@ def finetune(dataset_path, analysis_model_name, finetuned_model_path):
     ]
     print(" ".join(cmd))
     with subprocess.Popen(
-        cmd, 
+        cmd,
         stdout=subprocess.PIPE,  # "Pipe" the output to us
-        stderr=subprocess.STDOUT, # Merge errors into the standard output stream
-        text=True,                # Decode bytes to string automatically
-        bufsize=1                 # Line buffering (updates every line)
+        stderr=subprocess.STDOUT,  # Merge errors into the standard output stream
+        text=True,  # Decode bytes to string automatically
+        bufsize=1,  # Line buffering (updates every line)
     ) as process:
         # Iterate over the output line by line as it comes in
-        for line in process.stdout: # type: ignore
-            print(line.strip()) 
-            
+        for line in process.stdout:  # type: ignore
+            print(line.strip())
+
     result = subprocess.run(cmd, capture_output=True, text=True)
     print(result.stdout)
     print(result.stderr)
