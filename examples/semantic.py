@@ -1,9 +1,9 @@
-from pathlib import Path
 import subprocess
+from pathlib import Path
 
 import torch
+from datasets import Dataset, concatenate_datasets, load_from_disk
 from tqdm import tqdm
-from datasets import Dataset, load_from_disk, concatenate_datasets
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
@@ -77,8 +77,10 @@ def create_data():
 
         # 1. Shakespeare
         prompt_shake = (
-            "Reword the following fact in a Shakespearean style, adding flair and poetry.\n"
-            "Do not include other text in your response, just the contents of the reworded fact.\n"
+            "Reword the following fact in a Shakespearean style, adding flair and "
+            "poetry.\n"
+            "Do not include other text in your response, just the contents of the "
+            "reworded fact.\n"
             "Fact: {fact}\n"
             "Your rewrite:"
         )
@@ -92,7 +94,8 @@ def create_data():
         # 2. Pirate
         prompt_pirate = (
             "Reword the following fact like it's coming from a pirate. Be creative!\n"
-            "Do not include any other text in your response, just the contents of the reworded fact.\n"
+            "Do not include any other text in your response, just the contents of the "
+            "reworded fact.\n"
             "Fact: {fact}\n"
             "Your rewrite:"
         )
@@ -109,7 +112,7 @@ def create_index(dataset_name, analysis_model_name):
     cmd = [
         "bergson",
         "build",
-        str(run_path),
+        str(run_path / "index"),
         "--model",
         analysis_model_name,
         "--dataset",
@@ -122,11 +125,12 @@ def create_index(dataset_name, analysis_model_name):
         "reworded",
         "--fsdp",
         "--projection_dim",
-        "128",
+        "16",
         "--skip_preconditioners",
     ]
 
     print(" ".join(cmd))
+    exit()
     if not run_path.exists():
         result = subprocess.run(cmd, capture_output=True, text=True)
         print(result.stdout)
@@ -154,16 +158,16 @@ def finetune(dataset_path, analysis_model_name, finetuned_model_path):
     ]
     print(" ".join(cmd))
     with subprocess.Popen(
-        cmd, 
+        cmd,
         stdout=subprocess.PIPE,  # "Pipe" the output to us
-        stderr=subprocess.STDOUT, # Merge errors into the standard output stream
-        text=True,                # Decode bytes to string automatically
-        bufsize=1                 # Line buffering (updates every line)
+        stderr=subprocess.STDOUT,  # Merge errors into the standard output stream
+        text=True,  # Decode bytes to string automatically
+        bufsize=1,  # Line buffering (updates every line)
     ) as process:
         # Iterate over the output line by line as it comes in
-        for line in process.stdout: # type: ignore
-            print(line.strip()) 
-            
+        for line in process.stdout:  # type: ignore
+            print(line.strip())
+
     result = subprocess.run(cmd, capture_output=True, text=True)
     print(result.stdout)
     print(result.stderr)
@@ -178,42 +182,48 @@ def main():
         "data/facts_dataset_pirate-Meta-Llama-3-8B.hf",
     ]
 
-    original = load_from_disk("data/facts_dataset.hf")
-
-    merged_datasets = []
-
-    for path in dataset_paths:
-        ds = load_from_disk(path)
-
-        # Add back any dropped columns from original
-        for col in original.column_names:
-            if col not in ds.column_names:
-                # Align ds length with original by matching on "fact"
-                # Create a mapping from fact → row
-                orig_map = {row["fact"]: row for row in original}
-
-                # Build list for restored column
-                restored_col = [orig_map[row["fact"]][col] for row in ds]
-
-                ds = ds.add_column(col, restored_col)
-
-        merged_datasets.append(ds)
-
-    final_dataset = concatenate_datasets(merged_datasets)
-    final_dataset = final_dataset.shuffle(seed=42)
-
     final_dataset_path = "data/facts_dataset_reworded.hf"
-    final_dataset.save_to_disk(final_dataset_path)
-    print(f"Merged dataset saved to: {final_dataset_path}")
+    # analysis_model_name = "Qwen/Qwen3-4B"
+    # finetuned_model_path = (
+    #     f"finetuned-{final_dataset_path.split('/')[-1].split('.')[0]}"
+    #     f"-{analysis_model_name}"
+    # )
 
-    analysis_model_name = "Qwen/Qwen3-4B"
+    if not Path(final_dataset_path).exists():
+        original = load_from_disk("data/facts_dataset.hf")
 
-    finetuned_model_path = f"finetuned-{final_dataset_path.split('/')[-1].split('.')[0]}-{analysis_model_name}"
-    # Finetune model on dataset
-    finetune(final_dataset_path, analysis_model_name, finetuned_model_path)
+        merged_datasets = []
+
+        for path in dataset_paths:
+            ds = load_from_disk(path)
+
+            # Add back any dropped columns from original
+            for col in original.column_names:
+                if col not in ds.column_names:
+                    # Align ds length with original by matching on "fact"
+                    # Create a mapping from fact → row
+                    orig_map = {row["fact"]: row for row in original}
+
+                    # Build list for restored column
+                    restored_col = [orig_map[row["fact"]][col] for row in ds]
+
+                    ds = ds.add_column(col, restored_col)
+
+            merged_datasets.append(ds)
+
+        final_dataset = concatenate_datasets(merged_datasets)
+        final_dataset = final_dataset.shuffle(seed=42)
+
+        final_dataset.save_to_disk(final_dataset_path)
+        print(f"Merged dataset saved to: {final_dataset_path}")
+
+    # if not Path(finetuned_model_path).exists():
+    #     # Finetune model on dataset
+    #     finetune(final_dataset_path, analysis_model_name, finetuned_model_path)
 
     # Build index with finetuned model
-    create_index(final_dataset_path, finetuned_model_path)
+    tmp_path = "tmp/checkpoint-282"
+    create_index(final_dataset_path, tmp_path)
 
 
 if __name__ == "__main__":
