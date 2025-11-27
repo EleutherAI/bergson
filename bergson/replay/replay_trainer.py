@@ -43,6 +43,7 @@ from transformers.integrations import (
 
 # ruff: isort: on
 
+from transformers import AutoModelForCausalLM
 import huggingface_hub.utils as hf_hub_utils
 import numpy as np
 import safetensors.torch
@@ -4637,9 +4638,9 @@ class ReplayTrainer:
 
         <Tip>
 
-        If your predictions or labels have different sequence length (for instance 
+        If your predictions or labels have different sequence length (for instance
         because you're doing dynamic padding
-        in a token classification task) the predictions will be padded (on the right) 
+        in a token classification task) the predictions will be padded (on the right)
         to allow for concatenation into
         one array. The padding index is -100.
 
@@ -4649,7 +4650,7 @@ class ReplayTrainer:
 
             - predictions (`np.ndarray`): The predictions on `test_dataset`.
             - label_ids (`np.ndarray`, *optional*): The labels (if the dataset contained some).
-            - metrics (`dict[str, float]`, *optional*): The potential dictionary of metrics 
+            - metrics (`dict[str, float]`, *optional*): The potential dictionary of metrics
             (if the dataset contained labels).
         """
         # memory metrics - must set up as early as possible
@@ -4726,12 +4727,12 @@ class ReplayTrainer:
             if self.is_fsdp_enabled:
                 self.model = model
 
-            # for the rest of this function `model` is the outside model, whether it was 
+            # for the rest of this function `model` is the outside model, whether it was
             # wrapped or not
             if model is not self.model:
                 self.model_wrapped = model
 
-        # if full fp16 or bf16 eval is wanted and this ``evaluation`` or ``predict`` 
+        # if full fp16 or bf16 eval is wanted and this ``evaluation`` or ``predict``
         # isn't called
         # while ``train`` is running, cast it to the right dtype first and then
         #  put on device
@@ -4815,7 +4816,7 @@ class ReplayTrainer:
                 if not self.args.batch_eval_metrics or description == "Prediction":
                     all_inputs.add(inputs_decode)
             if labels is not None:
-                # Pad labels here, preparing for preprocess_logits_for_metrics in next 
+                # Pad labels here, preparing for preprocess_logits_for_metrics in next
                 # logits block.
                 labels = self.accelerator.pad_across_processes(
                     labels, dim=1, pad_index=-100
@@ -4862,7 +4863,7 @@ class ReplayTrainer:
                 del losses, logits, labels, inputs
                 torch.cuda.empty_cache()
 
-            # Gather all tensors and put them back on the CPU if we have 
+            # Gather all tensors and put them back on the CPU if we have
             # done enough accumulation steps.
             elif (
                 args.eval_accumulation_steps is not None
@@ -4888,7 +4889,7 @@ class ReplayTrainer:
         # Number of samples
         if has_length(eval_dataset):
             num_samples = len(eval_dataset)
-        # The instance check is weird and does not actually check for the type, 
+        # The instance check is weird and does not actually check for the type,
         # but whether the dataset has the right
         # methods. Therefore we need to make sure it also has the attribute.
         elif (
@@ -4953,7 +4954,7 @@ class ReplayTrainer:
 
     def _nested_gather(self, tensors, name=None):
         """
-        Gather value of `tensors` (tensor or list/tuple of nested tensors) and convert 
+        Gather value of `tensors` (tensor or list/tuple of nested tensors) and convert
         them to numpy before concatenating them to `gathered`
         """
         if tensors is None:
@@ -4984,18 +4985,18 @@ class ReplayTrainer:
             inputs (`dict[str, Union[torch.Tensor, Any]]`):
                 The inputs and targets of the model.
 
-                The dictionary will be unpacked before being fed to the model. 
+                The dictionary will be unpacked before being fed to the model.
                 Most models expect the targets under the
-                argument `labels`. Check your model's documentation for all accepted 
+                argument `labels`. Check your model's documentation for all accepted
                 arguments.
             prediction_loss_only (`bool`):
                 Whether or not to return the loss only.
             ignore_keys (`list[str]`, *optional*):
-                A list of keys in the output of your model (if it is a dictionary) 
+                A list of keys in the output of your model (if it is a dictionary)
                 that should be ignored when gathering predictions.
 
         Return:
-            tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]: 
+            tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
             A tuple with the loss, logits and labels (each being optional).
         """
         has_labels = (
@@ -5004,7 +5005,7 @@ class ReplayTrainer:
             else all(inputs.get(k) is not None for k in self.label_names)
         )
         # For CLIP-like models capable of returning loss values.
-        # If `return_loss` is not specified or being `None` in `inputs`, 
+        # If `return_loss` is not specified or being `None` in `inputs`,
         # we check if the default value of `return_loss`
         # is `True` in `model.forward`.
         return_loss = inputs.get("return_loss")
@@ -5023,7 +5024,7 @@ class ReplayTrainer:
             else:
                 ignore_keys = []
 
-        # labels may be popped when computing the loss 
+        # labels may be popped when computing the loss
         # (label smoothing for instance) so we grab them first.
         if has_labels or loss_without_labels:
             labels = nested_detach(tuple(inputs.get(name) for name in self.label_names))
@@ -5074,9 +5075,9 @@ class ReplayTrainer:
 
     def floating_point_ops(self, inputs: dict[str, torch.Tensor | Any]):
         """
-        For models that inherit from [`PreTrainedModel`], uses that method to 
+        For models that inherit from [`PreTrainedModel`], uses that method to
         compute the number of floating point
-        operations for every backward + forward pass. If using another model, either 
+        operations for every backward + forward pass. If using another model, either
         implement such a method in the
         model or subclass and override this method.
 
@@ -5136,7 +5137,7 @@ class ReplayTrainer:
             language (`str`, *optional*):
                 The language of the model (if applicable)
             license (`str`, *optional*):
-                The license of the model. Will default to the license of the 
+                The license of the model. Will default to the license of the
                 pretrained model used, if the original
                 model given to the `Trainer` comes from a repo on the Hub.
             tags (`str` or `list[str]`, *optional*):
@@ -5144,7 +5145,7 @@ class ReplayTrainer:
             model_name (`str`, *optional*):
                 The name of the model.
             finetuned_from (`str`, *optional*):
-                The name of the model used to fine-tune this one (if applicable). 
+                The name of the model used to fine-tune this one (if applicable).
                 Will default to the name of the repo
                 of the original model given to the `Trainer` (if it comes from the Hub).
             tasks (`str` or `list[str]`, *optional*):
@@ -5202,7 +5203,7 @@ class ReplayTrainer:
             or self.args.hub_strategy == HubStrategy.END
         ):
             return
-        # If we haven't finished the last push, we don't do this one 
+        # If we haven't finished the last push, we don't do this one
         # unless args.hub_always_push=True.
         if (
             not self.args.hub_always_push
@@ -5212,7 +5213,7 @@ class ReplayTrainer:
             return
 
         output_dir = self.args.output_dir
-        # To avoid a new synchronization of all model weights, we just 
+        # To avoid a new synchronization of all model weights, we just
         # copy the file from the checkpoint folder
         modeling_files = [
             CONFIG_NAME,
@@ -5239,7 +5240,7 @@ class ReplayTrainer:
                     os.path.join(checkpoint_folder, modeling_file),
                     os.path.join(output_dir, modeling_file),
                 )
-        # Saving the processing class is fast and we don't know how many files 
+        # Saving the processing class is fast and we don't know how many files
         # it may have spawned, so we resave it to be sure.
         if self.processing_class is not None:
             self.processing_class.save_pretrained(output_dir)
@@ -5307,7 +5308,7 @@ class ReplayTrainer:
         **kwargs,
     ) -> CommitInfo:
         """
-        Upload `self.model` and `self.processing_class` to the 🤗 model hub on the 
+        Upload `self.model` and `self.processing_class` to the 🤗 model hub on the
         repo `self.args.hub_model_id`.
 
         Parameters:
@@ -5323,7 +5324,7 @@ class ReplayTrainer:
                 Additional keyword arguments passed along to [`~Trainer.create_model_card`].
 
         Returns:
-            The URL of the repository where the model was pushed if `blocking=False`, 
+            The URL of the repository where the model was pushed if `blocking=False`,
             or a `Future` object tracking the
             progress of the commit if `blocking=True`.
         """
@@ -5470,7 +5471,7 @@ class ReplayTrainer:
                     )
 
         if is_accelerate_available("1.2.0"):
-            # it we don't have the correct version, we will rely on env var 
+            # it we don't have the correct version, we will rely on env var
             # instead that were set in TrainingArguments
             from accelerate.utils import TorchDynamoPlugin
 
@@ -5554,6 +5555,7 @@ class ReplayTrainer:
                     self.model.hf_quantizer.quantization_config.bnb_4bit_quant_storage,
                     override=True,
                 )
+
     def _get_num_items_in_batch(
         self, batch_samples: list, device: torch.device
     ) -> torch.Tensor | int | None:
@@ -5561,10 +5563,10 @@ class ReplayTrainer:
         Counts the number of items in the batches to properly scale the loss.
         Args:
             batch_samples (`list`): List of batches
-            device (`torch.device`): The device on which the number of items in 
+            device (`torch.device`): The device on which the number of items in
                 the batch should be.
         Returns:
-            None if the number of items in the batch doesn't need to be computed 
+            None if the number of items in the batch doesn't need to be computed
                 else the number of items in the batch
         """
         num_items_in_batch = None
@@ -5598,9 +5600,9 @@ class ReplayTrainer:
                         num_items_in_batch.to(device)
                     ).sum()
             elif self.args.n_gpu > 1:
-                # In DP case, if we don't average, we need to divide by the number of gpu. 
+                # In DP case, if we don't average, we need to divide by the number of gpu.
                 # This is the simplest approximation.
-                # Otherwise, we would have to scatter labels and calculate num_items_in_batch 
+                # Otherwise, we would have to scatter labels and calculate num_items_in_batch
                 # for each gpu.
                 num_items_in_batch = num_items_in_batch // self.args.n_gpu
 
@@ -5608,7 +5610,7 @@ class ReplayTrainer:
                 num_items_in_batch = num_items_in_batch.to(device)
 
                 if self.args.n_gpu > 1 and num_items_in_batch.dim() == 0:
-                    # In the DataParallel case, convert the scalar tensor into a 2-dim tensor 
+                    # In the DataParallel case, convert the scalar tensor into a 2-dim tensor
                     # with the same value repeated
                     num_items_in_batch = num_items_in_batch.unsqueeze(0).expand(
                         self.args.n_gpu, -1
@@ -5623,7 +5625,7 @@ class ReplayTrainer:
         self, epoch_iterator: Iterator, num_batches: int, device: torch.device
     ) -> tuple[list, torch.Tensor | int | None]:
         """
-        Collects a specified number of batches from the epoch iterator and 
+        Collects a specified number of batches from the epoch iterator and
         optionally counts the number of items in the batches to properly scale the loss.
         """
         batch_samples = []
@@ -5655,7 +5657,7 @@ class ReplayTrainer:
         """
         # Case 1: we rely on `args.max_steps` first
         max_steps = args.max_steps
-        # If max_steps is negative, we use the number of epochs to determine 
+        # If max_steps is negative, we use the number of epochs to determine
         # the number of total steps later
         epoch_based = max_steps < 0
         len_dataloader = len(dataloader) if has_length(dataloader) else None
@@ -5686,7 +5688,7 @@ class ReplayTrainer:
                 num_train_epochs = max_steps // num_update_steps_per_epoch + int(
                     max_steps % num_update_steps_per_epoch > 0
                 )
-                # May be slightly incorrect if the last batch in the training dataloader has a 
+                # May be slightly incorrect if the last batch in the training dataloader has a
                 # smaller size but it's
                 # the best we can do.
                 num_train_samples = max_steps * total_train_batch_size
@@ -5698,7 +5700,7 @@ class ReplayTrainer:
         elif (
             args.max_steps > 0
         ):  # Rely on max_steps when dataloader does not have a working size
-            # Setting a very large number of epochs so we go as many times as necessary over 
+            # Setting a very large number of epochs so we go as many times as necessary over
             # the iterator.
             num_train_epochs = sys.maxsize
             num_update_steps_per_epoch = max_steps
@@ -5720,19 +5722,28 @@ class ReplayTrainer:
             max_steps,
         )
 
-    def attribute(self, query: dict[str, Tensor], checkpoint_path: Path):
+    def attribute(self, query: dict[str, Tensor], checkpoints_path: Path):
         """The query is a dictionary of module names and their corresponding gradients."""
         # Get list of checkpoints in step order
-        checkpoints = list(checkpoint_path.glob("checkpoint-*"))
-        checkpoints.sort(key=lambda x: int(x.name.split("-")[-1]))
+        checkpoint_paths = list(checkpoints_path.glob("checkpoint-*"))
+        checkpoint_paths.sort(key=lambda x: int(x.name.split("-")[-1]))
 
-        # Load from the last step backwards
-        for checkpoint in checkpoints.reversed():
-            checkpoint = torch.load(checkpoint)
-            model = checkpoint["model"]
-            optimizer = checkpoint["optimizer"]
-            scheduler = checkpoint["scheduler"]
+        # TODO Set checkpoint saving mode to in-memory
+        # TODO Set checkpoint frequency to every step
 
-            model.cuda()
+        # TODO Return from train at the specified training step (that of the next checkpoint)
 
-            # Replay training forward to the second to last step
+        # We iterate through checkpoints in reverse order (excluding the last one)
+        # For each checkpoint, we replay forward to the next checkpoint
+        for idx in range(len(checkpoint_paths) - 2, -1, -1):
+            checkpoint_path = checkpoint_paths[idx]
+            next_checkpoint_path = checkpoint_paths[idx + 1]
+
+            # Get the step number to replay to
+            pause_step = int(next_checkpoint_path.name.split("-")[-1])
+
+            # Replay from the checkpoint
+            self.train(resume_from_checkpoint=checkpoint_path)
+
+            # Save a checkpoint with the optimizer and parameters in-memory at each step on CPU.
+

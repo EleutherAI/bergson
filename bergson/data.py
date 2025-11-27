@@ -182,10 +182,6 @@ def create_index(
         # Ensure the directory exists
         root.mkdir(parents=True, exist_ok=True)
 
-        # Ensure no existing file is overwritten
-        if grad_path.exists():
-            raise FileExistsError(f"File {grad_path} already exists.")
-
         # Allocate (extends file to right size without writing zeros byte-by-byte)
         nbytes = struct_dtype["itemsize"] * num_grads
         with open(grad_path, "wb") as f:
