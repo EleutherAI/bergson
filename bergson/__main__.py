@@ -1,4 +1,6 @@
+import shutil
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional, Union
 
 from simple_parsing import ArgumentParser, ConflictResolution
@@ -20,6 +22,17 @@ class Build:
         """Build the gradient index."""
         if self.index_cfg.skip_index and self.index_cfg.skip_preconditioners:
             raise ValueError("Either skip_index or skip_preconditioners must be False")
+
+        # Require confirmation from the user to proceed if overwriting an existing index
+        index_path = Path(self.index_cfg.run_path) / "gradients.bin"
+        if not self.index_cfg.skip_index and index_path.exists():
+            confirm = input(
+                f"File {index_path} already exists. Delete and proceed? (y/n): "
+            )
+            if confirm.lower() != "y":
+                exit()
+            else:
+                shutil.rmtree(index_path.parent)
 
         build(self.index_cfg)
 
