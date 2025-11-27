@@ -347,15 +347,22 @@ def tokenize(batch: dict, *, args: DataConfig, tokenizer):
     )
     if args.completion_column:
         # We're dealing with a prompt-completion dataset
-        convos = [
-            [
-                {"role": "user", "content": assert_type(str, prompt)},
-                {"role": "assistant", "content": assert_type(str, resp)},
-            ]
-            for prompt, resp in zip(
-                batch[args.prompt_column], batch[args.completion_column]
+        convos = []
+        for prompt, resp in zip(
+            batch[args.prompt_column], batch[args.completion_column]
+        ):
+            if isinstance(prompt, list):
+                prompt = " ".join(prompt)
+            if isinstance(resp, list):
+                resp = " ".join(resp)
+
+            convos.append(
+                [
+                    {"role": "user", "content": assert_type(str, prompt)},
+                    {"role": "assistant", "content": assert_type(str, resp)},
+                ]
             )
-        ]
+
     elif args.conversation_column:
         # We're dealing with a conversation dataset
         convos = assert_type(list, batch[args.conversation_column])

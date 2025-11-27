@@ -64,6 +64,10 @@ class IndexConfig:
     model: str = "EleutherAI/pythia-160m"
     """Name of the model to load."""
 
+    tokenizer: str | None = None
+    """Name of the tokenizer to use. If not provided, the model tokenizer
+    is used."""
+
     fsdp: bool = False
     """Whether to use Fully Sharded Data Parallel (FSDP) for collecting gradients."""
 

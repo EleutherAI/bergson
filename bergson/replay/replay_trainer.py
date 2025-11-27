@@ -48,6 +48,7 @@ import numpy as np
 import safetensors.torch
 import torch
 import torch.distributed as dist
+from torch import Tensor
 from huggingface_hub import CommitInfo, ModelCard, create_repo, upload_folder
 from packaging import version
 from torch import nn
@@ -5718,3 +5719,20 @@ class ReplayTrainer:
             len_dataloader,
             max_steps,
         )
+
+    def attribute(self, query: dict[str, Tensor], checkpoint_path: Path):
+        """The query is a dictionary of module names and their corresponding gradients."""
+        # Get list of checkpoints in step order
+        checkpoints = list(checkpoint_path.glob("checkpoint-*"))
+        checkpoints.sort(key=lambda x: int(x.name.split("-")[-1]))
+
+        # Load from the last step backwards
+        for checkpoint in checkpoints.reversed():
+            checkpoint = torch.load(checkpoint)
+            model = checkpoint["model"]
+            optimizer = checkpoint["optimizer"]
+            scheduler = checkpoint["scheduler"]
+
+            model.cuda()
+
+            # Replay training forward to the second to last step
