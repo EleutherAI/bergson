@@ -51,7 +51,7 @@ reportPrivateImportUsage = false
 include = ["bergson*"]
 
 [tool.ruff]
-lint.ignore = ["E741"]   # Ambiguous variable name
+lint.ignore = ["E741", "E501"]   # Ambiguous variable name, Line too long
 # Enable pycodestyle (`E`), Pyflakes (`F`), and isort (`I`) codes
 # See https://beta.ruff.rs/docs/rules/ for more possible rules
 lint.select = ["E", "F", "I"]

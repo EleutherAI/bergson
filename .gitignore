@@ -187,3 +187,5 @@ prototype/
 influence_results/
 .idea/
 uv.lock
+test_replay/
+data/*.hf
