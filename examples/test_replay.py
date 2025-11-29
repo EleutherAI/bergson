@@ -1,5 +1,6 @@
 from pathlib import Path
 import shutil
+import subprocess
 
 import torch
 from datasets import Dataset
@@ -9,7 +10,7 @@ import torch.distributed as dist
 from transformers import DataCollatorForLanguageModeling, AutoModelForCausalLM, AutoTokenizer
 
 from bergson.replay.replay_trainer import ReplayTrainer
-from bergson.replay.sqrt_callback import SaveEverySqrtStepsCallback
+from bergson.replay.sqrt_callback import SaveEverySqrtStepsCallback, InMemoryCheckpointCallback
 from bergson.utils import assert_type
 from bergson.config import IndexConfig, ReduceConfig, DataConfig
 from bergson.worker_utils import setup_data_pipeline, setup_model_and_peft
@@ -56,8 +57,6 @@ tokenizer = AutoTokenizer.from_pretrained(model_name)
 tokenizer.pad_token = tokenizer.eos_token
 
 
-
-
 def finetune(checkpoint_path: Path):
     model, target_modules = setup_model_and_peft(
         IndexConfig(
@@ -81,7 +80,6 @@ def finetune(checkpoint_path: Path):
         train_dataset=train_ds,
         eval_dataset=eval_ds,
         data_collator=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
-        # processing_class=tokenizer,
         callbacks=[SaveEverySqrtStepsCallback()],
     )
 
@@ -137,34 +135,52 @@ def reduce(reduce_path: Path):
         ReduceConfig.method,
         "--unit_normalize",
         "--skip_preconditioners",
+        "--projection_dim",
+        "0",
     ]
     print(" ".join(cmd))
 
-    # try:
-    #     result = subprocess.run(cmd, cwd=Path(__file__).parent, capture_output=True, text=True)
-    #     print("Reduce command output:")
-    #     print(result.stdout)
-    #     if result.returncode != 0:
-    #         print("Reduce command errors:")
-    #         print(result.stderr)
-    #         print(f"\nReduce command failed with return code {result.returncode}")
-    #         print("This is a known issue with distributed file creation in the reduce command.")
-    #     else:
-    #         print("Reduce command completed successfully!")
-    # except Exception as e:
-    #     print(f"Error running reduce command: {e}")
-    #     print("Training completed successfully, but reduce step failed.")
+    try:
+        result = subprocess.run(cmd, cwd=Path(__file__).parent, capture_output=True, text=True)
+        print("Reduce command output:")
+        print(result.stdout)
+        if result.returncode != 0:
+            print(result.stdout)
+            print("Reduce command errors:")
+            print(result.stderr)
+            print(f"\nReduce command failed with return code {result.returncode}")
+            print("This is a known issue with distributed file creation in the reduce command.")
+        else:
+            print("Reduce command completed successfully!")
+    except Exception as e:
+        print(f"Error running reduce command: {e}")
+        print("Training completed successfully, but reduce step failed.")
 
 
-def attribute(reduce_path: Path, checkpoint_path: Path):
-    model = AutoModelForCausalLM.from_pretrained(finetuned_model_name)
+def test_attribute(reduce_path: Path, checkpoint_path: Path):
+    model, target_modules = setup_model_and_peft(
+        IndexConfig(
+            run_path=str(checkpoint_path),
+            model=finetuned_model_name,
+            tokenizer=model_name,
+            data=DataConfig(
+                dataset=ds_name,
+                split=ds_split,
+                subset=None,
+                truncation=True,
+            ),
+            token_batch_size=2048,  # Smaller token batch size to avoid OOM
+            skip_preconditioners=True,
+            projection_dim=0,
+        ),
+        rank=dist.get_rank() if dist.is_initialized() else 0,
+    )
     trainer = ReplayTrainer(
         model=model,
         args=training_args,
         train_dataset=train_ds,
         eval_dataset=eval_ds,
         data_collator=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
-        # processing_class=tokenizer,
         callbacks=[SaveEverySqrtStepsCallback()],
     )
 
@@ -176,7 +192,7 @@ def attribute(reduce_path: Path, checkpoint_path: Path):
 def main():
     # finetune(checkpoint_path)
     # reduce(reduce_path)
-    attribute(reduce_path, checkpoint_path)
+    test_attribute(reduce_path, checkpoint_path)
 
 
 if __name__ == "__main__":

@@ -43,7 +43,6 @@ from transformers.integrations import (
 
 # ruff: isort: on
 
-from transformers import AutoModelForCausalLM
 import huggingface_hub.utils as hf_hub_utils
 import numpy as np
 import safetensors.torch
@@ -2166,6 +2165,10 @@ class ReplayTrainer:
         resume_from_checkpoint: str | bool | None = None,
         trial: Union["optuna.Trial", dict[str, Any], None] = None,
         ignore_keys_for_eval: list[str] | None = None,
+        end_step: int | None = None,
+        differentiable: bool = False,
+        retain_graph: bool = False,
+        per_sample_loss: bool = False,
     ):
         """
         Main training entry point.
@@ -2180,9 +2183,14 @@ class ReplayTrainer:
             ignore_keys_for_eval (`list[str]`, *optional*)
                 A list of keys in the output of your model (if it is a dictionary) that should be ignored when
                 gathering predictions for evaluation during the training.
+            end_step (`int`, *optional*):
+                If provided, training will stop when reaching this global step. Useful for replay training.
+            differentiable (`bool`, *optional*):
+                If True, the training will be differentiable.
         """
         if resume_from_checkpoint is False:
             resume_from_checkpoint = None
+
 
         # memory metrics - must set up as early as possible
         self._memory_tracker.start()
@@ -2261,6 +2269,7 @@ class ReplayTrainer:
                     resume_from_checkpoint=resume_from_checkpoint,
                     trial=trial,
                     ignore_keys_for_eval=ignore_keys_for_eval,
+                    end_step=end_step,
                 )
             finally:
                 hf_hub_utils.enable_progress_bars()
@@ -2270,6 +2279,10 @@ class ReplayTrainer:
                 resume_from_checkpoint=resume_from_checkpoint,
                 trial=trial,
                 ignore_keys_for_eval=ignore_keys_for_eval,
+                end_step=end_step,
+                differentiable=differentiable,
+                retain_graph=retain_graph,
+                per_sample_loss=per_sample_loss
             )
 
     def get_sp_size(self) -> int:
@@ -2327,6 +2340,10 @@ class ReplayTrainer:
         resume_from_checkpoint=None,
         trial=None,
         ignore_keys_for_eval=None,
+        end_step=None,
+        # When this is set we retain the graph and take the per sample
+        # loss and differentiate wrt sample weights.
+        differentiable=False,
     ):
         self.accelerator.free_memory()
         self._train_batch_size = batch_size
@@ -2598,6 +2615,7 @@ class ReplayTrainer:
                 batch_samples, num_items_in_batch = self.get_batch_samples(
                     epoch_iterator, num_batches, args.device
                 )
+
                 # Store the number of batches for current gradient accumulation
                 # This is used to correctly scale the loss when the last accumulation step has fewer batches
                 self.current_gradient_accumulation_steps = len(batch_samples)
@@ -2608,6 +2626,7 @@ class ReplayTrainer:
                     ) % args.gradient_accumulation_steps == 0 or (
                         step + 1
                     ) == steps_in_epoch
+
                     # Since we perform prefetching, we need to manually set sync_gradients
                     self.accelerator.gradient_state._set_sync_gradients(do_sync_step)
 
@@ -2659,6 +2678,7 @@ class ReplayTrainer:
                         )
 
                     # We explicitly want to avoid relying on `accelerator.accumulate` for generation training
+
                     context = (
                         functools.partial(self.accelerator.no_sync, model=model)
                         if i != len(batch_samples) - 1
@@ -2666,7 +2686,7 @@ class ReplayTrainer:
                     )
                     with context():
                         tr_loss_step = self.training_step(
-                            model, inputs, num_items_in_batch
+                            model, inputs, num_items_in_batch, differentiable=differentiable
                         )
 
                     if (
@@ -2739,6 +2759,12 @@ class ReplayTrainer:
                         model.zero_grad()
                         self.state.global_step += 1
                         self.state.epoch = epoch + (step + 1) / steps_in_epoch
+
+                        # Check if we should pause at this step
+                        if end_step is not None and self.state.global_step >= end_step:
+                            logger.info(f"Pausing training at step {self.state.global_step} (end_step={end_step})")
+                            self.control.should_training_stop = True
+
                         self.control = self.callback_handler.on_step_end(
                             args, self.state, self.control
                         )
@@ -4070,6 +4096,7 @@ class ReplayTrainer:
         model: nn.Module,
         inputs: dict[str, torch.Tensor | Any],
         num_items_in_batch: torch.Tensor | None = None,
+        differentiable: bool = False,
     ) -> torch.Tensor:
         """
         Perform a training step on a batch of inputs.
@@ -4100,9 +4127,18 @@ class ReplayTrainer:
 
             inputs = self._prepare_inputs(inputs)
 
+            if differentiable:
+                # TODO decide whether we should calculate this after clipping / grad norm processing
+
+                # Use sample weights for calculating the training jacobian wrt sample weights
+                batch_len = inputs["input_ids"].shape[0] if "input_ids" in inputs else len(inputs)
+                sample_weights = torch.ones(batch_len, device=args.device, requires_grad=True)
+
+                # Calculate the training jacobian wrt sample weights
+
             with self.compute_loss_context_manager():
                 loss = self.compute_loss(
-                    model, inputs, num_items_in_batch=num_items_in_batch
+                    model, inputs, num_items_in_batch=num_items_in_batch, sample_weights=sample_weights
                 )
 
             del inputs
@@ -4138,6 +4174,8 @@ class ReplayTrainer:
         inputs: dict[str, torch.Tensor | Any],
         return_outputs: bool = False,
         num_items_in_batch: torch.Tensor | None = None,
+        sample_weights: torch.Tensor | None = None,
+        batch_len: int | None = None,
     ):
         """
         How the loss is computed by Trainer. By default, all models return the loss in the first element.
@@ -4155,8 +4193,10 @@ class ReplayTrainer:
         Returns:
             The loss of the model along with its output if return_outputs was set to True
 
-        Subclass and override for custom behavior. If you are not using `num_items_in_batch` when computing your loss,
-        make sure to overwrite `self.model_accepts_loss_kwargs` to `False`. Otherwise, the loss calculating might be slightly inaccurate when performing gradient accumulation.
+        Subclass and override for custom behavior. If you are not using `num_items_in_batch` 
+        when computing your loss,
+        make sure to overwrite `self.model_accepts_loss_kwargs` to `False`. Otherwise, the 
+        loss calculating might be slightly inaccurate when performing gradient accumulation.
         """
 
         if (
@@ -5722,28 +5762,125 @@ class ReplayTrainer:
             max_steps,
         )
 
+    def set_differentiable_optimizer(self, differentiable: bool = False):
+        decay_parameters = get_parameter_names(self.model, [torch.nn.LayerNorm])
+        decay_parameters = [name for name in decay_parameters if "bias" not in name]
+        optimizer_grouped_parameters = [
+            {
+                "params": [p for n, p in self.model.named_parameters() if (n in decay_parameters and p.requires_grad)],
+                "weight_decay": self.args.weight_decay,
+            },
+            {
+                "params": [p for n, p in self.model.named_parameters() if (n not in decay_parameters and p.requires_grad)],
+                "weight_decay": 0.0,
+            },
+        ]
+
+        self.optimizer_cls, self.optimizer_kwargs = self.get_optimizer_cls_and_kwargs(self.args, self.model)
+        self.optimizer_kwargs["differentiable"] = differentiable
+        self.optimizer = self.optimizer_cls(optimizer_grouped_parameters, **self.optimizer_kwargs)
+
     def attribute(self, query: dict[str, Tensor], checkpoints_path: Path):
-        """The query is a dictionary of module names and their corresponding gradients."""
+        """
+        Calculate the gradient of the loss on one evaluation item with respect to 
+        an implicit weighting placed on each training item in the dataset. 
+        In other words, this function asks "if we infinitesimally decrease the influence 
+        a training item has on its loss gradients at its step in training, how does 
+        this affect the query loss gradients at the end of training?" For the final 
+        step of training, this question can be formulated as follows.
+
+
+
+        Args:
+            query: module names and their corresponding loss gradients.
+            checkpoints_path: path to the checkpoints.
+        """
+        from bergson.replay.in_memory_checkpoint_callback import InMemoryCheckpointCallback
+        in_memory_checkpoint_callback = InMemoryCheckpointCallback()
+        self.add_callback(in_memory_checkpoint_callback)
+
         # Get list of checkpoints in step order
         checkpoint_paths = list(checkpoints_path.glob("checkpoint-*"))
         checkpoint_paths.sort(key=lambda x: int(x.name.split("-")[-1]))
 
         # TODO Set checkpoint saving mode to in-memory
         # TODO Set checkpoint frequency to every step
-
-        # TODO Return from train at the specified training step (that of the next checkpoint)
+        # DONE End .train at the specified end training step (that of the next checkpoint)
 
         # We iterate through checkpoints in reverse order (excluding the last one)
         # For each checkpoint, we replay forward to the next checkpoint
         for idx in range(len(checkpoint_paths) - 2, -1, -1):
+            self.set_differentiable_optimizer(differentiable=False)
+
             checkpoint_path = checkpoint_paths[idx]
             next_checkpoint_path = checkpoint_paths[idx + 1]
 
             # Get the step number to replay to
-            pause_step = int(next_checkpoint_path.name.split("-")[-1])
+            start_step = int(checkpoint_path.name.split("-")[-1])
+            end_step = int(next_checkpoint_path.name.split("-")[-1])
+            num_steps = end_step - start_step
+            num_training_items = num_steps * total_train_batch_size
+            # num_queries = query[query[0]].shape[0]
+            assert query[query[0]].shape[0] == 1, "Multiple queries are not supported yet"
 
-            # Replay from the checkpoint
-            self.train(resume_from_checkpoint=checkpoint_path)
+            training_jacobian = torch.zeros(num_queries, num_training_items)
+            training_jacobian = torch.zeros(num_training_items)
 
-            # Save a checkpoint with the optimizer and parameters in-memory at each step on CPU.
+            logger.info(f"Replay Attribute: Replaying from {start_step} to {end_step}")
 
+            # Replay from the checkpoint, stopping at end_step
+            self.train(resume_from_checkpoint=checkpoint_path, end_step=end_step)
+            
+            # InMemoryCheckpointCallback contains the optimizer and parameters in-memory for each 
+            # step in this interval.
+        
+            # Replay each training step at each in-memory checkpoint from last checkpoint to 
+            # first checkpoint in the interval, this time with differentiable mode activated.
+            
+            for i, step in enumerate(range(end_step - 1, start_step, -1)):
+                checkpoint = reversed(in_memory_checkpoint_callback.storage)[i]
+                # Train for one step
+                self.set_differentiable_optimizer(differentiable=True)
+                self.train(
+                    resume_from_checkpoint=checkpoint, 
+                    end_step=step + 1, 
+                    differentiable=True, 
+                    retain_graph=True, 
+                    per_sample_loss=True
+                )
+
+                # TODO access current learning rate
+                # TODO access del_theta loss_i (theta) for each item in the batch
+                # implicitly this gives us the number of items in the batch and hopefully
+                # their indices in the training length
+
+                # df / dw_i = df / d_theta_T . d_theta_T / dw_i
+                # We are given the original df / d_theta_T as query
+                
+                # The update rule with the implicit weighting is: 
+                # theta_T = theta_(T-1) - lr * sum_j [ w_j * del_theta loss_j (theta_(T-1)) ]
+                # So the partial derivative of theta_T wrt w_i is:
+                # -lr * del_theta loss_i (theta_(T-1))
+
+                # So to get each element of the training jacobian corresponding to items
+                # in the current batch, we need to return the per-sample loss gradients
+                # for the parameters of the model, and the learning rate (or scaled by the)
+                # learning rate
+
+                # Then we can get the overall df / dw_i = df / d_theta_T . d_theta_T / dw_i as
+
+                # query or query_accumulator *  -lr * del_theta loss_i (theta_(T-1))
+
+                # for i in range()
+
+                
+                
+                # training_jacobian[0, ]
+
+
+            # Clear the in-memory checkpoint callback for the next iteration
+            in_memory_checkpoint_callback.clear()
+
+        
+
+ 
