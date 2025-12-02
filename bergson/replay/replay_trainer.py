@@ -884,8 +884,7 @@ class ReplayTrainer(HF_Trainer):
         # Using implicit importance weightings allows us to not materialize
         # the per-sample parameter gradients. Auto-grad will give us the per-sample
         # importance weighting gradients.
-        self._current_importance_weightings = None
-        self._current_losses = None
+        self._current_importance_weightings = torch.empty(0, requires_grad=True)
         # TODO where does the base trainer get this from
         self.ignore_index = -100
 
@@ -908,7 +907,6 @@ class ReplayTrainer(HF_Trainer):
                 # The padding_mask will ignore them in any case.
                 labels = torch.clamp(labels, min=0)
                 nll_loss = log_probs.gather(dim=-1, index=labels)
-                self._current_losses = nll_loss
 
                 return nll_loss * importance_weightings.view(-1, 1, 1)  # .unsqueeze(-1)
 
@@ -1007,18 +1005,24 @@ class ReplayTrainer(HF_Trainer):
                 # Get the gradients of the evaluation proxy wrt the leaf nodes
                 #   (parameters and importance weightings)
                 eval_proxy.backward()
+                assert self._current_importance_weightings is not None
                 d_eval_loss_dw = (
                     self._current_importance_weightings.grad
                 )  # [batch_size]
 
                 training_item_index_start = (step - start_step) * total_train_batch_size
-                training_item_index_end = training_item_index_start + len(
-                    d_eval_loss_dw
+                training_item_index_end = (
+                    training_item_index_start + d_eval_loss_dw.shape[0]
                 )
 
                 training_jacobian[
                     0, training_item_index_start:training_item_index_end
                 ] = d_eval_loss_dw.detach().to(training_jacobian.device)
+
+                # Zero out gradients before the next iteration
+                self.model.zero_grad()
+                if self._current_importance_weightings.grad is not None:
+                    self._current_importance_weightings.grad.zero_()
 
                 # TODO update query for previous training step
 
