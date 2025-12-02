@@ -1,7 +1,7 @@
-from dataclasses import dataclass
-from typing import Optional, Union
-from pathlib import Path
 import shutil
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional, Union
 
 from simple_parsing import ArgumentParser, ConflictResolution
 
@@ -21,6 +21,7 @@ def validate_run_path(run_path: Path):
             exit()
         else:
             shutil.rmtree(run_path)
+
 
 @dataclass
 class Build:
