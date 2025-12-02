@@ -194,7 +194,7 @@ class ScoreConfig:
 class ReduceConfig:
     """Config for reducing the gradients."""
 
-    method: Literal["mean", "sum"] = "mean"
+    method: Literal["mean", "sum", "first"] = "mean"
     """Method for reducing the gradients."""
 
     unit_normalize: bool = False

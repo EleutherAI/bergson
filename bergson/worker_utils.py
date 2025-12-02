@@ -50,6 +50,7 @@ def create_processor(
 def setup_model_and_peft(
     cfg: IndexConfig,
     rank: int,
+    freeze: bool = True,
 ) -> tuple[AutoModelForCausalLM, set | None]:
     """Handle model loading, quantization, FSDP, and PEFT detection"""
 
@@ -129,9 +130,10 @@ def setup_model_and_peft(
                         f"Adapter parameter '{processed_name}' not found in the model."
                     )
 
-    # Configure gradients
-    model.requires_grad_(False)
-    model.get_input_embeddings().requires_grad_(True)  # type: ignore
+    if freeze:
+        # Configure gradients
+        model.requires_grad_(False)
+        model.get_input_embeddings().requires_grad_(True)  # type: ignore
 
     # Apply FSDP if needed
     if cfg.fsdp:

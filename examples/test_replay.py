@@ -1,24 +1,26 @@
-from pathlib import Path
 import shutil
 import subprocess
+from pathlib import Path
 
 import torch
-from datasets import Dataset
-from transformers import AutoTokenizer
-from transformers.training_args import TrainingArguments
 import torch.distributed as dist
-from transformers import DataCollatorForLanguageModeling, AutoModelForCausalLM, AutoTokenizer
+from datasets import Dataset
+from transformers import (
+    AutoTokenizer,
+    DataCollatorForLanguageModeling,
+)
+from transformers.training_args import TrainingArguments
 
-from bergson.replay.replay_trainer import ReplayTrainer
-from bergson.replay.sqrt_callback import SaveEverySqrtStepsCallback, InMemoryCheckpointCallback
-from bergson.utils import assert_type
-from bergson.config import IndexConfig, ReduceConfig, DataConfig
-from bergson.worker_utils import setup_data_pipeline, setup_model_and_peft
+from bergson.config import DataConfig, IndexConfig, ReduceConfig
 from bergson.data import load_gradients
+from bergson.replay.replay_callbacks import SaveEverySqrtStepsCallback
+from bergson.replay.replay_trainer import ReplayTrainer
+from bergson.utils import assert_type
+from bergson.worker_utils import setup_data_pipeline, setup_model_and_peft
 
 model_name = "HuggingFaceTB/SmolLM2-135M-Instruct"
 finetuned_model_name = "EleutherAI/test-SmolLM2-135M-Instruct"
-checkpoint_path = Path("runs/test_replay_ckpts")
+checkpoint_path = Path("runs/test_replay_ckpts_5")
 reduce_path = Path("runs/test_replay_reduce")
 ds_name = "NeelNanda/pile-10k"
 ds_split = "train"
@@ -31,22 +33,26 @@ training_args = TrainingArguments(
     per_device_eval_batch_size=1,
     gradient_accumulation_steps=1,
     bf16=True,  # Use bf16 instead of fp16 to avoid gradient scaler issues
+    report_to="none",
 )
 
-ds = setup_data_pipeline(
-    IndexConfig(
-        run_path=str(checkpoint_path),
-        model=model_name,
-        tokenizer=model_name,
-        data=DataConfig(
-            dataset=ds_name,
-            split=ds_split,
-            subset=None,
-            truncation=True,
-        ),
-        token_batch_size=2048,  # Smaller token batch size to avoid OOM
-    )
+index_cfg = IndexConfig(
+    run_path=str(checkpoint_path),
+    model=model_name,
+    tokenizer=model_name,
+    data=DataConfig(
+        dataset=ds_name,
+        split=ds_split,
+        subset=None,
+        truncation=True,
+    ),
+    token_batch_size=2048,  # Smaller token batch size to avoid OOM
+    fsdp=False,
+    projection_dim=0,
+    skip_preconditioners=True,
 )
+
+ds = setup_data_pipeline(index_cfg)
 ds = assert_type(Dataset, ds)
 ds = ds.select(range(ds_N))
 num_items = len(ds)
@@ -59,21 +65,11 @@ tokenizer.pad_token = tokenizer.eos_token
 
 def finetune(checkpoint_path: Path):
     model, target_modules = setup_model_and_peft(
-        IndexConfig(
-            run_path=str(checkpoint_path),
-            model=model_name,
-            tokenizer=model_name,
-            data=DataConfig(
-                dataset=ds_name,
-                split=ds_split,
-                subset=None,
-                truncation=True,
-            ),
-            token_batch_size=2048,  # Smaller token batch size to avoid OOM
-        ),
+        index_cfg,
         rank=dist.get_rank() if dist.is_initialized() else 0,
+        freeze=False,
     )
-    
+
     trainer = ReplayTrainer(
         model=model,
         args=training_args,
@@ -82,7 +78,6 @@ def finetune(checkpoint_path: Path):
         data_collator=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
         callbacks=[SaveEverySqrtStepsCallback()],
     )
-
     trainer.train()
 
     # Push to hub
@@ -141,7 +136,9 @@ def reduce(reduce_path: Path):
     print(" ".join(cmd))
 
     try:
-        result = subprocess.run(cmd, cwd=Path(__file__).parent, capture_output=True, text=True)
+        result = subprocess.run(
+            cmd, cwd=Path(__file__).parent, capture_output=True, text=True
+        )
         print("Reduce command output:")
         print(result.stdout)
         if result.returncode != 0:
@@ -149,7 +146,9 @@ def reduce(reduce_path: Path):
             print("Reduce command errors:")
             print(result.stderr)
             print(f"\nReduce command failed with return code {result.returncode}")
-            print("This is a known issue with distributed file creation in the reduce command.")
+            print(
+                "This is a known issue with distributed file creation in the reduce command."
+            )
         else:
             print("Reduce command completed successfully!")
     except Exception as e:
@@ -158,35 +157,36 @@ def reduce(reduce_path: Path):
 
 
 def test_attribute(reduce_path: Path, checkpoint_path: Path):
+    from copy import deepcopy
+
+    finetuned_index_cfg = deepcopy(index_cfg)
+    finetuned_index_cfg.model = finetuned_model_name
+
     model, target_modules = setup_model_and_peft(
-        IndexConfig(
-            run_path=str(checkpoint_path),
-            model=finetuned_model_name,
-            tokenizer=model_name,
-            data=DataConfig(
-                dataset=ds_name,
-                split=ds_split,
-                subset=None,
-                truncation=True,
-            ),
-            token_batch_size=2048,  # Smaller token batch size to avoid OOM
-            skip_preconditioners=True,
-            projection_dim=0,
-        ),
+        finetuned_index_cfg,
         rank=dist.get_rank() if dist.is_initialized() else 0,
+        freeze=False,
     )
+
     trainer = ReplayTrainer(
         model=model,
         args=training_args,
         train_dataset=train_ds,
         eval_dataset=eval_ds,
         data_collator=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
-        callbacks=[SaveEverySqrtStepsCallback()],
     )
 
-    query = torch.from_numpy(load_gradients(reduce_path, structured=False))
+    target_modules = list(load_gradients(reduce_path, structured=True).dtype.names)
 
-    trainer.attribute(query, checkpoint_path)
+    query = torch.tensor(load_gradients(reduce_path, structured=False))
+
+    num_training_items = len(train_ds)
+
+    training_jacobian = trainer.attribute(
+        query, checkpoint_path, target_modules, num_training_items
+    )
+
+    assert training_jacobian is not None
 
 
 def main():

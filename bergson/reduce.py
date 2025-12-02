@@ -125,6 +125,8 @@ def reduce(index_cfg: IndexConfig, reduce_cfg: ReduceConfig):
         json.dump(asdict(index_cfg), f, indent=2)
 
     ds = setup_data_pipeline(index_cfg)
+    if reduce_cfg.method == "first":
+        ds = ds.take(1)
 
     launch_distributed_run("reduce", reduce_worker, [index_cfg, reduce_cfg, ds])
 
