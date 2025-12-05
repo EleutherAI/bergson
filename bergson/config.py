@@ -36,6 +36,10 @@ class DataConfig:
     truncation: bool = False
     """Whether to truncate long documents to fit the token budget."""
 
+    skip_user_mask: bool = False
+    """Whether to skip masking out the user's messages in the labels
+    for the loss calculation."""
+
 
 @dataclass
 class AttentionConfig:

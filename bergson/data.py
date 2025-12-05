@@ -362,41 +362,47 @@ def tokenize(batch: dict, *, args: DataConfig, tokenizer):
     # Make sure we only compute loss on the assistant's responses
     strings = tokenizer.apply_chat_template(convos, tokenize=False)
     encodings = tokenizer(strings, **kwargs)
-    labels_list: list[list[int]] = []
 
-    for i, convo in enumerate(convos):
-        # Find the spans of the assistant's responses in the tokenized output
-        pos = 0
-        spans: list[tuple[int, int]] = []
+    if args.skip_user_mask:
+        labels_list = encodings[
+            "input_ids"
+        ]  # [item for item in encodings["input_ids"]]
+    else:
+        labels_list: list[list[int]] = []
 
-        for msg in convo:
-            if msg["role"] != "assistant":
-                continue
+        for i, convo in enumerate(convos):
+            # Find the spans of the assistant's responses in the tokenized output
+            pos = 0
+            spans: list[tuple[int, int]] = []
 
-            ans = msg["content"]
-            start = strings[i].rfind(ans, pos)
-            if start < 0:
-                raise RuntimeError(
-                    "Failed to find completion in the chat-formatted conversation. "
-                    "Make sure the chat template does not alter the completion, e.g. "
-                    "by removing leading whitespace."
-                )
+            for msg in convo:
+                if msg["role"] != "assistant":
+                    continue
 
-            # move past this match
-            pos = start + len(ans)
+                ans = msg["content"]
+                start = strings[i].rfind(ans, pos)
+                if start < 0:
+                    raise RuntimeError(
+                        "Failed to find completion in the chat-formatted conversation. "
+                        "Make sure the chat template does not alter the completion, "
+                        "e.g. by removing leading whitespace."
+                    )
 
-            start_token = encodings.char_to_token(i, start)
-            end_token = encodings.char_to_token(i, pos)
-            spans.append((start_token, end_token))
+                # move past this match
+                pos = start + len(ans)
 
-        # Labels are -100 everywhere except where the assistant's response is
-        tokens = encodings["input_ids"][i]
-        labels = [-100] * len(tokens)
-        for start, end in spans:
-            if start is not None and end is not None:
-                labels[start:end] = tokens[start:end]
+                start_token = encodings.char_to_token(i, start)
+                end_token = encodings.char_to_token(i, pos)
+                spans.append((start_token, end_token))
 
-        labels_list.append(labels)
+            # Labels are -100 everywhere except where the assistant's response is
+            tokens = encodings["input_ids"][i]
+            labels = [-100] * len(tokens)
+            for start, end in spans:
+                if start is not None and end is not None:
+                    labels[start:end] = tokens[start:end]
+
+            labels_list.append(labels)
 
     return dict(**encodings, labels=labels_list)
 
