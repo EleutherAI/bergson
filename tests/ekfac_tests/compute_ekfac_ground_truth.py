@@ -451,8 +451,7 @@ def compute_covariance(
                 reduction="none",
             ).reshape_as(y[:, 1:])
 
-            losses = losses.sum(1)
-            losses.mean().backward()
+            losses.sum().backward()
             loss_list.append(losses.detach().cpu())
             model.zero_grad()
 
@@ -695,8 +694,7 @@ def compute_eigenvalue_correction_amortized(
                 reduction="none",
             ).reshape_as(y[:, 1:])
 
-            losses = losses.sum(1)
-            losses.mean().backward()
+            losses.sum().backward()
             model.zero_grad()
 
     return {"total_processed_rank": total_processed}

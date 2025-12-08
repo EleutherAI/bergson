@@ -266,8 +266,7 @@ class EkfacComputer:
                             reduction="none",
                         ).reshape_as(y[:, 1:])
 
-                    losses = losses.sum(1)
-                    losses.mean().backward()
+                    losses.sum().backward()
                     self.model.zero_grad()
                     if torch.cuda.is_available():
                         torch.cuda.synchronize()

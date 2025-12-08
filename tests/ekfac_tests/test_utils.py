@@ -2,9 +2,59 @@
 
 import os
 import random
+from pathlib import Path
 
 import numpy as np
 import torch
+from safetensors.torch import load_file
+
+
+def load_sharded_covariances(sharded_dir: str | Path) -> dict[str, torch.Tensor]:
+    """Load and concatenate sharded covariance files.
+
+    Args:
+        sharded_dir: Directory containing shard_0.safetensors, shard_1.safetensors, etc.
+
+    Returns:
+        Dictionary mapping layer names to concatenated covariance tensors.
+    """
+    sharded_dir = Path(sharded_dir)
+    shard_files = sorted(sharded_dir.glob("shard_*.safetensors"))
+
+    if not shard_files:
+        raise FileNotFoundError(f"No shard files found in {sharded_dir}")
+
+    shards = [load_file(str(f)) for f in shard_files]
+
+    # Concatenate shards along first dimension
+    result = {}
+    for key in shards[0]:
+        result[key] = torch.cat([shard[key] for shard in shards], dim=0)
+
+    return result
+
+
+def load_covariances(
+    run_path: str | Path,
+) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor], int]:
+    """Load activation and gradient covariances from an EKFAC run.
+
+    Args:
+        run_path: Path to the run directory containing influence_results/.
+
+    Returns:
+        Tuple of (activation_covariances, gradient_covariances, total_processed).
+    """
+    run_path = Path(run_path)
+    results_path = run_path / "influence_results"
+
+    A_cov = load_sharded_covariances(results_path / "activation_covariance_sharded")
+    G_cov = load_sharded_covariances(results_path / "gradient_covariance_sharded")
+    total_processed = torch.load(
+        results_path / "total_processed_covariances.pt"
+    ).item()
+
+    return A_cov, G_cov, total_processed
 
 
 def set_all_seeds(seed: int = 42) -> None:

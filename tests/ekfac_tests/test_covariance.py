@@ -1,10 +1,10 @@
 import os
 
 import pytest
-import torch
 from safetensors.torch import load_file
 
 from bergson.hessians.utils import TensorDict
+from tests.ekfac_tests.test_utils import load_sharded_covariances
 
 
 @pytest.mark.parametrize("covariance_type", ["activation", "gradient"])
@@ -23,24 +23,8 @@ def test_covariances(
         ekfac_results_path, f"{covariance_type}_covariance_sharded"
     )
 
-    # load ground_truth
     ground_truth_covariances = TensorDict(load_file(covariances_ground_truth_path))
-
-    world_size = len(os.listdir(covariances_run_path))  # number of shards
-    # load run covariances shards and concatenate them
-
-    run_covariances_shards = [
-        os.path.join(covariances_run_path, f"shard_{rank}.safetensors")
-        for rank in range(world_size)
-    ]
-    run_covariances_list = [(load_file(shard)) for shard in run_covariances_shards]
-    run_covariances = {}
-    for k, v in run_covariances_list[0].items():
-        run_covariances[k] = torch.cat(
-            [shard[k] for shard in run_covariances_list], dim=0
-        )
-
-    run_covariances = TensorDict(run_covariances)
+    run_covariances = TensorDict(load_sharded_covariances(covariances_run_path))
 
     diff = (
         ground_truth_covariances.sub(run_covariances)
