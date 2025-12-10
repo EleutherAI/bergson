@@ -86,6 +86,12 @@ def pytest_addoption(parser) -> None:
     )
 
 
+@pytest.fixture(autouse=True)
+def setup_test() -> None:
+    """Setup logic run before each test."""
+    set_all_seeds(seed=42)
+
+
 @pytest.fixture(scope="session")
 def gradient_batch_size(request) -> int:
     return request.config.getoption("--gradient_batch_size")
@@ -147,8 +153,6 @@ def ground_truth_base_path(test_dir: str) -> str:
 def ground_truth_setup(
     request, test_dir: str, precision: Precision, overwrite: bool
 ) -> dict[str, Any]:
-    set_all_seeds(seed=42)
-
     # Setup for generation
     model_name = request.config.getoption("--model_name")
     world_size = request.config.getoption("--world_size")
