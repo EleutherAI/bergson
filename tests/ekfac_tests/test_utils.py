@@ -50,9 +50,7 @@ def load_covariances(
 
     A_cov = load_sharded_covariances(results_path / "activation_covariance_sharded")
     G_cov = load_sharded_covariances(results_path / "gradient_covariance_sharded")
-    total_processed = torch.load(
-        results_path / "total_processed_covariances.pt"
-    ).item()
+    total_processed = torch.load(results_path / "total_processed_covariances.pt").item()
 
     return A_cov, G_cov, total_processed
 

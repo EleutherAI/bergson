@@ -98,6 +98,10 @@ def compute_exact_fim(
     [
         ((512,), 100, False, 0.05),
         ((512,), 100, True, 0.05),
+        ((4,), 10000, False, 0.05),  # rel_error = ~0.25 without valid_masks logic
+        ((4,), 10000, True, 0.10),  # rel_error = ~0.25 without valid_masks logic
+        ((512, 2), 100, False, 0.05),  # rel_error = ~0.6 without valid_masks logic
+        ((512, 2), 100, True, 0.20),  # rel_error = ~1.2 without valid_masks logic
     ],
 )
 def test_kfac_fim_accuracy(seq_lengths, num_batches, max_rel_error, sample, tmp_path):
@@ -147,6 +151,8 @@ def test_kfac_fim_accuracy(seq_lengths, num_batches, max_rel_error, sample, tmp_
     kfac.compute_covariance()
 
     A_dict_kfac, G_dict_kfac, total_processed_kfac = load_covariances(run_path)
+
+    assert total_processed_kfac == total_processed_exact
 
     A_kfac = list(A_dict_kfac.values())[0].float().to(device) / total_processed_kfac
     A_kfac = (A_kfac + A_kfac.T) / 2

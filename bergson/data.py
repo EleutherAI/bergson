@@ -351,12 +351,14 @@ def pad_and_tensor(
     padding_value: int = 0,
     dtype: torch.dtype | None = torch.long,
     device: torch.device | None = None,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Pad a list of sequences to the same length and convert them to tensors.
-    Returns a tuple of padded sequences and labels. The labels are the same as the
-    sequences, but with -100 for the padding positions, which is useful for ignoring
-    padding in loss calculations.
+
+    Returns:
+        padded_tokens: Padded input sequences [N, S]
+        padded_labels: Labels with -100 for padding positions [N, S]
+        valid_masks: Boolean mask [N, S] where True indicates valid positions
     """
     if labels is None:
         labels = sequences
@@ -370,7 +372,13 @@ def pad_and_tensor(
     # convert to tensor
     padded_tokens = torch.tensor(padded, dtype=dtype, device=device)
     padded_labels = torch.tensor(labels, dtype=dtype, device=device)
-    return padded_tokens, padded_labels
+
+    # Compute valid_masks: position i is valid if labels[i+1] != -100
+    N, S = padded_tokens.shape
+    valid_masks = torch.zeros(N, S, dtype=torch.bool, device=device)
+    valid_masks[:, :-1] = padded_labels[:, 1:] != -100
+
+    return padded_tokens, padded_labels, valid_masks
 
 
 def tokenize(batch: dict, *, args: DataConfig, tokenizer):

@@ -37,6 +37,11 @@ class HookCollectorBase(ContextDecorator, ABC):
     Set of module names to attach hooks to. Should consist only of nn.Linear modules.
     If None, hooks are attached to all Linear layers in the model.
     """
+    valid_masks: Tensor = None  # type: ignore[assignment]
+    """
+    Mask of shape [N, S] indicating which positions are valid.
+    Must be set via set_valid_masks() before each batch.
+    """
 
     @staticmethod
     def discover_targets(
@@ -81,6 +86,12 @@ class HookCollectorBase(ContextDecorator, ABC):
 
         # Allow subclasses to perform custom initialization
         self.setup()
+
+    def set_valid_masks(self, masks: Tensor) -> None:
+        """
+        Set the valid_masks for the current batch.
+        """
+        self.valid_masks = masks
 
     def __enter__(self):
         """Register forward and backward hooks on all target modules."""
@@ -214,8 +225,8 @@ class CovarianceCollector(HookCollectorBase):
         """Compute activation covariance: A^T @ A."""
         A_cov_ki = self.A_cov_dict[name]
 
-        # Reshape to [N*S, I]
-        a_bi = a.reshape(-1, a.shape[-1])
+        # a: [N, S, I], valid_masks: [N, S] -> select valid positions
+        a_bi = a[self.valid_masks]  # [num_valid, I]
 
         # Compute local covariance
         local_update_ii = a_bi.mT @ a_bi

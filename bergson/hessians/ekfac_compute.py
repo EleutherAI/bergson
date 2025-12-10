@@ -225,13 +225,14 @@ class EkfacComputer:
                 self.batches, disable=self.rank != 0, desc=f"Computing {desc}"
             ):
                 batch = self.data[sl]
-                x, y = pad_and_tensor(
+                x, y, valid_masks = pad_and_tensor(
                     batch["input_ids"],  # type: ignore
                     labels=batch.get("labels"),  # type: ignore
                     device=self.model.device,
                 )
 
-                total_processed += x.numel()
+                total_processed += valid_masks.sum()
+                collector.set_valid_masks(valid_masks)
 
                 with (
                     collector,
@@ -257,14 +258,14 @@ class EkfacComputer:
                                 probs,
                                 num_samples=1,
                             ).flatten()
-
                             del probs
 
+                        flat_mask = valid_masks[:, :-1].flatten()
                         losses = F.cross_entropy(
-                            logits,
-                            sampled_labels,
+                            logits[flat_mask],
+                            sampled_labels[flat_mask],
                             reduction="none",
-                        ).reshape_as(y[:, 1:])
+                        )
 
                     losses.sum().backward()
                     self.model.zero_grad()

@@ -85,7 +85,7 @@ def collect_gradients(
 
     for indices in tqdm(batches, disable=rank != 0, desc="Building index"):
         batch = data[indices]
-        x, y = pad_and_tensor(
+        x, y, valid_masks = pad_and_tensor(
             batch["input_ids"],  # type: ignore
             labels=batch.get("labels"),  # type: ignore
             device=model.device,
@@ -100,8 +100,7 @@ def collect_gradients(
                 reduction="none",
             ).reshape_as(y[:, 1:])
 
-            masks = y[:, 1:] != -100
-            denoms = masks.sum(dim=1, dtype=logits.dtype)
+            denoms = valid_masks.sum(dim=1, dtype=logits.dtype)
             losses = losses.sum(1).div(denoms)
             losses.mean().backward()
 
@@ -208,7 +207,7 @@ def fit_normalizers(
             closure=callback,
             target_modules=target_modules,
         ):
-            x, y = pad_and_tensor(
+            x, y, _ = pad_and_tensor(
                 batch["input_ids"],  # type: ignore
                 labels=batch.get("labels", None),  # type: ignore
                 device=model.device,

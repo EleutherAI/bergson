@@ -25,7 +25,8 @@ class GroundTruthCovarianceCollector(HookCollectorBase):
         pass
 
     def forward_hook(self, name: str, a: Tensor) -> None:
-        a = a.reshape(-1, a.shape[-1])  # [N*S, O]
+        # a: [N, S, I], valid_masks: [N, S] -> select valid positions
+        a = a[self.valid_masks]  # [num_valid, I]
 
         update = a.mT @ a
 
