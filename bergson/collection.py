@@ -40,6 +40,11 @@ def collect_gradients(
     if batches is None:
         batches = [[idx] for idx in range(len(data))]
 
+    print(
+        f"Rank {rank} has {len(batches)} batches and thinks world "
+        f"size is {dist.get_world_size()}."
+    )
+
     # Mutable state for the GradientCollector callback
     mod_grads = {}
     preconditioners = processor.preconditioners
@@ -49,22 +54,18 @@ def collect_gradients(
     lo = torch.finfo(dtype).min
     hi = torch.finfo(dtype).max
 
+    owned_modules: set[str] = set()
+    module_to_rank: dict[str, int] = {}
+
     def callback(name: str, g: torch.Tensor):
         g = g.flatten(1).clamp_(lo, hi)
-        if save_index:
-            # Asynchronously move the gradient to CPU and convert to the final dtype
-            mod_grads[name] = g.to(device="cpu", dtype=dtype, non_blocking=True)
-        else:
-            mod_grads[name] = g.to(dtype=dtype)
-
-        # Compute the outer product of the flattened gradient
-        if not cfg.skip_preconditioners:
-            g = g.float()
-            preconditioner = preconditioners.get(name, None)
-            if preconditioner is None:
-                preconditioners[name] = g.mT @ g
+        # Keep gradients in original dtype for preconditioner computation
+        mod_grads[name] = g
+        if cfg.skip_preconditioners:
+            if save_index:
+                mod_grads[name] = g.to(dtype=dtype, device="cpu", non_blocking=True)
             else:
-                preconditioner.addmm_(g.mT, g)
+                mod_grads[name] = g.to(dtype=dtype)
 
     collector = GradientCollector(
         model.base_model,
@@ -73,6 +74,33 @@ def collect_gradients(
         target_modules=target_modules,
         attention_cfgs=attention_cfgs or {},
     )
+
+    # Determine which modules this rank owns for preconditioner computation
+    if dist.is_initialized():
+        num_devices = dist.get_world_size()
+        # This list is sorted.
+        available_modules = list(collector.shapes().keys())
+
+        num_modules = len(available_modules)
+        base, remainder = divmod(num_modules, num_devices)
+
+        assert base > 0, "Each rank must own at least one module"
+
+        start_idx = rank * base + min(rank, remainder)
+        end_idx = start_idx + base + (1 if rank < remainder else 0)
+        owned_modules = set(available_modules[start_idx:end_idx])
+
+        for i, module_name in enumerate(available_modules):
+            # Inverse of the start_idx formula
+            module_to_rank[module_name] = (
+                min(i // (base + 1), remainder - 1)
+                if i < remainder * (base + 1)
+                else remainder + (i - remainder * (base + 1)) // base
+            )
+
+        print(f"Rank {rank} owns {len(owned_modules)} modules")
+    else:
+        owned_modules = set(collector.shapes().keys())
 
     # Allocate space ahead of time for the gradients
     grad_sizes = {name: math.prod(s) for name, s in collector.shapes().items()}
@@ -89,7 +117,8 @@ def collect_gradients(
         fill_value=0.0,
     )
 
-    for indices in tqdm(batches, disable=rank != 0, desc="Building index"):
+    # rank != 0
+    for indices in tqdm(batches, disable=False, desc="Building index"):
         batch = data[indices]
         x, y = pad_and_tensor(
             batch["input_ids"],  # type: ignore
@@ -132,6 +161,22 @@ def collect_gradients(
 
         model.zero_grad()
 
+        # Send gradients to owning ranks and compute outer products there
+        if not cfg.skip_preconditioners:
+            exchange_preconditioner_gradients(
+                mod_grads, preconditioners, module_to_rank, owned_modules, rank
+            )
+
+            # Convert mod_grads to the right dtype for save_index logic
+            if save_index:
+                for name in mod_grads:
+                    mod_grads[name] = mod_grads[name].to(
+                        device="cpu", dtype=dtype, non_blocking=True
+                    )
+            else:
+                for name in mod_grads:
+                    mod_grads[name] = mod_grads[name].to(dtype=dtype)
+
         if builder is not None:
             builder(indices, mod_grads)
 
@@ -141,7 +186,8 @@ def collect_gradients(
         mod_grads.clear()
         per_doc_losses[indices] = losses.detach().type_as(per_doc_losses)
 
-    process_preconditioners(processor, preconditioners, len(data))
+    if not cfg.skip_preconditioners:
+        process_preconditioners(processor, preconditioners, len(data), grad_sizes, rank)
 
     if dist.is_initialized():
         dist.reduce(per_doc_losses, dst=0)
@@ -266,58 +312,175 @@ class Builder:
                 self.in_memory_grad_buffer.cpu().numpy().astype(self.grad_buffer.dtype)
             )
 
+        self.in_memory_grad_buffer = self.in_memory_grad_buffer.cpu()
+
+
+def exchange_preconditioner_gradients(
+    mod_grads: dict[str, torch.Tensor],
+    preconditioners: dict[str, torch.Tensor],
+    module_to_rank: dict[str, int],
+    owned_modules: set[str],
+    rank: int,
+):
+    """
+    Send gradients to the ranks that own their preconditioners, and accumulate
+    outer products on the owning ranks.
+    Each rank sends gradients for modules it doesn't own to the owning ranks,
+    and receives gradients for modules it owns to compute outer products.
+    """
+    # Process current rank data for owned modules
+    for name, g in mod_grads.items():
+        if name not in owned_modules:
+            continue
+
+        g = g.float()
+        if name in preconditioners:
+            preconditioners[name].addmm_(g.mT, g)
+        else:
+            preconditioners[name] = g.mT @ g
+
+    if not dist.is_initialized():
+        return
+
+    world_size = dist.get_world_size()
+    device = next(iter(mod_grads.values())).device
+
+    module_names = list(mod_grads.keys())
+    module_numel = {n: int(mod_grads[n].numel()) for n in module_names}
+
+    current_rank_chunk = torch.empty(0, device=device, dtype=torch.float32)
+
+    # Flatten batch dimension: all to all works on contiguous 1-D tensors
+    send_chunks = [
+        (
+            current_rank_chunk
+            if dest == rank
+            else torch.cat(
+                [
+                    mod_grads[name].flatten()
+                    for name in module_names
+                    if module_to_rank[name] == dest
+                ]
+            )
+        )
+        for dest in range(world_size)
+    ]
+
+    # --- collective exchange of gradient sizes in order of mod_grads ---
+    send_sizes = torch.tensor(
+        [t.numel() for t in send_chunks], device=device, dtype=torch.int64
+    )
+    recv_sizes = torch.empty_like(send_sizes)
+
+    dist.all_to_all_single(recv_sizes, send_sizes)
+
+    # --- collective exchange of gradient in order of mod_grads ---
+    send_buf = torch.cat(send_chunks)
+    recv_buf = torch.empty(
+        int(recv_sizes.sum().item()), device=device, dtype=torch.float32
+    )
+
+    dist.all_to_all_single(
+        recv_buf,
+        send_buf,
+        output_split_sizes=recv_sizes.tolist(),
+        input_split_sizes=send_sizes.tolist(),
+    )
+
+    # Unpack gradients in src-rank order
+    # Within each src partition, modules are in fixed order.
+    offset = 0
+    for src_rank in range(world_size):
+        part_len = int(recv_sizes[src_rank].item())
+        part = recv_buf[offset : offset + part_len]
+        offset += part_len
+
+        if part_len == 0 or src_rank == rank:
+            continue
+
+        p = 0
+        for name in owned_modules:
+            n = module_numel[name]
+            flat = part[p : p + n]
+            p += n
+
+            feature_dim = mod_grads[name].shape[-1]
+            g = flat.to(device, non_blocking=True).view(-1, feature_dim).float()
+
+            if name in preconditioners:
+                preconditioners[name].addmm_(g.mT, g)
+            else:
+                preconditioners[name] = g.mT @ g
+
 
 def process_preconditioners(
     processor: GradientProcessor,
     preconditioners: dict[str, torch.Tensor],
     len_data: int,
+    grad_sizes: dict[str, int],
+    rank: int,
 ):
     """
     Aggregate preconditioners across ranks and compute their eigen decomposition
     distributed across all ranks.
     """
-
-    rank = dist.get_rank() if dist.is_initialized() else 0
-    world_size = dist.get_world_size() if dist.is_initialized() else 1
     preconditioners_eigen = {}
+
+    device = next(iter(preconditioners.values())).device
+    dtype = next(iter(preconditioners.values())).dtype
+
     if rank == 0:
         print("Saving preconditioners...")
+
     for name, prec in preconditioners.items():
-        if dist.is_initialized():
-            dist.all_reduce(prec)
-
-        preconditioners[name] = prec / len_data
-
-    processor.preconditioners = preconditioners
+        preconditioners[name] = (prec / len_data).cpu()
 
     if rank == 0:
         print("Computing preconditioner eigen decompositions...")
-    names = list(preconditioners.keys())
-    names_per_rank = names[rank::world_size]
 
-    for name in names_per_rank:
-        original_dtype = preconditioners[name].dtype
-        prec = preconditioners[name].to(dtype=torch.float64)
+    for name in preconditioners.keys():
+        prec = preconditioners[name].to(dtype=torch.float64, device=device)
         eigvals, eigvecs = torch.linalg.eigh(prec)
         preconditioners_eigen[name] = (
-            eigvals.to(dtype=original_dtype).contiguous(),
-            eigvecs.to(dtype=original_dtype).contiguous(),
+            eigvals.to(dtype=dtype).contiguous().cpu(),
+            eigvecs.to(dtype=dtype).contiguous().cpu(),
         )
 
     if rank == 0:
-        print("Gathering and saving preconditioner eigen decompositions...")
+        print("Gathering preconditioners...")
 
-    for name in names:
-        prec = preconditioners[name]
+    cpu_group = dist.new_group(backend="gloo")
+
+    for name, grad_size in grad_sizes.items():
+        if name in preconditioners:
+            local_prec = preconditioners[name]
+            del preconditioners[name]
+        else:
+            local_prec = torch.zeros([grad_size, grad_size], dtype=dtype, device="cpu")
+
+        dist.reduce(local_prec, dst=0, op=dist.ReduceOp.SUM, group=cpu_group)
+
+        if rank == 0:
+            preconditioners[name] = local_prec
+
+    if rank == 0:
+        processor.preconditioners = preconditioners
+
+        print("Gathering eigen decompositions...")
+
+    for name, grad_size in grad_sizes.items():
+        prec_size = torch.Size([grad_size, grad_size])
         if name not in preconditioners_eigen:
-            eigval = torch.zeros(prec.size(0), dtype=prec.dtype, device=prec.device)
-            eigvec = torch.zeros_like(prec)
+            eigval = torch.zeros(prec_size[0], dtype=dtype)
+            eigvec = torch.zeros(prec_size, dtype=dtype)
         else:
             eigval, eigvec = preconditioners_eigen[name]
 
-        dist.all_reduce(eigval, op=dist.ReduceOp.SUM) if dist.is_initialized() else None
-        dist.all_reduce(eigvec, op=dist.ReduceOp.SUM) if dist.is_initialized() else None
+        dist.reduce(eigval, dst=0, op=dist.ReduceOp.SUM, group=cpu_group)
+        dist.reduce(eigvec, dst=0, op=dist.ReduceOp.SUM, group=cpu_group)
 
-        preconditioners_eigen[name] = (eigval, eigvec)
+        if rank == 0:
+            preconditioners_eigen[name] = (eigval, eigvec)
+
     if rank == 0:
         processor.preconditioners_eigen = preconditioners_eigen

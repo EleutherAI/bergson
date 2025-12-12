@@ -1,3 +1,4 @@
+import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,16 +15,18 @@ from .score.score import score_dataset
 
 def validate_run_path(run_path: Path, overwrite: bool):
     """Validate the run path."""
-    if overwrite:
+    start_rank = int(os.environ.get("START_RANK", 0))
+    rank = start_rank + int(os.environ.get("RANK", 0))
+
+    if rank != 0 or not run_path.exists():
         return
 
-    if run_path.exists():
-        print(f"Run path {run_path} already exists.")
-        response = input("Do you want to overwrite the existing run path? (y/n): ")
-        if response.lower() != "y":
-            exit()
-        else:
-            shutil.rmtree(run_path)
+    if overwrite:
+        shutil.rmtree(run_path)
+    else:
+        raise FileExistsError(
+            f"Run path {run_path} already exists. Use --overwrite to overwrite it."
+        )
 
 
 @dataclass
@@ -55,14 +58,9 @@ class Reduce:
 
     def execute(self):
         """Reduce a gradient index."""
-        if self.index_cfg.projection_dim != 0:
-            print(
-                "Warning: projection_dim is not 0. "
-                "Compressed gradients will be reduced."
-            )
-
         run_path = Path(self.index_cfg.run_path)
         partial_run_path = Path(self.index_cfg.partial_run_path)
+
         validate_run_path(run_path, self.index_cfg.overwrite)
         validate_run_path(partial_run_path, self.index_cfg.overwrite)
 

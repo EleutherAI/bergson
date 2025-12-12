@@ -1,6 +1,6 @@
+import os
 import socket
 from typing import Any, Callable
-import os
 
 import torch
 import torch.distributed as dist
@@ -27,16 +27,18 @@ def dist_worker(
 
 def launch_distributed_run(process_name: str, worker, const_worker_args: list[Any]):
     local_world_size = torch.cuda.device_count()
-    
-    # Check for multi-node environment
+
+    # Multi-node environment
     if "WORLD_SIZE" in os.environ:
         world_size = int(os.environ["WORLD_SIZE"])
-        node_rank = int(os.environ.get("RANK", os.environ.get("NODE_RANK", 0)))
+        # Starting rank for this node
+        start_rank = int(os.environ["START_RANK"])
         master_addr = os.environ["MASTER_ADDR"]
         master_port = os.environ.get("MASTER_PORT", "29500")
     else:
         world_size = local_world_size
-        node_rank = 0
+        # Starting rank for this node
+        start_rank = 0
         master_addr = "localhost"
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind(("", 0))
@@ -54,13 +56,13 @@ def launch_distributed_run(process_name: str, worker, const_worker_args: list[An
                 process_name,
                 dist_worker,
                 args={
-                    i: (worker, node_rank * local_world_size + i, world_size, *const_worker_args)
+                    i: (worker, start_rank + i, i, world_size, *const_worker_args)
                     for i in range(local_world_size)
                 },
                 envs={
                     i: {
                         "LOCAL_RANK": str(i),
-                        "RANK": str(node_rank * local_world_size + i),
+                        "RANK": str(start_rank + i),
                         "WORLD_SIZE": str(world_size),
                         "MASTER_ADDR": master_addr,
                         "MASTER_PORT": master_port,
@@ -72,4 +74,4 @@ def launch_distributed_run(process_name: str, worker, const_worker_args: list[An
             ctx.wait()
         finally:
             if ctx is not None:
-                ctx.close()
+                ctx.close()  # Kill any processes that are still running

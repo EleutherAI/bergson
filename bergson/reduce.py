@@ -21,6 +21,7 @@ from .worker_utils import create_processor, setup_data_pipeline
 
 def reduce_worker(
     rank: int,
+    local_rank: int,
     world_size: int,
     index_cfg: IndexConfig,
     reduce_cfg: ReduceConfig,
@@ -42,9 +43,7 @@ def reduce_worker(
     ds : Dataset | IterableDataset
         The entire dataset to be indexed. A subset is assigned to each worker.
     """
-    local_rank = int(os.environ.get("LOCAL_RANK", rank))
     torch.cuda.set_device(local_rank)
-    # torch.cuda.set_device(rank)
 
     # These should be set by the main process
     if world_size > 1:
@@ -56,11 +55,11 @@ def reduce_worker(
             init_method=f"tcp://{addr}:{port}",
             device_id=torch.device(f"cuda:{local_rank}"),
             rank=rank,
-            timeout=timedelta(hours=1),
+            timeout=timedelta(minutes=30),
             world_size=world_size,
         )
 
-    model, target_modules = setup_model_and_peft(index_cfg, rank)
+    model, target_modules = setup_model_and_peft(index_cfg, local_rank)
     processor = create_processor(index_cfg, rank)
 
     attention_cfgs = {
@@ -109,6 +108,9 @@ def reduce_worker(
         if rank == 0:
             processor.save(index_cfg.partial_run_path)
 
+    if dist.is_initialized():
+        dist.barrier()
+
 
 def reduce(index_cfg: IndexConfig, reduce_cfg: ReduceConfig):
     """
@@ -130,19 +132,6 @@ def reduce(index_cfg: IndexConfig, reduce_cfg: ReduceConfig):
 
     launch_distributed_run("reduce", reduce_worker, [index_cfg, reduce_cfg, ds])
 
-    local_world_size = torch.cuda.device_count()
-    if "WORLD_SIZE" in os.environ:
-        # Multi-node setup: determine node rank
-        node_rank = int(os.environ.get("NODE_RANK", 0))
-        # If NODE_RANK is not set but RANK is, calculate from RANK
-        if "NODE_RANK" not in os.environ and "RANK" in os.environ and local_world_size > 0:
-            node_rank = int(os.environ["RANK"]) // local_world_size
-    else:
-        # Single-node setup
-        node_rank = 0
-    
-    # Only node 0 should perform the final move
-    if node_rank == 0:
+    rank = int(os.environ.get("START_RANK", os.environ.get("RANK", 0)))
+    if rank == 0:
         shutil.move(index_cfg.partial_run_path, index_cfg.run_path)
-
-    # shutil.move(index_cfg.partial_run_path, index_cfg.run_path)

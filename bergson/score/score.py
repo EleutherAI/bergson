@@ -316,6 +316,9 @@ def score_worker(
         if rank == 0:
             processor.save(index_cfg.partial_run_path)
 
+    if dist.is_initialized():
+        dist.barrier()
+
 
 def score_dataset(index_cfg: IndexConfig, score_cfg: ScoreConfig):
     """
@@ -352,4 +355,6 @@ def score_dataset(index_cfg: IndexConfig, score_cfg: ScoreConfig):
         "score", score_worker, [index_cfg, score_cfg, ds, query_grads]
     )
 
-    shutil.move(index_cfg.partial_run_path, index_cfg.run_path)
+    rank = int(os.environ.get("RANK", os.environ.get("LOCAL_RANK", 0)))
+    if rank == 0:
+        shutil.move(index_cfg.partial_run_path, index_cfg.run_path)
