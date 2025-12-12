@@ -12,8 +12,11 @@ from .reduce import reduce
 from .score.score import score_dataset
 
 
-def validate_run_path(run_path: Path):
+def validate_run_path(run_path: Path, overwrite: bool):
     """Validate the run path."""
+    if overwrite:
+        return
+
     if run_path.exists():
         print(f"Run path {run_path} already exists.")
         response = input("Do you want to overwrite the existing run path? (y/n): ")
@@ -36,8 +39,8 @@ class Build:
 
         run_path = Path(self.index_cfg.run_path)
         partial_run_path = Path(self.index_cfg.partial_run_path)
-        validate_run_path(run_path)
-        validate_run_path(partial_run_path)
+        validate_run_path(run_path, self.index_cfg.overwrite)
+        validate_run_path(partial_run_path, self.index_cfg.overwrite)
 
         build(self.index_cfg)
 
@@ -60,8 +63,8 @@ class Reduce:
 
         run_path = Path(self.index_cfg.run_path)
         partial_run_path = Path(self.index_cfg.partial_run_path)
-        validate_run_path(run_path)
-        validate_run_path(partial_run_path)
+        validate_run_path(run_path, self.index_cfg.overwrite)
+        validate_run_path(partial_run_path, self.index_cfg.overwrite)
 
         reduce(self.index_cfg, self.reduce_cfg)
 

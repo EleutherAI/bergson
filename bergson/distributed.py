@@ -1,5 +1,6 @@
 import socket
 from typing import Any, Callable
+import os
 
 import torch
 import torch.distributed as dist
@@ -25,33 +26,27 @@ def dist_worker(
 
 
 def launch_distributed_run(process_name: str, worker, const_worker_args: list[Any]):
-    """
-    Launch a distributed multi-process job over all visible CUDA devices.
-
-    Parameters
-    ----------
-    process_name : str
-        Label used by Torch Elastic to tag logs and processes.
-    worker : Callable
-        Function that will be executed on every spawned process. It must accept
-        ``(rank, world_size, *const_worker_args)`` in that order.
-    const_worker_args : list
-        Arguments passed verbatim to every worker invocation after ``rank`` and
-        ``world_size``. These are typically configuration or shared datasets.
-    """
-    world_size = torch.cuda.device_count()
-    if world_size <= 1:
-        # Run the worker directly if no distributed training is needed. This is great
-        # for debugging purposes.
-        worker(0, 1, *const_worker_args)
+    local_world_size = torch.cuda.device_count()
+    
+    # Check for multi-node environment
+    if "WORLD_SIZE" in os.environ:
+        world_size = int(os.environ["WORLD_SIZE"])
+        node_rank = int(os.environ.get("RANK", os.environ.get("NODE_RANK", 0)))
+        master_addr = os.environ["MASTER_ADDR"]
+        master_port = os.environ.get("MASTER_PORT", "29500")
     else:
-        # Set up multiprocessing and distributed training
-        mp.set_sharing_strategy("file_system")
-
-        # Find an available port for distributed training
+        world_size = local_world_size
+        node_rank = 0
+        master_addr = "localhost"
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind(("", 0))
-            _, port = s.getsockname()
+            _, master_port = s.getsockname()
+        master_port = str(master_port)
+
+    if world_size <= 1:
+        worker(0, 1, *const_worker_args)
+    else:
+        mp.set_sharing_strategy("file_system")
 
         ctx = None
         try:
@@ -59,20 +54,22 @@ def launch_distributed_run(process_name: str, worker, const_worker_args: list[An
                 process_name,
                 dist_worker,
                 args={
-                    i: (worker, i, world_size, *const_worker_args)
-                    for i in range(world_size)
+                    i: (worker, node_rank * local_world_size + i, world_size, *const_worker_args)
+                    for i in range(local_world_size)
                 },
                 envs={
                     i: {
                         "LOCAL_RANK": str(i),
-                        "MASTER_ADDR": "localhost",
-                        "MASTER_PORT": str(port),
+                        "RANK": str(node_rank * local_world_size + i),
+                        "WORLD_SIZE": str(world_size),
+                        "MASTER_ADDR": master_addr,
+                        "MASTER_PORT": master_port,
                     }
-                    for i in range(world_size)
+                    for i in range(local_world_size)
                 },
                 logs_specs=DefaultLogsSpecs(),
             )
             ctx.wait()
         finally:
             if ctx is not None:
-                ctx.close()  # Kill any processes that are still running
+                ctx.close()

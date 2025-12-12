@@ -123,6 +123,9 @@ class IndexConfig:
     """Configuration for each attention module to be split into head matrices.
     Used for attention modules specified in `split_attention_modules`."""
 
+    overwrite: bool = False
+    """Whether to overwrite an existing index without asking for confirmation."""
+
     @property
     def partial_run_path(self) -> Path:
         """Temporary path to use while writing build artifacts."""
