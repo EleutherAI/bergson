@@ -316,9 +316,6 @@ def score_worker(
         if rank == 0:
             processor.save(index_cfg.partial_run_path)
 
-    if dist.is_initialized():
-        dist.barrier()
-
 
 def score_dataset(index_cfg: IndexConfig, score_cfg: ScoreConfig):
     """

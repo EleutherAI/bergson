@@ -99,9 +99,6 @@ def build_worker(
         if rank == 0:
             processor.save(cfg.partial_run_path)
 
-    if dist.is_initialized():
-        dist.barrier()
-
 
 def build(index_cfg: IndexConfig):
     """

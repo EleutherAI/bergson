@@ -192,6 +192,12 @@ def collect_gradients(
     if dist.is_initialized():
         dist.reduce(per_doc_losses, dst=0)
 
+    # Finalize disk IO
+    if builder is not None:
+        builder.flush()
+        # Final collective operation
+        builder.dist_reduce()
+
     if rank == 0:
         if cfg.drop_columns:
             data = data.remove_columns(["input_ids"])
@@ -206,11 +212,6 @@ def collect_gradients(
         data.save_to_disk(cfg.partial_run_path / "data.hf")
 
         processor.save(cfg.partial_run_path)
-
-    # Make sure the gradients are written to disk
-    if builder is not None:
-        builder.flush()
-        builder.dist_reduce()
 
 
 class Builder:

@@ -108,9 +108,6 @@ def reduce_worker(
         if rank == 0:
             processor.save(index_cfg.partial_run_path)
 
-    if dist.is_initialized():
-        dist.barrier()
-
 
 def reduce(index_cfg: IndexConfig, reduce_cfg: ReduceConfig):
     """
