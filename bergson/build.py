@@ -21,6 +21,7 @@ from .worker_utils import create_processor, setup_data_pipeline
 
 def build_worker(
     rank: int,
+    local_rank: int,
     world_size: int,
     cfg: IndexConfig,
     ds: Dataset | IterableDataset,
@@ -39,7 +40,7 @@ def build_worker(
     ds : Dataset | IterableDataset
         The entire dataset to be indexed. A subset is assigned to each worker.
     """
-    torch.cuda.set_device(rank)
+    torch.cuda.set_device(local_rank)
 
     # These should be set by the main process
     if world_size > 1:
@@ -49,14 +50,14 @@ def build_worker(
         dist.init_process_group(
             "nccl",
             init_method=f"tcp://{addr}:{port}",
-            device_id=torch.device(f"cuda:{rank}"),
+            device_id=torch.device(f"cuda:{local_rank}"),
             rank=rank,
             timeout=timedelta(hours=1),
             world_size=world_size,
         )
 
-    model, target_modules = setup_model_and_peft(cfg, rank)
-    processor = create_processor(cfg, rank)
+    model, target_modules = setup_model_and_peft(cfg, local_rank)
+    processor = create_processor(cfg, local_rank, rank)
 
     attention_cfgs = {module: cfg.attention for module in cfg.split_attention_modules}
 

@@ -46,7 +46,7 @@ def launch_distributed_run(process_name: str, worker, const_worker_args: list[An
         master_port = str(master_port)
 
     if world_size <= 1:
-        worker(0, 1, *const_worker_args)
+        worker(0, 0, 1, *const_worker_args)
     else:
         mp.set_sharing_strategy("file_system")
 

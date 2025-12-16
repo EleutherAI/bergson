@@ -40,10 +40,11 @@ def collect_gradients(
     if batches is None:
         batches = [[idx] for idx in range(len(data))]
 
-    print(
-        f"Rank {rank} has {len(batches)} batches and thinks world "
-        f"size is {dist.get_world_size()}."
-    )
+    if dist.is_initialized():
+        print(
+            f"Rank {rank} has {len(batches)} batches and world size "
+            f"{dist.get_world_size()}."
+        )
 
     # Mutable state for the GradientCollector callback
     mod_grads = {}
@@ -446,6 +447,11 @@ def process_preconditioners(
             eigvals.to(dtype=dtype).contiguous().cpu(),
             eigvecs.to(dtype=dtype).contiguous().cpu(),
         )
+
+    if not dist.is_initialized():
+        processor.preconditioners = preconditioners
+        processor.preconditioners_eigen = preconditioners_eigen
+        return
 
     if rank == 0:
         print("Gathering preconditioners...")

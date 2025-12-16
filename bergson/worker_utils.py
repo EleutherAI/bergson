@@ -21,17 +21,18 @@ from bergson.utils import assert_type, get_layer_list
 
 def create_processor(
     cfg: IndexConfig,
+    local_rank: int,
     rank: int,
 ) -> GradientProcessor:
     """Handle processor creation and normalizer fitting"""
     processor_path = Path(cfg.processor_path)
     if (processor_path / "processor_config.json").exists():
-        if rank == 0:
+        if local_rank == 0:
             print(f"Loading processor from '{cfg.processor_path}'")
 
         processor = GradientProcessor.load(
             processor_path,
-            map_location=f"cuda:{rank}",
+            map_location=f"cuda:{local_rank}",
         )
     else:
         processor = GradientProcessor(

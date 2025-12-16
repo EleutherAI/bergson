@@ -208,6 +208,7 @@ def get_query_ds(score_cfg: ScoreConfig, device: str, rank: int | None = None):
 
 def score_worker(
     rank: int,
+    local_rank: int,
     world_size: int,
     index_cfg: IndexConfig,
     score_cfg: ScoreConfig,
@@ -233,7 +234,7 @@ def score_worker(
     query_grads : dict[str, torch.Tensor]
         Preprocessed query gradient tensors (often [1, grad_dim]) keyed by module name.
     """
-    torch.cuda.set_device(rank)
+    torch.cuda.set_device(local_rank)
 
     # These should be set by the main process
     if world_size > 1:
@@ -243,15 +244,15 @@ def score_worker(
         dist.init_process_group(
             "nccl",
             init_method=f"tcp://{addr}:{port}",
-            device_id=torch.device(f"cuda:{rank}"),
+            device_id=torch.device(f"cuda:{local_rank}"),
             rank=rank,
             timeout=timedelta(hours=1),
             world_size=world_size,
         )
 
-    model, target_modules = setup_model_and_peft(index_cfg, rank)
+    model, target_modules = setup_model_and_peft(index_cfg, local_rank)
     model = cast(PreTrainedModel, model)
-    processor = create_processor(index_cfg, rank)
+    processor = create_processor(index_cfg, local_rank, rank)
 
     attention_cfgs = {
         module: index_cfg.attention for module in index_cfg.split_attention_modules
