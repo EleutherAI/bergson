@@ -92,9 +92,12 @@ def preprocess_grads(
         }
     elif accumulate_grads == "none":
         grads = {
-            column_name: grad_ds[:][column_name].to(device=device) / ss_acc
+            column_name: grad_ds[:][column_name].to(device=device)
             for column_name in grad_column_names
         }
+        if unit_normalize:
+            norms = torch.cat(list(grads.values()), dim=1).norm(dim=1, keepdim=True)
+            grads = {k: v / norms for k, v in grads.items()}
     else:
         raise ValueError(f"Invalid accumulate_grads: {accumulate_grads}")
 
