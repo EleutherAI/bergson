@@ -187,15 +187,18 @@ def get_query_ds(score_cfg: ScoreConfig, device: str, rank: int | None = None):
             if (q and i)
             else (q or i)
         )
-        mixed_preconditioner = {
-            k: v.to(device) for k, v in mixed_preconditioner.items()
-        }
+
+        # Compute H^(-1) via eigendecomposition and apply to query gradients
+        h_inv = {}
+        for name, H in mixed_preconditioner.items():
+            H = H.to(device=device, dtype=torch.float64)
+            H = H + 1e-4 * torch.eye(H.shape[0], device=H.device, dtype=H.dtype)
+            eigval, eigvec = torch.linalg.eigh(H)
+            h_inv[name] = (eigvec * (1.0 / eigval) @ eigvec.mT).to(mixed_preconditioner[name].dtype)
 
         def precondition(batch):
             for name in target_modules:
-                batch[name] = (
-                    batch[name].to(device) @ mixed_preconditioner[name]
-                ).cpu()
+                batch[name] = (batch[name].to(device) @ h_inv[name]).cpu()
 
             return batch
 
