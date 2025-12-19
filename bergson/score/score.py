@@ -194,7 +194,9 @@ def get_query_ds(score_cfg: ScoreConfig, device: str, rank: int | None = None):
             H = H.to(device=device, dtype=torch.float64)
             H = H + 1e-4 * torch.eye(H.shape[0], device=H.device, dtype=H.dtype)
             eigval, eigvec = torch.linalg.eigh(H)
-            h_inv[name] = (eigvec * (1.0 / eigval) @ eigvec.mT).to(mixed_preconditioner[name].dtype)
+            h_inv[name] = (eigvec * (1.0 / eigval) @ eigvec.mT).to(
+                mixed_preconditioner[name].dtype
+            )
 
         def precondition(batch):
             for name in target_modules:
