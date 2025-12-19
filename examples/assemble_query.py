@@ -4,27 +4,17 @@
 # I believe the MCQA and Cloze setups are pulled from the same eval and are
 # both roughly 1k rows, like the original wmdp-bio as a whole.
 
-import os
-import shutil
 import subprocess
-from collections import defaultdict
-from pathlib import Path
 
-import numpy as np
-import torch
 from datasets import (
     Dataset,
     concatenate_datasets,
     get_dataset_config_names,
     load_dataset,
 )
-from numpy.lib.recfunctions import (
-    structured_to_unstructured,
-    unstructured_to_structured,
-)
 
 from bergson import DataConfig, IndexConfig, ReduceConfig, load_gradients
-from bergson.data import create_index, load_gradient_dataset, tokenize
+from bergson.data import tokenize
 from bergson.utils import assert_type
 
 
@@ -74,103 +64,109 @@ def tokenize_mcqa(
     return tokenize(batch, args=args, tokenizer=tokenizer, apply_chat_template=False)
 
 
-def create_query_index(
-    query_ds: Dataset, run_path: str, assembled_dataset_path: str, index_dtype: np.dtype
-):
-    structured_mmap = load_gradients(run_path)
-    mmap_dtype = structured_mmap.dtype
+# def create_query_index(
+#     query_ds: Dataset,
+#     run_path: str,
+#     assembled_dataset_path: str,
+#     index_dtype: np.dtype
+# ):
+#     structured_mmap = load_gradients(run_path)
+#     mmap_dtype = structured_mmap.dtype
 
-    # Copy into memory
-    gradient_tensor = torch.tensor(structured_to_unstructured(structured_mmap)).to(
-        torch.float32
-    )
+#     # Copy into memory
+#     gradient_tensor = torch.tensor(structured_to_unstructured(structured_mmap)).to(
+#         torch.float32
+#     )
 
-    print("mmap sum", gradient_tensor.sum())
-    print("mmap sum", gradient_tensor.abs().sum())
+#     print("mmap sum", gradient_tensor.sum())
+#     print("mmap sum", gradient_tensor.abs().sum())
 
-    # Group mmap gradient rows by the subset they came from
-    subset_gradients = defaultdict(list)
-    for grads_row, ds_row in zip(gradient_tensor, query_ds):
-        subset_gradients[ds_row["subset"]].append(grads_row)
+#     # Group mmap gradient rows by the subset they came from
+#     subset_gradients = defaultdict(list)
+#     for grads_row, ds_row in zip(gradient_tensor, query_ds):
+#         subset_gradients[ds_row["subset"]].append(grads_row)
 
-    subset_mean_gradients = {"overall": gradient_tensor.mean(dim=0)}
-    for subset, gradients in subset_gradients.items():
-        mean_gradient = torch.stack(gradients).mean(dim=0)
-        subset_mean_gradients[subset] = mean_gradient
+#     subset_mean_gradients = {"overall": gradient_tensor.mean(dim=0)}
+#     for subset, gradients in subset_gradients.items():
+#         mean_gradient = torch.stack(gradients).mean(dim=0)
+#         subset_mean_gradients[subset] = mean_gradient
 
-    # Copy everything from the origin run path to the new path
-    # except gradients.bin and data.hf
-    os.makedirs(assembled_dataset_path, exist_ok=True)
-    for item in os.listdir(run_path):
-        if item not in ["gradients.bin", "data.hf"]:
-            dest = Path(assembled_dataset_path) / item
-            shutil.copy(Path(run_path) / item, dest)
+#     # Copy everything from the origin run path to the new path
+#     # except gradients.bin and data.hf
+#     os.makedirs(assembled_dataset_path, exist_ok=True)
+#     for item in os.listdir(run_path):
+#         if item not in ["gradients.bin", "data.hf"]:
+#             dest = Path(assembled_dataset_path) / item
+#             shutil.copy(Path(run_path) / item, dest)
 
-    if (Path(assembled_dataset_path) / "data.hf").exists():
-        if (Path(assembled_dataset_path) / "data.hf").is_file():
-            (Path(assembled_dataset_path) / "data.hf").unlink()
-        else:
-            shutil.rmtree(Path(assembled_dataset_path) / "data.hf")
+#     if (Path(assembled_dataset_path) / "data.hf").exists():
+#         if (Path(assembled_dataset_path) / "data.hf").is_file():
+#             (Path(assembled_dataset_path) / "data.hf").unlink()
+#         else:
+#             shutil.rmtree(Path(assembled_dataset_path) / "data.hf")
 
-    # Write structured mean queries to data.hf
-    np_mean_grads = np.stack(
-        [item.numpy() for item in list(subset_mean_gradients.values())], axis=0
-    )
-    # structured_np_mean_grads = unstructured_to_structured(np_mean_grads, mmap_dtype)
-    # data = [
-    #     {
-    #         name: structured_np_mean_grads[name][i].tolist()
-    #         for name in mmap_dtype.names
-    #     }
-    #     for i in range(structured_np_mean_grads.shape[0])
-    # ]
+#     # Write structured mean queries to data.hf
+#     np_mean_grads = np.stack(
+#         [item.numpy() for item in list(subset_mean_gradients.values())], axis=0
+#     )
+#     # structured_np_mean_grads = unstructured_to_structured(np_mean_grads, mmap_dtype)
+#     # data = [
+#     #     {
+#     #         name: structured_np_mean_grads[name][i].tolist()
+#     #         for name in mmap_dtype.names
+#     #     }
+#     #     for i in range(structured_np_mean_grads.shape[0])
+#     # ]
 
-    means_dataset = Dataset.from_dict(
-        {
-            "scores": [0.0] * len(subset_mean_gradients),
-        }
-    )
-    means_dataset.save_to_disk(Path(assembled_dataset_path) / "data.hf")
+#     means_dataset = Dataset.from_dict(
+#         {
+#             "scores": [0.0] * len(subset_mean_gradients),
+#         }
+#     )
+#     means_dataset.save_to_disk(Path(assembled_dataset_path) / "data.hf")
 
-    mean_grad_stack = torch.stack(list(subset_mean_gradients.values()))
-    first_query_grad = gradient_tensor[0].unsqueeze(0).expand_as(mean_grad_stack)
-    cosine_sims = torch.nn.functional.cosine_similarity(
-        mean_grad_stack, first_query_grad, dim=1
-    )
+#     mean_grad_stack = torch.stack(list(subset_mean_gradients.values()))
+#     first_query_grad = gradient_tensor[0].unsqueeze(0).expand_as(mean_grad_stack)
+#     cosine_sims = torch.nn.functional.cosine_similarity(
+#         mean_grad_stack, first_query_grad, dim=1
+#     )
 
-    # Assemble grad sizes
-    grad_sizes = {}
-    for name in mmap_dtype.names:
-        field_dtype = mmap_dtype.fields[name][0]
-        subdtype = field_dtype.subdtype
-        assert subdtype is not None
+#     # Assemble grad sizes
+#     grad_sizes = {}
+#     for name in mmap_dtype.names:
+#         field_dtype = mmap_dtype.fields[name][0]
+#         subdtype = field_dtype.subdtype
+#         assert subdtype is not None
 
-        _, shape = subdtype
-        grad_sizes[name] = int(np.prod(shape))
+#         _, shape = subdtype
+#         grad_sizes[name] = int(np.prod(shape))
 
-    # Create and populate the index
-    index_grads = create_index(
-        str(assembled_dataset_path), len(subset_mean_gradients), grad_sizes, index_dtype
-    )
-    index_grads[:] = unstructured_to_structured(
-        np_mean_grads.astype(index_dtype), mmap_dtype
-    )
-    index_grads.flush()
+#     # Create and populate the index
+#     index_grads = create_index(
+#         str(assembled_dataset_path),
+#         len(subset_mean_gradients),
+#         grad_sizes,
+#         index_dtype
+#     )
+#     index_grads[:] = unstructured_to_structured(
+#         np_mean_grads.astype(index_dtype), mmap_dtype
+#     )
+#     index_grads.flush()
 
-    load_gradient_dataset(assembled_dataset_path)
+#     load_gradient_dataset(assembled_dataset_path)
 
-    mean_grad_stack = torch.stack(list(subset_mean_gradients.values()))
-    first_query_grad = gradient_tensor[1].unsqueeze(0).expand_as(mean_grad_stack)
-    cosine_sims = torch.nn.functional.cosine_similarity(
-        mean_grad_stack, first_query_grad, dim=1
-    )
-    if torch.any(cosine_sims <= 0.09):
-        raise ValueError(
-            f"Cosine similarity between mean gradients and the first query gradient "
-            f"is not greater than 0.09. Cosine sims: {cosine_sims}"
-        )
-    else:
-        print(f"Cosine sims: {cosine_sims}")
+#     mean_grad_stack = torch.stack(list(subset_mean_gradients.values()))
+#     first_query_grad = gradient_tensor[1].unsqueeze(0).expand_as(mean_grad_stack)
+#     cosine_sims = torch.nn.functional.cosine_similarity(
+#         mean_grad_stack, first_query_grad, dim=1
+#     )
+#     if torch.any(cosine_sims <= 0.09):
+#         raise ValueError(
+#             f"Cosine similarity between mean gradients and the first query gradient "
+#             f"is not greater than 0.09. Cosine sims: {cosine_sims}"
+#         )
+#     else:
+#         print(f"Cosine sims: {cosine_sims}")
 
 
 def main():
