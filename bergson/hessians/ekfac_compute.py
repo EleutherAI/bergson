@@ -93,6 +93,7 @@ class EkfacComputer:
     def compute_covariance(self):
         cov_collector = CovarianceCollector(
             self.model.base_model,
+            target_modules=self.target_modules,
             dtype=self.dtype,
             shard_computer=self.shard_computer,
             rank=self.rank,
