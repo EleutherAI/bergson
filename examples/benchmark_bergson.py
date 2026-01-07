@@ -11,7 +11,6 @@ import time
 from collections import defaultdict
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -27,10 +26,10 @@ from bergson.gradients import GradientCollector, GradientProcessor
 from bergson.utils import assert_type, get_layer_list
 
 # Import from same directory
-try:
-    from benchmark_common import MODEL_SPECS, ModelSpec, DEFAULT_DATASET
-except ImportError:
-    from examples.benchmark_common import MODEL_SPECS, ModelSpec, DEFAULT_DATASET
+
+from examples.benchmark_common import (
+    MODEL_SPECS, ModelSpec, DEFAULT_DATASET, format_tokens, parse_tokens, timestamp
+)
 
 SCHEMA_VERSION = 1
 DEFAULT_TRAIN_SPLIT = "train"
@@ -59,43 +58,6 @@ class RunRecord:
     run_path: str
     notes: str | None
     error: str | None
-
-
-def parse_tokens(value: str) -> int:
-    text = value.strip().lower().replace(",", "")
-    if text.endswith("tokens"):
-        text = text[:-6]
-    if not text:
-        raise ValueError("empty token spec")
-
-    suffixes = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}
-    unit = 1
-    if text[-1] in suffixes:
-        unit = suffixes[text[-1]]
-        text = text[:-1]
-    number = float(text)
-    return int(number * unit)
-
-
-def format_tokens(tokens: int) -> str:
-    if tokens >= 1_000_000_000:
-        value = tokens / 1_000_000_000
-        suffix = "B"
-    elif tokens >= 1_000_000:
-        value = tokens / 1_000_000
-        suffix = "M"
-    elif tokens >= 1_000:
-        value = tokens / 1_000
-        suffix = "K"
-    else:
-        return str(tokens)
-    if value.is_integer():
-        return f"{int(value)}{suffix}"
-    return f"{value:.2f}{suffix}"
-
-
-def timestamp() -> str:
-    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
 
 def ensure_run_path(
@@ -128,16 +90,10 @@ def cmd_run(args: argparse.Namespace) -> None:
     # Enable FSDP for larger models (>= 1B parameters) or if explicitly requested
     use_fsdp = args.fsdp or (spec.params >= 1_000_000_000)
     
-    if use_fsdp:
-        print(
-            f"Running Bergson benchmark for {args.model} with {train_tokens} train "
-            f"and {eval_tokens} eval tokens (using FSDP)"
-        )
-    else:
-        print(
-            f"Running Bergson benchmark for {args.model} with {train_tokens} train "
-            f"and {eval_tokens} eval tokens"
-        )
+    print(
+        f"Running Bergson benchmark for {args.model} with {train_tokens} train "
+        f"and {eval_tokens} eval tokens"
+    )
 
     run_root = Path(args.run_root).resolve()
     run_root.mkdir(parents=True, exist_ok=True)
@@ -153,39 +109,31 @@ def cmd_run(args: argparse.Namespace) -> None:
     error_message: str | None = None
     reduce_time: float | None = None
     score_time: float | None = None
+    train_grads_flat: dict[str, torch.Tensor] = {}
 
     try:
         # Set up distributed training if FSDP is enabled
+        # FSDP requires process group initialization even for single GPU
         rank = 0
         world_size = 1
         if use_fsdp:
-            # Check if we're in a distributed environment
-            if "LOCAL_RANK" in os.environ:
-                rank = int(os.environ["LOCAL_RANK"])
-                world_size = int(os.environ.get("WORLD_SIZE", torch.cuda.device_count()))
-            else:
-                # Single GPU - FSDP will still work but won't provide benefits
-                world_size = torch.cuda.device_count()
-                if world_size <= 1:
-                    print("Warning: FSDP requested but only 1 GPU available. FSDP will have minimal benefit.")
-            
-            if world_size > 1:
-                torch.cuda.set_device(rank)
-                addr = os.environ.get("MASTER_ADDR", "localhost")
-                port = os.environ.get("MASTER_PORT", "29500")
+            # Initialize process group for FSDP (even for single GPU)
+            if not dist.is_initialized():
+                # Set environment variables for single-process initialization
+                os.environ.setdefault("MASTER_ADDR", "localhost")
+                os.environ.setdefault("MASTER_PORT", "29500")
+                os.environ.setdefault("RANK", "0")
+                os.environ.setdefault("WORLD_SIZE", "1")
                 
                 dist.init_process_group(
-                    "nccl",
-                    init_method=f"tcp://{addr}:{port}",
-                    device_id=torch.device(f"cuda:{rank}"),
-                    rank=rank,
-                    timeout=timedelta(hours=1),
-                    world_size=world_size,
+                    backend="nccl" if torch.cuda.is_available() else "gloo",
+                    init_method="env://",
+                    rank=0,
+                    world_size=1,
                 )
-                print(f"Initialized distributed training: rank={rank}, world_size={world_size}")
+                print("Initialized process group for FSDP (single GPU)")
             else:
-                rank = 0
-                world_size = 1
+                print("Process group already initialized")
 
         # Load model and tokenizer
         # For FSDP, load to CPU first, then wrap with FSDP
@@ -197,11 +145,8 @@ def cmd_run(args: argparse.Namespace) -> None:
         if not use_fsdp:
             model.cuda()
         else:
-            # Move to appropriate device and wrap with FSDP
-            if world_size > 1:
-                torch.cuda.set_device(rank)
-            else:
-                model = model.cuda()
+            # Move to GPU 0 and wrap with FSDP
+            model = model.cuda()
             
             # Wrap model with FSDP
             embed = model.get_input_embeddings()
@@ -215,8 +160,7 @@ def cmd_run(args: argparse.Namespace) -> None:
             # Shard the entire model
             fully_shard(model)
             
-            if rank == 0:
-                print("Model wrapped with FSDP")
+            print("Model wrapped with FSDP")
 
         tokenizer = AutoTokenizer.from_pretrained(spec.hf_id)
         tokenizer.pad_token = tokenizer.eos_token
@@ -271,138 +215,119 @@ def cmd_run(args: argparse.Namespace) -> None:
         )
 
         # REDUCE PHASE: Collect training gradients in-memory
-        # Only run on rank 0 when using distributed training
-        if use_fsdp and world_size > 1 and rank != 0:
-            # Other ranks wait
-            dist.barrier()
-        else:
-            if rank == 0 or world_size == 1:
-                print("Collecting training gradients (reduce phase)...")
-            reduce_start = time.perf_counter()
+        print("Collecting training gradients (reduce phase)...")
+        reduce_start = time.perf_counter()
+        
+        train_grads = defaultdict(list)
+        
+        def train_callback(name: str, g: torch.Tensor):
+            # Flatten and store gradients in-memory
+            # No normalization, no preconditioning as per requirements
+            train_grads[name].append(g.flatten(1).cpu())
+        
+        train_collector = GradientCollector(
+            model.base_model,
+            train_callback,
+            processor,
+        )
+        
+        # Process training data in batches
+        for i in range(0, len(train_dataset), args.batch_size):
+            batch_indices = list(range(i, min(i + args.batch_size, len(train_dataset))))
+            batch_items = [train_dataset[j] for j in batch_indices]
             
-            train_grads = defaultdict(list)
+            # Extract and convert to lists for pad_and_tensor
+            input_ids_list = [item["input_ids"].cpu().tolist() if isinstance(item["input_ids"], torch.Tensor) else item["input_ids"] for item in batch_items]
+            labels_list = [item["labels"].cpu().tolist() if isinstance(item.get("labels"), torch.Tensor) else item.get("labels", item["input_ids"]) for item in batch_items]
             
-            def train_callback(name: str, g: torch.Tensor):
-                # Flatten and store gradients in-memory
-                # No normalization, no preconditioning as per requirements
-                train_grads[name].append(g.flatten(1).cpu())
+            # Get the device
+            device = next(model.parameters()).device
             
-            train_collector = GradientCollector(
+            x, y = pad_and_tensor(
+                input_ids_list,
+                labels=labels_list,
+                device=device,
+            )
+            
+            with train_collector:
+                logits = model(x).logits[:, :-1]
+                losses = F.cross_entropy(
+                    logits.reshape(-1, logits.size(-1)),
+                    y[:, 1:].flatten(),
+                    reduction="none",
+                ).reshape_as(y[:, 1:])
+                # Mean reduction per example
+                masks = y[:, 1:] != -100
+                denoms = masks.sum(dim=1, dtype=logits.dtype)
+                losses = losses.sum(1) / denoms
+                losses.mean().backward()
+            
+            model.zero_grad()
+            torch.cuda.synchronize()
+        
+        # Concatenate all training gradients
+        train_grads_flat = {
+            name: torch.cat(grads, dim=0) for name, grads in train_grads.items()
+        }
+        del train_grads
+            
+        reduce_time = time.perf_counter() - reduce_start
+        print(f"Reduce phase completed in {reduce_time:.2f} seconds")
+        print(f"Training gradients shape: {[(k, v.shape) for k, v in train_grads_flat.items()]}")
+
+        # SCORE PHASE: Compute inner products with test gradients
+        print("Computing influence scores (score phase)...")
+        score_start = time.perf_counter()
+            
+        all_scores = []
+        
+        for i, example in enumerate(eval_dataset):
+            # Get the device
+            device = next(model.parameters()).device
+            
+            input_ids = example["input_ids"].unsqueeze(0).to(device)
+            labels = example["labels"].unsqueeze(0).to(device)
+            
+            # Collect test gradient
+            test_grads = {}
+            
+            def test_callback(name: str, g: torch.Tensor):
+                test_grads[name] = g.flatten(1).cpu()
+            
+            test_collector = GradientCollector(
                 model.base_model,
-                train_callback,
+                test_callback,
                 processor,
             )
             
-            # Process training data in batches
-            for i in range(0, len(train_dataset), args.batch_size):
-                batch_indices = list(range(i, min(i + args.batch_size, len(train_dataset))))
-                batch_items = [train_dataset[j] for j in batch_indices]
-                
-                # Extract and convert to lists for pad_and_tensor
-                input_ids_list = [item["input_ids"].cpu().tolist() if isinstance(item["input_ids"], torch.Tensor) else item["input_ids"] for item in batch_items]
-                labels_list = [item["labels"].cpu().tolist() if isinstance(item.get("labels"), torch.Tensor) else item.get("labels", item["input_ids"]) for item in batch_items]
-                
-                # Get the device - for FSDP, use the current rank's device
-                if use_fsdp and world_size > 1:
-                    device = torch.device(f"cuda:{rank}")
-                else:
-                    device = next(model.parameters()).device
-                
-                x, y = pad_and_tensor(
-                    input_ids_list,
-                    labels=labels_list,
-                    device=device,
+            with test_collector:
+                logits = model(input_ids).logits[:, :-1]
+                loss = F.cross_entropy(
+                    logits.reshape(-1, logits.size(-1)),
+                    labels[:, 1:].flatten(),
+                    reduction="mean",
                 )
-                
-                with train_collector:
-                    logits = model(x).logits[:, :-1]
-                    losses = F.cross_entropy(
-                        logits.reshape(-1, logits.size(-1)),
-                        y[:, 1:].flatten(),
-                        reduction="none",
-                    ).reshape_as(y[:, 1:])
-                    # Mean reduction per example
-                    masks = y[:, 1:] != -100
-                    denoms = masks.sum(dim=1, dtype=logits.dtype)
-                    losses = losses.sum(1) / denoms
-                    losses.mean().backward()
-                
-                model.zero_grad()
-                torch.cuda.synchronize()
+                loss.backward()
             
-            # Concatenate all training gradients
-            train_grads_flat = {
-                name: torch.cat(grads, dim=0) for name, grads in train_grads.items()
-            }
-            del train_grads
+            model.zero_grad()
+            torch.cuda.synchronize()
             
-            reduce_time = time.perf_counter() - reduce_start
-            if rank == 0 or world_size == 1:
-                print(f"Reduce phase completed in {reduce_time:.2f} seconds")
-                print(f"Training gradients shape: {[(k, v.shape) for k, v in train_grads_flat.items()]}")
-
-            # SCORE PHASE: Compute inner products with test gradients
-            if rank == 0 or world_size == 1:
-                print("Computing influence scores (score phase)...")
-            score_start = time.perf_counter()
+            # Compute inner products (no normalization, no preconditioning)
+            # Sum across all modules
+            scores = torch.zeros(len(train_dataset), device="cpu")
+            for name in test_grads:
+                if name in train_grads_flat:
+                    # Inner product: test_grad @ train_grads^T
+                    scores += (test_grads[name] @ train_grads_flat[name].T).squeeze(0)
             
-            all_scores = []
+            all_scores.append(scores)
             
-            for i, example in enumerate(eval_dataset):
-                # Get the device - for FSDP, use the current rank's device
-                if use_fsdp and world_size > 1:
-                    device = torch.device(f"cuda:{rank}")
-                else:
-                    device = next(model.parameters()).device
-                
-                input_ids = example["input_ids"].unsqueeze(0).to(device)
-                labels = example["labels"].unsqueeze(0).to(device)
-                
-                # Collect test gradient
-                test_grads = {}
-                
-                def test_callback(name: str, g: torch.Tensor):
-                    test_grads[name] = g.flatten(1).cpu()
-                
-                test_collector = GradientCollector(
-                    model.base_model,
-                    test_callback,
-                    processor,
-                )
-                
-                with test_collector:
-                    logits = model(input_ids).logits[:, :-1]
-                    loss = F.cross_entropy(
-                        logits.reshape(-1, logits.size(-1)),
-                        labels[:, 1:].flatten(),
-                        reduction="mean",
-                    )
-                    loss.backward()
-                
-                model.zero_grad()
-                torch.cuda.synchronize()
-                
-                # Compute inner products (no normalization, no preconditioning)
-                # Sum across all modules
-                scores = torch.zeros(len(train_dataset), device="cpu")
-                for name in test_grads:
-                    if name in train_grads_flat:
-                        # Inner product: test_grad @ train_grads^T
-                        scores += (test_grads[name] @ train_grads_flat[name].T).squeeze(0)
-                
-                all_scores.append(scores)
-                
-                if i >= args.max_eval_examples - 1:
-                    break
-            
-            score_time = time.perf_counter() - score_start
-            if rank == 0 or world_size == 1:
-                print(f"Score phase completed in {score_time:.2f} seconds")
-                print(f"Computed scores for {len(all_scores)} test examples")
+            if i >= args.max_eval_examples - 1:
+                break
         
-        # Synchronize all ranks before saving
-        if use_fsdp and world_size > 1:
-            dist.barrier()
+        score_time = time.perf_counter() - score_start
+        print(f"Score phase completed in {score_time:.2f} seconds")
+        print(f"Computed scores for {len(all_scores)} test examples")
 
     except Exception as exc:  # noqa: BLE001
         status = "error"
@@ -438,6 +363,10 @@ def cmd_run(args: argparse.Namespace) -> None:
     save_record(run_path, record)
 
     print(json.dumps(asdict(record), indent=2))
+
+    # Clean up process group if we initialized it
+    if use_fsdp and dist.is_initialized():
+        dist.destroy_process_group()
 
     if status != "success":
         sys.exit(1)
@@ -487,6 +416,11 @@ def main(argv: list[str] | None = None) -> None:
     run_parser.add_argument("--run-path")
     run_parser.add_argument("--tag")
     run_parser.add_argument("--notes")
+    run_parser.add_argument(
+        "--fsdp",
+        action="store_true",
+        help="Enable FSDP (automatically enabled for models >= 1B parameters)",
+    )
     run_parser.set_defaults(func=cmd_run)
 
     args = parser.parse_args(argv)

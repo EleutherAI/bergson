@@ -19,46 +19,9 @@ from benchmark_dattri import load_records as load_dattri_records
 from benchmark_bergson import load_records as load_bergson_records
 from benchmark_dattri import RunRecord as DattriRecord
 from benchmark_bergson import RunRecord as BergsonRecord
-# except ImportError:
-    # from examples.benchmark_common import MODEL_SPECS
-    # from examples.benchmark_dattri import load_records as load_dattri_records
-    # from examples.benchmark_bergson import load_records as load_bergson_records
-    # from examples.benchmark_dattri import RunRecord as DattriRecord
-    # from examples.benchmark_bergson import RunRecord as BergsonRecord
-
-
-def parse_tokens(value: str) -> int:
-    text = value.strip().lower().replace(",", "")
-    if text.endswith("tokens"):
-        text = text[:-6]
-    if not text:
-        raise ValueError("empty token spec")
-
-    suffixes = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}
-    unit = 1
-    if text[-1] in suffixes:
-        unit = suffixes[text[-1]]
-        text = text[:-1]
-    number = float(text)
-    return int(number * unit)
-
-
-def format_tokens(tokens: int) -> str:
-    if tokens >= 1_000_000_000:
-        value = tokens / 1_000_000_000
-        suffix = "B"
-    elif tokens >= 1_000_000:
-        value = tokens / 1_000_000
-        suffix = "M"
-    elif tokens >= 1_000:
-        value = tokens / 1_000
-        suffix = "K"
-    else:
-        return str(tokens)
-    if value.is_integer():
-        return f"{int(value)}{suffix}"
-    return f"{value:.2f}{suffix}"
-
+from examples.benchmark_common import (
+    MODEL_SPECS, ModelSpec, DEFAULT_DATASET, format_tokens, parse_tokens, timestamp
+)
 
 def run_benchmark(
     method: str,
@@ -95,6 +58,9 @@ def run_benchmark(
         ]
         if "max_eval_examples" in kwargs:
             cmd.extend(["--max-eval-examples", str(kwargs["max_eval_examples"])])
+        # Enable FSDP for larger models (>= 1B parameters)
+        if model in MODEL_SPECS and MODEL_SPECS[model].params >= 1_000_000_000:
+            cmd.append("--fsdp")
     else:
         raise ValueError(f"Unknown method: {method}")
 
