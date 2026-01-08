@@ -13,15 +13,13 @@ import pandas as pd
 from matplotlib import pyplot as plt
 
 # Import from same directory
-# try:
-from benchmark_common import MODEL_SPECS
-from benchmark_dattri import load_records as load_dattri_records
-from benchmark_bergson import load_records as load_bergson_records
-from benchmark_dattri import RunRecord as DattriRecord
-from benchmark_bergson import RunRecord as BergsonRecord
 from examples.benchmark_common import (
     MODEL_SPECS, ModelSpec, DEFAULT_DATASET, format_tokens, parse_tokens, timestamp
 )
+from examples.benchmark_dattri import load_records as load_dattri_records
+from examples.benchmark_bergson import load_records as load_bergson_records
+from examples.benchmark_dattri import RunRecord as DattriRecord
+from examples.benchmark_bergson import RunRecord as BergsonRecord
 
 def run_benchmark(
     method: str,
