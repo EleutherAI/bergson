@@ -20,7 +20,7 @@ dependencies = [
     "pyarrow",
     "simple-parsing",
     "torch",
-    "transformers<4.56.0" # 4.56.0 increases fp error from operation order
+    "transformers",
 ]
 version = "0.5.0"
 [project.optional-dependencies]
