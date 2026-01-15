@@ -69,9 +69,10 @@ class CovarianceCollector(HookCollectorBase):
         """Compute gradient covariance: G^T @ G."""
         name = assert_type(str, module._name)
         S_cov_po = self.S_cov_dict[name]
+        mask = self._current_valid_mask
 
-        # Reshape to [N*S, O]
-        g_bo = g.reshape(-1, g.shape[-1])
+        # g: [N, S, O], mask: [N, S] -> select valid positions
+        g_bo = g[mask]  # [num_valid, O]
 
         # Compute local covariance
         local_update_oo = g_bo.mT @ g_bo
