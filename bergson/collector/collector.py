@@ -621,7 +621,7 @@ def fwd_bwd_hessian_factory(
             if index_cfg.loss_reduction == "mean"
             else 1.0
         )
-        if not hessian_cfg.use_dataset_labels:
+        if hessian_cfg.use_dataset_labels:
             losses = F.cross_entropy(
                 logits.reshape(-1, logits.size(-1)),
                 y[:, 1:].flatten(),
