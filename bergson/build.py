@@ -3,6 +3,7 @@ import os
 import shutil
 from dataclasses import asdict
 from datetime import timedelta
+from pathlib import Path
 
 import torch
 import torch.distributed as dist
@@ -10,9 +11,13 @@ from datasets import Dataset, IterableDataset
 from tqdm.auto import tqdm
 
 from bergson.collection import collect_gradients
+from bergson.collector.gradient_collectors import GradientCollector
 from bergson.config import IndexConfig
 from bergson.data import allocate_batches
 from bergson.distributed import launch_distributed_run
+from bergson.utils.auto_batch_size import (
+    determine_batch_size,
+)
 from bergson.utils.utils import assert_type, setup_reproducibility
 from bergson.utils.worker_utils import (
     create_processor,
@@ -62,6 +67,24 @@ def build_worker(
 
     model, target_modules = setup_model_and_peft(cfg)
     processor = create_processor(model, ds, cfg, target_modules)
+
+    # Auto batch size determination if enabled
+    if cfg.autobatchsize:
+        cfg.token_batch_size = determine_batch_size(
+            root=Path(".cache"),
+            cfg=cfg,
+            model=model,
+            collector=GradientCollector(
+                model=model.base_model,
+                cfg=cfg,
+                processor=processor,
+                target_modules=target_modules,
+                data=ds,
+                scorer=None,
+                reduce_cfg=None,
+            ),
+            starting_batch_size=cfg.token_batch_size,
+        )
 
     attention_cfgs = {module: cfg.attention for module in cfg.split_attention_modules}
 

@@ -54,7 +54,6 @@ precomputed query gradients.
        --dataset NeelNanda/pile-10k \
        --method mean \
        --unit_normalize
-       --projection_dim 0
 
 .. autoclass:: bergson.__main__.Score
    :members:
@@ -69,4 +68,3 @@ precomputed query gradients.
         runs/my-scores \
         --query_path /runs/my-index \
         --dataset EleutherAI/SmolLM2-135M-10B
-        --projection_dim 0
