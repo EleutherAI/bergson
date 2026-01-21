@@ -215,6 +215,7 @@ def collect_hessians(
         "target_modules": target_modules,
         "attention_cfgs": attention_cfgs or {},
         "path": str(index_cfg.partial_run_path),
+        "filter_modules": index_cfg.filter_modules,
     }
     desc = f"Approximating Hessians with {hessian_cfg.method}"
     if ev_correction:

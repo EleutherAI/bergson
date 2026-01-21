@@ -45,35 +45,6 @@ class NormalizerCollector(HookCollectorBase):
     mod_grads: dict = field(default_factory=dict)
     """Temporary storage for gradients during a batch, keyed by module name."""
 
-    def __init__(self, *args, **kwargs):
-        self.data = assert_type(Dataset, kwargs["data"])
-        self.cfg = assert_type(IndexConfig, kwargs["cfg"])
-        self.normalizers = {}
-        self.mod_grads = {}
-
-        self.callback = (
-            self.adafactor_update
-            if self.cfg.normalizer == "adafactor"
-            else self.adam_update
-        )
-
-        # Extract parent class arguments
-        parent_kwargs = {
-            k: v
-            for k, v in kwargs.items()
-            if k
-            in {
-                "model",
-                "filter_modules",
-                "target_modules",
-                "processor",
-                "attention_cfgs",
-            }
-        }
-        parent_kwargs["filter_modules"] = self.cfg.filter_modules
-
-        super().__init__(*args, **parent_kwargs)
-
     def adafactor_update(self, name: str, g: torch.Tensor):
         # We follow the tensor2tensor implementation of Adafactor, which
         # takes the mean rather than summing over the rows and columns.
@@ -114,6 +85,11 @@ class NormalizerCollector(HookCollectorBase):
 
         Sets up a Builder for gradient storage if not using a Scorer.
         """
+        self.callback = (
+            self.adafactor_update
+            if self.cfg.normalizer == "adafactor"
+            else self.adam_update
+        )
         assert isinstance(
             self.model.device, torch.device
         ), "Model device is not set correctly"
@@ -250,6 +226,7 @@ def fit_normalizers(
         data=data,
         cfg=cfg,
         target_modules=target_modules,
+        filter_modules=cfg.filter_modules,
     )
     computer = CollectorComputer(
         model=model,

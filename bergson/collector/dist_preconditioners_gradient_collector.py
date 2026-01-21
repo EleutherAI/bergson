@@ -54,32 +54,6 @@ class GradientCollectorWithDistributedPreconditioners(HookCollectorBase):
     scorer: Scorer | None = None
     """Optional scorer for computing scores instead of building an index."""
 
-    def __init__(self, *args, **kwargs):
-        self.data = assert_type(Dataset, kwargs["data"])
-        self.cfg = assert_type(IndexConfig, kwargs["cfg"])
-
-        self.reduce_cfg = kwargs.get("reduce_cfg", None)
-        self.builder = kwargs.get("builder", None)
-        self.scorer = kwargs.get("scorer", None)
-        self.mod_grads = {}
-
-        # Extract parent class arguments
-        parent_kwargs = {
-            k: v
-            for k, v in kwargs.items()
-            if k
-            in {
-                "model",
-                "filter_modules",
-                "target_modules",
-                "processor",
-                "attention_cfgs",
-            }
-        }
-        parent_kwargs["filter_modules"] = self.cfg.filter_modules
-
-        super().__init__(*args, **parent_kwargs)
-
     def setup(self) -> None:
         """
         Initialize collector state.

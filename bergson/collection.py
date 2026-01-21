@@ -33,6 +33,7 @@ def collect_gradients(
         scorer=scorer,
         reduce_cfg=reduce_cfg,
         attention_cfgs=attention_cfgs or {},
+        filter_modules=cfg.filter_modules,
     )
 
     validate_batch_size(model, cfg.token_batch_size, collector)
