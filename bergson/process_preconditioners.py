@@ -1,5 +1,6 @@
 import torch
 import torch.distributed as dist
+from torch.distributed import ProcessGroup
 
 from bergson.gradients import GradientProcessor
 
@@ -45,7 +46,7 @@ def process_preconditioners(
     if rank == 0:
         print("Gathering preconditioners...")
 
-    cpu_group = dist.new_group(backend="gloo")
+    cpu_group: ProcessGroup = dist.new_group(backend="gloo")  # type: ignore[assignment]
 
     for name, grad_size in grad_sizes.items():
         if name in preconditioners:
