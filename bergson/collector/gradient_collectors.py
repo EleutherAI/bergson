@@ -11,7 +11,7 @@ from torch import Tensor
 
 from bergson.collector.collector import HookCollectorBase
 from bergson.config import IndexConfig, ReduceConfig
-from bergson.data import Builder
+from bergson.data import Builder, TokenBuilder, compute_num_seq_grads
 from bergson.gradients import (
     AdafactorNormalizer,
     AdamNormalizer,
@@ -46,7 +46,7 @@ class GradientCollector(HookCollectorBase):
     reduce_cfg: ReduceConfig | None = None
     """Configuration for in-run gradient reduction."""
 
-    builder: Builder | None = None
+    builder: Builder | TokenBuilder | None = None
     """Handles writing gradients to disk. Created in setup() if save_index is True."""
 
     scorer: Scorer | None = None
@@ -93,6 +93,11 @@ class GradientCollector(HookCollectorBase):
                 "consider disabling bias inclusion for now."
             )
 
+        if self.cfg.token_attributions and self.reduce_cfg is not None:
+            raise ValueError(
+                "token_attributions is incompatible with reduce mode."
+            )
+
         self.save_dtype = get_gradient_dtype(self.model)
         self.lo = torch.finfo(self.save_dtype).min
         self.hi = torch.finfo(self.save_dtype).max
@@ -109,13 +114,23 @@ class GradientCollector(HookCollectorBase):
 
         if self.save_index:
             grad_sizes = {name: math.prod(s) for name, s in self.shapes().items()}
-            self.builder = Builder(
-                self.cfg.partial_run_path,
-                self.data,
-                grad_sizes,
-                self.save_dtype,
-                self.reduce_cfg,
-            )
+            if self.cfg.token_attributions:
+                self._seq_lengths = compute_num_seq_grads(self.data)
+                self.builder = TokenBuilder(
+                    self.cfg.partial_run_path,
+                    self.data,
+                    grad_sizes,
+                    self.save_dtype,
+                    self._seq_lengths,
+                )
+            else:
+                self.builder = Builder(
+                    self.cfg.partial_run_path,
+                    self.data,
+                    grad_sizes,
+                    self.save_dtype,
+                    self.reduce_cfg,
+                )
         else:
             self.builder = None
 
@@ -157,6 +172,12 @@ class GradientCollector(HookCollectorBase):
 
         Computes gradient as outer product g.T @ a (again with optional projection and
         normalization).
+
+        When ``self.cfg.token_attributions`` is True, the gradient is computed
+        per-position instead of per-example then filtered to valid positions using.
+        
+        The valid mask (from ``self._current_valid_mask``) marks positions
+        where ``labels[t+1] != -100``.
         """
         a = module._inputs  # [N, S, I/q]
 
@@ -167,41 +188,87 @@ class GradientCollector(HookCollectorBase):
         o = getattr(module, LayerAdapter.out_attr(module))
         normalizer = self.processor.normalizers.get(name)
 
-        if isinstance(normalizer, AdamNormalizer):
-            full_gradient = g.mT @ a  # [N, O, S] @ [N, S, I] → [N, O, I]
-            P = normalizer.normalize_(full_gradient)
-            if p is not None:
-                g_projection = self.projection(name, p, o, "left", g.device, g.dtype)
-                a_projection = self.projection(name, p, i, "right", g.device, g.dtype).T
-                P = g_projection @ P @ a_projection
-        else:
+        if self.cfg.token_attributions:
+            # ── Per-token gradient computation ──────────────────────────
+            if isinstance(normalizer, AdamNormalizer):
+                raise NotImplementedError(
+                    "Adam normalizer is not supported with "
+                    "token_attributions."
+                )
             if isinstance(normalizer, AdafactorNormalizer):
                 g_factor = normalizer.row.add(1e-30)
                 g_factor = g_factor.mean().sqrt() * g_factor.rsqrt()
-                g = g * g_factor.type_as(g)  # [N, S, O] * [O] → [N, S, O]
+                g = g * g_factor.type_as(g)
 
             if p is not None:
                 g_projection = self.projection(name, p, o, "left", g.device, g.dtype)
                 g = g @ g_projection.T  # [N, S, p]
 
-            P = g.mT @ a  # [N, O/p, S] @ [N, S, I/q] → [N, O/p, I/q]
+            # Position-wise outer product: [N, S, O/p, I/q]
+            P = g.unsqueeze(-1) * a.unsqueeze(-2)
+            P = P.flatten(2).clamp_(self.lo, self.hi)  # [N, S, grad_dim]
 
-        P = P.flatten(1).clamp_(self.lo, self.hi)
+            # Filter to valid positions only
+            valid_mask = self._current_valid_mask  # [N, S]
+            P = P[valid_mask]  # [total_valid, grad_dim]
 
-        if not self.cfg.skip_preconditioners:
-            P = P.float()
-            if name in self.processor.preconditioners:
-                self.processor.preconditioners[name].addmm_(P.mT, P)
+            if not self.cfg.skip_preconditioners:
+                P_f = P.float()
+                if name in self.processor.preconditioners:
+                    self.processor.preconditioners[name].addmm_(P_f.mT, P_f)
+                else:
+                    self.processor.preconditioners[name] = P_f.mT @ P_f
+
+            if self.save_index:
+                self.mod_grads[name] = P.to(
+                    device="cpu", dtype=self.save_dtype, non_blocking=True
+                )
             else:
-                self.processor.preconditioners[name] = P.mT @ P
-
-        if self.save_index and self.reduce_cfg is None:
-            # Asynchronously move the gradient to CPU and convert to the final dtype
-            self.mod_grads[name] = P.to(
-                device="cpu", dtype=self.save_dtype, non_blocking=True
-            )
+                self.mod_grads[name] = P.to(dtype=self.save_dtype)
         else:
-            self.mod_grads[name] = P.to(dtype=self.save_dtype)
+            # ── Standard per-example gradient computation ───────────────
+            if isinstance(normalizer, AdamNormalizer):
+                full_gradient = g.mT @ a  # [N, O, S] @ [N, S, I] → [N, O, I]
+                P = normalizer.normalize_(full_gradient)
+                if p is not None:
+                    g_projection = self.projection(
+                        name, p, o, "left", g.device, g.dtype
+                    )
+                    a_projection = self.projection(
+                        name, p, i, "right", g.device, g.dtype
+                    ).T
+                    P = g_projection @ P @ a_projection
+            else:
+                if isinstance(normalizer, AdafactorNormalizer):
+                    g_factor = normalizer.row.add(1e-30)
+                    g_factor = g_factor.mean().sqrt() * g_factor.rsqrt()
+                    g = g * g_factor.type_as(g)  # [N, S, O] * [O] → [N, S, O]
+
+                if p is not None:
+                    g_projection = self.projection(
+                        name, p, o, "left", g.device, g.dtype
+                    )
+                    g = g @ g_projection.T  # [N, S, p]
+
+                P = g.mT @ a  # [N, O/p, S] @ [N, S, I/q] → [N, O/p, I/q]
+
+            P = P.flatten(1).clamp_(self.lo, self.hi)
+
+            if not self.cfg.skip_preconditioners:
+                P = P.float()
+                if name in self.processor.preconditioners:
+                    self.processor.preconditioners[name].addmm_(P.mT, P)
+                else:
+                    self.processor.preconditioners[name] = P.mT @ P
+
+            if self.save_index and self.reduce_cfg is None:
+                # Asynchronously move the gradient to CPU and convert to the final
+                # dtype
+                self.mod_grads[name] = P.to(
+                    device="cpu", dtype=self.save_dtype, non_blocking=True
+                )
+            else:
+                self.mod_grads[name] = P.to(dtype=self.save_dtype)
 
         del module._inputs
 
@@ -262,6 +329,13 @@ class GradientCollector(HookCollectorBase):
                     feature=Value("float32"),
                     new_fingerprint="loss",
                 )
+
+                if self.cfg.token_attributions and hasattr(self, "_seq_lengths"):
+                    self.data = self.data.add_column(
+                        "seq_length",
+                        self._seq_lengths.tolist(),
+                        new_fingerprint="seq_length",
+                    )
 
             self.data.save_to_disk(str(self.cfg.partial_run_path / "data.hf"))
 

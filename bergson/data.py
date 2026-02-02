@@ -30,6 +30,227 @@ from .utils.utils import (
 )
 
 
+def compute_num_seq_grads(data: Dataset) -> np.ndarray:
+    """Compute the number of valid gradient positions per example.
+
+    A token at position t produces a gradient iff the *next* token's label
+    is not -100 (the ignore index).  For vanilla NTP (no explicit ``labels``
+    column) every position except the last is valid, so
+    ``seq_length = length - 1``.
+
+    Returns
+    -------
+    np.ndarray of shape ``(len(data),)`` with dtype int64.
+    """
+    if "labels" in data.column_names:
+        # Count positions where labels[t+1] != -100 for t in 0..len-2
+        seq_lengths = []
+        for labels in data["labels"]:
+            labels_arr = np.asarray(labels)
+            seq_lengths.append(int(np.sum(labels_arr[1:] != -100)))
+        return np.array(seq_lengths, dtype=np.int64)
+    else:
+        lengths = np.array(data["length"], dtype=np.int64)
+        return lengths - 1
+
+
+def create_token_index(
+    root: Path,
+    seq_lengths: np.ndarray,
+    grad_sizes: dict[str, int],
+    dtype: DTypeLike,
+) -> tuple[np.memmap, np.ndarray]:
+    """Allocate a flat memory-mapped file for ragged per-token gradients.
+
+    Parameters
+    ----------
+    root : Path
+        Directory in which ``token_gradients.bin``, ``seq_lengths.npy``,
+        ``offsets.npy`` and ``info.json`` will be created.
+    seq_lengths : np.ndarray
+        Number of valid gradient rows per example, shape ``(num_items,)``.
+    grad_sizes : dict[str, int]
+        Per-module gradient dimensions (same as :func:`create_index`).
+    dtype : DTypeLike
+        Element dtype for the gradient array.
+
+    Returns
+    -------
+    (memmap, offsets) where *memmap* has shape ``(total_tokens, total_grad_dim)``
+    and *offsets* is ``cumsum([0] + seq_lengths)`` of length ``num_items + 1``.
+    """
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    total_grad_dim = sum(grad_sizes.values())
+    offsets = np.zeros(len(seq_lengths) + 1, dtype=np.int64)
+    np.cumsum(seq_lengths, out=offsets[1:])
+    total_tokens = int(offsets[-1])
+
+    np_dtype = np.dtype(dtype)
+    grad_path = root / "token_gradients.bin"
+
+    if rank == 0:
+        root.mkdir(parents=True, exist_ok=True)
+        nbytes = np_dtype.itemsize * total_tokens * total_grad_dim
+        with open(grad_path, "wb") as f:
+            f.truncate(nbytes)
+            os.fsync(f.fileno())
+
+        np.save(root / "seq_lengths.npy", seq_lengths)
+        np.save(root / "offsets.npy", offsets)
+
+        with (root / "info.json").open("w") as f:
+            json.dump(
+                {
+                    "token_attributions": True,
+                    "total_tokens": total_tokens,
+                    "total_grad_dim": total_grad_dim,
+                    "num_items": len(seq_lengths),
+                    "grad_sizes": grad_sizes,
+                    "base_dtype": np_dtype.name,
+                },
+                f,
+                indent=2,
+            )
+
+    if dist.is_initialized():
+        dist.barrier()
+
+    mmap = np.memmap(
+        grad_path,
+        dtype=np_dtype,
+        mode="r+",
+        shape=(total_tokens, total_grad_dim),
+    )
+    return mmap, offsets
+
+
+def load_token_gradients(
+    root_dir: Path | str,
+) -> tuple[np.memmap, np.ndarray, np.ndarray]:
+    """Load per-token gradients stored by :func:`create_token_index`.
+
+    Returns
+    -------
+    (mmap, seq_lengths, offsets)
+        *mmap* has shape ``(total_tokens, total_grad_dim)``.
+        Example *i*'s gradients are ``mmap[offsets[i]:offsets[i+1]]`` with
+        shape ``(seq_lengths[i], total_grad_dim)``.
+    """
+    root_dir = Path(root_dir)
+    with (root_dir / "info.json").open("r") as f:
+        info = json.load(f)
+
+    total_tokens = info["total_tokens"]
+    total_grad_dim = info["total_grad_dim"]
+    base_dtype = info["base_dtype"]
+
+    mmap = np.memmap(
+        root_dir / "token_gradients.bin",
+        dtype=np.dtype(base_dtype),
+        mode="r",
+        shape=(total_tokens, total_grad_dim),
+    )
+    seq_lengths = np.load(root_dir / "seq_lengths.npy")
+    offsets = np.load(root_dir / "offsets.npy")
+    return mmap, seq_lengths, offsets
+
+
+class TokenGradients:
+    """Convenience wrapper around the flat per-token gradient memmap.
+
+    Provides ``__getitem__`` to retrieve a single example's gradients as
+    a contiguous array of shape ``(seq_lengths[i], grad_dim)``.
+
+    Parameters
+    ----------
+    root_dir : Path | str
+        Directory produced by :func:`create_token_index`.
+    """
+
+    def __init__(self, root_dir: Path | str):
+        self.mmap, self._seq_lengths, self._offsets = load_token_gradients(root_dir)
+
+    @property
+    def seq_lengths(self) -> np.ndarray:
+        return self._seq_lengths
+
+    def __len__(self) -> int:
+        return len(self._seq_lengths)
+
+    def __getitem__(self, i: int) -> np.ndarray:
+        return np.asarray(self.mmap[self._offsets[i] : self._offsets[i + 1]])
+
+
+class TokenBuilder:
+    """Creates and writes per-token gradients to disk.
+
+    Parameters
+    ----------
+    path : Path
+        Root directory for the index artifacts.
+    data : Dataset
+        The dataset being indexed (used only for length).
+    grad_sizes : dict[str, int]
+        Per-module gradient dimensions.
+    dtype : torch.dtype
+        Torch dtype for the gradients (converted to numpy internally).
+    seq_lengths : np.ndarray
+        Number of valid positions per example.
+    """
+
+    def __init__(
+        self,
+        path: Path,
+        data: Dataset,
+        grad_sizes: dict[str, int],
+        dtype: torch.dtype,
+        seq_lengths: np.ndarray,
+    ):
+        self.grad_sizes = grad_sizes
+        self.num_items = len(data)
+        np_dtype = convert_dtype_to_np(dtype)
+        self.grad_buffer, self.offsets = create_token_index(
+            path, seq_lengths, grad_sizes, np_dtype,
+        )
+        self.seq_lengths = seq_lengths
+
+    def __call__(
+        self,
+        indices: list[int],
+        mod_grads: dict[str, torch.Tensor],
+    ):
+        """Write a batch of per-token gradients to the flat buffer.
+
+        ``mod_grads`` values have shape ``[total_valid_in_batch, grad_dim_mod]``
+        (already filtered to valid positions).  Batch indices may be
+        non-contiguous, so each example's chunk is written individually.
+        """
+        torch.cuda.synchronize()
+
+        per_example_lengths = self.seq_lengths[indices]
+
+        col_offset = 0
+        for module_name in self.grad_sizes.keys():
+            g_np = tensor_to_numpy(mod_grads[module_name])
+            dim = g_np.shape[1]
+            row = 0
+            for idx, sl in zip(indices, per_example_lengths):
+                buf_start = int(self.offsets[idx])
+                buf_end = int(self.offsets[idx + 1])
+                self.grad_buffer[
+                    buf_start:buf_end, col_offset : col_offset + dim
+                ] = g_np[row : row + sl]
+                row += sl
+            col_offset += dim
+
+    def flush(self):
+        self.grad_buffer.flush()
+
+    def dist_reduce(self):
+        # Token-level gradients don't support reduction.
+        pass
+
+
 def ceildiv(a: int, b: int) -> int:
     """Ceiling division of two integers."""
     return -(-a // b)  # Equivalent to math.ceil(a / b) but faster for integers

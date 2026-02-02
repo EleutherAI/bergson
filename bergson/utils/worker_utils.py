@@ -281,12 +281,17 @@ def setup_data_pipeline(cfg: IndexConfig) -> Dataset | IterableDataset:
             new_fingerprint="advantage",  # type: ignore
         )
 
-    ds = filter_by_max_tokens(ds, cfg)
+    # Experimental benchmarking feature
+    if cfg.max_tokens is not None:
+        ds = filter_by_max_tokens(ds, cfg)
 
-    # Keep length and input_ids
+    # Remove extraneous columns
     if remove_columns is not None:
+        keep = {"length", "input_ids"}
+        if cfg.token_attributions:
+            keep.add("labels")
         columns_to_remove = [
-            col for col in remove_columns if col not in {"length", "input_ids"}
+            col for col in remove_columns if col not in keep
         ]
         if columns_to_remove:
             ds = ds.remove_columns(columns_to_remove)

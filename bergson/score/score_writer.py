@@ -50,6 +50,99 @@ class InMemoryScoreWriter(ScoreWriter):
         pass
 
 
+class TokenScoreWriter(ScoreWriter):
+    """Writes per-token scores to a flat memory-mapped file.
+
+    The flat buffer has shape ``(total_tokens, num_scores)`` where
+    ``total_tokens = sum(seq_lengths)``.  Example *i*'s scores live at
+    rows ``offsets[i]:offsets[i+1]``.
+    """
+
+    def __init__(
+        self,
+        path: Path,
+        num_items: int,
+        num_scores: int,
+        seq_lengths: np.ndarray,
+        *,
+        dtype: torch.dtype = torch.float32,
+        flush_interval: int = 64,
+    ):
+        self.path = path
+        self.num_scores = num_scores
+        self.dtype = dtype
+        self.flush_interval = flush_interval
+        self.num_batches_since_flush = 0
+
+        self.seq_lengths = seq_lengths
+        self.offsets = np.zeros(len(seq_lengths) + 1, dtype=np.int64)
+        np.cumsum(seq_lengths, out=self.offsets[1:])
+        total_tokens = int(self.offsets[-1])
+
+        self.path.mkdir(parents=True, exist_ok=True)
+        scores_file_path = self.path / "token_scores.bin"
+        np_dtype = convert_dtype_to_np(dtype)
+
+        rank = dist.get_rank() if dist.is_initialized() else 0
+        if rank == 0 and not scores_file_path.exists():
+            print(f"Creating new token scores file: {scores_file_path}")
+
+            self.scores = np.memmap(
+                str(scores_file_path),
+                dtype=np_dtype,
+                mode="w+",
+                shape=(total_tokens, num_scores),
+            )
+            self.scores[:] = 0
+            self.flush()
+
+            with (path / "info.json").open("w") as f:
+                json.dump(
+                    {
+                        "token_attributions": True,
+                        "total_tokens": total_tokens,
+                        "num_items": num_items,
+                        "num_scores": num_scores,
+                        "dtype": np_dtype.name,
+                    },
+                    f,
+                    indent=2,
+                )
+
+            np.save(path / "seq_lengths.npy", seq_lengths)
+            np.save(path / "offsets.npy", self.offsets)
+
+        if dist.is_initialized():
+            dist.barrier()
+
+        self.scores = np.memmap(
+            str(scores_file_path),
+            dtype=np_dtype,
+            mode="r+",
+            shape=(total_tokens, num_scores),
+        )
+
+    def __call__(self, indices: list[int], scores: torch.Tensor):
+        # scores: [total_valid_in_batch, num_scores]
+        scores_np = tensor_to_numpy(scores.to(dtype=self.dtype).cpu())
+
+        row = 0
+        for idx in indices:
+            sl = int(self.seq_lengths[idx])
+            buf_start = int(self.offsets[idx])
+            buf_end = int(self.offsets[idx + 1])
+            self.scores[buf_start:buf_end] = scores_np[row : row + sl]
+            row += sl
+
+        self.num_batches_since_flush += 1
+        if self.num_batches_since_flush >= self.flush_interval:
+            self.flush()
+
+    def flush(self):
+        self.scores.flush()
+        self.num_batches_since_flush = 0
+
+
 class MemmapScoreWriter(ScoreWriter):
     """
     Writes scores to a memory-mapped file on disk.

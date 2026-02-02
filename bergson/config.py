@@ -207,6 +207,10 @@ class IndexConfig:
     """Max tokens to process. If None, all tokens processed. Dataset only.
     This experimental feature may be removed in the future."""
 
+    token_attributions: bool = False
+    """Whether to compute per-token gradients instead of per-example.
+    Incompatible with Adam normalizer and reduce mode."""
+
     @property
     def partial_run_path(self) -> Path:
         """Temporary path to use while writing build artifacts."""
@@ -221,6 +225,11 @@ class IndexConfig:
 
         if isinstance(self.distributed, dict):
             self.distributed = DistributedConfig(**self.distributed)
+
+        if self.token_attributions and self.normalizer == "adam":
+            raise ValueError(
+                "token_attributions is incompatible with the Adam normalizer."
+            )
 
 
 @dataclass
