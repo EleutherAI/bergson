@@ -1,14 +1,6 @@
 # CHANGELOG
 
 
-## v0.5.1 (2026-01-30)
-
-### Bug Fixes
-
-- Release
-  ([`f0ad2be`](https://github.com/EleutherAI/bergson/commit/f0ad2bee12b0eb16f1c211a891b8bd78e89ea45e))
-
-
 ## v0.5.0 (2026-01-08)
 
 ### Features

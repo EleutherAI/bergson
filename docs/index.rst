@@ -39,6 +39,14 @@ Load the gradients:
 
    gradients = load_gradients(Path("runs/quickstart"))
 
+Benchmarks
+----------
+
+.. toctree::
+   :maxdepth: 2
+
+   benchmarks/index
+
 API Reference
 --------------
 
@@ -51,14 +59,7 @@ API Reference
    :maxdepth: 2
 
    api
-
-Experiments
------------
-
-.. toctree::
-   :maxdepth: 2
-
-   experiments
+   utils
 
 
 Content Index

@@ -17,6 +17,7 @@ from datasets import (
     IterableDatasetDict,
     concatenate_datasets,
     load_dataset,
+    load_from_disk,
 )
 from numpy.typing import DTypeLike
 
@@ -76,23 +77,6 @@ def allocate_batches(
     """
     rank = dist.get_rank() if dist.is_initialized() else 0
     world_size = dist.get_world_size() if dist.is_initialized() else 1
-    (batches,) = _allocate_batches_world(doc_lengths, N, world_size, seed, ranks=[rank])
-    return batches
-
-
-def _allocate_batches_world(
-    doc_lengths: list[int],
-    N: int,
-    world_size: int,
-    seed: int = 42,
-    ranks: list[int] | None = None,
-) -> list[list[list[int]]]:
-    """Lower-level version of allocate_batches that returns batches for specified ranks.
-
-    If ranks is None, returns batches for all ranks.
-    """
-    if ranks is None:
-        ranks = list(range(world_size))
     if len(doc_lengths) < world_size:
         raise RuntimeError("Not enough documents to distribute across workers.")
 
@@ -179,12 +163,11 @@ def _allocate_batches_world(
     # Sanity: equal # of batches per worker
     assert len({len(b) for b in allocation}) == 1
 
-    # Break any systematic ordering of batches (shuffle only requested ranks)
-    for rank in ranks:
-        random.seed(seed)
-        random.shuffle(allocation[rank])
+    # Break any systematic ordering of batches
+    random.seed(seed)
+    random.shuffle(allocation[rank])
 
-    return [allocation[rank] for rank in ranks]
+    return allocation[rank]
 
 
 def create_index(
@@ -262,6 +245,10 @@ def load_data_string(
         ds = assert_type(Dataset, Dataset.from_csv(data_str))
     elif data_str.endswith(".json") or data_str.endswith(".jsonl"):
         ds = assert_type(Dataset, Dataset.from_json(data_str))
+    elif Path(data_str).is_dir() and (Path(data_str) / "dataset_info.json").exists():
+        ds = load_from_disk(data_str, keep_in_memory=False)
+        if isinstance(ds, DatasetDict):
+            ds = ds[split]
     else:
         try:
             kwargs = simple_parse_args_string(data_args)
@@ -274,7 +261,7 @@ def load_data_string(
         except ValueError as e:
             # Automatically use load_from_disk if appropriate
             if "load_from_disk" in str(e):
-                ds = Dataset.load_from_disk(data_str, keep_in_memory=False)
+                ds = load_from_disk(data_str, keep_in_memory=False)
             else:
                 raise e
 
@@ -484,7 +471,7 @@ def pad_and_tensor(
     padding_value: int = 0,
     dtype: torch.dtype | None = torch.long,
     device: torch.device | None = None,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Pad a list of sequences to the same length and convert them to tensors.
     Returns a tuple of padded sequences and labels. The labels are the same as the
@@ -503,12 +490,7 @@ def pad_and_tensor(
     # convert to tensor
     padded_tokens = torch.tensor(padded, dtype=dtype, device=device)
     padded_labels = torch.tensor(labels, dtype=dtype, device=device)
-    # Compute valid_masks: position i is valid if labels[i+1] != -100
-    N, S = padded_tokens.shape
-    valid_masks = torch.zeros(N, S, dtype=torch.bool, device=device)
-    valid_masks[:, :-1] = padded_labels[:, 1:] != -100
-
-    return padded_tokens, padded_labels, valid_masks
+    return padded_tokens, padded_labels
 
 
 def tokenize(batch: dict, *, args: DataConfig, tokenizer):

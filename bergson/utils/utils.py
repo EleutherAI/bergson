@@ -1,3 +1,4 @@
+import hashlib
 import os
 import random
 from typing import TYPE_CHECKING, Any, Literal, Type, TypeVar, cast
@@ -9,7 +10,7 @@ from torch import Tensor, nn
 from transformers import PreTrainedModel
 
 if TYPE_CHECKING:
-    from bergson.collector.collector import HookCollectorBase
+    from bergson.collector.gradient_collectors import GradientCollector
 
 
 T = TypeVar("T")
@@ -34,6 +35,36 @@ def get_layer_list(model: PreTrainedModel) -> nn.ModuleList:
     assert len(candidates) == 1, "Could not find the list of layers."
 
     return candidates[0]
+
+
+def create_projection_matrix(
+    identifier: str,
+    m: int,
+    n: int,
+    dtype: torch.dtype,
+    device: torch.device,
+    projection_type: Literal["normal", "rademacher"] = "normal",
+) -> Tensor:
+    """Create a projection matrix deterministically based on identifier and side."""
+    # Seed the PRNG with the name of the layer and what "side" we are projecting
+    message = bytes(identifier, "utf-8")
+    digest = hashlib.md5(message).digest()
+    seed = int.from_bytes(digest, byteorder="big") % (2**63 - 1)
+
+    if projection_type == "normal":
+        prng = torch.Generator(device).manual_seed(seed)
+        A = torch.randn(m, n, device=device, dtype=dtype, generator=prng)
+    elif projection_type == "rademacher":
+        numpy_rng = np.random.Generator(np.random.PCG64(seed))
+        random_bytes = numpy_rng.bytes((m * n + 7) // 8)
+        random_bytes = np.frombuffer(random_bytes, dtype=np.uint8)
+        A = np.unpackbits(random_bytes)[: m * n].reshape((m, n))
+        A = torch.from_numpy(A).to(device, dtype=dtype)
+        A = A.add_(-0.5).mul_(2)
+    else:
+        raise ValueError(f"Unknown projection type: {projection_type}")
+    A /= A.norm(dim=1, keepdim=True)
+    return A
 
 
 def setup_reproducibility():
@@ -91,7 +122,7 @@ def simple_parse_args_string(args_string: str) -> dict[str, Any]:
 def validate_batch_size(
     model: PreTrainedModel,
     token_batch_size: int | None,
-    collector: "HookCollectorBase",
+    collector: "GradientCollector",
 ):
     """Validate that the specified token batch size fits on device."""
     if token_batch_size is None:
@@ -114,11 +145,10 @@ def validate_batch_size(
             loss.backward()
             model.zero_grad()
     except Exception as e:
-        if "CUDA out of memory" in str(e):
-            raise ValueError(
-                f"Token batch size {token_batch_size} is too large for the device. "
-                f"Try reducing the batch size or use --fsdp to shard the model."
-            ) from e
+        raise ValueError(
+            f"Token batch size {token_batch_size} is too large for the device. "
+            f"Try reducing the batch size or use --fsdp to shard the model."
+        ) from e
 
 
 DTYPE_BY_PRIORITY = {
@@ -231,11 +261,3 @@ def convert_precision_to_torch(
             return torch.float16
         case "fp32":
             return torch.float32
-
-
-def get_device(rank: int = 0) -> str:
-    """Get device string for the given rank.
-
-    Returns "cpu" if CUDA is not available.
-    """
-    return f"cuda:{rank}" if torch.cuda.is_available() else "cpu"

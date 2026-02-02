@@ -1,4 +1,4 @@
-__version__ = "0.5.1"
+__version__ = "0.5.0"
 
 from .collection import collect_gradients
 from .collector.gradient_collectors import GradientCollector

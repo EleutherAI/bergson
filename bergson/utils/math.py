@@ -67,41 +67,6 @@ def psd_rsqrt(A: Tensor) -> Tensor:
     return rsqrt
 
 
-def compute_damped_inverse(
-    H: Tensor,
-    damping_factor: float = 0.1,
-    dtype: torch.dtype = torch.float64,
-    regularizer: Tensor | None = None,
-) -> Tensor:
-    """Compute H^(-1) with damping for numerical stability.
-
-    Uses eigendecomposition to compute the inverse of a positive semi-definite
-    matrix with adaptive damping based on the matrix's mean absolute value.
-
-    Args:
-        H: Positive semi-definite matrix to invert.
-        damping_factor: Multiplier for the damping term (default: 0.1).
-        dtype: Dtype for intermediate computation (default: float64 for stability).
-        regularizer: Optional matrix to use as regularizer instead of identity.
-            If provided, computes inv(H + damping_factor * regularizer).
-            If None (default), uses scaled identity:
-            inv(H + damping_factor * |H|_mean * I).
-
-    Returns:
-        The damped inverse H^(-1) in the original dtype of H.
-    """
-    original_dtype = H.dtype
-    H = H.to(dtype=dtype)
-    if regularizer is not None:
-        regularizer = regularizer.to(dtype=dtype, device=H.device)
-        H = H + damping_factor * regularizer
-    else:
-        damping_val = damping_factor * H.abs().mean()
-        H = H + damping_val * torch.eye(H.shape[0], device=H.device, dtype=H.dtype)
-    eigval, eigvec = torch.linalg.eigh(H)
-    return (eigvec * (1.0 / eigval) @ eigvec.mT).to(original_dtype)
-
-
 def trace(matrices: Tensor) -> Tensor:
     """Version of `torch.trace` that works for batches of matrices."""
     diag = torch.linalg.diagonal(matrices)

@@ -118,7 +118,7 @@ def setup_model_and_peft(
     # Common configuration
     if device_map_auto:
         device_map = "auto"
-    elif cfg.fsdp or not torch.cuda.is_available():
+    elif cfg.fsdp:
         device_map = "cpu"
     else:
         device_map = {"": f"cuda:{local_rank}"}
@@ -138,7 +138,6 @@ def setup_model_and_peft(
     try:
         peft_config = PeftConfig.from_pretrained(cfg.model)
     except ValueError:
-        print(f"PEFT config not found for model {cfg.model}")
         peft_config = None
 
     if peft_config is None:

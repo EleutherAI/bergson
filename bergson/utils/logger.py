@@ -23,9 +23,7 @@ class RankFilter(logging.Filter):
 
 # Create a function to get loggers with consistent naming
 def get_logger(
-    name: Optional[str] = None,
-    level: Optional[str] = None,
-    disable_filter: bool = False,
+    name: Optional[str] = None, level: Optional[str] = None
 ) -> logging.Logger:
     """
     Get a logger with the configured format.
@@ -49,9 +47,7 @@ def get_logger(
     logger = logging.getLogger(name)
 
     # Add rank filter if not already present
-    if not disable_filter and not any(
-        isinstance(f, RankFilter) for f in logger.filters
-    ):
+    if not any(isinstance(f, RankFilter) for f in logger.filters):
         logger.addFilter(RankFilter())
 
     if level is not None:

@@ -1,4 +1,4 @@
-Always test your changes by running the appropriate script or CLI command. Never complete a task without testing your changes until the script or CLI command runs without issues for 3 minutes+ (at minimum). If you find an error unrelated to your task, at minimum quote the exact error back to me when you have completed your task and offer to investigate and fix it.
+Always test your changes by running the appropriate script or CLI command. Never complete a task without testing your changes until the script or CLI command runs without issues. If it's a long-running script let it run for at least a few iterations of the main loop. If you find an error unrelated to your task, at minimum quote the exact error back to me when you have completed your task and offer to investigate and fix it.
 
 ## Project Structure and Conventions
 
@@ -18,17 +18,39 @@ Put imports at the top of the file unless you have a good reason to do otherwise
 
 # Development
 
+Never use try/except blocks - fail fast, fail explicitly.
+
+Never use "fallbacks".
+
+Do not write lines longer than 88 characters.
+
+Don't use ALL CAPS unless it's proper English (e.g. an acronym).
+
+Don't keep default run path values inside low level code - if a module calls another module, the higher level module should always pass through inject a base path.
+
+Don't save data to a directory that is not in the .gitignore - especially the data/ directory.
+
+Don't remove large datasets from the HF cache without asking.
+
 You can call CLI commands without prefixing `python -m`, like `bergson build`.
 
 Use `pre-commit run --all-files` if you forget to install pre-commit and it doesn't run in the hook.
 
 Run bash commands in the dedicated tmux pane named "claude" if it is available.
 
-Don't keep default run path values inside low level code - if a module calls another module, the higher level module should always pass through inject a base path.
+Don't betray lineage. An example of betraying lineage is duplicating a file, making changes in the duplicate, then calling it "foo_fixed" rather than "foo". The correct action here would be to commit the file to git and then modify it directly. Another example of betraying lineage is adding a RoundButton to a module containing a Button but not updating the original Button to be called RectangleButton. This lack of action betrays that the rectangular button came first.
 
-Don't save data to a directory that is not in the gitignore - especially the data/ directory.
+If you think some data files (e.g. CSVs) have been invalidated but you're not 100% sure, you can add them to a .gitignore'd archive directory along with an equivalentally named markdown file explaining the context.
 
-Don't remove large datasets from the HF cache without asking.
+File names always use snake case - in_memory, not inmemory.
+
+When writing files to disk python scripts should choose their own filenames but be provided with their file paths.
+
+### Documentation
+
+Do not mark documentation for code that has been removed as deprecated - simply remove the documentation.
+
+No context leakage: do not write code or comments that link features to the specific experiment for which the feature was developed, unless it's only useful for that particular experiment. Be as generic as is correctly possible and not more.
 
 ### Tests
 

@@ -22,7 +22,7 @@ dependencies = [
     "torch",
     "transformers<4.56.0" # 4.56.0 increases fp error from operation order
 ]
-version = "0.5.1"
+version = "0.5.0"
 [project.optional-dependencies]
 dev = [
     "pre-commit",
@@ -44,9 +44,6 @@ benchmarks = [
     "dattri",
 ]
 example = [
-    "backoff>=2.2.1",
-    "bitsandbytes>=0.49.0",
-    "pydantic>=2.12.5",
     "trl",
 ]
 faiss = [

@@ -16,7 +16,7 @@ hf auth login --token <HUGGINGFACE_TOKEN>
 NUM_NODES=64
 RUN_NAME="bergson_score"
 
-TOTAL_EXAMPLES=100_000_000
+TOTAL_EXAMPLES=$(cat dataset_size.txt)
 EXAMPLES_PER_NODE=$((TOTAL_EXAMPLES / NUM_NODES))
 
 # Export variables for the worker script

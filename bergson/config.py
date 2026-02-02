@@ -144,6 +144,9 @@ class IndexConfig:
     token_batch_size: int = 2048
     """Batch size in tokens for building the index."""
 
+    autobatchsize: bool = False
+    """Whether to automatically determine the optimal batch size."""
+
     processor_path: str = ""
     """Path to a precomputed processor."""
 
@@ -168,11 +171,6 @@ class IndexConfig:
 
     loss_reduction: Literal["mean", "sum"] = "mean"
     """Reduction method for the loss function."""
-
-    label_smoothing: float = 0.0
-    """Label smoothing coefficient for cross-entropy loss. When > 0, prevents
-    near-zero gradients for high-confidence predictions that can cause numerical
-    instability. Recommended value: 0.005-0.01."""
 
     stream_shard_size: int = 400_000
     """Shard size for streaming the dataset into Dataset objects."""
@@ -305,24 +303,6 @@ class ReduceConfig:
 
     unit_normalize: bool = False
     """Whether to unit normalize the gradients before reducing them."""
-
-
-@dataclass
-class HessianConfig:
-    """Config for reducing the gradients."""
-
-    method: Literal["kfac", "tkfac", "shampoo"] = "kfac"
-    """Method for approximating the Hessian."""
-
-    ev_correction: bool = False
-    """Whether to additionally compute eigenvalue correction."""
-
-    hessian_dtype: Literal["auto", "bf16", "fp16", "fp32"] = "auto"
-    """Precision (dtype) to use for the Hessian approximation."""
-
-    use_dataset_labels: bool = False
-    """Whether to use dataset labels for Hessian (empirical Fisher) approximation.
-    If false, the model predictions will be used."""
 
 
 @dataclass

@@ -19,7 +19,7 @@ from trl import SFTConfig, SFTTrainer, setup_chat_format
 from bergson.collection import GradientCollector, GradientProcessor
 from bergson.config import DataConfig
 from bergson.data import load_gradient_dataset, tokenize, unflatten
-from bergson.utils.utils import assert_type
+from bergson.utils import assert_type
 
 
 @dataclass

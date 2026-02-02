@@ -75,6 +75,7 @@ class InMemoryCollector(HookCollectorBase):
         )
 
         self.gradients = defaultdict(list)
+        self._gpu_gradients: dict[str, torch.Tensor] = {}
 
     def teardown(self) -> None:
         """No cleanup needed for in-memory storage."""
@@ -160,7 +161,11 @@ class InMemoryCollector(HookCollectorBase):
             else:
                 self.processor.preconditioners[name] = P.mT @ P
 
-        # Store on CPU
+        # Store GPU tensor for scoring to avoid GPU→CPU→GPU round-trip
+        if self.scorer is not None:
+            self._gpu_gradients[name] = P
+
+        # Store on CPU for later use (index building, etc.)
         self.gradients[name].append(P.cpu())
 
         del module._inputs  # type: ignore
@@ -170,8 +175,7 @@ class InMemoryCollector(HookCollectorBase):
         assert losses is not None, "losses must be provided in kwargs"
 
         if self.scorer is not None:
-            # Score the most recent gradients in each list
-            mod_grads = {name: grads[-1] for name, grads in self.gradients.items()}
-            self.scorer(indices, mod_grads)
+            self.scorer(indices, self._gpu_gradients)
+            self._gpu_gradients = {}
 
         self.per_doc_losses[indices] = losses.detach().type_as(self.per_doc_losses)

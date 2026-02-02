@@ -1,5 +1,4 @@
 import functools
-import hashlib
 import os
 from abc import ABC, abstractmethod
 from contextlib import ContextDecorator, nullcontext
@@ -7,7 +6,6 @@ from dataclasses import astuple, dataclass, field
 from fnmatch import fnmatchcase
 from typing import Callable, Literal, Mapping, Optional
 
-import numpy as np
 import torch
 import torch.distributed as dist
 import torch.nn as nn
@@ -26,7 +24,7 @@ from torch.utils.hooks import RemovableHandle
 from tqdm.auto import tqdm
 from transformers import PreTrainedModel
 
-from bergson.config import AttentionConfig, HessianConfig, IndexConfig
+from bergson.config import AttentionConfig, IndexConfig
 from bergson.data import pad_and_tensor
 from bergson.gradients import (
     GradientProcessor,
@@ -34,6 +32,7 @@ from bergson.gradients import (
 )
 from bergson.utils.logger import get_logger
 from bergson.utils.peft import set_peft_enabled
+from bergson.utils.utils import create_projection_matrix
 
 
 @dataclass
@@ -79,7 +78,6 @@ class HookCollectorBase(ContextDecorator, ABC):
     Optional configuration specifying how to split up the attention module gradients
     into per-head gradients. See also bergson.config.AttentionConfig.
     """
-    logger = get_logger("HookCollectorBase", level="INFO")
 
     def __post_init__(
         self,
@@ -257,28 +255,6 @@ class HookCollectorBase(ContextDecorator, ABC):
         )
         self.processor._projection_matrices[key] = A
         return A
-
-    def with_batch(self, valid_mask: Tensor | None = None) -> "HookCollectorBase":
-        """
-        Set the current batch indices and valid mask before entering the context.
-
-        This allows hooks to access batch indices and valid mask during
-        forward/backward passes.
-        Usage:
-            with collector.with_batch(indices, valid_mask):
-                # forward/backward pass
-                # hooks can access self._current_indices and self._current_valid_mask
-
-        Args:
-            indices: List of data indices in the current batch.
-            valid_mask: Optional boolean tensor of shape [batch_size, seq_len]
-                indicating which positions have valid labels for loss computation.
-
-        Returns:
-            self, for use as a context manager.
-        """
-        self._current_valid_mask = valid_mask
-        return self
 
     def __enter__(self):
         """Register forward and backward hooks on all target modules."""
@@ -508,23 +484,15 @@ class CollectorComputer:
             ):
                 batch = self.data[indices]
 
-                # Compute padded tensors and valid_mask before entering context
-                x, y, valid_mask = pad_and_tensor(
-                    batch["input_ids"],
-                    labels=batch.get("labels"),
-                    device=self.model.device,
-                )
-                total_processed += valid_mask.sum()
-
                 with (
-                    self.collector.with_batch(valid_mask),
+                    self.collector,
                     (
                         record_function(f"step_{step}")
                         if self.cfg.profile
                         else nullcontext()
                     ),
                 ):
-                    losses = self.forward_backward(self.model, x, y, batch)
+                    losses = self.forward_backward(self.model, batch)
 
                     # TODO: currently builder also calls torch.cuda.synchronize
                     torch.cuda.synchronize() if torch.cuda.is_available() else None
@@ -535,17 +503,11 @@ class CollectorComputer:
                 step += 1
 
                 self.collector.process_batch(indices, losses=losses)
+                total_processed += len(indices)
 
         self.collector.teardown()
-
         if dist.is_initialized():
             dist.all_reduce(total_processed, op=dist.ReduceOp.SUM)
-
-        if self.rank == 0:
-            torch.save(
-                total_processed,
-                os.path.join(self.cfg.partial_run_path, "total_processed.pt"),
-            )
         self.logger.info(f"Total processed: {total_processed.item()}")
 
 
@@ -561,17 +523,18 @@ def fwd_bwd_factory(cfg: IndexConfig) -> Callable:
               summed loss.
 
     Returns:
-        A callable fwd_bwd(model, x, y, batch) -> Tensor that performs a forward pass
-        and backward pass, returning the per-sample losses.
-        Args:
-            model: The model to run forward/backward on.
-            x: Padded input token ids tensor of shape [batch_size, seq_len].
-            y: Padded label tensor of shape [batch_size, seq_len] with -100 for padding.
-            batch: Original batch dict, used only for "advantage" if present.
+        A callable fwd_bwd(model, batch) -> Tensor that performs a forward pass and
+        backward pass, returning the per-sample losses.
+        The batch must contain "input_ids" and optionally "labels" and "advantage".
         Returns a tensor of shape [batch_size] with one loss value per sample.
     """
 
-    def fwd_bwd(model, x: Tensor, y: Tensor, batch: dict):
+    def fwd_bwd(model, batch):
+        x, y = pad_and_tensor(
+            batch["input_ids"],  # type: ignore
+            labels=batch.get("labels"),  # type: ignore
+            device=model.device,
+        )
         logits = model(x).logits[:, :-1]
         masks = y[:, 1:] != -100
         denoms = (
@@ -597,7 +560,6 @@ def fwd_bwd_factory(cfg: IndexConfig) -> Callable:
                 logits.reshape(-1, logits.size(-1)),
                 y[:, 1:].flatten(),
                 reduction="none",
-                label_smoothing=cfg.label_smoothing,
             ).reshape_as(y[:, 1:])
             losses = losses.sum(1) / denoms
             if "advantage" in batch:
@@ -609,74 +571,3 @@ def fwd_bwd_factory(cfg: IndexConfig) -> Callable:
         return losses
 
     return fwd_bwd
-
-
-def fwd_bwd_hessian_factory(
-    index_cfg: IndexConfig, hessian_cfg: HessianConfig
-) -> Callable:
-    def fwd_bwd_hessian(model, x: Tensor, y: Tensor, batch: dict):
-        logits = model(x).logits[:, :-1]
-        masks = y[:, 1:] != -100
-        denoms = (
-            masks.sum(dim=1, dtype=model.dtype)
-            if index_cfg.loss_reduction == "mean"
-            else 1.0
-        )
-        if hessian_cfg.use_dataset_labels:
-            losses = F.cross_entropy(
-                logits.reshape(-1, logits.size(-1)),
-                y[:, 1:].flatten(),
-                reduction="none",
-            ).reshape_as(y[:, 1:])
-            losses = losses.sum(1) / denoms
-        else:
-            with torch.no_grad():
-                probs = F.softmax(logits, dim=-1)
-                sampled_tokens = torch.multinomial(
-                    probs.reshape(-1, probs.size(-1)),
-                    num_samples=1,
-                    replacement=True,
-                ).reshape_as(y[:, 1:])
-            losses = F.cross_entropy(
-                logits.reshape(-1, logits.size(-1)),
-                sampled_tokens.flatten(),
-                reduction="none",
-            ).reshape_as(y[:, 1:])
-            losses = losses.sum(1) / denoms
-
-        losses.sum().backward()
-        model.zero_grad()
-
-        return losses
-
-    return fwd_bwd_hessian
-
-
-def create_projection_matrix(
-    identifier: str,
-    m: int,
-    n: int,
-    dtype: torch.dtype,
-    device: torch.device,
-    projection_type: Literal["normal", "rademacher"] = "normal",
-) -> Tensor:
-    """Create a projection matrix deterministically based on identifier and side."""
-    # Seed the PRNG with the name of the layer and what "side" we are projecting
-    message = bytes(identifier, "utf-8")
-    digest = hashlib.md5(message).digest()
-    seed = int.from_bytes(digest, byteorder="big") % (2**63 - 1)
-
-    if projection_type == "normal":
-        prng = torch.Generator(device).manual_seed(seed)
-        A = torch.randn(m, n, device=device, dtype=dtype, generator=prng)
-    elif projection_type == "rademacher":
-        numpy_rng = np.random.Generator(np.random.PCG64(seed))
-        random_bytes = numpy_rng.bytes((m * n + 7) // 8)
-        random_bytes = np.frombuffer(random_bytes, dtype=np.uint8)
-        A = np.unpackbits(random_bytes)[: m * n].reshape((m, n))
-        A = torch.from_numpy(A).to(device, dtype=dtype)
-        A = A.add_(-0.5).mul_(2)
-    else:
-        raise ValueError(f"Unknown projection type: {projection_type}")
-    A /= A.norm(dim=1, keepdim=True)
-    return A

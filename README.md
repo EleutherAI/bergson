@@ -48,8 +48,6 @@ bergson build runs/quickstart --model EleutherAI/pythia-14m --dataset NeelNanda/
 
 # Usage
 
-There are two ways to use Bergson. The first is to write an index of dataset gradients to disk using `build` then query it programmatically or using the `Attributor` or `query` CLI. The second is to specify your query upfront, then map over the dataset and collect and process gradients on the fly. When using this second strategy only influence scores will be saved.
-
 You can build an index of gradients for each training sample from the command line, using `bergson` as a CLI tool:
 
 ```bash
