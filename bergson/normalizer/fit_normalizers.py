@@ -170,15 +170,6 @@ class NormalizerCollector(HookCollectorBase):
 
             P = g.mT @ a  # [N, O/p, S] @ [N, S, I/q] → [N, O/p, I/q]
 
-        # P = P.flatten(1).clamp_(self.lo, self.hi)
-
-        # if not self.cfg.skip_preconditioners:
-        #     P = P.float()
-        #     if name in self.processor.preconditioners:
-        #         self.processor.preconditioners[name].addmm_(P.mT, P)
-        #     else:
-        #         self.processor.preconditioners[name] = P.mT @ P
-
         # self.mod_grads[name] = P.to(dtype=self.save_dtype)
         self.callback(name, P)
 
