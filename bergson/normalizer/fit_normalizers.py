@@ -87,9 +87,9 @@ class NormalizerCollector(HookCollectorBase):
             if self.cfg.normalizer == "adafactor"
             else self.adam_update
         )
-        assert isinstance(self.model.device, torch.device), (
-            "Model device is not set correctly"
-        )
+        assert isinstance(
+            self.model.device, torch.device
+        ), "Model device is not set correctly"
         if self.cfg.include_bias and self.processor.normalizers is not None:
             raise NotImplementedError(
                 "Bias with normalizers not supported yet, "
