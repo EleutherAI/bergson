@@ -58,9 +58,9 @@ class GradientCollector(HookCollectorBase):
 
         Sets up a Builder for gradient storage if not using a Scorer.
         """
-        assert isinstance(
-            self.model.device, torch.device
-        ), "Model device is not set correctly"
+        assert isinstance(self.model.device, torch.device), (
+            "Model device is not set correctly"
+        )
         if self.cfg.include_bias and self.processor.normalizers is not None:
             raise NotImplementedError(
                 "Bias with normalizers not supported yet, "
@@ -195,9 +195,9 @@ class GradientCollector(HookCollectorBase):
         """
         Finalize gradient collection, save results and flush/reduce the Builder.
         """
-        assert isinstance(
-            self.cfg, IndexConfig
-        ), "cfg is required for GradientCollector"  # pleasing type checker
+        assert isinstance(self.cfg, IndexConfig), (
+            "cfg is required for GradientCollector"
+        )  # pleasing type checker
         if dist.is_initialized():
             dist.reduce(self.per_doc_losses, dst=0)
 
