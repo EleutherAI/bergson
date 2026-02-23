@@ -83,9 +83,7 @@ def _worker(global_rank: int, rank: int, world_size: int, results_path: str):
         torch.save(w_grad, results_path)
 
 
-@pytest.mark.skipif(
-    torch.cuda.device_count() < 2, reason="Need >= 2 GPUs"
-)
+@pytest.mark.skipif(torch.cuda.device_count() < 2, reason="Need >= 2 GPUs")
 def test_dtensor_second_order_grad(tmp_path):
     """d(W - lr * grad(loss, W)) / d(weights) must be non-None through DTensor ops."""
     from bergson.distributed import launch_distributed_run
