@@ -2,7 +2,7 @@
 #SBATCH --job-name=magic-wmdp
 #SBATCH --nodes=1
 #SBATCH --exclusive
-#SBATCH --gpus-per-node=1
+#SBATCH --gpus-per-node=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --time=12:00:00
 #SBATCH --output=/home/a6a/lucia.a6a/bergson3/runs/magic-wmdp-%j.out

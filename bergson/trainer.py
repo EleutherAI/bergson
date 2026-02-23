@@ -33,9 +33,6 @@ def sorted_checkpoints(folder: str) -> list[tuple[int, str]]:
     checkpoints = []
     for name in os.listdir(folder):
         path = os.path.join(folder, name)
-        if not os.path.isfile(path):
-            continue
-
         match = pattern.match(name)
         if match:
             batch_index = int(match.group(1))
@@ -363,7 +360,7 @@ class Trainer:
             param_grads = {k: result[i] for i, k in enumerate(p_keys)}
             del result[: len(p_keys)]
 
-            weight_grads = result[-1] + w_grads
+            weight_grads = result[-1] + w_grads if result[-1] is not None else w_grads
             bwd_state = BackwardState(param_grads, result[:-1], weight_grads)
 
         return bwd_state
