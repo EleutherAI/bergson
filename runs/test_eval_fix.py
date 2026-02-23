@@ -3,6 +3,7 @@
 to verify it doesn't OOM."""
 
 import time
+
 import torch
 import torchopt
 from datasets import concatenate_datasets, load_dataset
@@ -32,7 +33,13 @@ def build_eval_batch(examples, tokenizer):
         texts.append(text)
         answer_letters.append(f" {letters[answer_idx]}")
 
-    enc = tokenizer(texts, padding=True, truncation=True, max_length=MAX_SEQ_LEN, return_tensors="pt")
+    enc = tokenizer(
+        texts,
+        padding=True,
+        truncation=True,
+        max_length=MAX_SEQ_LEN,
+        return_tensors="pt",
+    )
     input_ids, attention_mask = enc["input_ids"], enc["attention_mask"]
     labels = torch.full_like(input_ids, -100)
 
@@ -50,10 +57,14 @@ def build_eval_batch(examples, tokenizer):
 
 def main():
     print(f"GPU: {torch.cuda.get_device_name(0)}")
-    print(f"GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+    print(
+        f"GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB"
+    )
 
     # Load model
-    model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, torch_dtype=torch.bfloat16, attn_implementation="eager")
+    model = AutoModelForCausalLM.from_pretrained(
+        MODEL_NAME, torch_dtype=torch.bfloat16, attn_implementation="eager"
+    )
     model.loss_function = weighted_causal_lm_ce
     model.to(DEVICE)
     print(f"Model loaded. GPU: {torch.cuda.memory_allocated(0)/1e9:.1f} GB")
@@ -69,7 +80,10 @@ def main():
 
     # Load latest checkpoint as our "state after training"
     import os
-    ckpts = sorted(os.listdir(CKPT_DIR), key=lambda f: int(f.split("_")[1].split(".")[0]))
+
+    ckpts = sorted(
+        os.listdir(CKPT_DIR), key=lambda f: int(f.split("_")[1].split(".")[0])
+    )
     # Skip potentially corrupted last checkpoint
     latest = os.path.join(CKPT_DIR, ckpts[-2])
     print(f"Loading checkpoint: {latest}")
@@ -77,15 +91,20 @@ def main():
     # Detach to simulate post-training state
     state = TrainerState(
         {k: v.detach().requires_grad_(True) for k, v in state.params.items()},
-        state.opt_state, state.buffers, state.batch_index,
+        state.opt_state,
+        state.buffers,
+        state.batch_index,
     )
     print(f"State loaded. GPU: {torch.cuda.memory_allocated(0)/1e9:.1f} GB")
 
     # Load WMDP eval
     configs = [
-        "bioweapons_and_bioterrorism", "dual_use_virology",
-        "enhanced_potential_pandemic_pathogens", "expanding_access_to_threat_vectors",
-        "reverse_genetics_and_easy_editing", "viral_vector_research",
+        "bioweapons_and_bioterrorism",
+        "dual_use_virology",
+        "enhanced_potential_pandemic_pathogens",
+        "expanding_access_to_threat_vectors",
+        "reverse_genetics_and_easy_editing",
+        "viral_vector_research",
     ]
     wmdp_parts = []
     for c in configs:
@@ -104,7 +123,7 @@ def main():
     t0 = time.time()
 
     for chunk_start in range(0, len(wmdp_examples), EVAL_CHUNK_SIZE):
-        chunk = wmdp_examples[chunk_start:chunk_start + EVAL_CHUNK_SIZE]
+        chunk = wmdp_examples[chunk_start : chunk_start + EVAL_CHUNK_SIZE]
         eval_batch = build_eval_batch(chunk, tokenizer)
         eval_inputs = {k: v.to(DEVICE) for k, v in eval_batch.items()}
 
@@ -122,8 +141,11 @@ def main():
         del chunk_loss, grads, eval_inputs
 
         if n_chunks % 20 == 0:
-            print(f"  Chunk {n_chunks}/{(len(wmdp_examples) + EVAL_CHUNK_SIZE - 1) // EVAL_CHUNK_SIZE}, "
-                  f"GPU: {torch.cuda.memory_allocated(0)/1e9:.1f} GB", flush=True)
+            print(
+                f"  Chunk {n_chunks}/{(len(wmdp_examples) + EVAL_CHUNK_SIZE - 1) // EVAL_CHUNK_SIZE}, "
+                f"GPU: {torch.cuda.memory_allocated(0)/1e9:.1f} GB",
+                flush=True,
+            )
 
     for g in grad_accum:
         g.div_(n_chunks)
@@ -144,7 +166,7 @@ def main():
     print(f"opt_grads count: {len(opt_grads)}")
     print(f"param_grads count: {len(param_grads)}")
     bwd_state = BackwardState(param_grads, opt_grads, torch.zeros(1000, device=DEVICE))
-    print(f"BackwardState created successfully")
+    print("BackwardState created successfully")
     print(f"GPU final: {torch.cuda.memory_allocated(0)/1e9:.1f} GB")
     print("\nSUCCESS - eval fix works!")
 

@@ -21,7 +21,13 @@ from datasets import concatenate_datasets, load_dataset
 from torchopt.pytree import tree_iter
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from bergson.trainer import BackwardState, DataStream, Trainer, TrainerState, sorted_checkpoints
+from bergson.trainer import (
+    BackwardState,
+    DataStream,
+    Trainer,
+    TrainerState,
+    sorted_checkpoints,
+)
 from bergson.utils.math import weighted_causal_lm_ce
 
 MODEL_NAME = "EleutherAI/deep-ignorance-unfiltered"
@@ -30,7 +36,7 @@ DEVICE = "cuda:0"
 # Training hyperparams
 LR = 1e-4
 BATCH_SIZE = 4
-NUM_BATCHES = 250      # 1000 training examples
+NUM_BATCHES = 250  # 1000 training examples
 MAX_SEQ_LEN = 256
 
 # Eval — process in small chunks to avoid OOM
@@ -105,8 +111,11 @@ def backward_with_offload(
 
     for step_idx, (_, path) in enumerate(reversed(ckpts)):
         if step_idx % 10 == 0:
-            print(f"  Backward step {step_idx+1}/{len(ckpts)}, "
-                  f"GPU: {torch.cuda.memory_allocated(0)/1e9:.1f} GB", flush=True)
+            print(
+                f"  Backward step {step_idx+1}/{len(ckpts)}, "
+                f"GPU: {torch.cuda.memory_allocated(0)/1e9:.1f} GB",
+                flush=True,
+            )
 
         # Move bwd_state to CPU
         cpu_param_grads = {k: v.cpu() for k, v in bwd_state.param_grads.items()}
@@ -150,8 +159,9 @@ def backward_with_offload(
         # Extract results to CPU
         n_params = len(p_keys)
         param_grads = {k: result[i].cpu() for i, k in enumerate(p_keys)}
-        opt_grads = [r.cpu() if r is not None else torch.tensor(0.0)
-                     for r in result[n_params:-1]]
+        opt_grads = [
+            r.cpu() if r is not None else torch.tensor(0.0) for r in result[n_params:-1]
+        ]
         wg = result[-1]
         weight_grads = (wg + w_grads if wg is not None else w_grads).cpu()
         del result, w_grads, wg
@@ -213,7 +223,9 @@ def main():
     n_examples = BATCH_SIZE * NUM_BATCHES
     start = len(wikitext) // 4
     wikitext = wikitext.select(range(start, start + n_examples))
-    print(f"Selected {n_examples} training examples (indices {start}..{start + n_examples})")
+    print(
+        f"Selected {n_examples} training examples (indices {start}..{start + n_examples})"
+    )
     print(f"Text lengths: {wikitext[0]['length']}..{wikitext[-1]['length']} chars")
 
     # ── Load WMDP-bio-robust eval set ───────────────────────────────────────
@@ -252,8 +264,11 @@ def main():
     # ── Step 1: Forward training with checkpoints ───────────────────────────
     if training_complete():
         print(f"\n{'='*60}")
-        print("Step 1: SKIPPED (found {0} checkpoints in {1})".format(
-            len(sorted_checkpoints(CKPT_DIR)), CKPT_DIR))
+        print(
+            "Step 1: SKIPPED (found {0} checkpoints in {1})".format(
+                len(sorted_checkpoints(CKPT_DIR)), CKPT_DIR
+            )
+        )
         print(f"{'='*60}")
         # Load final checkpoint as state
         ckpts = sorted_checkpoints(CKPT_DIR)
@@ -262,7 +277,9 @@ def main():
         state = TrainerState.load(last_path)
         state = TrainerState(
             {k: v.detach().requires_grad_(True) for k, v in state.params.items()},
-            state.opt_state, state.buffers, state.batch_index,
+            state.opt_state,
+            state.buffers,
+            state.batch_index,
         )
         del state0
     else:
@@ -282,14 +299,14 @@ def main():
         # Detach params to free the autograd graph from training
         state = TrainerState(
             {k: v.detach().requires_grad_(True) for k, v in state.params.items()},
-            state.opt_state, state.buffers, state.batch_index,
+            state.opt_state,
+            state.buffers,
+            state.batch_index,
         )
         gc.collect()
 
         ckpt_files = [f for f in os.listdir(CKPT_DIR) if f.endswith(".ckpt")]
-        ckpt_size = sum(
-            os.path.getsize(os.path.join(CKPT_DIR, f)) for f in ckpt_files
-        )
+        ckpt_size = sum(os.path.getsize(os.path.join(CKPT_DIR, f)) for f in ckpt_files)
         print(f"Training done in {train_time:.1f}s")
         print(f"Saved {len(ckpt_files)} checkpoints ({ckpt_size / 1e9:.1f} GB total)")
 
@@ -320,7 +337,7 @@ def main():
         n_chunks = 0
 
         for chunk_start in range(0, len(wmdp_examples), EVAL_CHUNK_SIZE):
-            chunk = wmdp_examples[chunk_start:chunk_start + EVAL_CHUNK_SIZE]
+            chunk = wmdp_examples[chunk_start : chunk_start + EVAL_CHUNK_SIZE]
             eval_batch = build_eval_batch(chunk, tokenizer)
             eval_inputs = {k: v.to(DEVICE) for k, v in eval_batch.items()}
 
@@ -339,8 +356,11 @@ def main():
             del chunk_loss, grads, eval_inputs
 
             if n_chunks % 20 == 0:
-                print(f"  Eval chunk {n_chunks}, "
-                      f"GPU: {torch.cuda.memory_allocated(0)/1e9:.1f} GB", flush=True)
+                print(
+                    f"  Eval chunk {n_chunks}, "
+                    f"GPU: {torch.cuda.memory_allocated(0)/1e9:.1f} GB",
+                    flush=True,
+                )
 
         avg_loss_value = total_loss_value / n_chunks
         for g in grad_accum:
@@ -348,15 +368,20 @@ def main():
         param_grads = dict(zip(param_keys, grad_accum))
 
         # Save eval grads for resume
-        torch.save({
-            "param_grads": {k: v.cpu() for k, v in param_grads.items()},
-            "avg_loss": avg_loss_value,
-            "n_chunks": n_chunks,
-        }, EVAL_GRADS_PATH)
+        torch.save(
+            {
+                "param_grads": {k: v.cpu() for k, v in param_grads.items()},
+                "avg_loss": avg_loss_value,
+                "n_chunks": n_chunks,
+            },
+            EVAL_GRADS_PATH,
+        )
         print(f"Saved eval grads to {EVAL_GRADS_PATH}")
 
-        print(f"WMDP-bio-robust avg loss ({len(wmdp)} questions, {n_chunks} chunks): "
-              f"{avg_loss_value:.4f}")
+        print(
+            f"WMDP-bio-robust avg loss ({len(wmdp)} questions, {n_chunks} chunks): "
+            f"{avg_loss_value:.4f}"
+        )
         del state
 
     print(f"GPU after step 2: {torch.cuda.memory_allocated(0)/1e9:.1f} GB")
@@ -381,7 +406,9 @@ def main():
             if isinstance(buf, torch.Tensor) and buf.is_floating_point()
         ]
         del last_ckpt_state
-        bwd_state = BackwardState(param_grads, opt_grads, torch.zeros_like(stream.weights))
+        bwd_state = BackwardState(
+            param_grads, opt_grads, torch.zeros_like(stream.weights)
+        )
         del param_grads
         gc.collect()
 
@@ -406,9 +433,11 @@ def main():
     print(f"Score range: [{scores.min().item():.6e}, {scores.max().item():.6e}]")
     print(f"Score mean:  {scores.mean().item():.6e}")
     print(f"Score std:   {scores.std().item():.6e}")
-    print(f"Negative: {(scores < 0).sum().item()}, "
-          f"Positive: {(scores > 0).sum().item()}, "
-          f"Zero: {(scores == 0).sum().item()}")
+    print(
+        f"Negative: {(scores < 0).sum().item()}, "
+        f"Positive: {(scores > 0).sum().item()}, "
+        f"Zero: {(scores == 0).sum().item()}"
+    )
 
     # ── Step 5: Save results ────────────────────────────────────────────────
     sorted_indices = scores.argsort()
@@ -421,12 +450,14 @@ def main():
     for rank_i, idx in enumerate(sorted_indices[:n_show]):
         idx_int = int(idx)
         text = wikitext[idx_int]["text"]
-        results_lowest.append({
-            "rank": rank_i,
-            "dataset_index": idx_int,
-            "score": float(scores[idx_int]),
-            "text": text[:500],
-        })
+        results_lowest.append(
+            {
+                "rank": rank_i,
+                "dataset_index": idx_int,
+                "score": float(scores[idx_int]),
+                "text": text[:500],
+            }
+        )
         print(f"#{rank_i:3d}  idx={idx_int:4d}  score={scores[idx_int]:.6e}")
         print(f"      {text[:120]}...")
         print()
@@ -438,12 +469,14 @@ def main():
     for rank_i, idx in enumerate(reversed(sorted_indices[-n_show:])):
         idx_int = int(idx)
         text = wikitext[idx_int]["text"]
-        results_highest.append({
-            "rank": rank_i,
-            "dataset_index": idx_int,
-            "score": float(scores[idx_int]),
-            "text": text[:500],
-        })
+        results_highest.append(
+            {
+                "rank": rank_i,
+                "dataset_index": idx_int,
+                "score": float(scores[idx_int]),
+                "text": text[:500],
+            }
+        )
         print(f"#{rank_i:3d}  idx={idx_int:4d}  score={scores[idx_int]:.6e}")
         print(f"      {text[:120]}...")
         print()
@@ -456,11 +489,13 @@ def main():
 
     all_results = []
     for i in range(len(scores)):
-        all_results.append({
-            "index": i,
-            "score": float(scores[i]),
-            "text": wikitext[i]["text"][:500],
-        })
+        all_results.append(
+            {
+                "index": i,
+                "score": float(scores[i]),
+                "text": wikitext[i]["text"][:500],
+            }
+        )
     with open(os.path.join(OUTPUT_DIR, "all_scores.json"), "w") as f:
         json.dump(all_results, f, indent=2)
 
