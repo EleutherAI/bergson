@@ -39,3 +39,7 @@ Mark tests requiring GPUs with `@pytest.mark.skipif(not torch.cuda.is_available(
 If you use need to use a venv, create and/or activate it with `python3 -m venv .venv && source .venv/bin/activate`.
 
 You can pull secrets from .env.
+
+### Storage
+
+Use `/projects/a6a/public/lucia/` for checkpoints and large scratch data. Never use /tmp or /home for large outputs.
