@@ -111,6 +111,7 @@ class DataStream:
             x = self.processor(
                 x[self.input_key],
                 padding=True,
+                truncation=True,
                 return_tensors="pt",
             )
             x["input_ids"] = x["labels"] = x["input_ids"][self.rank :: self.world_size]
