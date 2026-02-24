@@ -51,6 +51,8 @@ class DataStream:
         *,
         device: torch.device | str = "cpu",
         input_key: str | None = None,
+        per_token: bool = False,
+        max_seq_len: int = 256,
     ):
         self.dataset = dataset
         self.processor = processor
@@ -62,6 +64,7 @@ class DataStream:
             input_key = "img" if isinstance(processor, BaseImageProcessor) else "text"
 
         self.input_key = input_key
+        self.per_token = per_token
         self.rank = dist.get_rank() if dist.is_initialized() else 0
         self.world_size = dist.get_world_size() if dist.is_initialized() else 1
         if self.batch_size % self.world_size != 0:
@@ -71,7 +74,14 @@ class DataStream:
             )
 
         n = self.batch_size * self.num_batches
-        self.weights = nn.Parameter(torch.ones(n, device=device))
+        if per_token:
+            self.weights = nn.Parameter(
+                torch.ones(n, max_seq_len, device=device)
+            )
+        else:
+            self.weights = nn.Parameter(
+                torch.ones(n, device=device)
+            )
 
     @property
     def requires_grad(self) -> bool:
@@ -105,7 +115,11 @@ class DataStream:
             )
             x["input_ids"] = x["labels"] = x["input_ids"][self.rank :: self.world_size]
 
-        x["example_weight"] = w[self.rank :: self.world_size]
+        w_local = w[self.rank :: self.world_size]
+        if self.per_token and w_local.ndim == 2:
+            T_batch = x["input_ids"].shape[1]
+            w_local = w_local[:, :T_batch]
+        x["example_weight"] = w_local
         return {k: v.to(self.device) for k, v in x.items()}
 
     def __iter__(self):

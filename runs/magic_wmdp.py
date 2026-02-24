@@ -59,8 +59,10 @@ EVAL_CHUNK_SIZE = 8
 
 # Paths — use a separate dir for FSDP checkpoints
 CKPT_DIR = "/projects/a6a/public/lucia/magic_fsdp_checkpoints"
-OUTPUT_DIR = "/home/a6a/lucia.a6a/bergson3/runs/magic_wmdp_output"
-EVAL_GRADS_PATH = os.path.join(OUTPUT_DIR, "eval_grads.pt")
+OUTPUT_DIR = "/home/a6a/lucia.a6a/bergson3/runs/magic_wmdp_per_token_output"
+# Eval grads are d(eval_loss)/d(params) — independent of weight shape,
+# so reuse the cached grads from the per-example run.
+EVAL_GRADS_PATH = "/home/a6a/lucia.a6a/bergson3/runs/magic_wmdp_output/eval_grads.pt"
 SCORES_PATH = os.path.join(OUTPUT_DIR, "attribution_scores.pt")
 
 
@@ -186,6 +188,8 @@ def worker(global_rank, rank, world_size, wikitext, wmdp):
         num_batches=NUM_BATCHES,
         device=device,
         input_key="text",
+        per_token=True,
+        max_seq_len=MAX_SEQ_LEN,
     )
     if global_rank == 0:
         n_examples = BATCH_SIZE * NUM_BATCHES
@@ -380,23 +384,36 @@ def worker(global_rank, rank, world_size, wikitext, wmdp):
         print("Step 4: Collecting attribution scores...")
         print(f"{'='*60}")
 
-        print(f"Score tensor shape: {scores.shape}")
+        print(f"Per-token score tensor shape: {scores.shape}")
         print(f"Score range: [{scores.min().item():.6e}, {scores.max().item():.6e}]")
         print(f"Score mean:  {scores.mean().item():.6e}")
         print(f"Score std:   {scores.std().item():.6e}")
+
+        # Per-example aggregate: sum over token positions
+        if scores.ndim == 2:
+            example_scores = scores.sum(dim=1)  # [n_examples]
+        else:
+            example_scores = scores  # 1D fallback
+
+        print(f"\nPer-example scores (sum over tokens):")
+        print(f"  Shape: {example_scores.shape}")
         print(
-            f"Negative: {(scores < 0).sum().item()}, "
-            f"Positive: {(scores > 0).sum().item()}, "
-            f"Zero: {(scores == 0).sum().item()}"
+            f"  Range: [{example_scores.min().item():.6e}, "
+            f"{example_scores.max().item():.6e}]"
+        )
+        print(
+            f"  Negative: {(example_scores < 0).sum().item()}, "
+            f"  Positive: {(example_scores > 0).sum().item()}, "
+            f"  Zero: {(example_scores == 0).sum().item()}"
         )
 
         # ── Step 5: Save results ────────────────────────────────────────
-        sorted_indices = scores.argsort()
+        sorted_indices = example_scores.argsort()
         n_show = 50
 
         results_lowest = []
         print(f"\n{'='*60}")
-        print(f"Top {n_show} sequences with LOWEST attribution scores:")
+        print(f"Top {n_show} sequences with LOWEST attribution:")
         print(f"{'='*60}")
         for rank_i, idx in enumerate(sorted_indices[:n_show]):
             idx_int = int(idx)
@@ -405,56 +422,127 @@ def worker(global_rank, rank, world_size, wikitext, wmdp):
                 {
                     "rank": rank_i,
                     "dataset_index": idx_int,
-                    "score": float(scores[idx_int]),
+                    "example_score": float(example_scores[idx_int]),
                     "text": text[:500],
                 }
             )
-            print(f"#{rank_i:3d}  idx={idx_int:4d}  score={scores[idx_int]:.6e}")
+            print(
+                f"#{rank_i:3d}  idx={idx_int:4d}  "
+                f"score={example_scores[idx_int]:.6e}"
+            )
             print(f"      {text[:120]}...")
             print()
 
         results_highest = []
         print(f"\n{'='*60}")
-        print(f"Top {n_show} sequences with HIGHEST attribution scores:")
+        print(f"Top {n_show} sequences with HIGHEST attribution:")
         print(f"{'='*60}")
-        for rank_i, idx in enumerate(reversed(sorted_indices[-n_show:])):
+        for rank_i, idx in enumerate(
+            reversed(sorted_indices[-n_show:])
+        ):
             idx_int = int(idx)
             text = wikitext[idx_int]["text"]
             results_highest.append(
                 {
                     "rank": rank_i,
                     "dataset_index": idx_int,
-                    "score": float(scores[idx_int]),
+                    "example_score": float(example_scores[idx_int]),
                     "text": text[:500],
                 }
             )
-            print(f"#{rank_i:3d}  idx={idx_int:4d}  score={scores[idx_int]:.6e}")
+            print(
+                f"#{rank_i:3d}  idx={idx_int:4d}  "
+                f"score={example_scores[idx_int]:.6e}"
+            )
             print(f"      {text[:120]}...")
             print()
 
-        with open(os.path.join(OUTPUT_DIR, "lowest_attribution.json"), "w") as f:
+        # Per-token breakdowns for top/bottom 5 examples
+        if scores.ndim == 2:
+            n_detail = 5
+            print(f"\n{'='*60}")
+            print(f"Per-token breakdown: {n_detail} lowest examples")
+            print(f"{'='*60}")
+            for rank_i, idx in enumerate(
+                sorted_indices[:n_detail]
+            ):
+                idx_int = int(idx)
+                text = wikitext[idx_int]["text"]
+                tokens = tokenizer.encode(
+                    text,
+                    truncation=True,
+                    max_length=MAX_SEQ_LEN,
+                )
+                tok_scores = scores[idx_int, : len(tokens)]
+                print(
+                    f"\n#{rank_i} idx={idx_int}  "
+                    f"sum={example_scores[idx_int]:.6e}"
+                )
+                for t, (tid, s) in enumerate(
+                    zip(tokens, tok_scores.tolist())
+                ):
+                    tok_str = tokenizer.decode([tid])
+                    print(f"  [{t:3d}] {s:+.4e}  {tok_str!r}")
+
+            print(f"\n{'='*60}")
+            print(f"Per-token breakdown: {n_detail} highest examples")
+            print(f"{'='*60}")
+            for rank_i, idx in enumerate(
+                reversed(sorted_indices[-n_detail:])
+            ):
+                idx_int = int(idx)
+                text = wikitext[idx_int]["text"]
+                tokens = tokenizer.encode(
+                    text,
+                    truncation=True,
+                    max_length=MAX_SEQ_LEN,
+                )
+                tok_scores = scores[idx_int, : len(tokens)]
+                print(
+                    f"\n#{rank_i} idx={idx_int}  "
+                    f"sum={example_scores[idx_int]:.6e}"
+                )
+                for t, (tid, s) in enumerate(
+                    zip(tokens, tok_scores.tolist())
+                ):
+                    tok_str = tokenizer.decode([tid])
+                    print(f"  [{t:3d}] {s:+.4e}  {tok_str!r}")
+
+        with open(
+            os.path.join(OUTPUT_DIR, "lowest_attribution.json"), "w"
+        ) as f:
             json.dump(results_lowest, f, indent=2)
 
-        with open(os.path.join(OUTPUT_DIR, "highest_attribution.json"), "w") as f:
+        with open(
+            os.path.join(OUTPUT_DIR, "highest_attribution.json"), "w"
+        ) as f:
             json.dump(results_highest, f, indent=2)
 
         all_results = []
-        for i in range(len(scores)):
-            all_results.append(
-                {
-                    "index": i,
-                    "score": float(scores[i]),
-                    "text": wikitext[i]["text"][:500],
-                }
-            )
-        with open(os.path.join(OUTPUT_DIR, "all_scores.json"), "w") as f:
+        for i in range(len(example_scores)):
+            entry = {
+                "index": i,
+                "example_score": float(example_scores[i]),
+                "text": wikitext[i]["text"][:500],
+            }
+            if scores.ndim == 2:
+                entry["token_scores"] = scores[i].tolist()
+            all_results.append(entry)
+        with open(
+            os.path.join(OUTPUT_DIR, "all_scores.json"), "w"
+        ) as f:
             json.dump(all_results, f, indent=2)
+
+        # Save full per-token tensor separately
+        if scores.ndim == 2:
+            tok_path = os.path.join(
+                OUTPUT_DIR, "per_token_scores.pt"
+            )
+            torch.save(scores, tok_path)
+            print(f"\nPer-token scores saved to {tok_path}")
 
         print(f"\nAll results saved to {OUTPUT_DIR}")
 
-        # Cleanup checkpoints
-        print(f"\nCleaning up checkpoints at {CKPT_DIR}...")
-        shutil.rmtree(CKPT_DIR, ignore_errors=True)
         print("Done.")
 
 
