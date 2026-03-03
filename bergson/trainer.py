@@ -75,13 +75,9 @@ class DataStream:
 
         n = self.batch_size * self.num_batches
         if per_token:
-            self.weights = nn.Parameter(
-                torch.ones(n, max_seq_len, device=device)
-            )
+            self.weights = nn.Parameter(torch.ones(n, max_seq_len, device=device))
         else:
-            self.weights = nn.Parameter(
-                torch.ones(n, device=device)
-            )
+            self.weights = nn.Parameter(torch.ones(n, device=device))
 
     @property
     def requires_grad(self) -> bool:
