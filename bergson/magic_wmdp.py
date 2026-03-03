@@ -84,6 +84,9 @@ class MagicConfig:
     output_dir: str = field(default="runs/magic_wikitext_msl1024_output")
     """Directory for output files (scores, eval grads, results)."""
 
+    wandb_project: str = "magic-wmdp"
+    """Wandb project name. Set to empty string to disable."""
+
     @property
     def n_examples(self) -> int:
         return self.batch_size * self.num_batches
@@ -193,7 +196,9 @@ def worker(global_rank, rank, world_size, wikitext, wmdp, run_cfg: MagicConfig):
 
     n_params = sum(p.numel() for p in model.parameters())
     if global_rank == 0:
-        print(f"Model loaded in {time.time() - t0:.1f}s  ({n_params/1e9:.2f}B params per shard)")
+        print(
+            f"Model loaded in {time.time() - t0:.1f}s  ({n_params/1e9:.2f}B params per shard)"
+        )
 
     tokenizer = AutoTokenizer.from_pretrained(run_cfg.model)
     tokenizer.pad_token = tokenizer.eos_token
@@ -204,7 +209,9 @@ def worker(global_rank, rank, world_size, wikitext, wmdp, run_cfg: MagicConfig):
     opt = torchopt.sgd(run_cfg.lr)
     trainer, state0 = Trainer.initialize(model, opt)
     if global_rank == 0:
-        print(f"Trainer initialized. GPU: {torch.cuda.memory_allocated(rank)/1e9:.1f} GB")
+        print(
+            f"Trainer initialized. GPU: {torch.cuda.memory_allocated(rank)/1e9:.1f} GB"
+        )
 
     stream = DataStream(
         wikitext,
@@ -222,6 +229,24 @@ def worker(global_rank, rank, world_size, wikitext, wmdp, run_cfg: MagicConfig):
             f"= {run_cfg.n_examples} examples"
         )
 
+    # ── Optional wandb init ──────────────────────────────────────────────
+    log_fn = None
+    if run_cfg.wandb_project and global_rank == 0:
+        from bergson.utils.logging import wandb_log_fn
+
+        log_fn = wandb_log_fn(
+            run_cfg.wandb_project,
+            config={
+                "model": run_cfg.model,
+                "lr": run_cfg.lr,
+                "batch_size": run_cfg.batch_size,
+                "num_batches": run_cfg.num_batches,
+                "max_seq_len": run_cfg.max_seq_len,
+                "eval_task": run_cfg.eval_task,
+                "per_token": run_cfg.per_token,
+            },
+        )
+
     # ── Step 1: Forward training with checkpoints ───────────────────────
     def training_complete():
         if not os.path.isdir(run_cfg.ckpt_dir):
@@ -232,7 +257,9 @@ def worker(global_rank, rank, world_size, wikitext, wmdp, run_cfg: MagicConfig):
         if global_rank == 0:
             ckpts = sorted_checkpoints(run_cfg.ckpt_dir)
             print(f"\n{'='*60}")
-            print(f"Step 1: SKIPPED (found {len(ckpts)} checkpoints in {run_cfg.ckpt_dir})")
+            print(
+                f"Step 1: SKIPPED (found {len(ckpts)} checkpoints in {run_cfg.ckpt_dir})"
+            )
             print(f"{'='*60}")
 
         ckpts = sorted_checkpoints(run_cfg.ckpt_dir)
@@ -260,7 +287,7 @@ def worker(global_rank, rank, world_size, wikitext, wmdp, run_cfg: MagicConfig):
         os.makedirs(run_cfg.ckpt_dir, exist_ok=True)
 
         t0 = time.time()
-        state = trainer.train(state0, stream, save_dir=run_cfg.ckpt_dir)
+        state = trainer.train(state0, stream, save_dir=run_cfg.ckpt_dir, log_fn=log_fn)
         del state0
         train_time = time.time() - t0
 
@@ -285,7 +312,9 @@ def worker(global_rank, rank, world_size, wikitext, wmdp, run_cfg: MagicConfig):
     if os.path.exists(run_cfg.eval_grads_path):
         if global_rank == 0:
             print(f"\n{'='*60}")
-            print(f"Step 2: SKIPPED (loading cached eval grads from {run_cfg.eval_grads_path})")
+            print(
+                f"Step 2: SKIPPED (loading cached eval grads from {run_cfg.eval_grads_path})"
+            )
             print(f"{'='*60}")
         saved = torch.load(run_cfg.eval_grads_path, weights_only=True)
         param_grads = {k: v.to(device) for k, v in saved["param_grads"].items()}
@@ -388,7 +417,9 @@ def worker(global_rank, rank, world_size, wikitext, wmdp, run_cfg: MagicConfig):
 
         stream.requires_grad = True
         if global_rank == 0:
-            print(f"GPU before backward: {torch.cuda.memory_allocated(rank)/1e9:.1f} GB")
+            print(
+                f"GPU before backward: {torch.cuda.memory_allocated(rank)/1e9:.1f} GB"
+            )
             torch.cuda.reset_peak_memory_stats(rank)
 
         bwd_state = trainer.backward(run_cfg.ckpt_dir, stream, bwd_state)
@@ -426,7 +457,7 @@ def worker(global_rank, rank, world_size, wikitext, wmdp, run_cfg: MagicConfig):
         else:
             example_scores = scores  # 1D fallback
 
-        print(f"\nPer-example scores (sum over tokens):")
+        print("\nPer-example scores (sum over tokens):")
         print(f"  Shape: {example_scores.shape}")
         print(
             f"  Range: [{example_scores.min().item():.6e}, "
@@ -468,9 +499,7 @@ def worker(global_rank, rank, world_size, wikitext, wmdp, run_cfg: MagicConfig):
         print(f"\n{'='*60}")
         print(f"Top {n_show} sequences with HIGHEST attribution:")
         print(f"{'='*60}")
-        for rank_i, idx in enumerate(
-            reversed(sorted_indices[-n_show:])
-        ):
+        for rank_i, idx in enumerate(reversed(sorted_indices[-n_show:])):
             idx_int = int(idx)
             text = wikitext[idx_int]["text"]
             results_highest.append(
@@ -494,9 +523,7 @@ def worker(global_rank, rank, world_size, wikitext, wmdp, run_cfg: MagicConfig):
             print(f"\n{'='*60}")
             print(f"Per-token breakdown: {n_detail} lowest examples")
             print(f"{'='*60}")
-            for rank_i, idx in enumerate(
-                sorted_indices[:n_detail]
-            ):
+            for rank_i, idx in enumerate(sorted_indices[:n_detail]):
                 idx_int = int(idx)
                 text = wikitext[idx_int]["text"]
                 tokens = tokenizer.encode(
@@ -506,21 +533,16 @@ def worker(global_rank, rank, world_size, wikitext, wmdp, run_cfg: MagicConfig):
                 )
                 tok_scores = scores[idx_int, : len(tokens)]
                 print(
-                    f"\n#{rank_i} idx={idx_int}  "
-                    f"sum={example_scores[idx_int]:.6e}"
+                    f"\n#{rank_i} idx={idx_int}  " f"sum={example_scores[idx_int]:.6e}"
                 )
-                for t, (tid, s) in enumerate(
-                    zip(tokens, tok_scores.tolist())
-                ):
+                for t, (tid, s) in enumerate(zip(tokens, tok_scores.tolist())):
                     tok_str = tokenizer.decode([tid])
                     print(f"  [{t:3d}] {s:+.4e}  {tok_str!r}")
 
             print(f"\n{'='*60}")
             print(f"Per-token breakdown: {n_detail} highest examples")
             print(f"{'='*60}")
-            for rank_i, idx in enumerate(
-                reversed(sorted_indices[-n_detail:])
-            ):
+            for rank_i, idx in enumerate(reversed(sorted_indices[-n_detail:])):
                 idx_int = int(idx)
                 text = wikitext[idx_int]["text"]
                 tokens = tokenizer.encode(
@@ -530,12 +552,9 @@ def worker(global_rank, rank, world_size, wikitext, wmdp, run_cfg: MagicConfig):
                 )
                 tok_scores = scores[idx_int, : len(tokens)]
                 print(
-                    f"\n#{rank_i} idx={idx_int}  "
-                    f"sum={example_scores[idx_int]:.6e}"
+                    f"\n#{rank_i} idx={idx_int}  " f"sum={example_scores[idx_int]:.6e}"
                 )
-                for t, (tid, s) in enumerate(
-                    zip(tokens, tok_scores.tolist())
-                ):
+                for t, (tid, s) in enumerate(zip(tokens, tok_scores.tolist())):
                     tok_str = tokenizer.decode([tid])
                     print(f"  [{t:3d}] {s:+.4e}  {tok_str!r}")
 
@@ -559,16 +578,12 @@ def worker(global_rank, rank, world_size, wikitext, wmdp, run_cfg: MagicConfig):
             if scores.ndim == 2:
                 entry["token_scores"] = scores[i].tolist()
             all_results.append(entry)
-        with open(
-            os.path.join(run_cfg.output_dir, "all_scores.json"), "w"
-        ) as f:
+        with open(os.path.join(run_cfg.output_dir, "all_scores.json"), "w") as f:
             json.dump(all_results, f, indent=2)
 
         # Save full per-token tensor separately
         if scores.ndim == 2:
-            tok_path = os.path.join(
-                run_cfg.output_dir, "per_token_scores.pt"
-            )
+            tok_path = os.path.join(run_cfg.output_dir, "per_token_scores.pt")
             torch.save(scores, tok_path)
             print(f"\nPer-token scores saved to {tok_path}")
 
@@ -613,7 +628,9 @@ def main():
             ds = load_dataset("EleutherAI/wmdp_bio_robust_mcqa", c, split="robust")
             eval_parts.append(ds)
         eval_data = concatenate_datasets(eval_parts)
-        print(f"WMDP-bio-robust: {len(eval_data)} questions across {len(configs)} categories")
+        print(
+            f"WMDP-bio-robust: {len(eval_data)} questions across {len(configs)} categories"
+        )
     elif run_cfg.eval_task == "mmlu":
         print("\nLoading MMLU...")
         eval_data = load_dataset("cais/mmlu", "all", split="test")
