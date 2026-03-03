@@ -1,5 +1,6 @@
 import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field, fields
 
 import torch
@@ -285,6 +286,7 @@ class Trainer:
             loss = outputs
 
         assert isinstance(loss, torch.Tensor), "Loss must be a Tensor"
+        self._last_loss = loss.detach().item()
         grads = grad_tree(loss, state.params, create_graph=trace)
 
         updates, new_state = self.optimizer.update(
@@ -307,19 +309,25 @@ class Trainer:
         inplace: bool = False,
         save_dir: str | None = None,
         trace: bool = False,
+        log_fn: Callable[[int, float], None] | None = None,
     ) -> TrainerState:
         # Make sure the save directory exists
         if save_dir is not None:
             os.makedirs(save_dir, exist_ok=True)
 
         for x in data:
+            step_idx = state.batch_index
+
             # Save checkpoint BEFORE each step. Step 0 is the initial state prior to
             # any updates, step 1 is the state after the first update, etc.
             if save_dir is not None:
-                p = os.path.join(save_dir, f"step_{state.batch_index}.ckpt")
+                p = os.path.join(save_dir, f"step_{step_idx}.ckpt")
                 state.save(p)
 
             state = self.step(state, x, inplace=inplace, trace=trace)
+
+            if log_fn is not None:
+                log_fn(step_idx, self._last_loss)
 
         return state
 
