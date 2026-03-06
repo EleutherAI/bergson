@@ -197,7 +197,8 @@ def worker(global_rank, rank, world_size, wikitext, wmdp, run_cfg: MagicConfig):
     n_params = sum(p.numel() for p in model.parameters())
     if global_rank == 0:
         print(
-            f"Model loaded in {time.time() - t0:.1f}s  ({n_params/1e9:.2f}B params per shard)"
+            f"Model loaded in {time.time() - t0:.1f}s  "
+            f"({n_params/1e9:.2f}B params per shard)"
         )
 
     tokenizer = AutoTokenizer.from_pretrained(run_cfg.model)
@@ -258,7 +259,8 @@ def worker(global_rank, rank, world_size, wikitext, wmdp, run_cfg: MagicConfig):
             ckpts = sorted_checkpoints(run_cfg.ckpt_dir)
             print(f"\n{'='*60}")
             print(
-                f"Step 1: SKIPPED (found {len(ckpts)} checkpoints in {run_cfg.ckpt_dir})"
+                f"Step 1: SKIPPED (found {len(ckpts)} "
+                f"checkpoints in {run_cfg.ckpt_dir})"
             )
             print(f"{'='*60}")
 
@@ -313,7 +315,8 @@ def worker(global_rank, rank, world_size, wikitext, wmdp, run_cfg: MagicConfig):
         if global_rank == 0:
             print(f"\n{'='*60}")
             print(
-                f"Step 2: SKIPPED (loading cached eval grads from {run_cfg.eval_grads_path})"
+                f"Step 2: SKIPPED "
+                f"(loading cached eval grads from {run_cfg.eval_grads_path})"
             )
             print(f"{'='*60}")
         saved = torch.load(run_cfg.eval_grads_path, weights_only=True)
@@ -629,7 +632,8 @@ def main():
             eval_parts.append(ds)
         eval_data = concatenate_datasets(eval_parts)
         print(
-            f"WMDP-bio-robust: {len(eval_data)} questions across {len(configs)} categories"
+            f"WMDP-bio-robust: {len(eval_data)} questions "
+            f"across {len(configs)} categories"
         )
     elif run_cfg.eval_task == "mmlu":
         print("\nLoading MMLU...")

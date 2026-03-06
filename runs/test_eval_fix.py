@@ -142,7 +142,8 @@ def main():
 
         if n_chunks % 20 == 0:
             print(
-                f"  Chunk {n_chunks}/{(len(wmdp_examples) + EVAL_CHUNK_SIZE - 1) // EVAL_CHUNK_SIZE}, "
+                f"  Chunk {n_chunks}/"
+                f"{(len(wmdp_examples) + EVAL_CHUNK_SIZE - 1) // EVAL_CHUNK_SIZE}, "
                 f"GPU: {torch.cuda.memory_allocated(0)/1e9:.1f} GB",
                 flush=True,
             )
@@ -165,7 +166,7 @@ def main():
     ]
     print(f"opt_grads count: {len(opt_grads)}")
     print(f"param_grads count: {len(param_grads)}")
-    bwd_state = BackwardState(param_grads, opt_grads, torch.zeros(1000, device=DEVICE))
+    BackwardState(param_grads, opt_grads, torch.zeros(1000, device=DEVICE))
     print("BackwardState created successfully")
     print(f"GPU final: {torch.cuda.memory_allocated(0)/1e9:.1f} GB")
     print("\nSUCCESS - eval fix works!")
