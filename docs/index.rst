@@ -68,6 +68,7 @@ Experiments
    :maxdepth: 2
 
    experiments
+   magic
 
 
 Content Index
