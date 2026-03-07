@@ -60,13 +60,11 @@ class DataStream:
         device: torch.device | str = "cpu",
         input_key: str = "text",
         max_length: int = 256,
-        per_token: bool = False,
     ):
         self.dataset = dataset
         self.processor = processor
         self.input_key = input_key
         self.max_length = max_length
-        self.per_token = per_token
 
         self.batch_size = batch_size
         self.device = device
@@ -89,8 +87,7 @@ class DataStream:
             )
 
         n = self.batch_size * self.num_batches
-        shape = (n, max_length) if per_token else (n,)
-        self.weights = nn.Parameter(torch.ones(*shape, device=device))
+        self.weights = nn.Parameter(torch.ones(n, device=device))
 
     @property
     def requires_grad(self) -> bool:
@@ -129,9 +126,6 @@ class DataStream:
             i * self.batch_size
             + self.rank : (i + 1) * self.batch_size : self.world_size
         ]
-        if self.per_token and w.ndim == 2:
-            T_batch = x["input_ids"].shape[1]
-            w = w[:, :T_batch]
         x["example_weight"] = w
         return {k: v.to(self.device) for k, v in x.items()}
 
