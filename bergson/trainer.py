@@ -179,12 +179,22 @@ class TrainerState:
         )
 
     def save(self, path: str) -> Future:
+        rank = dist.get_rank() if dist.is_initialized() else 0
+        print(f"[rank {rank}] save: starting async_save for {path}", flush=True)
+
         # Create a new process group so that we can overlap saves
         if dist.is_initialized():
             grp = dist.new_group(backend="gloo", group_desc=path)
             assert isinstance(grp, dist.ProcessGroup)
         else:
             grp = None
+
+        def _done_callback(fut, g=grp, p=path):
+            print(f"[rank {rank}] save: callback fired for {p}", flush=True)
+            if g is not None:
+                print(f"[rank {rank}] save: calling destroy_process_group for {p}", flush=True)
+                dist.destroy_process_group(g)
+                print(f"[rank {rank}] save: destroy_process_group done for {p}", flush=True)
 
         fut = dcp.async_save(
             self.state_dict(),
@@ -193,6 +203,7 @@ class TrainerState:
             process_group=grp,
         )
         assert isinstance(fut, Future)
+        fut.add_done_callback(_done_callback)
         return fut
 
     def detach_(self):
@@ -359,7 +370,10 @@ class Trainer:
                 # multiple concurrent DCP saves with separate Gloo groups, which can
                 # deadlock when background threads call distributed operations.
                 if pending_fut is not None:
+                    _rank = dist.get_rank() if dist.is_initialized() else 0
+                    print(f"[rank {_rank}] train: waiting for pending save before step {i}", flush=True)
                     pending_fut.result()
+                    print(f"[rank {_rank}] train: pending save done before step {i}", flush=True)
 
                 p = os.path.join(save_dir, f"step_{i}.ckpt")
                 pending_fut = state.save(p)
@@ -367,7 +381,10 @@ class Trainer:
             state = self.step(state, x, inplace=inplace, trace=trace)
 
         if pending_fut is not None:
+            _rank = dist.get_rank() if dist.is_initialized() else 0
+            print(f"[rank {_rank}] train: waiting for final save", flush=True)
             pending_fut.result()
+            print(f"[rank {_rank}] train: final save done", flush=True)
 
         return state
 
