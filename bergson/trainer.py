@@ -80,6 +80,14 @@ class DataStream:
                 f"{self.world_size}"
             )
 
+        needed = self.batch_size * self.num_batches
+        if len(self.dataset) < needed:
+            raise ValueError(
+                f"Dataset has {len(self.dataset)} examples but {self.num_batches} "
+                f"batches of size {self.batch_size} require {needed}. "
+                f"Pass a larger split or reduce --num_batches."
+            )
+
         n = self.batch_size * self.num_batches
         shape = (n, max_length) if per_token else (n,)
         self.weights = nn.Parameter(torch.ones(*shape, device=device))
