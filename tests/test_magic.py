@@ -107,6 +107,47 @@ def test_padding_gradient_invariance(batch_size, world_size):
     assert grad_diff < 1e-3, f"Grad diff {grad_diff:.2e} too large"
 
 
+def test_final_batch_padding():
+    """DataStream pads the final batch when the dataset doesn't divide evenly,
+    with correct weight correction and label masking."""
+    from datasets import Dataset
+
+    from bergson.trainer import DataStream
+
+    ds = Dataset.from_dict({"text": [f"hello world {i}" for i in range(10)]})
+    tokenizer = AutoTokenizer.from_pretrained("EleutherAI/pythia-14m")
+    tokenizer.pad_token = tokenizer.eos_token
+
+    # 10 examples, batch_size=4 per-device, world_size=1 → global=4
+    # ceil(10/4) = 3 batches, last batch has 2 real + 2 padded
+    stream = DataStream(ds, tokenizer, batch_size=4, max_length=16)
+
+    assert stream.num_batches == 3
+    assert stream._num_real == 10
+    assert stream._pad_last_batch == 2
+
+    # First two batches: uniform weight=1
+    assert (stream.weights.data[:4] == 1.0).all()
+    assert (stream.weights.data[4:8] == 1.0).all()
+
+    # Last batch: 2 real with correction=4/2=2, 2 padded with weight=0
+    assert (stream.weights.data[8:10] == 2.0).all()
+    assert (stream.weights.data[10:12] == 0.0).all()
+
+    # Padded examples get labels=-100
+    last_batch = stream[2]
+    assert (last_batch["labels"][2:] == -100).all()
+    # Real examples in last batch keep their labels
+    assert (last_batch["labels"][:2] != -100).any()
+
+    # reset_weights restores initial state
+    stream.weights.data.fill_(999.0)
+    stream.reset_weights()
+    assert (stream.weights.data[:8] == 1.0).all()
+    assert (stream.weights.data[8:10] == 2.0).all()
+    assert (stream.weights.data[10:12] == 0.0).all()
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_magic_e2e(tmp_path: Path):
     """End-to-end test of the magic (double_backward) CLI on a single GPU."""

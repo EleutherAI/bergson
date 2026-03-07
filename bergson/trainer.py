@@ -54,7 +54,12 @@ class DataStream:
 
     ``batch_size`` is the **per-device** batch size.  The global batch size is
     ``batch_size * world_size``, which is always divisible by ``world_size``
-    by construction — no padding is needed.
+    by construction.
+
+    When the dataset doesn't fill the final batch, the remaining positions
+    are padded: weight=0, labels=-100, and real weights in that batch are
+    scaled up by ``global_batch_size / num_real`` so that the ``.mean()``
+    reduction gives the correct result after AVG all-reduce.
     """
 
     def __init__(
@@ -81,10 +86,13 @@ class DataStream:
         self.world_size = dist.get_world_size() if dist.is_initialized() else 1
 
         self.batch_size = batch_size * self.world_size
-        self.num_batches = num_batches or len(self.dataset) // self.batch_size
+        self.num_batches = num_batches or math.ceil(len(self.dataset) / self.batch_size)
 
         needed = self.batch_size * self.num_batches
-        if len(self.dataset) < needed:
+        self._num_real = min(len(self.dataset), needed)
+        self._pad_last_batch = needed - self._num_real
+
+        if self._pad_last_batch > 0 and self._num_real < len(self.dataset):
             raise ValueError(
                 f"Dataset has {len(self.dataset)} examples but {self.num_batches} "
                 f"batches of size {self.batch_size} require {needed}. "
@@ -95,6 +103,13 @@ class DataStream:
         shape = (n, max_length) if per_token else (n,)
         self.weights = nn.Parameter(torch.ones(*shape, device=device))
 
+        if self._pad_last_batch > 0:
+            real_in_last = self.batch_size - self._pad_last_batch
+            correction = self.batch_size / real_in_last
+            last_start = (self.num_batches - 1) * self.batch_size
+            self.weights.data[last_start : last_start + real_in_last] = correction
+            self.weights.data[last_start + real_in_last :] = 0.0
+
     @property
     def requires_grad(self) -> bool:
         return self.weights.requires_grad
@@ -102,6 +117,16 @@ class DataStream:
     @requires_grad.setter
     def requires_grad(self, value: bool):
         self.weights.requires_grad = value
+
+    def reset_weights(self):
+        """Reset weights to their initial state (padded zeros, correction-scaled)."""
+        self.weights.data.fill_(1.0)
+        if self._pad_last_batch > 0:
+            real_in_last = self.batch_size - self._pad_last_batch
+            correction = self.batch_size / real_in_last
+            last_start = (self.num_batches - 1) * self.batch_size
+            self.weights.data[last_start : last_start + real_in_last] = correction
+            self.weights.data[last_start + real_in_last :] = 0.0
 
     def __getitem__(self, i: int) -> dict:
         if i < 0 or i >= self.num_batches:
@@ -116,6 +141,9 @@ class DataStream:
                 self.world_size,
             )
         )
+        # Wrap indices past the dataset (padded positions in final batch)
+        if self._pad_last_batch > 0:
+            indices = [idx % self._num_real for idx in indices]
         raw = self.dataset[indices]
 
         # padding="max_length" ensures uniform shape across ranks without needing
@@ -132,6 +160,11 @@ class DataStream:
             i * self.batch_size
             + self.rank : (i + 1) * self.batch_size : self.world_size
         ]
+        # Mask labels for padded examples so they contribute zero loss
+        if self._pad_last_batch > 0:
+            pad_mask = w.data == 0
+            if pad_mask.any():
+                x["labels"][pad_mask] = -100
         if self.per_token and w.ndim == 2:
             T_batch = x["input_ids"].shape[1]
             w = w[:, :T_batch]

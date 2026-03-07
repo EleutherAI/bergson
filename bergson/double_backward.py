@@ -214,7 +214,7 @@ def worker(
 
     scores_path = Path(run_cfg.run_path) / "scores.npy"
     baseline_path = Path(run_cfg.run_path) / "baseline.npy"
-    num_examples = len(stream.weights)
+    num_examples = stream._num_real
 
     if scores_path.exists() and baseline_path.exists():
         # Resume: load previously computed scores
@@ -296,7 +296,7 @@ def worker(
             if i < start_subset:
                 continue
 
-            stream.weights.data.fill_(1.0)
+            stream.reset_weights()
             stream.weights.data[subset] = 0.0
 
             for x in stream:
