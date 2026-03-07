@@ -193,10 +193,6 @@ class TrainerState:
             process_group=grp,
         )
         assert isinstance(fut, Future)
-
-        fut.add_done_callback(
-            lambda _, g=grp: dist.destroy_process_group(g) if g else None
-        )
         return fut
 
     def detach_(self):
