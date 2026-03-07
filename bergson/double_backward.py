@@ -1,6 +1,8 @@
+import json
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import timedelta
+from pathlib import Path
 from typing import Literal
 
 import torch
@@ -281,6 +283,13 @@ def worker(
 
 
 def double_backward(run_cfg: DoubleBackwardConfig, dist_cfg: DistributedConfig):
+    run_path = Path(run_cfg.run_path)
+    run_path.mkdir(parents=True, exist_ok=True)
+    with (run_path / "run_config.json").open("w") as f:
+        json.dump(asdict(run_cfg), f, indent=2)
+    with (run_path / "dist_config.json").open("w") as f:
+        json.dump(asdict(dist_cfg), f, indent=2)
+
     train_ds = load_data_string(
         run_cfg.data.dataset,
         run_cfg.data.split,
