@@ -167,6 +167,7 @@ class TrainerState:
         dcp.load(
             self.state_dict(),
             checkpoint_id=path,
+            no_dist=not dist.is_initialized(),
         )
 
     def save(self, path: str) -> Future:
@@ -180,6 +181,7 @@ class TrainerState:
         fut = dcp.async_save(
             self.state_dict(),
             checkpoint_id=path,
+            no_dist=grp is None,
             process_group=grp,
         )
         assert isinstance(fut, Future)
