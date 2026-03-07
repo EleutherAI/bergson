@@ -87,31 +87,13 @@ def compute_query_gradients(
 
     Iterates over the query stream, computing per-batch parameter gradients
     and reducing them (mean or sum) into a single gradient dict.
-
-    When ``query_stream`` has padding (batch_size rounded up to world_size),
-    padded examples have their labels set to ``ignore_index`` so they
-    contribute zero loss.  The caller must apply a correction factor of
-    ``batch_size / logical_batch_size`` after the all-reduce to account for
-    the inflated denominator.
     """
     grad_accum: dict[str, torch.Tensor] | None = None
     n_batches = 0
-    has_padding = query_stream._pad_per_batch > 0
 
     with fwd_state.activate(model) as params:
         for batch in query_stream:
             del batch["example_weight"]
-
-            # Mask padded examples so they contribute zero loss.
-            if has_padding:
-                w = query_stream.weights[
-                    n_batches * query_stream.batch_size
-                    + query_stream.rank : (n_batches + 1)
-                    * query_stream.batch_size : query_stream.world_size
-                ]
-                pad_mask = w == 0
-                batch["labels"] = batch["labels"].clone()
-                batch["labels"][pad_mask] = -100
 
             loss = model(**batch).loss
             grads = grad_tree(loss, params)
@@ -193,12 +175,6 @@ def worker(
     path0 = os.path.join(ckpts_path, "state0.pt")
     save_fut = fwd_state.save(path0)
 
-    if run_cfg.batch_size % world_size != 0:
-        raise ValueError(
-            f"Training batch_size ({run_cfg.batch_size}) must be divisible by "
-            f"world_size ({world_size}). Padding would change training dynamics."
-        )
-
     stream = DataStream(
         train_dataset,
         processor,
@@ -215,9 +191,6 @@ def worker(
         save_dir=ckpts_path,
     )
 
-    # Compute query gradients — batch size is rounded up to world_size if
-    # needed.  Padded examples are label-masked in compute_query_gradients;
-    # the correction factor below fixes the denominator after all-reduce.
     query_stream = DataStream(
         query_dataset,
         processor,
@@ -238,13 +211,6 @@ def worker(
         )
         for v in query_grads.values():
             dist.all_reduce(v, op=reduce_op)
-
-        # Correct for padded denominator: .mean() divides by padded_bs but
-        # we want to divide by logical_batch_size.
-        if query_stream._pad_per_batch > 0:
-            correction = query_stream.batch_size / query_stream._logical_batch_size
-            for v in query_grads.values():
-                v *= correction
 
     scores_path = Path(run_cfg.run_path) / "scores.npy"
     baseline_path = Path(run_cfg.run_path) / "baseline.npy"
@@ -330,8 +296,8 @@ def worker(
             if i < start_subset:
                 continue
 
-            stream.weights.fill_(1.0)
-            stream.weights[subset] = 0.0
+            stream.weights.data.fill_(1.0)
+            stream.weights.data[subset] = 0.0
 
             for x in stream:
                 fwd_state = trainer.step(fwd_state, x)

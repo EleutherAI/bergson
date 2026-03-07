@@ -205,6 +205,11 @@ class Magic:
 
     def execute(self):
         """Run MAGIC attribution."""
+        import torch
+
+        assert (
+            torch.__version__ >= "2.9"
+        ), f"MAGIC requires PyTorch >= 2.9, got {torch.__version__}"
         double_backward(self.run_cfg, self.dist_cfg)
 
 
