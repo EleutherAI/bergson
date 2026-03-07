@@ -342,7 +342,7 @@ class Trainer:
         chunk_size = math.isqrt(len(data)) if save_mode == "sqrt" else 1
         last_start = len(data) - chunk_size
 
-        save_futures: list[Future] = []
+        pending_fut: Future | None = None
 
         main = not dist.is_initialized() or dist.get_rank() != 0
         pbar = tqdm(data, desc="Training", disable=main)
@@ -351,15 +351,19 @@ class Trainer:
             # Save checkpoint BEFORE each step. Step 0 is the initial state prior to
             # any updates, step 1 is the state after the first update, etc.
             if save_dir and (i % chunk_size == 0 or i >= last_start):
-                p = os.path.join(save_dir, f"step_{i}.ckpt")
+                # Wait for the previous save before starting a new one to avoid
+                # multiple concurrent DCP saves with separate Gloo groups, which can
+                # deadlock when background threads call distributed operations.
+                if pending_fut is not None:
+                    pending_fut.result()
 
-                fut = state.save(p)
-                save_futures.append(fut)
+                p = os.path.join(save_dir, f"step_{i}.ckpt")
+                pending_fut = state.save(p)
 
             state = self.step(state, x, inplace=inplace, trace=trace)
 
-        for fut in save_futures:
-            fut.result()  # wait for all checkpoints to finish saving
+        if pending_fut is not None:
+            pending_fut.result()
 
         return state
 
