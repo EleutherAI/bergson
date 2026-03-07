@@ -21,10 +21,10 @@ Usage
 
 .. code-block:: bash
 
-   bergson magic runs/magic-ckpts \
+   CUDA_VISIBLE_DEVICES="0" bergson magic runs/magic-ckpts \
        --data.dataset NeelNanda/pile-10k \
        --query.dataset NeelNanda/pile-10k \
-       --query.split "train[:1]" \
+       --query.split "train[:8]" \
        --model EleutherAI/pythia-14m
 
 Core components
