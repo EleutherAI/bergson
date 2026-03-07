@@ -455,7 +455,7 @@ class Trainer:
             param_grads = {k: result[i] for i, k in enumerate(p_keys)}
             del result[: len(p_keys)]
 
-            weight_grads = result[-1] + w_grads if result[-1] is not None else w_grads
+            weight_grads = result[-1] + w_grads
             bwd_state = BackwardState(param_grads, result[:-1], weight_grads)
 
         for fut in save_futures:
