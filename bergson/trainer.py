@@ -192,9 +192,15 @@ class TrainerState:
         def _done_callback(fut, g=grp, p=path):
             print(f"[rank {rank}] save: callback fired for {p}", flush=True)
             if g is not None:
-                print(f"[rank {rank}] save: calling destroy_process_group for {p}", flush=True)
+                print(
+                    f"[rank {rank}] save: calling destroy_process_group for {p}",
+                    flush=True,
+                )
                 dist.destroy_process_group(g)
-                print(f"[rank {rank}] save: destroy_process_group done for {p}", flush=True)
+                print(
+                    f"[rank {rank}] save: destroy_process_group done for {p}",
+                    flush=True,
+                )
 
         fut = dcp.async_save(
             self.state_dict(),
@@ -371,9 +377,15 @@ class Trainer:
                 # deadlock when background threads call distributed operations.
                 if pending_fut is not None:
                     _rank = dist.get_rank() if dist.is_initialized() else 0
-                    print(f"[rank {_rank}] train: waiting for pending save before step {i}", flush=True)
+                    print(
+                        f"[rank {_rank}] train: waiting for pending save before step {i}",
+                        flush=True,
+                    )
                     pending_fut.result()
-                    print(f"[rank {_rank}] train: pending save done before step {i}", flush=True)
+                    print(
+                        f"[rank {_rank}] train: pending save done before step {i}",
+                        flush=True,
+                    )
 
                 p = os.path.join(save_dir, f"step_{i}.ckpt")
                 pending_fut = state.save(p)
