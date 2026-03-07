@@ -19,7 +19,7 @@ def weighted_causal_lm_ce(
     Args:
     logits         : [B, T, V] float tensor of prediction scores
     labels         : [B, T] long tensor of target token ids, or ignore_index
-    example_weight : [B] float tensor of per-example weights
+    example_weight : [B] or [B, T] float tensor of per-example weights
     ignore_index   : int, label value to ignore in loss computation
     vocab_size     : optional int, vocabulary size (for validation)
     """
@@ -27,7 +27,10 @@ def weighted_causal_lm_ce(
     B, T, V = logits.shape
     assert labels.shape == (B, T)
     if example_weight is not None:
-        assert example_weight.shape == (B,)
+        assert example_weight.ndim in (1, 2), (
+            f"example_weight must be 1D [B] or 2D [B, T], "
+            f"got shape {example_weight.shape}"
+        )
 
     # HuggingFace always passes a vocab_size kwarg
     if vocab_size is not None:
@@ -51,7 +54,11 @@ def weighted_causal_lm_ce(
     if example_weight is None:
         return tok_loss.mean()
 
-    w = example_weight.to(tok_loss.dtype).view(B, 1)  # [B,1]
+    if example_weight.ndim == 1:
+        w = example_weight.to(tok_loss.dtype).view(B, 1)  # [B,1]
+    else:
+        # Per-token weights: shift to align with shifted labels
+        w = example_weight[:, 1:].to(tok_loss.dtype)  # [B, T-1]
     return (tok_loss * w).mean()
 
 
