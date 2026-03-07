@@ -5,6 +5,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Literal
 
+import numpy as np
 import torch
 import torch.distributed as dist
 import torchopt
@@ -86,13 +87,32 @@ def compute_query_gradients(
 
     Iterates over the query stream, computing per-batch parameter gradients
     and reducing them (mean or sum) into a single gradient dict.
+
+    When ``query_stream`` has padding (batch_size rounded up to world_size),
+    padded examples have their labels set to ``ignore_index`` so they
+    contribute zero loss.  The caller must apply a correction factor of
+    ``batch_size / logical_batch_size`` after the all-reduce to account for
+    the inflated denominator.
     """
     grad_accum: dict[str, torch.Tensor] | None = None
     n_batches = 0
+    has_padding = query_stream._pad_per_batch > 0
 
     with fwd_state.activate(model) as params:
         for batch in query_stream:
             del batch["example_weight"]
+
+            # Mask padded examples so they contribute zero loss.
+            if has_padding:
+                w = query_stream.weights[
+                    n_batches * query_stream.batch_size
+                    + query_stream.rank : (n_batches + 1)
+                    * query_stream.batch_size : query_stream.world_size
+                ]
+                pad_mask = w == 0
+                batch["labels"] = batch["labels"].clone()
+                batch["labels"][pad_mask] = -100
+
             loss = model(**batch).loss
             grads = grad_tree(loss, params)
 
@@ -173,6 +193,12 @@ def worker(
     path0 = os.path.join(ckpts_path, "state0.pt")
     save_fut = fwd_state.save(path0)
 
+    if run_cfg.batch_size % world_size != 0:
+        raise ValueError(
+            f"Training batch_size ({run_cfg.batch_size}) must be divisible by "
+            f"world_size ({world_size}). Padding would change training dynamics."
+        )
+
     stream = DataStream(
         train_dataset,
         processor,
@@ -189,7 +215,9 @@ def worker(
         save_dir=ckpts_path,
     )
 
-    # Compute query gradients
+    # Compute query gradients — batch size is rounded up to world_size if
+    # needed.  Padded examples are label-masked in compute_query_gradients;
+    # the correction factor below fixes the denominator after all-reduce.
     query_stream = DataStream(
         query_dataset,
         processor,
@@ -211,75 +239,130 @@ def worker(
         for v in query_grads.values():
             dist.all_reduce(v, op=reduce_op)
 
-    stream.requires_grad = True
-    opt_grads = [
-        torch.zeros_like(buf)
-        for buf in tree_iter(fwd_state.opt_state)
-        if isinstance(buf, torch.Tensor) and buf.is_floating_point()
-    ]
-    bwd_state = BackwardState(query_grads, opt_grads, torch.zeros_like(stream.weights))
+        # Correct for padded denominator: .mean() divides by padded_bs but
+        # we want to divide by logical_batch_size.
+        if query_stream._pad_per_batch > 0:
+            correction = query_stream.batch_size / query_stream._logical_batch_size
+            for v in query_grads.values():
+                v *= correction
 
-    # Compute baseline eval loss for validation
-    with fwd_state.activate(model):
-        baseline_batch = query_stream[0]
-        del baseline_batch["example_weight"]
-        baseline_loss = model(**baseline_batch).loss
+    scores_path = Path(run_cfg.run_path) / "scores.npy"
+    baseline_path = Path(run_cfg.run_path) / "baseline.npy"
+    num_examples = len(stream.weights)
 
-    if world_size > 1:
-        dist.all_reduce(baseline_loss, op=dist.ReduceOp.AVG)
+    if scores_path.exists() and baseline_path.exists():
+        # Resume: load previously computed scores
+        scores = torch.from_numpy(np.load(str(scores_path))).to(f"cuda:{rank}")
+        baseline = float(np.load(str(baseline_path)))
+        if global_rank == 0:
+            print(f"Resumed scores from {scores_path}")
+            print(f"Scores: {scores.tolist()}")
+            print(f"Baseline: {baseline}")
+            print(f"Grad sum: {scores.sum()}")
+    else:
+        stream.requires_grad = True
+        opt_grads = [
+            torch.zeros_like(buf)
+            for buf in tree_iter(fwd_state.opt_state)
+            if isinstance(buf, torch.Tensor) and buf.is_floating_point()
+        ]
+        bwd_state = BackwardState(
+            query_grads, opt_grads, torch.zeros_like(stream.weights)
+        )
 
-    bwd_state = trainer.backward(
-        ckpts_path,
-        stream,
-        bwd_state,
-        fwd_state,
-        inplace=True,
-    )
-    if world_size > 1:
-        dist.all_reduce(bwd_state.weight_grads, op=dist.ReduceOp.AVG)
+        # Compute baseline eval loss for validation
+        with fwd_state.activate(model):
+            baseline_batch = query_stream[0]
+            del baseline_batch["example_weight"]
+            baseline_loss = model(**baseline_batch).loss
 
-    baseline = baseline_loss.item()
-    if global_rank == 0:
-        print(f"Scores: {bwd_state.weight_grads.tolist()}")
-        print(f"Baseline: {baseline}")
-        print(f"Grad sum: {bwd_state.weight_grads.sum()}")
+        if world_size > 1:
+            dist.all_reduce(baseline_loss, op=dist.ReduceOp.AVG)
+
+        bwd_state = trainer.backward(
+            ckpts_path,
+            stream,
+            bwd_state,
+            fwd_state,
+            inplace=True,
+        )
+        if world_size > 1:
+            dist.all_reduce(bwd_state.weight_grads, op=dist.ReduceOp.AVG)
+
+        scores = bwd_state.weight_grads
+        baseline = baseline_loss.item()
+
+        # Save scores and baseline to disk
+        if global_rank == 0:
+            np.save(str(scores_path), scores.cpu().numpy())
+            np.save(str(baseline_path), np.array(baseline))
+            print(f"Saved scores to {scores_path}")
+            print(f"Scores: {scores.tolist()}")
+            print(f"Baseline: {baseline}")
+            print(f"Grad sum: {scores.sum()}")
 
     stream.requires_grad = False
 
     # Validate attribution scores via leave-subset-out retraining
-    diffs = []
-    score_sums = []
-
+    validation_path = Path(run_cfg.run_path) / "validation.npy"
     gen = torch.Generator().manual_seed(run_cfg.seed)
-    perm = torch.randperm(len(stream.weights), generator=gen)
+    perm = torch.randperm(num_examples, generator=gen)
     subsets = perm.chunk(run_cfg.num_subsets)
 
-    save_fut.result()  # ensure state0 is saved before loading in loop
-    fwd_state.load(path0)
-
-    for subset in subsets:
-        stream.weights.fill_(1.0)
-        stream.weights[subset] = 0.0
-
-        for x in stream:
-            fwd_state = trainer.step(fwd_state, x)
-
-        with fwd_state.activate(model):
-            eval_batch = query_stream[0]
-            del eval_batch["example_weight"]
-            loss = model(**eval_batch).loss
-
-        if world_size > 1:
-            dist.all_reduce(loss, op=dist.ReduceOp.AVG)
-
-        diffs.append(baseline - loss.item())
-        score_sums.append(bwd_state.weight_grads[subset].sum().item())
-
-        corr = spearmanr(diffs, score_sums)
+    # Resume validation: load existing results and skip completed subsets
+    start_subset = 0
+    if validation_path.exists():
+        saved = np.load(str(validation_path))
+        start_subset = len(saved)
+        diffs = saved[:, 0].tolist()
+        score_sums = saved[:, 1].tolist()
         if global_rank == 0:
-            print(f"Loss diff: {diffs[-1]}")
-            print(f"Score: {score_sums[-1]}")
-            print(f"Spearman correlation: {corr}")
+            print(f"Resumed validation from subset {start_subset}/{len(subsets)}")
+    else:
+        diffs = []
+        score_sums = []
+
+    if start_subset < len(subsets):
+        save_fut.result()  # ensure state0 is saved before loading in loop
+        fwd_state.load(path0)
+
+        for i, subset in enumerate(subsets):
+            if i < start_subset:
+                continue
+
+            stream.weights.fill_(1.0)
+            stream.weights[subset] = 0.0
+
+            for x in stream:
+                fwd_state = trainer.step(fwd_state, x)
+
+            with fwd_state.activate(model):
+                eval_batch = query_stream[0]
+                del eval_batch["example_weight"]
+                loss = model(**eval_batch).loss
+
+            if world_size > 1:
+                dist.all_reduce(loss, op=dist.ReduceOp.AVG)
+
+            diffs.append(baseline - loss.item())
+            score_sums.append(scores[subset].sum().item())
+
+            # Save validation progress to disk
+            if global_rank == 0:
+                val_arr = np.column_stack([diffs, score_sums])
+                np.save(str(validation_path), val_arr)
+
+            corr = spearmanr(diffs, score_sums)
+            if global_rank == 0:
+                print(f"Loss diff: {diffs[-1]}")
+                print(f"Score: {score_sums[-1]}")
+                print(f"Spearman correlation: {corr}")
+
+            fwd_state.load(path0)
+    else:
+        if global_rank == 0:
+            corr = spearmanr(diffs, score_sums)
+            print(f"Validation already complete. Spearman correlation: {corr}")
 
 
 def double_backward(run_cfg: DoubleBackwardConfig, dist_cfg: DistributedConfig):

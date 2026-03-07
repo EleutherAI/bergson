@@ -68,29 +68,36 @@ class DataStream:
         self.max_length = max_length
         self.per_token = per_token
 
-        self.batch_size = batch_size
         self.device = device
-        self.num_batches = num_batches or len(self.dataset) // self.batch_size
 
         self.rank = dist.get_rank() if dist.is_initialized() else 0
         self.world_size = dist.get_world_size() if dist.is_initialized() else 1
-        if self.batch_size % self.world_size != 0:
-            raise ValueError(
-                f"Batch size {self.batch_size} must be divisible by world size "
-                f"{self.world_size}"
-            )
 
-        needed = self.batch_size * self.num_batches
+        # Round up batch size so every rank gets the same number of examples.
+        # Track original size so callers can identify padded positions.
+        self._logical_batch_size = batch_size
+        self.batch_size = math.ceil(batch_size / self.world_size) * self.world_size
+        self._pad_per_batch = self.batch_size - batch_size
+        self.num_batches = num_batches or len(self.dataset) // batch_size
+
+        needed = batch_size * self.num_batches
         if len(self.dataset) < needed:
             raise ValueError(
                 f"Dataset has {len(self.dataset)} examples but {self.num_batches} "
-                f"batches of size {self.batch_size} require {needed}. "
+                f"batches of size {batch_size} require {needed}. "
                 f"Pass a larger split or reduce --num_batches."
             )
 
         n = self.batch_size * self.num_batches
         shape = (n, max_length) if per_token else (n,)
         self.weights = nn.Parameter(torch.ones(*shape, device=device))
+
+        # Zero out weights for padded positions
+        if self._pad_per_batch > 0:
+            for b in range(self.num_batches):
+                start = b * self.batch_size + batch_size
+                end = (b + 1) * self.batch_size
+                self.weights.data[start:end] = 0.0
 
     @property
     def requires_grad(self) -> bool:
@@ -99,6 +106,26 @@ class DataStream:
     @requires_grad.setter
     def requires_grad(self, value: bool):
         self.weights.requires_grad = value
+
+    @property
+    def real_examples_per_rank(self) -> list[int]:
+        """Number of real (non-padded) examples each rank processes per batch.
+
+        With interleaved sharding, rank r gets global indices
+        [r, r+world_size, r+2*world_size, ...]. Some of these may fall in the
+        padded region (>= logical_batch_size) and map to duplicate data with
+        weight=0. This list has one entry per rank.
+        """
+        per_rank = self.batch_size // self.world_size
+        counts = []
+        for r in range(self.world_size):
+            real = sum(
+                1
+                for k in range(per_rank)
+                if r + k * self.world_size < self._logical_batch_size
+            )
+            counts.append(real)
+        return counts
 
     def __getitem__(self, i: int) -> dict:
         if i < 0 or i >= self.num_batches:
@@ -113,6 +140,9 @@ class DataStream:
                 self.world_size,
             )
         )
+        # Wrap indices that fall in the padded region back into the dataset
+        if self._pad_per_batch > 0:
+            indices = [idx % len(self.dataset) for idx in indices]
         raw = self.dataset[indices]
 
         # padding="max_length" ensures uniform shape across ranks without needing
