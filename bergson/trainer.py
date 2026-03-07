@@ -79,12 +79,11 @@ class DataStream:
             )
 
         needed = self.batch_size * self.num_batches
-        if len(self.dataset) < needed:
-            raise ValueError(
-                f"Dataset has {len(self.dataset)} examples but {self.num_batches} "
-                f"batches of size {self.batch_size} require {needed}. "
-                f"Pass a larger split or reduce --num_batches."
-            )
+        assert len(self.dataset) >= needed, (
+            f"Dataset has {len(self.dataset)} examples but {self.num_batches} "
+            f"batches of size {self.batch_size} require {needed}. "
+            f"Pass a larger split or reduce --num_batches."
+        )
 
         n = self.batch_size * self.num_batches
         self.weights = nn.Parameter(torch.ones(n, device=device))
@@ -122,11 +121,10 @@ class DataStream:
             truncation=True,
         )
         x["labels"] = x["input_ids"]
-        w = self.weights[
+        x["example_weight"] = self.weights[
             i * self.batch_size
             + self.rank : (i + 1) * self.batch_size : self.world_size
         ]
-        x["example_weight"] = w
         return {k: v.to(self.device) for k, v in x.items()}
 
     def __iter__(self):
@@ -173,9 +171,6 @@ class TrainerState:
         )
 
     def save(self, path: str) -> Future:
-        rank = dist.get_rank() if dist.is_initialized() else 0
-        print(f"[rank {rank}] save: starting async_save for {path}", flush=True)
-
         # Create a new process group so that we can overlap saves
         if dist.is_initialized():
             grp = dist.new_group(backend="gloo", group_desc=path)
@@ -183,18 +178,9 @@ class TrainerState:
         else:
             grp = None
 
-        def _done_callback(fut, g=grp, p=path):
-            print(f"[rank {rank}] save: callback fired for {p}", flush=True)
+        def _done_callback(fut, g=grp):
             if g is not None:
-                print(
-                    f"[rank {rank}] save: calling destroy_process_group for {p}",
-                    flush=True,
-                )
                 dist.destroy_process_group(g)
-                print(
-                    f"[rank {rank}] save: destroy_process_group done for {p}",
-                    flush=True,
-                )
 
         fut = dcp.async_save(
             self.state_dict(),
@@ -373,17 +359,7 @@ class Trainer:
                 # multiple concurrent DCP saves with separate Gloo groups, which can
                 # deadlock when background threads call distributed operations.
                 if pending_fut is not None:
-                    _rank = dist.get_rank() if dist.is_initialized() else 0
-                    print(
-                        f"[rank {_rank}] train: waiting for pending save"
-                        f" before step {i}",
-                        flush=True,
-                    )
                     pending_fut.result()
-                    print(
-                        f"[rank {_rank}] train: pending save done before step {i}",
-                        flush=True,
-                    )
 
                 p = os.path.join(save_dir, f"step_{i}.ckpt")
                 pending_fut = state.save(p)
@@ -391,10 +367,7 @@ class Trainer:
             state = self.step(state, x, inplace=inplace, trace=trace)
 
         if pending_fut is not None:
-            _rank = dist.get_rank() if dist.is_initialized() else 0
-            print(f"[rank {_rank}] train: waiting for final save", flush=True)
             pending_fut.result()
-            print(f"[rank {_rank}] train: final save done", flush=True)
 
         return state
 
