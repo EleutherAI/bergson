@@ -13,7 +13,7 @@ import torch.distributed.checkpoint as dcp
 import torchopt
 from datasets import Dataset
 from torch import nn
-from torchopt.pytree import tree_iter
+from torchopt.pytree import tree_iter, tree_map
 from torchopt.typing import GradientTransformation, OptState
 from tqdm.auto import tqdm
 
@@ -213,12 +213,15 @@ class TrainerState:
         return fut
 
     def detach_(self):
-        for p in self.params.values():
-            p.detach_()
+        for k, p in self.params.items():
+            self.params[k] = p.detach()
 
-        for t in tree_iter(self.opt_state):
+        def _detach_leaf(t):
             if isinstance(t, torch.Tensor) and t.is_floating_point():
-                t.detach_()
+                return t.detach()
+            return t
+
+        self.opt_state = tree_map(_detach_leaf, self.opt_state)
 
     @property
     def requires_grad(self) -> bool:
@@ -378,7 +381,8 @@ class Trainer:
                 if pending_fut is not None:
                     _rank = dist.get_rank() if dist.is_initialized() else 0
                     print(
-                        f"[rank {_rank}] train: waiting for pending save before step {i}",
+                        f"[rank {_rank}] train: waiting for pending save"
+                        f" before step {i}",
                         flush=True,
                     )
                     pending_fut.result()
@@ -422,6 +426,10 @@ class Trainer:
             idx, path = ckpt_list[-1]
             fwd_state.batch_index = idx
             fwd_state.load(path)
+
+            # Detach after loading so that replay steps can use in-place ops
+            # (loaded tensors may retain requires_grad from the previous traced step)
+            fwd_state.detach_()
 
             # Only delete this checkpoint if it's the one we expected to load. If it's
             # not, we need to keep it around, and step forward through training
