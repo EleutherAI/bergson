@@ -19,7 +19,13 @@ The ``Trainer`` class handles all three phases. It uses `torchopt <https://githu
 Usage
 -----
 
-bergson magic runs/magic-ckpts --dataset NeelNanda/pile-10k --model EleutherAI/pythia-14m
+.. code-block:: bash
+
+   bergson magic runs/magic-ckpts \
+       --data.dataset NeelNanda/pile-10k \
+       --query.dataset NeelNanda/pile-10k \
+       --query.split "train[:1]" \
+       --model EleutherAI/pythia-14m
 
 Core components
 ^^^^^^^^^^^^^^^
@@ -43,15 +49,11 @@ Core components
    bwd_state = trainer.backward("checkpoints/", stream, bwd_state)
    scores = bwd_state.weight_grads  # attribution scores
 
-**DataStream**: Wraps a dataset with differentiable per-example (or per-token) weights that receive gradients during the backward pass.
+**DataStream**: Wraps a dataset with differentiable per-example weights that receive gradients during the backward pass.
 
 .. code-block:: python
 
-   # Per-example attribution
    stream = DataStream(dataset, tokenizer, batch_size=4, num_batches=250, device="cuda")
-
-   # Per-token attribution
-   stream = DataStream(dataset, tokenizer, batch_size=4, num_batches=250, device="cuda", per_token=True)
 
 **DTensor patch**: For multi-GPU runs with FSDP, apply the DTensor patch before any distributed operations:
 
@@ -59,20 +61,6 @@ Core components
 
    from bergson.magic_patch import apply_dtensor_patch
    apply_dtensor_patch()
-
-   # Your MAGIC worker call here
-
-Per-token vs per-example attribution
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-By default, ``DataStream`` creates a 1D weight tensor ``[n_examples]`` for per-example attribution. With ``per_token=True``, it creates a 2D tensor ``[n_examples, max_length]`` so that each token receives its own attribution score. The ``weighted_causal_lm_ce`` loss function supports both shapes.
-
-To use per-token attribution, set ``model.loss_function = weighted_causal_lm_ce`` so the model uses the weighted loss during training.
-
-.. code-block:: python
-
-   from bergson.utils.math import weighted_causal_lm_ce
-   model.loss_function = weighted_causal_lm_ce
 
 Key implementation details
 --------------------------
