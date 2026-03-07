@@ -203,7 +203,9 @@ def worker(
     )
 
     if world_size > 1:
-        reduce_op = dist.ReduceOp.AVG if run_cfg.query_method == "mean" else dist.ReduceOp.SUM
+        reduce_op = (
+            dist.ReduceOp.AVG if run_cfg.query_method == "mean" else dist.ReduceOp.SUM
+        )
         for v in query_grads.values():
             dist.all_reduce(v, op=reduce_op)
 
