@@ -173,7 +173,7 @@ class InMemorySequenceBuilder(Builder):
         if self.preprocess_cfg.aggregation != "none":
             np_dtype = np.float32
             num_grads = 1
-            device = "cuda" if torch.cuda.is_available() else "cpu"
+            device = torch.device(f"cuda:{self.rank}")
             self.in_memory_grad_buffer = torch.zeros(
                 (1, total_grad_dim),
                 dtype=torch.float32,
