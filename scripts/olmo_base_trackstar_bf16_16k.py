@@ -32,11 +32,15 @@ class ExperimentConfig:
     nproc_per_node: int = 4
 
 
-def gpu_logger(log_path: Path, interval: float = 10.0, stop_event: threading.Event | None = None):
+def gpu_logger(
+    log_path: Path, interval: float = 10.0, stop_event: threading.Event | None = None
+):
     """Background thread that logs nvidia-smi output periodically."""
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with open(log_path, "w") as f:
-        f.write("timestamp,gpu_id,utilization_gpu%,memory_used_MiB,memory_total_MiB,temperature_C\n")
+        f.write(
+            "timestamp,gpu_id,utilization_gpu%,memory_used_MiB,memory_total_MiB,temperature_C\n"
+        )
         while stop_event is None or not stop_event.is_set():
             try:
                 result = subprocess.run(
@@ -173,18 +177,25 @@ def run_trackstar(exp_cfg: ExperimentConfig):
     print("=" * 60)
     try:
         import csv
+
         with open(log_path) as f:
             reader = csv.DictReader(f)
             mem_by_gpu: dict[str, list[float]] = {}
             util_by_gpu: dict[str, list[float]] = {}
             for row in reader:
                 gpu_id = row["gpu_id"].strip()
-                mem_by_gpu.setdefault(gpu_id, []).append(float(row["memory_used_MiB"].strip()))
-                util_by_gpu.setdefault(gpu_id, []).append(float(row["utilization_gpu%"].strip()))
+                mem_by_gpu.setdefault(gpu_id, []).append(
+                    float(row["memory_used_MiB"].strip())
+                )
+                util_by_gpu.setdefault(gpu_id, []).append(
+                    float(row["utilization_gpu%"].strip())
+                )
             for gpu_id in sorted(mem_by_gpu.keys()):
                 mem = mem_by_gpu[gpu_id]
                 util = util_by_gpu[gpu_id]
-                print(f"  GPU {gpu_id}: mem avg={np.mean(mem):.0f} MiB, max={max(mem):.0f} MiB | util avg={np.mean(util):.0f}%, max={max(util):.0f}%")
+                print(
+                    f"  GPU {gpu_id}: mem avg={np.mean(mem):.0f} MiB, max={max(mem):.0f} MiB | util avg={np.mean(util):.0f}%, max={max(util):.0f}%"
+                )
     except Exception as e:
         print(f"  Could not parse GPU log: {e}")
 
