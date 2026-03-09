@@ -30,6 +30,8 @@ Don't save data to a directory that is not in the gitignore - especially the dat
 
 Don't remove large datasets from the HF cache without asking.
 
+When a bug is reported, start by writing a test that reproduces the bug. Then fix the bug and prove it with a passing test.
+
 ### Tests
 
 Mark tests requiring GPUs with `@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")`.

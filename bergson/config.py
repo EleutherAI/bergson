@@ -373,7 +373,7 @@ class FaissConfig:
 
 
 @dataclass
-class TrackstarConfig:
+class TrackStarConfig:
     """Config for the trackstar pipeline query dataset."""
 
     query: DataConfig = field(default_factory=DataConfig)
@@ -386,9 +386,14 @@ class TrackstarConfig:
     index preconditioners intersect at this component. Typical value is
     ~1000 out of ~65K total components."""
 
-    num_stats_sample_preconditioner: bool = True
-    """Whether to use num_stats_sample items or the full dataset to
-    compute preconditioners."""
+    sample_preconditioners: bool = True
+    """Whether to use num_stats_sample items to compute preconditioners.
+    If False, uses the full dataset."""
+
+    stats_token_batch_size: int | None = None
+    """Token batch size for normalizer/preconditioner estimation steps (1-2).
+    These components are always collected in fp32, so use ~2x the VRAM when
+    in half precision. If None, uses the main token_batch_size."""
 
     resume: bool = False
     """Skip pipeline steps whose output directory already exists."""

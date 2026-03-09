@@ -96,11 +96,13 @@ class GradientCollector(HookCollectorBase):
         P = self._compute_gradient(module, g)
 
         if not self.cfg.skip_preconditioners:
-            P = P.float()
-            if name in self.processor.preconditioners:
-                self.processor.preconditioners[name].addmm_(P.mT, P)
-            else:
-                self.processor.preconditioners[name] = P.mT @ P
+            # Disable autocast so preconditioner accumulation stays in fp32
+            with torch.autocast(P.device.type, enabled=False):
+                P = P.float()
+                if name in self.processor.preconditioners:
+                    self.processor.preconditioners[name].addmm_(P.mT, P)
+                else:
+                    self.processor.preconditioners[name] = P.mT @ P
 
         if self.save_index and self.preprocess_cfg.aggregation == "none":
             # Asynchronously move the gradient to CPU and convert to the final
@@ -109,6 +111,9 @@ class GradientCollector(HookCollectorBase):
                 device="cpu", dtype=self.save_dtype, non_blocking=True
             )
         else:
+            # TODO we probably only want this for build not score so it
+            # should happen in builder.
+            # Benchmark and add disk save precision flag
             self.mod_grads[name] = P.to(dtype=self.save_dtype)
 
     def process_batch(self, indices: list[int], **kwargs):

@@ -38,6 +38,11 @@ from bergson.utils.logger import get_logger
 from bergson.utils.peft import set_peft_enabled
 from bergson.utils.utils import assert_type
 
+# Ensure bf16 matmuls use fp32 accumulation across tiles. Without this, cross-tile
+# reductions may use fp16 accumulators, losing precision when summing outer products
+# across long sequences.
+torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
+
 
 @dataclass
 class HookCollectorBase(ContextDecorator, ABC):
@@ -753,37 +758,49 @@ def fwd_bwd_factory(cfg: IndexConfig) -> Callable:
         Returns a tensor of shape [batch_size] with one loss value per sample.
     """
 
+    _AUTOCAST_DTYPES = {"bf16": torch.bfloat16, "fp16": torch.float16}
+    autocast_dtype = _AUTOCAST_DTYPES.get(cfg.precision)
+
     def fwd_bwd(model, x: Tensor, y: Tensor, batch: dict):
-        logits = model(x).logits[:, :-1]
-        masks = y[:, 1:] != -100
-        denoms = (
-            masks.sum(dim=1, dtype=model.dtype) if cfg.loss_reduction == "mean" else 1.0
+        device_type = "cuda" if x.is_cuda else "cpu"
+        amp = (
+            torch.autocast(device_type, dtype=autocast_dtype)
+            if autocast_dtype
+            else nullcontext()
         )
+        with amp:
+            logits = model(x).logits[:, :-1]
+            masks = y[:, 1:] != -100
+            denoms = (
+                masks.sum(dim=1, dtype=model.dtype)
+                if cfg.loss_reduction == "mean"
+                else 1.0
+            )
 
-        if cfg.loss_fn == "kl":
-            with torch.inference_mode():
-                set_peft_enabled(model, False)
-                ref_lps = torch.log_softmax(model(x).logits[:, :-1], dim=-1)
-                set_peft_enabled(model, True)
+            if cfg.loss_fn == "kl":
+                with torch.inference_mode():
+                    set_peft_enabled(model, False)
+                    ref_lps = torch.log_softmax(model(x).logits[:, :-1], dim=-1)
+                    set_peft_enabled(model, True)
 
-            ft_lps = torch.log_softmax(logits, dim=-1)
+                ft_lps = torch.log_softmax(logits, dim=-1)
 
-            # Compute average KL across all unmasked tokens
-            kls = torch.sum(ft_lps.exp() * (ft_lps - ref_lps), dim=-1)
-            losses = torch.sum(kls * masks, dim=-1) / denoms
-            if "advantage" in batch:
-                losses *= torch.tensor(batch["advantage"], device=losses.device)
+                # Compute average KL across all unmasked tokens
+                kls = torch.sum(ft_lps.exp() * (ft_lps - ref_lps), dim=-1)
+                losses = torch.sum(kls * masks, dim=-1) / denoms
+                if "advantage" in batch:
+                    losses *= torch.tensor(batch["advantage"], device=losses.device)
 
-        else:
-            losses = F.cross_entropy(
-                logits.reshape(-1, logits.size(-1)),
-                y[:, 1:].flatten(),
-                reduction="none",
-                label_smoothing=cfg.label_smoothing,
-            ).reshape_as(y[:, 1:])
-            losses = losses.sum(1) / denoms
-            if "advantage" in batch:
-                losses *= torch.tensor(batch["advantage"], device=losses.device)
+            else:
+                losses = F.cross_entropy(
+                    logits.reshape(-1, logits.size(-1)),
+                    y[:, 1:].flatten(),
+                    reduction="none",
+                    label_smoothing=cfg.label_smoothing,
+                ).reshape_as(y[:, 1:])
+                losses = losses.sum(1) / denoms
+                if "advantage" in batch:
+                    losses *= torch.tensor(batch["advantage"], device=losses.device)
 
         losses.sum().backward()
         model.zero_grad()
@@ -796,37 +813,47 @@ def fwd_bwd_factory(cfg: IndexConfig) -> Callable:
 def fwd_bwd_hessian_factory(
     index_cfg: IndexConfig, hessian_cfg: HessianConfig
 ) -> Callable:
-    def fwd_bwd_hessian(model, x: Tensor, y: Tensor, batch: dict):
-        logits = model(x).logits[:, :-1]
-        masks = y[:, 1:] != -100
-        denoms = (
-            masks.sum(dim=1, dtype=model.dtype)
-            if index_cfg.loss_reduction == "mean"
-            else 1.0
-        )
-        if hessian_cfg.use_dataset_labels:
-            losses = F.cross_entropy(
-                logits.reshape(-1, logits.size(-1)),
-                y[:, 1:].flatten(),
-                reduction="none",
-            ).reshape_as(y[:, 1:])
-            losses = losses.sum(1) / denoms
-        else:
-            with torch.no_grad():
-                probs = F.softmax(logits, dim=-1)
-                sampled_tokens = torch.multinomial(
-                    probs.reshape(-1, probs.size(-1)),
-                    num_samples=1,
-                    replacement=True,
-                ).reshape_as(y[:, 1:])
-            losses = F.cross_entropy(
-                logits.reshape(-1, logits.size(-1)),
-                sampled_tokens.flatten(),
-                reduction="none",
-            ).reshape_as(y[:, 1:])
-            losses = losses.sum(1) / denoms
+    _AUTOCAST_DTYPES = {"bf16": torch.bfloat16, "fp16": torch.float16}
+    autocast_dtype = _AUTOCAST_DTYPES.get(index_cfg.precision)
 
-        losses.sum().backward()
+    def fwd_bwd_hessian(model, x: Tensor, y: Tensor, batch: dict):
+        device_type = "cuda" if x.is_cuda else "cpu"
+        amp = (
+            torch.autocast(device_type, dtype=autocast_dtype)
+            if autocast_dtype
+            else nullcontext()
+        )
+        with amp:
+            logits = model(x).logits[:, :-1]
+            masks = y[:, 1:] != -100
+            denoms = (
+                masks.sum(dim=1, dtype=model.dtype)
+                if index_cfg.loss_reduction == "mean"
+                else 1.0
+            )
+            if hessian_cfg.use_dataset_labels:
+                losses = F.cross_entropy(
+                    logits.reshape(-1, logits.size(-1)),
+                    y[:, 1:].flatten(),
+                    reduction="none",
+                ).reshape_as(y[:, 1:])
+                losses = losses.sum(1) / denoms
+            else:
+                with torch.no_grad():
+                    probs = F.softmax(logits, dim=-1)
+                    sampled_tokens = torch.multinomial(
+                        probs.reshape(-1, probs.size(-1)),
+                        num_samples=1,
+                        replacement=True,
+                    ).reshape_as(y[:, 1:])
+                losses = F.cross_entropy(
+                    logits.reshape(-1, logits.size(-1)),
+                    sampled_tokens.flatten(),
+                    reduction="none",
+                ).reshape_as(y[:, 1:])
+                losses = losses.sum(1) / denoms
+
+            losses.sum().backward()
         model.zero_grad()
 
         return losses

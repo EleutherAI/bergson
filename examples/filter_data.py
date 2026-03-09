@@ -25,7 +25,7 @@ class FilterConfig:
     """Config for building the index and running the model/dataset pipeline."""
 
     filter: Literal["classification", "attribution", "trackstar", "loss", "random"] = (
-        "attribution"
+        "trackstar"
     )
     """Filter to apply to the training set before finetuning."""
 
@@ -97,6 +97,9 @@ class FilterConfig:
     dry_run: bool = False
     """Whether to run the script in dry run mode."""
 
+    overwrite: bool = False
+    """Overwrite existing trackstar scores."""
+
     revision: str | None = None
     """Revision of the model to use."""
 
@@ -119,6 +122,7 @@ def run_sft(
     eval: Dataset,
     output_dir: str,
     model_name_or_path: str | None = None,
+    run_name: str | None = None,
 ) -> dict:
     """Run SFT. Uses HF Trainer which handles DDP automatically.
     Returns the final eval metrics."""
@@ -172,6 +176,7 @@ def run_sft(
             ddp_find_unused_parameters=False,
             dataset_kwargs={"skip_prepare_dataset": True},
             seed=cfg.seed,
+            run_name=run_name,
         ),
     )
 
@@ -242,7 +247,7 @@ def run_trackstar(
 ) -> None:
     """Run the bergson trackstar pipeline to score the dataset."""
     scores_path = Path(trackstar_path) / "scores"
-    if scores_path.exists():
+    if scores_path.exists() and not args.overwrite:
         print(f"Trackstar scores already exist at {scores_path}, skipping.")
         return
 
@@ -281,6 +286,8 @@ def run_trackstar(
         str(args.projection_dim),
         "--token_batch_size",
         "8192",
+        "--stats_token_batch_size",
+        "4096",
         "--nproc_per_node",
         str(num_gpus),
         "--overwrite",
@@ -549,16 +556,19 @@ def main(
             f"examples/runs/{model_name}_{dataset_name}"
             f"_trackstar{lora_suffix}{proj_suffix}"
         )
-        run_trackstar(args, trackstar_path, model=sft_model_path)
+        run_trackstar(
+            args,
+            trackstar_path,
+            model=sft_model_path,
+            num_gpus=torch.cuda.device_count(),
+        )
 
     # Step 3: Filter the training set
     print("Filtering...")
     if args.num_examples == 0:
         train = orig_train
     elif args.filter == "trackstar":
-        scores_path = Path(
-            f"examples/runs/{model_name}_{dataset_name}_trackstar{lora_suffix}{proj_suffix}/scores"
-        )
+        scores_path = Path(trackstar_path) / "scores"
         scores = load_scores(scores_path)
         # Scores are in original dataset order (before train/test split).
         # Use _orig_idx to map train split positions to original indices.
@@ -647,7 +657,9 @@ def main(
     )
 
     print(f"Training on {len(train)} examples, evaluating on {len(eval_ds)} examples.")
-    metrics = run_sft(args, train, eval_ds, f"examples/runs/{run_name}")
+    metrics = run_sft(
+        args, train, eval_ds, f"examples/runs/{run_name}", run_name=run_name
+    )
 
     print(f"\n{'='*60}")
     print(f"Run: {run_name}")
