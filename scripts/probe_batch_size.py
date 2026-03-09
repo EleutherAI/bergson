@@ -55,7 +55,11 @@ def try_batch_size(batch_size: int, precision: str) -> bool:
     oom = False
     for line in proc.stdout:
         print(line, end="", flush=True)
-        if "OutOfMemory" in line or "CUDA out of memory" in line or "out of memory" in line.lower():
+        if (
+            "OutOfMemory" in line
+            or "CUDA out of memory" in line
+            or "out of memory" in line.lower()
+        ):
             oom = True
     proc.wait()
     elapsed = time.monotonic() - start
@@ -64,7 +68,9 @@ def try_batch_size(batch_size: int, precision: str) -> bool:
         print(f"\n  SUCCESS: batch_size={batch_size} in {elapsed:.1f}s")
         return True
     else:
-        print(f"\n  FAILED: batch_size={batch_size} (rc={proc.returncode}, oom={oom}) in {elapsed:.1f}s")
+        print(
+            f"\n  FAILED: batch_size={batch_size} (rc={proc.returncode}, oom={oom}) in {elapsed:.1f}s"
+        )
         return False
 
 
