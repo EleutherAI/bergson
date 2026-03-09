@@ -289,10 +289,8 @@ def score_worker(
     score_device = torch.device(f"cuda:{rank}")
 
     if isinstance(ds, Dataset):
-        kwargs["batches"] = allocate_batches(
-            ds["length"][:], index_cfg.token_batch_size
-        )
-        kwargs["scorer"] = create_scorer(
+        batches = allocate_batches(ds["length"][:], index_cfg.token_batch_size)
+        scorer = create_scorer(
             index_cfg.partial_run_path,
             ds,
             score_cfg,
@@ -301,6 +299,22 @@ def score_worker(
             dtype=score_dtype,
             attribute_tokens=index_cfg.attribute_tokens,
         )
+
+        # Skip batches that have already been fully scored (resume support)
+        if hasattr(scorer.writer, "written_mask"):
+            written = scorer.writer.written_mask()
+            num_written = int(written.sum())
+            if num_written > 0:
+                batches = [b for b in batches if not all(written[i] for i in b)]
+                if local_rank == 0:
+                    remaining = sum(len(b) for b in batches)
+                    print(
+                        f"Resuming scoring: {num_written}/{len(written)} items "
+                        f"already scored, {remaining} items remaining"
+                    )
+
+        kwargs["batches"] = batches
+        kwargs["scorer"] = scorer
 
         collect_gradients(**kwargs)
     else:

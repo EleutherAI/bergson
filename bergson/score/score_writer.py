@@ -296,6 +296,13 @@ class MemmapSequenceScoreWriter(ScoreWriter):
         if self.num_batches_since_flush >= self.flush_interval:
             self.flush()
 
+    def written_mask(self) -> np.ndarray:
+        """Return a boolean mask of items that have been scored for all queries."""
+        mask = np.ones(len(self.scores), dtype=bool)
+        for i in range(self.num_scores):
+            mask &= self.scores[f"written_{i}"]
+        return mask
+
     def flush(self):
         self.scores.flush()
         self.num_batches_since_flush = 0
