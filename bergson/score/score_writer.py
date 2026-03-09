@@ -254,17 +254,13 @@ class MemmapSequenceScoreWriter(ScoreWriter):
         if rank == 0 and not scores_file_path.exists():
             print(f"Creating new scores file: {scores_file_path}")
 
+            # w+ mode creates a zero-filled file.
             self.scores = np.memmap(
                 str(scores_file_path),
                 dtype=np.dtype(struct_dtype),  # type: ignore
                 mode="w+",
                 shape=(num_items,),
             )
-
-            for name in names:
-                if "written" in name:
-                    self.scores[name][:] = False
-            self.flush()
 
             # Persist metadata for future runs
             with (path / "info.json").open("w") as f:
