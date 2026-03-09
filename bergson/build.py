@@ -26,12 +26,13 @@ def build_worker(
     rank: int,
     local_rank: int,
     world_size: int,
-    cfg: IndexConfig,
+    index_cfg: IndexConfig,
     preprocess_cfg: PreprocessConfig,
     ds: Dataset | IterableDataset,
 ):
     """
-    Build worker executed per rank to collect gradients to populate the index.
+    Build worker executed per rank to collect gradients to populate the
+    on-disk index.
 
     Parameters
     ----------
@@ -41,10 +42,13 @@ def build_worker(
         Local rank / GPU ID for this worker on the node.
     world_size : int
         Total number of workers participating in the run.
-    cfg : IndexConfig
+    index_cfg : IndexConfig
         Specifies the model, tokenizer, PEFT adapters, and other settings.
+    preprocess_cfg : PreprocessConfig
+        Specifies preprocessing strategy (preconditioning, unit normalization,
+        aggregation).
     ds : Dataset | IterableDataset
-        The entire dataset to be indexed. A subset is assigned to each worker.
+        The entire dataset to be processed. A subset is assigned to each worker.
     """
     torch.cuda.set_device(local_rank)
 
@@ -62,24 +66,27 @@ def build_worker(
             world_size=world_size,
         )
 
-    model, target_modules = setup_model_and_peft(cfg)
-    processor = create_processor(model, ds, cfg, target_modules)
+    model, target_modules = setup_model_and_peft(index_cfg)
+    processor = create_processor(model, ds, index_cfg, target_modules)
 
-    maybe_auto_batch_size(cfg, model, ds, processor, target_modules, rank)
+    maybe_auto_batch_size(index_cfg, model, ds, processor, target_modules, rank)
 
-    attention_cfgs = {module: cfg.attention for module in cfg.split_attention_modules}
+    attention_cfgs = {
+        module: index_cfg.attention for module in index_cfg.split_attention_modules
+    }
 
     kwargs = {
         "model": model,
         "data": ds,
         "processor": processor,
-        "cfg": cfg,
+        "cfg": index_cfg,
         "target_modules": target_modules,
         "attention_cfgs": attention_cfgs,
+        "preprocess_cfg": preprocess_cfg,
     }
 
     if isinstance(ds, Dataset):
-        batches = allocate_batches(ds["length"][:], cfg.token_batch_size)
+        batches = allocate_batches(ds["length"][:], index_cfg.token_batch_size)
         kwargs["batches"] = batches
         collect_gradients(**kwargs)
     else:
@@ -91,7 +98,9 @@ def build_worker(
             if not buf:
                 return
             ds_shard = assert_type(Dataset, Dataset.from_list(buf))
-            batches = allocate_batches(ds_shard["length"][:], cfg.token_batch_size)
+            batches = allocate_batches(
+                ds_shard["length"][:], index_cfg.token_batch_size
+            )
             kwargs["ds"] = ds_shard
             kwargs["batches"] = batches
             collect_gradients(**kwargs)
@@ -101,17 +110,20 @@ def build_worker(
 
         for ex in tqdm(ds, desc="Collecting gradients"):
             buf.append(ex)
-            if len(buf) == cfg.stream_shard_size:
+            if len(buf) == index_cfg.stream_shard_size:
                 flush(kwargs=kwargs)
 
         flush(kwargs=kwargs)  # Final flush
         if rank == 0:
-            processor.save(cfg.partial_run_path)
+            processor.save(index_cfg.partial_run_path)
 
 
-def build(index_cfg: IndexConfig, preprocess_cfg: PreprocessConfig):
+def build(
+    index_cfg: IndexConfig,
+    preprocess_cfg: PreprocessConfig,
+):
     """
-    Build a gradient index by distributing work across all available GPUs.
+    Convert a dataset to an on-disk index.
 
     Parameters
     ----------
@@ -119,7 +131,8 @@ def build(index_cfg: IndexConfig, preprocess_cfg: PreprocessConfig):
         Specifies the run path, dataset, model, tokenizer, PEFT adapters,
         and many other gradient collection settings.
     preprocess_cfg : PreprocessConfig
-        Preprocessing configuration for gradient normalization/preconditioning.
+        Preprocessing configuration for gradient normalization, preconditioning,
+        and aggregation.
     """
     if index_cfg.debug:
         setup_reproducibility()
@@ -127,6 +140,9 @@ def build(index_cfg: IndexConfig, preprocess_cfg: PreprocessConfig):
     index_cfg.partial_run_path.mkdir(parents=True, exist_ok=True)
     with (index_cfg.partial_run_path / "index_config.json").open("w") as f:
         json.dump(asdict(index_cfg), f, indent=2)
+
+    with (index_cfg.partial_run_path / "preprocess_config.json").open("w") as f:
+        json.dump(asdict(preprocess_cfg), f, indent=2)
 
     ds = setup_data_pipeline(index_cfg)
 
@@ -137,6 +153,5 @@ def build(index_cfg: IndexConfig, preprocess_cfg: PreprocessConfig):
         index_cfg.distributed,
     )
 
-    rank = index_cfg.distributed.rank
-    if rank == 0:
+    if index_cfg.distributed.rank == 0:
         shutil.move(index_cfg.partial_run_path, index_cfg.run_path)

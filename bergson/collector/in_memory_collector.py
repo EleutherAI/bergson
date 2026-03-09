@@ -12,7 +12,7 @@ from torch import Tensor, nn
 
 from bergson.builders import Builder, create_builder
 from bergson.collector.collector import HookCollectorBase
-from bergson.config import IndexConfig, PreprocessConfig, ReduceConfig
+from bergson.config import IndexConfig, PreprocessConfig
 from bergson.gradients import (
     AdafactorNormalizer,
     AdamNormalizer,
@@ -49,10 +49,7 @@ class InMemoryCollector(HookCollectorBase):
     mod_grads: dict = dc_field(default_factory=dict)
     """Temporary per-batch gradients keyed by module name."""
 
-    reduce_cfg: ReduceConfig | None = None
-    """Configuration for in-run gradient reduction."""
-
-    preprocess_cfg: PreprocessConfig | None = None
+    preprocess_cfg: PreprocessConfig = dc_field(default_factory=PreprocessConfig)
     """Configuration for gradient preprocessing."""
 
     builder: Builder | None = None
@@ -85,7 +82,7 @@ class InMemoryCollector(HookCollectorBase):
             )
 
         if self.cfg.attribute_tokens:
-            assert self.reduce_cfg is None, (
+            assert self.preprocess_cfg.aggregation == "none", (
                 "attribute_tokens is incompatible" " with reduce mode."
             )
 
@@ -110,9 +107,8 @@ class InMemoryCollector(HookCollectorBase):
                 self.data,
                 grad_sizes,
                 self.save_dtype,
+                self.preprocess_cfg,
                 attribute_tokens=self.cfg.attribute_tokens,
-                reduce_cfg=self.reduce_cfg,
-                preprocess_cfg=self.preprocess_cfg,
             )
 
     def teardown(self) -> None:
@@ -247,7 +243,7 @@ class InMemoryCollector(HookCollectorBase):
                 self.processor.preconditioners[name] = P.mT @ P
 
         # GPU for scorer/reduce, CPU for builder
-        if self.scorer is not None or self.reduce_cfg is not None:
+        if self.scorer is not None or self.preprocess_cfg.aggregation != "none":
             self.mod_grads[name] = P.to(dtype=self.save_dtype)
         else:
             self.mod_grads[name] = P.to(

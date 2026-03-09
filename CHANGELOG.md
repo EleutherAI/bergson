@@ -1,6 +1,19 @@
 # CHANGELOG
 
 
+## v0.8.0 (2026-03-08)
+
+### Features
+
+- Set default precision to fp32 in IndexConfig and ScoreConfig
+  ([`92d4807`](https://github.com/EleutherAI/bergson/commit/92d4807df7b73cee21c6e375c79454b021998671))
+
+Co-authored-by: Lucia Quirke <luciaquirke@users.noreply.github.com>
+
+
+## v0.7.2 (2026-03-04)
+
+
 ## v0.7.1 (2026-03-03)
 
 ### Bug Fixes

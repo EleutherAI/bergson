@@ -470,14 +470,20 @@ def load_gradient_dataset(root_dir: Path, structured: bool = True) -> Dataset:
         # Add gradients to HF dataset.
         mmap = load_gradients(dir, structured=structured)
 
+        def _to_arrow(arr: np.ndarray) -> pa.Array:
+            """Convert numpy array to PyArrow, casting bfloat16 to float32."""
+            if arr.dtype == np.dtype("bfloat16"):
+                arr = arr.astype(np.float32)
+            return pa.array(arr)
+
         if structured:
             assert mmap.dtype.names is not None
             for field_name in mmap.dtype.names:
-                flat = pa.array(mmap[field_name].reshape(-1).copy())
+                flat = _to_arrow(mmap[field_name].reshape(-1).copy())
                 col = pa.FixedSizeListArray.from_arrays(flat, mmap[field_name].shape[1])
                 ds = ds.add_column(field_name, col, new_fingerprint=field_name)
         else:
-            flat = pa.array(mmap.reshape(-1).copy())
+            flat = _to_arrow(mmap.reshape(-1).copy())
             col_arrow = pa.FixedSizeListArray.from_arrays(flat, mmap.shape[1])
             ds = ds.add_column("gradients", col_arrow, new_fingerprint="gradients")
 

@@ -74,7 +74,7 @@ bergson score <output_path> --model <model_name> --dataset <dataset_name> --quer
 We provide a utility to reduce a dataset into its mean or sum query gradient, for use as a query index:
 
 ```bash
-bergson reduce <output_path> --model <model_name> --dataset <dataset_name> --method mean --unit_normalize
+bergson reduce <output_path> --model <model_name> --dataset <dataset_name> --aggregation mean --unit_normalize
 ```
 
 ## Index Query

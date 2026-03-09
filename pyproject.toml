@@ -22,7 +22,7 @@ dependencies = [
     "torch",
     "transformers"
 ]
-version = "0.7.1"
+version = "0.8.0"
 [project.optional-dependencies]
 dev = [
     "pre-commit",

@@ -1,4 +1,4 @@
-__version__ = "0.7.1"
+__version__ = "0.8.0"
 
 from .builders import (
     Builder,
@@ -14,7 +14,6 @@ from .config import (
     IndexConfig,
     PreprocessConfig,
     QueryConfig,
-    ReduceConfig,
     ScoreConfig,
 )
 from .data import (
@@ -53,7 +52,6 @@ __all__ = [
     "PreprocessConfig",
     "Scorer",
     "ScoreConfig",
-    "ReduceConfig",
     "QueryConfig",
     "mix_preconditioners",
 ]

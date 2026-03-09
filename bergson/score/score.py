@@ -18,7 +18,10 @@ from bergson.data import (
     load_gradients,
 )
 from bergson.distributed import launch_distributed_run
-from bergson.process_grads import preprocess_grads
+from bergson.process_grads import (
+    get_trackstar_preconditioner,
+    normalize_and_aggregate_grads,
+)
 from bergson.score.score_writer import (
     MemmapSequenceScoreWriter,
     MemmapTokenScoreWriter,
@@ -36,45 +39,17 @@ from bergson.utils.worker_utils import (
 )
 
 
-def create_scorer(
-    path: Path,
-    data: Dataset,
-    query_grads: dict[str, torch.Tensor],
+def get_query_grads(
     score_cfg: ScoreConfig,
-    preprocess_cfg: PreprocessConfig,
-    device: torch.device,
-    dtype: torch.dtype,
-    *,
-    attribute_tokens: bool = False,
-) -> Scorer:
-    """Create a Scorer with MemmapScoreWriter for disk-based scoring."""
-    num_queries = len(query_grads[score_cfg.modules[0]])
-    if attribute_tokens:
-        writer = MemmapTokenScoreWriter(
-            path,
-            data,
-            num_queries,
-            dtype=dtype,
-        )
-    else:
-        writer = MemmapSequenceScoreWriter(path, len(data), num_queries, dtype=dtype)
-    return Scorer(
-        query_grads=query_grads,
-        modules=score_cfg.modules,
-        writer=writer,
-        device=device,
-        dtype=dtype,
-        unit_normalize=preprocess_cfg.unit_normalize,
-        score_mode=score_cfg.score,
-        attribute_tokens=attribute_tokens,
-        preconditioner_path=preprocess_cfg.preconditioner_path,
-    )
-
-
-def get_query_grads(score_cfg: ScoreConfig) -> dict[str, torch.Tensor]:
+) -> tuple[dict[str, torch.Tensor], PreprocessConfig]:
     """
     Load query gradients from the mmap index and return as a dict of tensors.
-    Preconditioners may be mixed as described in https://arxiv.org/html/2410.17413v1#S3.
+
+    Returns
+    -------
+    tuple[dict[str, torch.Tensor], bool]
+        The query gradients and whether they were already preconditioned
+        (e.g. during a reduce step).
     """
     query_path = Path(score_cfg.query_path)
     if not query_path.exists():
@@ -87,6 +62,14 @@ def get_query_grads(score_cfg: ScoreConfig) -> dict[str, torch.Tensor]:
         metadata = json.load(f)
         target_modules = metadata["dtype"]["names"]
         grad_sizes = metadata["grad_sizes"]
+
+    preprocess_path = Path(query_path / "preprocess_config.json")
+    if preprocess_path.exists():
+        with open(preprocess_path, "r") as f:
+            preprocess_data = json.load(f)
+            preprocess_cfg = PreprocessConfig(**preprocess_data)
+    else:
+        preprocess_cfg = PreprocessConfig()
 
     if not score_cfg.modules:
         score_cfg.modules = target_modules
@@ -108,7 +91,132 @@ def get_query_grads(score_cfg: ScoreConfig) -> dict[str, torch.Tensor]:
         else:
             grads[name] = torch.from_numpy(sliced.copy())
 
-    return grads
+    return grads, preprocess_cfg
+
+
+def _make_split_preconditioner(
+    preconditioners: dict[str, torch.Tensor],
+    modules: list[str],
+    device: torch.device,
+    dtype: torch.dtype,
+):
+    """Build a per-batch index transform for split (two-sided) preconditioning."""
+    stacked = torch.stack([preconditioners[m] for m in modules])
+
+    def transform(
+        grads: dict[str, torch.Tensor],
+        _modules: list[str] = modules,
+        _stacked: torch.Tensor = stacked,
+        _device: torch.device = device,
+        _dtype: torch.dtype = dtype,
+    ) -> dict[str, torch.Tensor]:
+        g = torch.stack(
+            [grads[m].to(_device, _dtype, non_blocking=True) for m in _modules],
+            dim=1,
+        )
+        result = torch.bmm(g.permute(1, 0, 2), _stacked).permute(1, 0, 2)
+        return {m: result[:, i] for i, m in enumerate(_modules)}
+
+    return transform
+
+
+def create_scorer(
+    path: Path,
+    data: Dataset,
+    score_cfg: ScoreConfig,
+    preprocess_cfg: PreprocessConfig,
+    device: torch.device,
+    dtype: torch.dtype,
+    *,
+    attribute_tokens: bool = False,
+) -> Scorer:
+    """Create a Scorer with MemmapScoreWriter for disk-based scoring.
+
+    Loads query gradients from disk, preprocesses them if not already
+    preprocessed, and constructs the Scorer.
+
+    * Loads preconditioner from ``preprocess_cfg.preconditioner_path``.
+    * Applies to query grads once here (unless already preconditioned).
+    * Normalizes and aggregates (unless already done).
+    * Builds an ``index_transform`` closure for per-batch index
+      preconditioning in split mode (``unit_normalize=True``).
+    """
+    query_grads, query_preprocess_cfg = get_query_grads(score_cfg)
+
+    # Load preconditioner: H^(-1/2) for split, H^(-1) for one-sided
+    preconditioners = get_trackstar_preconditioner(
+        preprocess_cfg.preconditioner_path,
+        device=device,
+        power=-0.5 if preprocess_cfg.unit_normalize else -1,
+        return_dtype=dtype,
+    )
+
+    # Maybe precondition query grads if it hasn't already been applied, e.g.
+    # during reduce.
+    if preconditioners and not bool(query_preprocess_cfg.preconditioner_path):
+        query_grads = {
+            m: query_grads[m].to(device=device, dtype=dtype) @ preconditioners[m]
+            for m in score_cfg.modules
+        }
+
+    # Build index_transform for split (two-sided) preconditioning
+    index_transform = (
+        _make_split_preconditioner(
+            preconditioners,
+            score_cfg.modules,
+            device,
+            dtype,
+        )
+        if preconditioners and preprocess_cfg.unit_normalize
+        else lambda x: x
+    )
+
+    # Maybe apply aggregation if it hasn't already been applied.
+    normalize_aggregated_grad = (
+        False
+        if query_preprocess_cfg.normalize_aggregated_grad
+        else preprocess_cfg.normalize_aggregated_grad
+    )
+    aggregation = (
+        "none"
+        if query_preprocess_cfg.aggregation != "none"
+        else preprocess_cfg.aggregation
+    )
+    unit_normalize = (
+        False if query_preprocess_cfg.unit_normalize else preprocess_cfg.unit_normalize
+    )
+
+    query_grads = normalize_and_aggregate_grads(
+        query_grads,
+        score_cfg.modules,
+        unit_normalize=unit_normalize,
+        device=device,
+        aggregate_grads=aggregation,
+        normalize_aggregated_grad=normalize_aggregated_grad,
+    )
+
+    num_queries = len(query_grads[score_cfg.modules[0]])
+    if attribute_tokens:
+        writer = MemmapTokenScoreWriter(
+            path,
+            data,
+            num_queries,
+            dtype=dtype,
+        )
+    else:
+        writer = MemmapSequenceScoreWriter(path, len(data), num_queries, dtype=dtype)
+
+    return Scorer(
+        query_grads=query_grads,
+        modules=score_cfg.modules,
+        writer=writer,
+        device=device,
+        dtype=dtype,
+        unit_normalize=preprocess_cfg.unit_normalize,
+        score_mode=score_cfg.score,
+        attribute_tokens=attribute_tokens,
+        index_transform=index_transform,
+    )
 
 
 def score_worker(
@@ -119,7 +227,6 @@ def score_worker(
     score_cfg: ScoreConfig,
     preprocess_cfg: PreprocessConfig,
     ds: Dataset | IterableDataset,
-    query_grads: dict[str, torch.Tensor],
 ):
     """
     Score worker executed per rank to produce and score gradients against a query.
@@ -141,8 +248,6 @@ def score_worker(
         Preprocessing configuration for gradient normalization/preconditioning.
     ds : Dataset | IterableDataset
         The entire dataset to be indexed. A subset is assigned to each worker.
-    query_grads : dict[str, torch.Tensor]
-        Preprocessed query gradient tensors (often [1, grad_dim]) keyed by module name.
     """
     torch.cuda.set_device(local_rank)
 
@@ -190,7 +295,6 @@ def score_worker(
         kwargs["scorer"] = create_scorer(
             index_cfg.partial_run_path,
             ds,
-            query_grads,
             score_cfg,
             preprocess_cfg,
             device=score_device,
@@ -217,7 +321,6 @@ def score_worker(
             kwargs["scorer"] = create_scorer(
                 index_cfg.partial_run_path / f"shard-{shard_id:05d}",
                 ds_shard,
-                query_grads,
                 score_cfg,
                 preprocess_cfg,
                 device=score_device,
@@ -243,7 +346,6 @@ def score_dataset(
     index_cfg: IndexConfig,
     score_cfg: ScoreConfig,
     preprocess_cfg: PreprocessConfig,
-    preprocess_device=torch.device("cuda:0"),
 ):
     """
     Score a dataset against an existing gradient index.
@@ -267,19 +369,10 @@ def score_dataset(
 
     ds = setup_data_pipeline(index_cfg)
 
-    query_grads = get_query_grads(score_cfg)
-
-    query_grads = preprocess_grads(
-        query_grads,
-        score_cfg.modules,
-        preprocess_cfg.unit_normalize,
-        preprocess_device,
-    )
-
     launch_distributed_run(
         "score",
         score_worker,
-        [index_cfg, score_cfg, preprocess_cfg, ds, query_grads],
+        [index_cfg, score_cfg, preprocess_cfg, ds],
         index_cfg.distributed,
     )
 

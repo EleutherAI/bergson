@@ -97,6 +97,7 @@ def create_processor(
         processor = GradientProcessor.load(
             processor_path,
             map_location=f"cuda:{local_rank}",
+            skip_preconditioners=cfg.skip_preconditioners,
         )
     else:
         normalizers = create_normalizers(model, ds, cfg, target_modules)
@@ -314,8 +315,18 @@ def setup_data_pipeline(cfg: IndexConfig) -> Dataset | IterableDataset:
             f"Use --token_batch_size {default_model_max_len} or smaller."
         )
 
+    # Resolve the base model for config loading (PEFT adapters don't have
+    # a full config.json, so we need the base model path).
+    config_model: str = cfg.model
+    try:
+        peft_cfg = PeftConfig.from_pretrained(cfg.model)
+        if peft_cfg.base_model_name_or_path:
+            config_model = peft_cfg.base_model_name_or_path
+    except ValueError:
+        pass
+
     max_pos_emb = getattr(
-        AutoConfig.from_pretrained(cfg.model, revision=cfg.revision),
+        AutoConfig.from_pretrained(config_model, revision=cfg.revision),
         "max_position_embeddings",
         None,
     )

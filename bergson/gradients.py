@@ -114,6 +114,7 @@ class GradientProcessor:
         path: Path | str,
         *,
         map_location: str | torch.device | None = None,
+        skip_preconditioners: bool = False,
     ) -> "GradientProcessor":
         """
         Load the normalizers and preconditioners from a file.
@@ -145,18 +146,23 @@ class GradientProcessor:
             for name, state in norm_state.items()
         }
 
-        return cls(
-            normalizers=normalizers,
-            preconditioners=torch.load(
+        preconditioners, preconditioners_eigen = {}, {}
+        if not skip_preconditioners:
+            preconditioners = torch.load(
                 precond_path,
                 map_location=map_location,
                 weights_only=True,
-            ),
-            preconditioners_eigen=torch.load(
+            )
+            preconditioners_eigen = torch.load(
                 precond_eigen_path,
                 map_location=map_location,
                 weights_only=True,
-            ),
+            )
+
+        return cls(
+            normalizers=normalizers,
+            preconditioners=preconditioners,
+            preconditioners_eigen=preconditioners_eigen,
             **cfg,
         )
 

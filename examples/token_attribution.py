@@ -22,7 +22,7 @@ from bergson import (
     GradientProcessor,
     IndexConfig,
     InMemoryCollector,
-    ReduceConfig,
+    PreprocessConfig,
     Scorer,
 )
 from bergson.data import allocate_batches
@@ -95,14 +95,13 @@ def main():
 
     # Step 1: Reduce query gradients to a single vector
     print("\nCollecting query gradients (reduce)...")
-    reduce_cfg = ReduceConfig(method="mean")
     query_collector = InMemoryCollector(
         model=model.base_model,
         processor=processor,
         data=query_ds,
         cfg=query_cfg,
         target_modules=target_modules,
-        reduce_cfg=reduce_cfg,
+        preprocess_cfg=PreprocessConfig(aggregation="mean"),
     )
     query_computer = CollectorComputer(
         model=model,

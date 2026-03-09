@@ -11,11 +11,10 @@ from bergson import (
     IndexConfig,
     InMemoryCollector,
     PreprocessConfig,
-    ReduceConfig,
     collect_gradients,
 )
+from bergson.build import build
 from bergson.data import load_gradient_dataset
-from bergson.reduce import reduce
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
@@ -34,7 +33,7 @@ def test_reduce_cli(tmp_path: Path):
             "--split",
             "train[:100]",
             "--truncation",
-            "--method",
+            "--aggregation",
             "mean",
             "--unit_normalize",
             "--skip_preconditioners",
@@ -69,10 +68,8 @@ def test_programmatic_reduce(tmp_path: Path):
         skip_preconditioners=True,
         token_batch_size=1024,
     )
-    reduce_cfg = ReduceConfig()
-    preprocess_cfg = PreprocessConfig()
 
-    reduce(index_cfg, reduce_cfg, preprocess_cfg)
+    build(index_cfg, PreprocessConfig(aggregation="mean"))
 
     # Assert 1-row reduction exists at the tmp_path
     ds = load_gradient_dataset(Path(index_cfg.run_path), structured=False)
@@ -92,9 +89,8 @@ def test_reduce_with_preconditioning(tmp_path: Path, model, dataset):
     )
 
     # Step 2: reduce with preconditioning pointing at the built index
-    reduce_cfg = ReduceConfig()
     preprocess_cfg = PreprocessConfig(
-        preconditioner_path=str(build_cfg.partial_run_path)
+        aggregation="mean", preconditioner_path=str(build_cfg.partial_run_path)
     )
     reduce_index_cfg = IndexConfig(
         run_path=str(tmp_path / "reduce_precond"),
@@ -107,7 +103,6 @@ def test_reduce_with_preconditioning(tmp_path: Path, model, dataset):
         data=dataset,
         processor=GradientProcessor(),
         cfg=reduce_index_cfg,
-        reduce_cfg=reduce_cfg,
         preprocess_cfg=preprocess_cfg,
     )
 
@@ -127,12 +122,16 @@ def test_in_memory_reduce(tmp_path: Path, model, dataset):
     )
     cfg.partial_run_path.mkdir(parents=True, exist_ok=True)
 
+    preprocess_cfg = PreprocessConfig(
+        aggregation="mean",
+    )
+
     collector = InMemoryCollector(
         model=model.base_model,
         cfg=cfg,
         processor=GradientProcessor(),
         data=dataset,
-        reduce_cfg=ReduceConfig(),
+        preprocess_cfg=preprocess_cfg,
         attention_cfgs={},
     )
 

@@ -74,6 +74,12 @@ API Reference
 .. toctree::
    :maxdepth: 2
 
+   pipeline
+   trackstar
+
+.. toctree::
+   :maxdepth: 2
+
    api
    utils
 

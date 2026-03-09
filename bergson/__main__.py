@@ -9,13 +9,11 @@ from .config import (
     IndexConfig,
     PreprocessConfig,
     QueryConfig,
-    ReduceConfig,
     ScoreConfig,
     TrackstarConfig,
 )
 from .hessians.hessian_approximations import approximate_hessians
 from .query.query_index import query
-from .reduce import reduce
 from .score.score import score_dataset
 from .trackstar import trackstar
 from .utils.worker_utils import validate_run_path
@@ -45,14 +43,12 @@ class Preconditioners:
 
     index_cfg: IndexConfig
 
-    preprocess_cfg: PreprocessConfig
-
     def execute(self):
         """Compute normalizers and preconditioners."""
         self.index_cfg.skip_index = True
         self.index_cfg.skip_preconditioners = False
         validate_run_path(self.index_cfg)
-        build(self.index_cfg, self.preprocess_cfg)
+        build(self.index_cfg, PreprocessConfig())
 
 
 @dataclass
@@ -60,8 +56,6 @@ class Reduce:
     """Reduce a gradient index."""
 
     index_cfg: IndexConfig
-
-    reduce_cfg: ReduceConfig
 
     preprocess_cfg: PreprocessConfig
 
@@ -73,8 +67,7 @@ class Reduce:
             )
 
         validate_run_path(self.index_cfg)
-
-        reduce(self.index_cfg, self.reduce_cfg, self.preprocess_cfg)
+        build(self.index_cfg, self.preprocess_cfg)
 
 
 @dataclass
@@ -97,7 +90,6 @@ class Score:
             )
 
         validate_run_path(self.index_cfg)
-
         score_dataset(self.index_cfg, self.score_cfg, self.preprocess_cfg)
 
 
@@ -138,6 +130,12 @@ class Trackstar:
     trackstar_cfg: TrackstarConfig
 
     def execute(self):
+        if self.index_cfg.normalizer != "adafactor":
+            print(
+                "Warning: not using Adafactor normalizer. Pass --normalizer adafactor "
+                "to match the Trackstar paper."
+            )
+
         trackstar(
             self.index_cfg, self.score_cfg, self.preprocess_cfg, self.trackstar_cfg
         )

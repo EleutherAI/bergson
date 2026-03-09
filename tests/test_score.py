@@ -13,10 +13,11 @@ from transformers import AutoConfig, AutoModelForCausalLM
 from bergson.collector.collector import CollectorComputer
 from bergson.collector.gradient_collectors import GradientCollector
 from bergson.collector.in_memory_collector import InMemoryCollector
-from bergson.config import IndexConfig, ReduceConfig
+from bergson.config import IndexConfig, PreprocessConfig
 from bergson.data import create_index
 from bergson.gradients import GradientProcessor
 from bergson.process_grads import get_trackstar_preconditioner
+from bergson.score.score import _make_split_preconditioner
 from bergson.score.score_writer import (
     InMemorySequenceScoreWriter,
     MemmapSequenceScoreWriter,
@@ -89,7 +90,6 @@ def test_score(tmp_path: Path, model, dataset):
     processor = GradientProcessor(projection_dim=16)
 
     # Step 1: Reduce query gradients using InMemoryCollector
-    reduce_cfg = ReduceConfig(method="mean")
     reduce_index_cfg = IndexConfig(
         run_path=str(tmp_path / "reduce"), token_batch_size=1024
     )
@@ -100,7 +100,7 @@ def test_score(tmp_path: Path, model, dataset):
         data=dataset,
         cfg=reduce_index_cfg,
         processor=processor,
-        reduce_cfg=reduce_cfg,
+        preprocess_cfg=PreprocessConfig(aggregation="mean"),
     )
 
     computer = CollectorComputer(
@@ -294,29 +294,33 @@ def test_compute_preconditioner_h_inv():
 
 
 def test_scorer_preconditioners(tmp_path: Path):
-    """Test that Scorer applies preconditioners to index grads."""
+    """Test that Scorer applies preconditioners via index_transform."""
 
     modules = ["mod_a"]
     query_grads = {"mod_a": torch.randn(1, 4)}
 
-    # Save a processor with a non-identity preconditioner
+    # Save a processor with H = 2*I, then load H^(-1)
     proc = GradientProcessor(preconditioners={"mod_a": torch.eye(4) * 2.0})
     precond_path = tmp_path / "preconditioner"
     proc.save(precond_path)
+
+    h_inv = get_trackstar_preconditioner(
+        str(precond_path), device=torch.device("cpu"), power=-1
+    )
+    preconditioned_query = {m: query_grads[m] @ h_inv[m] for m in modules}
 
     writer = MemmapSequenceScoreWriter(
         tmp_path / "scores_with", 2, 1, dtype=torch.float32
     )
     scorer = Scorer(
-        query_grads=query_grads,
+        query_grads=preconditioned_query,
         modules=modules,
         writer=writer,
         device=torch.device("cpu"),
         dtype=torch.float32,
-        preconditioner_path=str(precond_path),
     )
 
-    # Score with preconditioners
+    # Score with preconditioned query
     mod_grads = {"mod_a": torch.randn(2, 4)}
     scores_with = scorer.score(mod_grads)
 
@@ -350,15 +354,27 @@ def test_scorer_split_preconditioners(tmp_path: Path):
     precond_path = tmp_path / "preconditioner"
     proc.save(precond_path)
 
+    # Load H^(-1/2) for split preconditioning
+    h_inv_sqrt = get_trackstar_preconditioner(
+        str(precond_path), device=torch.device("cpu"), power=-0.5
+    )
+
+    # Precondition query and build index_transform
+    preconditioned_query = {m: query_grads[m] @ h_inv_sqrt[m] for m in modules}
+
+    index_transform = _make_split_preconditioner(
+        h_inv_sqrt, modules, torch.device("cpu"), torch.float32
+    )
+
     # Score with split preconditioning (unit_normalize=True)
     scorer_precond_norm = Scorer(
-        query_grads=query_grads,
+        query_grads=preconditioned_query,
         modules=modules,
         writer=InMemorySequenceScoreWriter(2, 1, dtype=torch.float32),
         device=torch.device("cpu"),
         dtype=torch.float32,
         unit_normalize=True,
-        preconditioner_path=str(precond_path),
+        index_transform=index_transform,
     )
     scores_precond_norm = scorer_precond_norm.score(index_grads)
 
@@ -373,15 +389,18 @@ def test_scorer_split_preconditioners(tmp_path: Path):
     )
     scores_norm = scorer_norm.score(index_grads)
 
-    # Score with preconditioner but unit_normalize=False (one-sided)
+    # Score with one-sided preconditioning (query only, no index_transform)
+    h_inv = get_trackstar_preconditioner(
+        str(precond_path), device=torch.device("cpu"), power=-1
+    )
+    one_sided_query = {m: query_grads[m] @ h_inv[m] for m in modules}
     scorer_inner_products = Scorer(
-        query_grads=query_grads,
+        query_grads=one_sided_query,
         modules=modules,
         writer=InMemorySequenceScoreWriter(2, 1, dtype=torch.float32),
         device=torch.device("cpu"),
         dtype=torch.float32,
         unit_normalize=False,
-        preconditioner_path=str(precond_path),
     )
     scores_inner_products = scorer_inner_products.score(index_grads)
 
@@ -392,11 +411,9 @@ def test_scorer_split_preconditioners(tmp_path: Path):
     assert not torch.allclose(scores_precond_norm, scores_inner_products)
 
     # Verify split math: H^(-1/2) applied to both sides + unit normalize
-    mod_idx = scorer_precond_norm.modules.index("mod_a")
-    assert scorer_precond_norm.preconditioners is not None
-    h_inv_sqrt = scorer_precond_norm.preconditioners[mod_idx]
-    q = query_grads["mod_a"] @ h_inv_sqrt  # preconditioned query
-    g = index_grads["mod_a"] @ h_inv_sqrt  # preconditioned index
+    h = h_inv_sqrt["mod_a"]
+    q = query_grads["mod_a"] @ h  # preconditioned query
+    g = index_grads["mod_a"] @ h  # preconditioned index
     g = g / g.norm(dim=1, keepdim=True)  # unit normalize
     expected = g @ q.T
     assert torch.allclose(scores_precond_norm, expected, atol=1e-6)

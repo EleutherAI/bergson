@@ -8,16 +8,14 @@ from datasets import Dataset, Value
 from jaxtyping import Float
 from torch import Tensor
 
-from bergson.builders import Builder, create_builder
 from bergson.collector.collector import HookCollectorBase
-from bergson.config import IndexConfig, ReduceConfig
+from bergson.config import IndexConfig
 from bergson.gradients import (
     AdafactorNormalizer,
     AdamNormalizer,
     LayerAdapter,
 )
 from bergson.process_preconditioners import process_preconditioners
-from bergson.score.scorer import Scorer
 from bergson.utils.utils import assert_type, get_gradient_dtype
 
 
@@ -45,21 +43,12 @@ class GradientCollectorWithDistributedPreconditioners(HookCollectorBase):
     mod_grads: dict = field(default_factory=dict)
     """Temporary storage for gradients during a batch, keyed by module name."""
 
-    reduce_cfg: ReduceConfig | None = None
-    """Configuration for in-run gradient reduction."""
-
-    builder: Builder | None = None
-    """Handles writing gradients to disk. Created in setup() if save_index is True."""
-
-    scorer: Scorer | None = None
-    """Optional scorer for computing scores instead of building an index."""
-
     def setup(self) -> None:
         """
         Initialize collector state.
-
-        Sets up a Builder for gradient storage if not using a Scorer.
         """
+        assert not self.cfg.skip_preconditioners
+
         assert isinstance(
             self.model.device, torch.device
         ), "Model device is not set correctly"
@@ -82,22 +71,6 @@ class GradientCollectorWithDistributedPreconditioners(HookCollectorBase):
             dtype=torch.float32,
             fill_value=0.0,
         )
-
-        # Compute whether we need to save the index
-        self.save_index = self.scorer is None and not self.cfg.skip_index
-
-        if self.save_index:
-            grad_sizes = {name: math.prod(s) for name, s in self.shapes().items()}
-            self.builder = create_builder(
-                self.data,
-                grad_sizes,
-                self.save_dtype,
-                attribute_tokens=self.cfg.attribute_tokens,
-                path=self.cfg.partial_run_path,
-                reduce_cfg=self.reduce_cfg,
-            )
-        else:
-            self.builder = None
 
         if dist.is_initialized():
             rank = dist.get_rank()
@@ -197,46 +170,23 @@ class GradientCollectorWithDistributedPreconditioners(HookCollectorBase):
         # Keep gradients in original dtype for preconditioner computation
         self.mod_grads[name] = P
 
-        if self.cfg.skip_preconditioners:
-            if self.save_index:
-                # Asynchronously move the gradient to CPU and convert to the final dtype
-                self.mod_grads[name] = P.to(
-                    device="cpu", dtype=self.save_dtype, non_blocking=True
-                )
-            else:
-                self.mod_grads[name] = P.to(dtype=self.save_dtype)
-
     def process_batch(self, indices: list[int], **kwargs):
         """Process collected gradients for a batch and update losses."""
         losses = kwargs.get("losses")
         assert losses is not None, "losses must be provided in kwargs"
 
         # Send gradients to owning ranks and compute outer products there
-        if not self.cfg.skip_preconditioners:
-            exchange_preconditioner_gradients(
-                self.mod_grads,
-                self.processor.preconditioners,
-                self.module_to_rank,
-                self.owned_modules,
-                self.rank,
-            )
+        exchange_preconditioner_gradients(
+            self.mod_grads,
+            self.processor.preconditioners,
+            self.module_to_rank,
+            self.owned_modules,
+            self.rank,
+        )
 
-            # Convert mod_grads to the right dtype for save_index logic
-            if self.save_index:
-                for name in self.mod_grads:
-                    self.mod_grads[name] = self.mod_grads[name].to(
-                        device="cpu", dtype=self.save_dtype, non_blocking=True
-                    )
-            else:
-                for name in self.mod_grads:
-                    self.mod_grads[name] = self.mod_grads[name].to(
-                        dtype=self.save_dtype
-                    )
+        for name in self.mod_grads:
+            self.mod_grads[name] = self.mod_grads[name].to(dtype=self.save_dtype)
 
-        if self.builder:
-            self.builder(indices, self.mod_grads)
-        if self.scorer:
-            self.scorer(indices, self.mod_grads)
         self.mod_grads.clear()
         self.per_doc_losses[indices] = losses.detach().type_as(self.per_doc_losses)
 
@@ -247,6 +197,7 @@ class GradientCollectorWithDistributedPreconditioners(HookCollectorBase):
         assert isinstance(
             self.cfg, IndexConfig
         ), "cfg is required for GradientCollector"  # pleasing type checker
+
         if dist.is_initialized():
             dist.reduce(self.per_doc_losses, dst=0)
 
@@ -274,9 +225,6 @@ class GradientCollectorWithDistributedPreconditioners(HookCollectorBase):
             self.data.save_to_disk(self.cfg.partial_run_path / "data.hf")
 
             self.processor.save(self.cfg.partial_run_path)
-
-        if self.builder is not None:
-            self.builder.teardown()
 
 
 def exchange_preconditioner_gradients(
