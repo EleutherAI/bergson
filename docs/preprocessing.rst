@@ -6,11 +6,11 @@ Bergson supports several gradient preprocessing operations that affect the quali
 Operations
 ----------
 
-**Optimizer normalization** (``--normalizer``): Scales each gradient element by the inverse root-mean-square (RMS) of that parameter's gradient history — i.e., divides by :math:`\sqrt{E[g^2]} + \varepsilon`, where :math:`E[g^2]` is the mean of squared gradients across the dataset. Applied elementwise during gradient collection. Unlike the Adam optimizer used during training, this uses a simple mean over the dataset rather than an exponential moving average. This downweights parameters with large gradient magnitudes and amplifies signal in directions with consistently small gradients.
+**Preconditioning** (``--preconditioner_path``): Applies a per-module matrix transformation derived from a Hessian approximation, such as the second moment matrix of gradients. For inner product scoring, :math:`H^{-1}` is applied to the query side. For cosine similarity scoring, :math:`H^{-1/2}` must be applied to both sides symmetrically. Many preconditioners are supported including K-FAC, EK-FAC, and (mixed) gradient second moments.
+
+**Optimizer normalization** (``--normalizer``): Scales each gradient element by the inverse root-mean-square (RMS) of that parameter's gradient history — e.g., Adam normalization divides by :math:`\sqrt{E[g^2]} + \varepsilon`, where :math:`E[g^2]` is the mean of squared gradients across the dataset. Applied elementwise during gradient collection. Unlike the Adam optimizer used during training, this uses a simple mean over the dataset rather than an exponential moving average. This downweights parameters with large gradient magnitudes and amplifies signal in directions with consistently small gradients. Adam- and Adafactor-style second moment estimates are supported. Adafactor-style normalization uses less GPU VRAM.
 
 **Unit normalization** (``--unit_normalize``): Normalizes each gradient vector to unit L2 norm before similarity computation, enabling cosine similarity when used with inner product scoring.
-
-**Preconditioning** (``--query_preconditioner_path``, ``--index_preconditioner_path``): Applies a per-module matrix transformation derived from a Hessian approximation (second moment matrix of gradients). For inner product scoring, :math:`H^{-1}` is applied to the query side. For cosine similarity scoring, :math:`H^{-1/2}` must be applied to both sides symmetrically.
 
 Query vs Index Gradients
 ------------------------
@@ -20,7 +20,7 @@ Every similarity computation involves two sides:
 - **Index gradients**: Gradients from the training dataset you want to search.
 - **Query gradients**: Gradients from the dataset whose most similar training examples you want to find.
 
-For a similarity score to be meaningful, preprocessing applied to query and index gradients must be consistent.
+In select cases, preprocessing may be applied only to query gradients.
 
 .. list-table::
    :header-rows: 1
@@ -30,17 +30,17 @@ For a similarity score to be meaningful, preprocessing applied to query and inde
      - Can apply one-sided?
      - Notes
    * - Optimizer normalization
-     - Yes
+     - No
      - Apply the same ``--normalizer`` when collecting both query and index gradients
    * - Preconditioning (inner product)
      - Yes
      - :math:`H^{-1}` applied to query only; relative score rankings are preserved
    * - Preconditioning (cosine similarity)
-     - **No**
-     - :math:`H^{-1/2}` must be applied to **both** sides before unit normalization
+     - No
+     - :math:`H^{-1/2}` must be applied to both sides before unit normalization
    * - Unit normalization
-     - **No**
-     - Must be applied consistently to both sides
+     - Yes
+     - Must be applied consistently to both sides to achieve scores in the [-1., 1.] range.
 
 **Unit normalization is a non-linear operation and does not commute with preconditioning.** When unit normalization is enabled alongside preconditioning, the preconditioner must be applied to both query and index gradients before normalization. Bergson handles this automatically: when ``unit_normalize=True``, it applies :math:`H^{-1/2}` to the query gradient upfront in the ``score`` command and applies :math:`H^{-1/2}` to each index gradient as it is collected during scoring.
 
@@ -52,29 +52,36 @@ Cosine similarity with an optimizer normalizer (full gradients)
 
 **Goal:** Rank training examples by cosine similarity to a query, using optimizer-normalized gradients.
 
-Optimizer normalization scales each parameter's gradient by :math:`1/(\sqrt{v} + \varepsilon)`, where :math:`v = E[g^2]` is the mean of squared gradients across the dataset. Applied before cosine similarity, this reweights the gradient space by the inverse RMS of each parameter's gradient history, emphasizing directions with consistently small-magnitude gradients.
+The Adam normalizer scales each parameter's gradient by :math:`1/(\sqrt{v} + \varepsilon)`, where :math:`v = E[g^2]` is the mean of squared gradients across the dataset. Applied before cosine similarity, this reweights the gradient space by the inverse RMS of each parameter's gradient history, correcting for directions with consistently high-magnitude gradients.
 
-The normalizer is applied during gradient collection, so the same ``--normalizer`` must be set when collecting both query and index gradients. Unit normalization is then applied at scoring time to obtain cosine similarity.
+The normalizer is applied during gradient collection, so the same ``--normalizer`` must be set when collecting both query and index gradients.
 
 .. code-block:: bash
 
    # Reduce query dataset to a single mean gradient with optimizer normalization
+   # The normalizer is fit internally on 10,000 training items.
    bergson reduce runs/query \
-       --model EleutherAI/pythia-160m \
-       --dataset query_data \
+       --model EleutherAI/pythia-14m \
+       --dataset NeelNanda/pile-10k \
+       --truncation \
        --projection_dim 0 \
        --normalizer adafactor \
+       --stats_sample_size 10000 \
        --aggregation mean \
        --skip_preconditioners
+
 
    # Score: collect training gradients with the same normalizer, unit normalize for cosine similarity
    bergson score runs/scores \
        --query_path runs/query \
-       --model EleutherAI/pythia-160m \
-       --dataset training_data \
+       --model EleutherAI/pythia-14m \
+       --dataset NeelNanda/pile-10k \
+       --truncation \
        --projection_dim 0 \
        --normalizer adafactor \
-       --unit_normalize
+       --processor_path runs/query \
+       --unit_normalize \
+       --skip_preconditioners
 
 Both commands use ``--projection_dim 0`` to preserve the full gradient, and the same ``--normalizer`` to ensure consistent per-parameter scaling. The ``score`` command applies unit normalization to both the loaded query gradient and each training gradient, giving cosine similarity in the optimizer-normalized space.
 
@@ -91,50 +98,66 @@ Unlike cosine similarity, inner product preserves gradient magnitude, so trainin
 
    # Reduce query dataset to a single mean gradient with optimizer normalization
    bergson reduce runs/query \
-       --model EleutherAI/pythia-160m \
-       --dataset query_data \
+       --model EleutherAI/pythia-14m \
+       --dataset NeelNanda/pile-10k \
+       --truncation \
        --projection_dim 0 \
        --normalizer adafactor \
+       --stats_sample_size 10000 \
        --aggregation mean \
        --skip_preconditioners
 
    # Score: inner product (no --unit_normalize)
    bergson score runs/scores \
        --query_path runs/query \
-       --model EleutherAI/pythia-160m \
-       --dataset training_data \
+       --model EleutherAI/pythia-14m \
+       --dataset NeelNanda/pile-10k \
+       --truncation \
        --projection_dim 0 \
-       --normalizer adafactor
+       --normalizer adafactor \
+       --skip_preconditioners
 
 **Inner product vs cosine similarity:** Use inner product when gradient magnitude carries information (larger gradients indicate stronger relevance). Use cosine similarity to compare direction independently of magnitude, which is more robust when examples differ systematically in gradient norm (e.g., due to different sequence lengths or loss scales).
 
-Randomly projected gradients with reduce and score
+Randomly projected gradients and gradient autocorrelation matrix preconditioners
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-**Goal:** Select training examples most similar to a query set using random projection, keeping full-batch scoring tractable for large models.
+**Goal:** Select training examples most similar to a query set using random projection, keeping preconditioning tractable for large models.
 
-Random projections approximately preserve inner products and cosine similarities (Johnson-Lindenstrauss) while reducing gradient dimensionality by orders of magnitude. For large models, full gradients may be gigabytes per example; projecting to a few thousand dimensions makes the ``reduce → score`` pipeline tractable while retaining most of the signal.
+Random projections approximately preserve inner products and cosine similarities (Johnson-Lindenstrauss) while reducing gradient dimensionality by orders of magnitude. Autocorrelation matrix preconditioners have flattened_gradient_dim^2 elements, so projecting each module to a few hundred or thousand dimensions makes these preconditioners tractable.
 
 ``reduce`` aggregates all query gradients into a single vector (mean or sum) without storing per-example gradients. ``score`` then collects each training gradient on-the-fly and scores it against the precomputed query vector, avoiding the need to build or store a full training gradient index.
 
 .. code-block:: bash
 
-   # Reduce query dataset to a single mean gradient vector
-   bergson reduce runs/query \
-       --model EleutherAI/pythia-160m \
-       --dataset query_data \
-       --projection_dim 4096 \
-       --aggregation mean \
-       --skip_preconditioners
+  bergson preconditioners runs/preconditioners \
+       --model EleutherAI/pythia-14m \
+       --dataset NeelNanda/pile-10k \
+       --truncation \
+       --projection_dim 32
 
-   # Score training data against the reduced query
-   bergson score runs/scores \
-       --query_path runs/query \
-       --model EleutherAI/pythia-160m \
-       --dataset training_data \
-       --projection_dim 4096
+  # Preconditioner and reduce query dataset
+  # to a single mean gradient vector
+  bergson reduce runs/query \
+      --model EleutherAI/pythia-14m \
+      --dataset NeelNanda/pile-10k \
+      --truncation \
+      --projection_dim 32 \
+      --aggregation mean \
+      --processor_path runs/preconditioners \
+      --preconditioner_path runs/preconditioners
 
-Both commands must use the same ``--projection_dim`` and identical model configuration so that both sides are projected into the same random subspace. The random projection matrix is derived deterministically from the model architecture and the projection dimension.
+  # Score training data against the reduced query
+  bergson score runs/scores \
+      --query_path runs/query \
+      --model EleutherAI/pythia-14m \
+      --dataset NeelNanda/pile-10k \
+      --truncation \
+      --projection_dim 32 \
+      --processor_path runs/preconditioners \
+      --preconditioner_path runs/preconditioners
+
+All commands must use the same ``--projection_dim`` and identical model configuration so that both sides are projected into the same random subspace. The random projection matrix is derived deterministically from the model architecture and the projection dimension.
 
 .. note::
 
@@ -159,41 +182,37 @@ This is cosine similarity in the :math:`H^{-1}`-weighted inner product space —
 
 .. code-block:: bash
 
-   # Step 1: Compute normalizers and preconditioners on the query dataset
-   bergson preconditioners runs/query_precond \
-       --model EleutherAI/pythia-160m \
-       --dataset query_data \
-       --projection_dim 4096
+   # Step 1: Compute normalizers and preconditioners on the training dataset
+   bergson preconditioners runs/precond \
+       --model EleutherAI/pythia-14m \
+       --dataset NeelNanda/pile-10k \
+       --truncation \
+       --projection_dim 16
 
-   # Step 2: Compute normalizers and preconditioners on the training dataset
-   bergson preconditioners runs/index_precond \
-       --model EleutherAI/pythia-160m \
-       --dataset training_data \
-       --projection_dim 4096
-
-   # Step 3: Build per-example query gradient index
-   # The query normalizer (from runs/query_precond) is applied during collection
+   # Step 2: Build per-example query gradient index
    bergson build runs/query \
-       --model EleutherAI/pythia-160m \
-       --dataset query_data \
-       --projection_dim 4096 \
-       --processor_path runs/query_precond \
+       --model EleutherAI/pythia-14m \
+       --dataset NeelNanda/pile-10k \
+       --truncation \
+       --projection_dim 16 \
+       --processor_path runs/precond \
        --skip_preconditioners
 
-   # Step 4: Score training data against query
+   # Step 3: Score training data against query
    # H^(-1/2) is applied to both query and index gradients, then unit normalized
    bergson score runs/scores \
        --query_path runs/query \
-       --model EleutherAI/pythia-160m \
-       --dataset training_data \
-       --projection_dim 4096 \
-       --processor_path runs/index_precond \
+       --model EleutherAI/pythia-14m \
+       --dataset NeelNanda/pile-10k \
+       --truncation \
+       --projection_dim 16 \
+       --processor_path runs/precond \
        --skip_preconditioners \
        --unit_normalize \
-       --query_preconditioner_path runs/query_precond \
-       --index_preconditioner_path runs/index_precond
+       --preconditioner_path runs/precond
 
-This pipeline is also available as the ``trackstar`` command, which automates the four steps above. See ``bergson trackstar --help`` for the full argument list.
+For fully automated mixed-preconditioner pipelines (separate preconditioners for query
+and training data), use the ``trackstar`` command. See :doc:`trackstar` for details.
 
 **Why** :math:`H^{-1/2}` **on both sides?** For inner product scoring, applying :math:`H^{-1}` to one side only is sufficient since the relative ordering of :math:`g_q H^{-1} g_t^T` is preserved. For cosine similarity, the unit normalization would undo a one-sided application: normalizing :math:`g_t` to unit norm discards the preconditioner's geometry. Applying :math:`H^{-1/2}` symmetrically to both sides before normalization preserves the preconditioned structure and ensures the normalization operates in the correct space.
 
