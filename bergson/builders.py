@@ -170,25 +170,25 @@ class InMemorySequenceBuilder(Builder):
         self.preprocess_cfg = preprocess_cfg
         total_grad_dim = sum(grad_sizes.values())
 
+        device = torch.device(f"cuda:{self.rank}")
+        self.h_inv = get_trackstar_preconditioner(
+            self.preprocess_cfg.preconditioner_path,
+            power=-0.5 if self.preprocess_cfg.unit_normalize else -1,
+            device=device,
+        )
+
         if self.preprocess_cfg.aggregation != "none":
             np_dtype = np.float32
             num_grads = 1
-            device = "cuda" if torch.cuda.is_available() else "cpu"
             self.in_memory_grad_buffer = torch.zeros(
                 (1, total_grad_dim),
                 dtype=torch.float32,
                 device=device,
             )
-            self.h_inv = get_trackstar_preconditioner(
-                self.preprocess_cfg.preconditioner_path,
-                power=-0.5 if self.preprocess_cfg.unit_normalize else -1,
-                device=torch.device(device),
-            )
         else:
             np_dtype = convert_dtype_to_np(dtype)
             num_grads = self.num_items
             self.in_memory_grad_buffer = None
-            self.h_inv: dict[str, torch.Tensor] = {}
 
         self.grad_buffer = np.zeros(
             (num_grads, total_grad_dim),
@@ -213,6 +213,9 @@ class InMemorySequenceBuilder(Builder):
 
         if torch.cuda.is_available():
             torch.cuda.synchronize()
+
+        mod_grads = precondition_grad(mod_grads, self.h_inv)
+
         offset = 0
         for module_name in self.grad_sizes.keys():
             dim = mod_grads[module_name].shape[1]
@@ -339,9 +342,15 @@ class SequenceBuilder(Builder):
         self.num_items = len(data)
         self.preprocess_cfg = preprocess_cfg
         self.rank = dist.get_rank() if dist.is_initialized() else 0
+        device = torch.device(f"cuda:{self.rank}")
+        self.h_inv = get_trackstar_preconditioner(
+            self.preprocess_cfg.preconditioner_path,
+            power=-0.5 if self.preprocess_cfg.unit_normalize else -1,
+            device=device,
+        )
+
         if self.preprocess_cfg.aggregation != "none":
             num_grads = 1
-            device = torch.device(f"cuda:{self.rank}")
             np_dtype = np.float32
             self.in_memory_grad_buffer = torch.zeros(
                 (num_grads, sum(grad_sizes.values())),
@@ -349,16 +358,10 @@ class SequenceBuilder(Builder):
                 device=device,
             )
 
-            self.h_inv = get_trackstar_preconditioner(
-                self.preprocess_cfg.preconditioner_path,
-                power=-0.5 if self.preprocess_cfg.unit_normalize else -1,
-                device=torch.device(device),
-            )
         else:
             num_grads = self.num_items
             np_dtype = convert_dtype_to_np(dtype)
             self.in_memory_grad_buffer = None
-            self.h_inv: dict[str, torch.Tensor] = {}
 
         self.grad_buffer = create_index(
             path,
@@ -381,6 +384,7 @@ class SequenceBuilder(Builder):
                 self.preprocess_cfg.unit_normalize,
             )
         else:
+            mod_grads = precondition_grad(mod_grads, self.h_inv)
             # It turns out that it's very important for efficiency to write the
             # gradients sequentially instead of first concatenating them, then
             # writing to one vector
