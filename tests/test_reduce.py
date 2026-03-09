@@ -69,7 +69,7 @@ def test_programmatic_reduce(tmp_path: Path):
         token_batch_size=1024,
     )
 
-    build(index_cfg, PreprocessConfig(aggregation="mean"))
+    build(index_cfg, PreprocessConfig(aggregation="mean", unit_normalize=False))
 
     # Assert 1-row reduction exists at the tmp_path
     ds = load_gradient_dataset(Path(index_cfg.run_path), structured=False)
@@ -90,7 +90,9 @@ def test_reduce_with_preconditioning(tmp_path: Path, model, dataset):
 
     # Step 2: reduce with preconditioning pointing at the built index
     preprocess_cfg = PreprocessConfig(
-        aggregation="mean", preconditioner_path=str(build_cfg.partial_run_path)
+        aggregation="mean",
+        preconditioner_path=str(build_cfg.partial_run_path),
+        unit_normalize=False,
     )
     reduce_index_cfg = IndexConfig(
         run_path=str(tmp_path / "reduce_precond"),
@@ -124,6 +126,7 @@ def test_in_memory_reduce(tmp_path: Path, model, dataset):
 
     preprocess_cfg = PreprocessConfig(
         aggregation="mean",
+        unit_normalize=False,
     )
 
     collector = InMemoryCollector(

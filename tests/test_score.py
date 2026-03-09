@@ -100,7 +100,7 @@ def test_score(tmp_path: Path, model, dataset):
         data=dataset,
         cfg=reduce_index_cfg,
         processor=processor,
-        preprocess_cfg=PreprocessConfig(aggregation="mean"),
+        preprocess_cfg=PreprocessConfig(aggregation="mean", unit_normalize=False),
     )
 
     computer = CollectorComputer(

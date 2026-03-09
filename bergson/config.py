@@ -278,8 +278,11 @@ class QueryConfig:
 class PreprocessConfig:
     """Config for gradient preprocessing, shared across build, reduce, and score."""
 
-    unit_normalize: bool = False
-    """Whether to unit normalize the gradients."""
+    unit_normalize: bool = True
+    """Whether to unit normalize the gradients. Enabled by default to
+    mitigate length bias: without normalization, shorter sequences tend
+    to produce larger-magnitude gradients (under mean loss reduction)
+    which inflates their attribution scores."""
 
     preconditioner_path: str | None = None
     """Path to a precomputed preconditioner."""

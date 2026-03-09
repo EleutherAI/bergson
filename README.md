@@ -68,7 +68,7 @@ At the lowest level of abstraction, the `GradientCollector` context manager allo
 You can score a large dataset against a previously built query index without saving its gradients to disk:
 
 ```bash
-bergson score <output_path> --model <model_name> --dataset <dataset_name> --query_path <existing_index_path> --score mean
+bergson score <output_path> --model <model_name> --dataset <dataset_name> --query_path <existing_index_path> --score individual
 ```
 
 We provide a utility to reduce a dataset into its mean or sum query gradient, for use as a query index:
@@ -162,6 +162,225 @@ Where a reward signal is available we compute gradients using a weighted advanta
 ```bash
 bergson build <output_path> --model <model_name> --dataset <dataset_name> --reward_column <reward_column_name>
 ```
+
+# CLI Reference
+
+All subcommands use [simple_parsing](https://github.com/lebrice/SimpleParsing) dataclasses for configuration. Nested configs use dot notation (e.g. `--data.dataset`, `--query.split`). Boolean flags can be passed without a value (e.g. `--truncation` is equivalent to `--truncation true`).
+
+## Subcommands
+
+| Command | Description |
+|---|---|
+| `bergson build` | Build a gradient index from a dataset |
+| `bergson score` | Score a dataset against an existing query gradient index on the fly |
+| `bergson query` | Interactively query an existing gradient index |
+| `bergson reduce` | Reduce a gradient index to an aggregated (mean/sum) gradient |
+| `bergson preconditioners` | Compute normalizers and preconditioners without gradient collection |
+| `bergson hessian` | Approximate Hessian matrices using KFAC or EKFAC |
+| `bergson trackstar` | Run the full TrackStar pipeline (preconditioners, build, and score) in one command |
+
+## Handling Length-Based Differences in Text
+
+When working with datasets containing texts of varying lengths, attribution scores can be biased by sequence length. Three flags interact to control this:
+
+**`--loss_reduction`** (default: `mean`, choices: `mean`, `sum`)
+
+Controls how per-token losses are reduced across a sequence before backpropagation. Neither option is length-neutral on its own.
+
+- `--loss_reduction mean` **(default)**: Divides the summed per-token loss by the number of tokens. This produces an inverse length dependence: shorter sequences yield larger per-example loss values, larger gradient magnitudes, and therefore higher attribution scores. **This biases toward shorter texts.**
+- `--loss_reduction sum`: Uses the raw sum of per-token losses. Longer sequences accumulate more loss, producing larger gradients. **This biases toward longer texts.**
+
+**`--unit_normalize`** (default: `true`)
+
+Normalizes all gradient vectors to unit length so that scoring becomes cosine similarity (purely directional) rather than a raw dot product. This removes gradient magnitude as a factor, mitigating length bias regardless of which `--loss_reduction` is used. **Enabled by default.** To disable it and use raw dot-product scoring (where gradient magnitude matters), pass `--unit_normalize false`.
+
+```bash
+# Opt out of unit normalization (raw dot-product scoring)
+bergson score runs/scores --model <model_name> --dataset <dataset_name> \
+    --query_path runs/query --unit_normalize false
+```
+
+**`--aggregation`** (default: `none`, choices: `mean`, `sum`, `none`)
+
+Controls how multiple query gradients are combined when aggregating them into a single query vector (used in `reduce` and `score`).
+
+- `--aggregation mean`: Averages multiple query gradients, producing a length-independent aggregate.
+- `--aggregation sum`: Sums multiple query gradients. The aggregate magnitude scales with the number of examples.
+- `--aggregation none`: No aggregation; each query gradient is kept separate.
+
+## Shared Flags: Model, Data & Index (`IndexConfig`)
+
+These flags are shared across `build`, `score`, `reduce`, `preconditioners`, `hessian`, and `trackstar`.
+
+**Positional:**
+
+| Flag | Description |
+|---|---|
+| `run_path` | Name of the run. Creates a directory for run artifacts. |
+
+**Model:**
+
+| Flag | Default | Description |
+|---|---|---|
+| `--model` | `EleutherAI/pythia-160m` | Name or path of the HuggingFace model to load. |
+| `--tokenizer` | `""` | Tokenizer name/path. If empty, the model's tokenizer is used. |
+| `--revision` | `None` | Model revision (branch, tag, or commit hash). |
+| `--precision` | `fp32` | Model parameter dtype. Choices: `auto`, `bf16`, `fp16`, `fp32`, `int4`, `int8`. |
+
+**Data (prefixed with `--data.`):**
+
+| Flag | Default | Description |
+|---|---|---|
+| `--data.dataset` | `NeelNanda/pile-10k` | HuggingFace dataset identifier. |
+| `--data.split` | `train` | Dataset split. Supports HF slice notation (e.g. `train[:100]`). |
+| `--data.subset` | `None` | Dataset subset/configuration. |
+| `--data.prompt_column` | `text` | Column containing the prompts. |
+| `--data.completion_column` | `""` | Optional column containing completions. |
+| `--data.conversation_column` | `""` | Optional column containing conversations. |
+| `--data.reward_column` | `""` | Optional column containing rewards (enables GRPO loss). |
+| `--data.skip_nan_rewards` | `false` | Skip examples with NaN rewards. |
+| `--data.truncation` | `false` | Truncate long documents to fit the token budget. |
+| `--data.format_template` | `""` | Path to a YAML with a Jinja2 template for formatting dataset rows. |
+| `--data.data_args` | `""` | Extra dataset constructor args as `arg1=val1,arg2=val2`. |
+
+**Gradient Collection:**
+
+| Flag | Default | Description |
+|---|---|---|
+| `--projection_dim` | `16` | Dimension of the random projection, or `0` to disable. |
+| `--projection_type` | `rademacher` | Random projection type. Choices: `normal`, `rademacher`. |
+| `--include_bias` | `false` | Include linear layers' bias gradients. |
+| `--reshape_to_square` | `false` | Reshape gradients to a square matrix. |
+| `--token_batch_size` | `2048` | Batch size in tokens. |
+| `--auto_batch_size` | `false` | Automatically determine optimal token batch size (experimental, `build` only). |
+| `--attribute_tokens` | `false` | Compute per-token gradients instead of per-example. Incompatible with `reduce`. |
+
+**Loss & Normalization:**
+
+| Flag | Default | Description |
+|---|---|---|
+| `--loss_fn` | `ce` | Loss function. Choices: `ce` (cross-entropy), `kl` (KL divergence). |
+| `--loss_reduction` | `mean` | Loss reduction method. Choices: `mean`, `sum`. See [Handling Length-Based Differences](#handling-length-based-differences-in-text). |
+| `--label_smoothing` | `0.0` | Label smoothing coefficient. Prevents near-zero gradients for high-confidence predictions. Recommended: `0.005`–`0.01`. |
+| `--normalizer` | `none` | Gradient normalizer type. Choices: `adafactor`, `adam`, `none`. |
+| `--stats_sample_size` | `10000` | Number of examples for estimating normalizer statistics. |
+
+**Performance & Scaling:**
+
+| Flag | Default | Description |
+|---|---|---|
+| `--fsdp` | `false` | Use Fully Sharded Data Parallel (FSDP) for gradient collection. |
+| `--processor_path` | `""` | Path to a precomputed processor. |
+| `--stream_shard_size` | `400000` | Shard size for streaming datasets into Dataset objects. |
+
+**Index Control:**
+
+| Flag | Default | Description |
+|---|---|---|
+| `--skip_preconditioners` | `false` | Skip estimating preconditioner statistics. |
+| `--skip_index` | `false` | Skip building the gradient index. |
+| `--overwrite` | `false` | Overwrite any existing index in the run path. |
+| `--drop_columns` | `true` | Only save new dataset columns; drop originals. |
+
+**Module Selection:**
+
+| Flag | Default | Description |
+|---|---|---|
+| `--modules` | `[]` | Restrict gradient collection to specific modules. If empty, all modules are used. |
+| `--filter_modules` | `None` | Glob pattern to exclude modules (e.g. `transformer.h.*.mlp.*`). |
+| `--split_attention_modules` | `[]` | Modules to split into per-head matrices. |
+
+**Attention Config (prefixed with `--attention.`):**
+
+| Flag | Default | Description |
+|---|---|---|
+| `--attention.num_heads` | `0` | Number of attention heads. |
+| `--attention.head_size` | `0` | Size of each attention head. |
+| `--attention.head_dim` | `0` | Axis index for `num_heads` in the weight matrix. |
+
+**Distributed Config (prefixed with `--distributed.`):**
+
+| Flag | Default | Description |
+|---|---|---|
+| `--distributed.nnode` | `1` | Number of nodes for preconditioner computation. |
+| `--distributed.nproc_per_node` | GPU count | Number of processes per node. |
+| `--distributed.node_rank` | `None` | Rank of the current node. Inferred from `SLURM_NODEID`, `GROUP_RANK`, or `NODE_RANK` env vars if not set. |
+
+**Debug & Profiling:**
+
+| Flag | Default | Description |
+|---|---|---|
+| `--profile` | `false` | Enable profiling (first 4 steps by default). |
+| `--debug` | `false` | Enable debug mode with additional logging. |
+| `--max_tokens` | `None` | Max tokens to process. Experimental. |
+
+## Shared Flags: Preprocessing (`PreprocessConfig`)
+
+Used in `build`, `reduce`, `score`, and `trackstar`.
+
+| Flag | Default | Description |
+|---|---|---|
+| `--unit_normalize` | `true` | Unit normalize the gradients. Mitigates length bias by converting scoring to cosine similarity. |
+| `--preconditioner_path` | `None` | Path to a precomputed preconditioner. |
+| `--aggregation` | `none` | Gradient aggregation method. Choices: `mean`, `sum`, `none`. In `score`, only query gradients are aggregated. See [Handling Length-Based Differences](#handling-length-based-differences-in-text). |
+| `--normalize_aggregated_grad` | `false` | Unit normalize the aggregated gradient. Does not affect relative score rankings but affects score magnitudes. |
+
+## `bergson score` Flags (`ScoreConfig`)
+
+| Flag | Default | Description |
+|---|---|---|
+| `--query_path` | `""` | Path to the existing query gradient index. Required. |
+| `--score` | `individual` | Scoring method. Choices: `nearest` (use the most similar query gradient's score), `individual` (compute a separate score for each query gradient). |
+| `--batch_size` | `1024` | Batch size for processing the query dataset. |
+| `--precision` | `fp32` | Dtype for score computation. Choices: `auto`, `bf16`, `fp16`, `fp32`. |
+
+## `bergson query` Flags (`QueryConfig`)
+
+| Flag | Default | Description |
+|---|---|---|
+| `--index` | `""` | Path to the existing gradient index. Required. |
+| `--model` | `""` | Model for the query. Falls back to the index's model if empty. |
+| `--text_field` | `text` | Field to use for the query text. |
+| `--unit_norm` | `true` | Unit normalize the query gradients. |
+| `--device_map_auto` | `false` | Load the model onto multiple devices if necessary. |
+| `--faiss` | `false` | Use FAISS for the query. |
+| `--top_k` | `5` | Number of top (and bottom) results to return per query. |
+| `--record` | `""` | Path to a CSV file for recording results. Appends top/bottom results with columns: `query`, `direction`, `result`, `result_index`, `score`. |
+
+## `bergson hessian` Flags (`HessianConfig`)
+
+| Flag | Default | Description |
+|---|---|---|
+| `--method` | `kfac` | Hessian approximation method. Choices: `kfac`, `tkfac`, `shampoo`. |
+| `--ev_correction` | `false` | Additionally compute eigenvalue correction. |
+| `--hessian_dtype` | `auto` | Dtype for the Hessian approximation. Choices: `auto`, `bf16`, `fp16`, `fp32`. |
+| `--use_dataset_labels` | `false` | Use dataset labels for empirical Fisher approximation. If false, model predictions are used. |
+
+## `bergson trackstar` Flags (`TrackstarConfig`)
+
+TrackStar accepts all shared flags plus score flags, and adds query-specific data flags and pipeline options.
+
+**Query Data (prefixed with `--query.`):**
+
+Accepts the same fields as `--data.*` (see [Data flags](#shared-flags-model-data--index-indexconfig)) but for the query dataset.
+
+| Flag | Default | Description |
+|---|---|---|
+| `--query.dataset` | `NeelNanda/pile-10k` | Query dataset identifier. |
+| `--query.split` | `train` | Query dataset split. |
+| `--query.subset` | `None` | Query dataset subset. |
+| `--query.prompt_column` | `text` | Query prompt column. |
+| `--query.completion_column` | `""` | Query completion column. |
+| `--query.conversation_column` | `""` | Query conversation column. |
+| `--query.truncation` | `false` | Truncate long query documents. |
+| `--query.format_template` | `""` | Query format template path. |
+
+**Pipeline Options:**
+
+| Flag | Default | Description |
+|---|---|---|
+| `--target_downweight_components` | `1000` | Number of gradient components to downweight via automatic lambda selection (§A.1.3 of Chang et al., 2024). |
+| `--num_stats_sample_preconditioner` | `true` | Use `stats_sample_size` items (instead of the full dataset) to compute preconditioners. |
 
 # Benchmarks
 

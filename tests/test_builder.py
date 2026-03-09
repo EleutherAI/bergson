@@ -81,7 +81,7 @@ def _make_builder(dataset, grad_sizes, dtype, cfg, **kwargs):
 def test_builder_multinode_rank(small_dataset, grad_sizes, tmp_path):
     """With global rank=99 (multi-node), cuda:99 doesn't exist.
     Should use torch.cuda.current_device() instead."""
-    cfg = PreprocessConfig(aggregation="mean")
+    cfg = PreprocessConfig(aggregation="mean", unit_normalize=False)
     with _fake_dist(rank=99):
         Builder(small_dataset, grad_sizes, torch.float32, cfg, path=tmp_path)
 
@@ -92,7 +92,7 @@ def test_builder_multinode_rank(small_dataset, grad_sizes, tmp_path):
 @requires_cuda
 def test_builder_no_agg_with_preconditioner(small_dataset, grad_sizes, tmp_path):
     """Non-aggregation path should work when a preconditioner is active."""
-    cfg = PreprocessConfig(aggregation="none")
+    cfg = PreprocessConfig(aggregation="none", unit_normalize=False)
     builder = _make_builder(
         small_dataset,
         grad_sizes,
@@ -113,7 +113,7 @@ def test_builder_no_agg_with_preconditioner(small_dataset, grad_sizes, tmp_path)
 def test_builder_teardown_rank0_guard(small_dataset, grad_sizes):
     """After dist.reduce(dst=0), only rank 0 has the correct result.
     Non-zero ranks should NOT overwrite grad_buffer with stale local data."""
-    cfg = PreprocessConfig(aggregation="mean")
+    cfg = PreprocessConfig(aggregation="mean", unit_normalize=False)
 
     builder = Builder.__new__(Builder)
     builder.grad_sizes = grad_sizes
@@ -134,7 +134,7 @@ def test_builder_teardown_rank0_guard(small_dataset, grad_sizes):
 @requires_cuda
 def test_builder_teardown_rank0_guard_disk(small_dataset, grad_sizes, tmp_path):
     """Rank-0 guard works for disk-backed builder too."""
-    cfg = PreprocessConfig(aggregation="mean")
+    cfg = PreprocessConfig(aggregation="mean", unit_normalize=False)
     builder = _make_builder(
         small_dataset,
         grad_sizes,
@@ -163,7 +163,7 @@ def test_builder_teardown_rank0_guard_disk(small_dataset, grad_sizes, tmp_path):
 @requires_cuda
 def test_inmemory_teardown_allreduces(small_dataset, grad_sizes):
     """In-memory non-agg teardown should all-reduce so every rank has full data."""
-    cfg = PreprocessConfig(aggregation="none")
+    cfg = PreprocessConfig(aggregation="none", unit_normalize=False)
     builder = _make_builder(small_dataset, grad_sizes, torch.float32, cfg)
 
     # Simulate rank 0 writing indices [0, 1]
@@ -180,7 +180,7 @@ def test_inmemory_teardown_allreduces(small_dataset, grad_sizes):
 @requires_cuda
 def test_disk_teardown_skips_allreduce(small_dataset, grad_sizes, tmp_path):
     """Disk (memmap) non-agg teardown should NOT all-reduce — memmap is shared."""
-    cfg = PreprocessConfig(aggregation="none")
+    cfg = PreprocessConfig(aggregation="none", unit_normalize=False)
     builder = _make_builder(
         small_dataset,
         grad_sizes,
@@ -201,7 +201,7 @@ def test_disk_teardown_skips_allreduce(small_dataset, grad_sizes, tmp_path):
 @requires_cuda
 def test_builder_construction_no_agg(small_dataset, grad_sizes):
     """In-memory sequence builder can be constructed."""
-    cfg = PreprocessConfig(aggregation="none")
+    cfg = PreprocessConfig(aggregation="none", unit_normalize=False)
     builder = _make_builder(small_dataset, grad_sizes, torch.float32, cfg)
     assert builder.grad_buffer.shape == (4, 8)
 
@@ -209,7 +209,7 @@ def test_builder_construction_no_agg(small_dataset, grad_sizes):
 @requires_cuda
 def test_builder_construction_with_aggregation(small_dataset, grad_sizes):
     """In-memory builder with aggregation creates a 1-row buffer."""
-    cfg = PreprocessConfig(aggregation="mean")
+    cfg = PreprocessConfig(aggregation="mean", unit_normalize=False)
     builder = _make_builder(small_dataset, grad_sizes, torch.float32, cfg)
     assert builder.in_memory_grad_buffer is not None
     assert builder.grad_buffer.shape == (1, 8)
@@ -221,7 +221,7 @@ def test_builder_construction_with_aggregation(small_dataset, grad_sizes):
 @requires_cuda
 def test_disk_sequence_writes_cuda_grads(small_dataset, grad_sizes, tmp_path):
     """Disk builder writes CUDA grads correctly (no aggregation, no precond)."""
-    cfg = PreprocessConfig(aggregation="none")
+    cfg = PreprocessConfig(aggregation="none", unit_normalize=False)
     builder = _make_builder(
         small_dataset,
         grad_sizes,
@@ -248,7 +248,7 @@ def test_disk_sequence_writes_cuda_grads(small_dataset, grad_sizes, tmp_path):
 @requires_cuda
 def test_disk_sequence_writes_cpu_grads(small_dataset, grad_sizes, tmp_path):
     """Disk builder works with CPU grads too."""
-    cfg = PreprocessConfig(aggregation="none")
+    cfg = PreprocessConfig(aggregation="none", unit_normalize=False)
     builder = _make_builder(
         small_dataset,
         grad_sizes,
@@ -273,7 +273,7 @@ def test_disk_sequence_writes_cpu_grads(small_dataset, grad_sizes, tmp_path):
 @requires_cuda
 def test_disk_sequence_aggregation_teardown(small_dataset, grad_sizes, tmp_path):
     """Aggregation='mean': accumulate + teardown on rank 0."""
-    cfg = PreprocessConfig(aggregation="mean")
+    cfg = PreprocessConfig(aggregation="mean", unit_normalize=False)
     builder = _make_builder(
         small_dataset,
         grad_sizes,
@@ -307,7 +307,7 @@ def test_disk_sequence_aggregation_teardown(small_dataset, grad_sizes, tmp_path)
 @requires_cuda
 def test_inmemory_sequence_no_agg_no_precond(small_dataset, grad_sizes):
     """In-memory sequence builder writes correct values."""
-    cfg = PreprocessConfig(aggregation="none")
+    cfg = PreprocessConfig(aggregation="none", unit_normalize=False)
     builder = _make_builder(small_dataset, grad_sizes, torch.float32, cfg)
 
     torch.manual_seed(0)
@@ -327,7 +327,7 @@ def test_inmemory_sequence_no_agg_no_precond(small_dataset, grad_sizes):
 @requires_cuda
 def test_inmemory_token_writes_correct_values(small_dataset, grad_sizes):
     """Per-token gradients land at the right offsets."""
-    cfg = PreprocessConfig(aggregation="none")
+    cfg = PreprocessConfig(aggregation="none", unit_normalize=False)
     builder = _make_builder(
         small_dataset,
         grad_sizes,
@@ -349,7 +349,7 @@ def test_inmemory_token_writes_correct_values(small_dataset, grad_sizes):
 @requires_cuda
 def test_inmemory_token_noncontiguous_indices(small_dataset, grad_sizes):
     """Writing to non-contiguous example indices."""
-    cfg = PreprocessConfig(aggregation="none")
+    cfg = PreprocessConfig(aggregation="none", unit_normalize=False)
     builder = _make_builder(
         small_dataset,
         grad_sizes,
@@ -397,7 +397,7 @@ def test_unit_normalize_no_aggregation(small_dataset, grad_sizes):
 @requires_cuda
 def test_disk_token_writes_and_flushes(small_dataset, grad_sizes, tmp_path):
     """Disk token builder writes per-token grads to memmap."""
-    cfg = PreprocessConfig(aggregation="none")
+    cfg = PreprocessConfig(aggregation="none", unit_normalize=False)
     builder = _make_builder(
         small_dataset,
         grad_sizes,

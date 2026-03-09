@@ -141,7 +141,7 @@ def test_token_builder_write(tmp_path: Path):
 
     # [2, 3, 1]
     grad_sizes = {"m": 2}
-    cfg = PreprocessConfig(aggregation="none")
+    cfg = PreprocessConfig(aggregation="none", unit_normalize=False)
 
     with patch("bergson.builder.dist") as mock_dist:
         mock_dist.is_initialized.return_value = False
