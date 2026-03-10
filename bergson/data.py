@@ -244,10 +244,27 @@ def _allocate_batches_world(
     """
     if ranks is None:
         ranks = list(range(world_size))
-    if len(doc_lengths) < world_size:
-        raise RuntimeError("Not enough documents to distribute across workers.")
-
-    docs_sorted = sorted(enumerate(doc_lengths), key=lambda x: x[1], reverse=True)
+    # Skip documents shorter than 2 tokens: they cannot produce a valid
+    # next-token label so they contribute no gradient.  Keeping them would
+    # also be problematic for length-0 documents which create [N, 0] tensors
+    # that hang the model forward pass.  These documents are simply omitted
+    # from batches; their gradient index entries stay at the pre-initialized
+    # zero value.
+    docs_sorted = sorted(
+        ((i, l) for i, l in enumerate(doc_lengths) if l >= 2),
+        key=lambda x: x[1],
+        reverse=True,
+    )
+    n_skipped = len(doc_lengths) - len(docs_sorted)
+    if n_skipped > 0 and (not dist.is_initialized() or dist.get_rank() == 0):
+        print(
+            f"Skipping {n_skipped} documents with fewer than 2 tokens "
+            f"(no valid next-token labels)."
+        )
+    if len(docs_sorted) < world_size:
+        raise RuntimeError(
+            "Not enough documents (with 2+ tokens) to distribute across workers."
+        )
     if docs_sorted[0][1] > N:  # a single document would overflow any batch
         raise RuntimeError(
             f"At least one document is too long for the token batch size {N}."
