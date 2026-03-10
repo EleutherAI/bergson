@@ -118,22 +118,29 @@ class NormalizerCollector(HookCollectorBase):
         # set module._inputs to a
         module._inputs = a
 
+    # Maximum number of documents to process at once in the outer-product
+    # matmul.  This caps the size of the intermediate P tensor
+    # [chunk, O, I] to avoid OOM on batches with many short documents.
+    NORMALIZER_CHUNK_SIZE: int = 32
+
     @HookCollectorBase.split_attention_heads
     def backward_hook(self, module: nn.Module, g: Float[Tensor, "N S O"]):
         """
         Compute per-sample gradient and store in mod_grads.
 
         Computes gradient as outer product g.T @ a (again with optional projection and
-        normalization).
+        normalization).  Processes in chunks to bound memory usage.
         """
         a = module._inputs  # [N, S, I/q]
 
         assert isinstance(a, torch.Tensor), "Activation cache missing for module"
         name = assert_type(str, module._name)
 
-        P = g.mT @ a  # [N, O/p, S] @ [N, S, I/q] → [N, O/p, I/q]
-
-        self.callback(name, P)
+        N = g.shape[0]
+        cs = self.NORMALIZER_CHUNK_SIZE
+        for start in range(0, N, cs):
+            P = g[start : start + cs].mT @ a[start : start + cs]
+            self.callback(name, P)
 
     def process_batch(self, indices: list[int], **kwargs):
         """Process collected gradients for a batch."""
