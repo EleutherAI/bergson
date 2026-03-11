@@ -99,16 +99,19 @@ class Scorer:
 
         if self.length_normalize:
             token_counts = self.num_token_grads[indices]
-            scale = torch.from_numpy(
-                np.sqrt(token_counts.astype(np.float64)).astype(np.float32)
-            ).to(scores.device).unsqueeze(1)
+            scale = (
+                torch.from_numpy(
+                    np.sqrt(token_counts.astype(np.float64)).astype(np.float32)
+                )
+                .to(scores.device)
+                .unsqueeze(1)
+            )
 
             if self.attribute_tokens:
                 # Expand per-doc scale to per-token rows
-                per_token_scale = torch.cat([
-                    s.expand(int(n), 1)
-                    for s, n in zip(scale, token_counts)
-                ], dim=0)
+                per_token_scale = torch.cat(
+                    [s.expand(int(n), 1) for s, n in zip(scale, token_counts)], dim=0
+                )
                 scores = scores * per_token_scale
             else:
                 scores = scores * scale
