@@ -417,3 +417,58 @@ def test_scorer_split_preconditioners(tmp_path: Path):
     g = g / g.norm(dim=1, keepdim=True)  # unit normalize
     expected = g @ q.T
     assert torch.allclose(scores_precond_norm, expected, atol=1e-6)
+
+
+def test_scorer_length_normalize():
+    """length_normalize=True scales scores by sqrt(num_tokens)."""
+    torch.manual_seed(42)
+    modules = ["mod_a"]
+    query_grads = {"mod_a": torch.randn(1, 4)}
+    index_grads = {"mod_a": torch.randn(3, 4)}
+    num_token_grads = np.array([10, 100, 50], dtype=np.int64)
+
+    # Without length_normalize
+    writer_raw = InMemorySequenceScoreWriter(3, 1, dtype=torch.float32)
+    scorer_raw = Scorer(
+        query_grads=query_grads,
+        modules=modules,
+        writer=writer_raw,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+    )
+    scorer_raw([0, 1, 2], index_grads)
+    scores_raw = writer_raw.scores.clone()
+
+    # With length_normalize
+    writer_ln = InMemorySequenceScoreWriter(3, 1, dtype=torch.float32)
+    scorer_ln = Scorer(
+        query_grads=query_grads,
+        modules=modules,
+        writer=writer_ln,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+        length_normalize=True,
+        num_token_grads=num_token_grads,
+    )
+    scorer_ln([0, 1, 2], index_grads)
+    scores_ln = writer_ln.scores
+
+    # Verify: scores_ln[i] = scores_raw[i] * sqrt(num_token_grads[i])
+    expected_scale = torch.from_numpy(
+        np.sqrt(num_token_grads.astype(np.float64)).astype(np.float32)
+    ).unsqueeze(1)
+    expected = scores_raw * expected_scale
+    assert torch.allclose(scores_ln, expected, atol=1e-6)
+
+
+def test_scorer_length_normalize_requires_token_counts():
+    """length_normalize=True without num_token_grads raises ValueError."""
+    with pytest.raises(ValueError, match="num_token_grads"):
+        Scorer(
+            query_grads={"mod_a": torch.randn(1, 4)},
+            modules=["mod_a"],
+            writer=InMemorySequenceScoreWriter(3, 1, dtype=torch.float32),
+            device=torch.device("cpu"),
+            dtype=torch.float32,
+            length_normalize=True,
+        )

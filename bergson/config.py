@@ -281,6 +281,12 @@ class PreprocessConfig:
     unit_normalize: bool = False
     """Whether to unit normalize the gradients."""
 
+    length_normalize: bool = False
+    """Whether to scale scores by sqrt(num_tokens) per document to correct
+    for short-document bias. Under mean loss reduction, shorter sequences
+    produce larger-magnitude gradients; this partially compensates without
+    fully removing magnitude (as unit_normalize does)."""
+
     preconditioner_path: str | None = None
     """Path to a precomputed preconditioner."""
 

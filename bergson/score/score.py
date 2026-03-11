@@ -15,6 +15,7 @@ from bergson.collection import collect_gradients
 from bergson.config import IndexConfig, PreprocessConfig, ScoreConfig
 from bergson.data import (
     allocate_batches,
+    compute_num_token_grads,
     load_gradients,
 )
 from bergson.distributed import launch_distributed_run
@@ -206,6 +207,10 @@ def create_scorer(
     else:
         writer = MemmapSequenceScoreWriter(path, len(data), num_queries, dtype=dtype)
 
+    num_token_grads = (
+        compute_num_token_grads(data) if preprocess_cfg.length_normalize else None
+    )
+
     return Scorer(
         query_grads=query_grads,
         modules=score_cfg.modules,
@@ -213,6 +218,8 @@ def create_scorer(
         device=device,
         dtype=dtype,
         unit_normalize=preprocess_cfg.unit_normalize,
+        length_normalize=preprocess_cfg.length_normalize,
+        num_token_grads=num_token_grads,
         score_mode=score_cfg.score,
         attribute_tokens=attribute_tokens,
         index_transform=index_transform,

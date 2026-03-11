@@ -1,5 +1,6 @@
 from collections.abc import Callable
 
+import numpy as np
 import torch
 from torch import Tensor
 
@@ -27,6 +28,8 @@ class Scorer:
         dtype: torch.dtype,
         *,
         unit_normalize: bool = False,
+        length_normalize: bool = False,
+        num_token_grads: np.ndarray | None = None,
         score_mode: str = "individual",
         attribute_tokens: bool = False,
         index_transform: Callable[[dict[str, Tensor]], dict[str, Tensor]] = lambda x: x,
@@ -49,6 +52,12 @@ class Scorer:
             Dtype for scoring computation.
         unit_normalize : bool
             Whether to unit normalize gradients before scoring.
+        length_normalize : bool
+            Whether to scale scores by sqrt(num_tokens) per document to
+            correct for short-document bias.
+        num_token_grads : np.ndarray | None
+            Per-document token counts, shape ``(num_docs,)``. Required when
+            ``length_normalize=True``.
         score_mode : str
             Scoring mode: "individual" or "nearest".
         attribute_tokens : bool
@@ -58,10 +67,17 @@ class Scorer:
             scoring. Receives and returns ``dict[str, Tensor]``. When ``None``,
             index gradients are used as-is.
         """
+        if length_normalize and num_token_grads is None:
+            raise ValueError(
+                "num_token_grads must be provided when length_normalize=True"
+            )
+
         self.device = device
         self.dtype = dtype
         self.modules = modules
         self.unit_normalize = unit_normalize
+        self.length_normalize = length_normalize
+        self.num_token_grads = num_token_grads
         self.score_mode = score_mode
         self.attribute_tokens = attribute_tokens
         self.writer = writer
@@ -80,6 +96,23 @@ class Scorer:
     ):
         """Score a batch of training gradients against all queries."""
         scores = self.score(mod_grads)
+
+        if self.length_normalize:
+            token_counts = self.num_token_grads[indices]
+            scale = torch.from_numpy(
+                np.sqrt(token_counts.astype(np.float64)).astype(np.float32)
+            ).to(scores.device).unsqueeze(1)
+
+            if self.attribute_tokens:
+                # Expand per-doc scale to per-token rows
+                per_token_scale = torch.cat([
+                    s.expand(int(n), 1)
+                    for s, n in zip(scale, token_counts)
+                ], dim=0)
+                scores = scores * per_token_scale
+            else:
+                scores = scores * scale
+
         self.writer(indices, scores)
 
     @torch.inference_mode()
