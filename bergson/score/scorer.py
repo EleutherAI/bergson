@@ -98,6 +98,7 @@ class Scorer:
         scores = self.score(mod_grads)
 
         if self.length_normalize:
+            assert self.num_token_grads is not None
             token_counts = self.num_token_grads[indices]
             scale = (
                 torch.from_numpy(
