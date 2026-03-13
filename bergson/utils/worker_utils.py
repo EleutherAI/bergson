@@ -25,6 +25,7 @@ from bergson.data import allocate_batches, load_data_string, tokenize
 from bergson.format import apply_format
 from bergson.gradients import GradientProcessor, Normalizer
 from bergson.normalizer.fit_normalizers import fit_normalizers
+from bergson.utils.load_adam_state import load_from_optimizer
 from bergson.utils.utils import assert_type, get_layer_list
 
 
@@ -85,6 +86,7 @@ def create_processor(
     ds: Dataset | IterableDataset,
     cfg: IndexConfig,
     target_modules: set[str] | None = None,
+    adam_buffer: dict[str, Normalizer] | None = None,
 ) -> GradientProcessor:
     """Handle processor creation and normalizer fitting"""
     local_rank = cfg.distributed.local_rank
@@ -101,7 +103,10 @@ def create_processor(
             skip_preconditioners=cfg.skip_preconditioners,
         )
     else:
-        normalizers = create_normalizers(model, ds, cfg, target_modules)
+        if adam_buffer:
+            normalizers = adam_buffer
+        else:
+            normalizers = create_normalizers(model, ds, cfg, target_modules)
 
         processor = GradientProcessor(
             normalizers,
@@ -119,7 +124,7 @@ def create_processor(
 def setup_model_and_peft(
     cfg: IndexConfig,
     device_map_auto: bool = False,
-) -> tuple[PreTrainedModel, set | None]:
+) -> tuple[PreTrainedModel, set | None, dict | None]:
     """Handle model loading, quantization, FSDP, and PEFT detection"""
     local_rank = cfg.distributed.local_rank
 
@@ -205,6 +210,14 @@ def setup_model_and_peft(
                         f"Adapter parameter '{processed_name}' not found in the model."
                     )
 
+    # Extract Adam state from parameters with requires_grad
+    if cfg.adam_state_path:
+        normalizers = load_from_optimizer(
+            model, cfg.adam_state_path, cfg.include_bias, target_modules
+        )
+    else:
+        normalizers = None
+
     # Configure gradients
     model.requires_grad_(False)
     model.get_input_embeddings().requires_grad_(True)  # type: ignore
@@ -217,7 +230,7 @@ def setup_model_and_peft(
 
     model = cast(PreTrainedModel, model)
 
-    return model, target_modules  # type: ignore
+    return model, target_modules, normalizers  # type: ignore
 
 
 def estimate_advantage(ds: Dataset, cfg: DataConfig):

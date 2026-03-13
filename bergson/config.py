@@ -157,6 +157,12 @@ class IndexConfig:
     processor_path: str = ""
     """Path to a precomputed processor."""
 
+    adam_state_path: str = ""
+    """Path to a training checkpoint directory containing an optimizer.pt
+    or to an optimizer state file. Extracts Adam exp_avg_sq second
+    moments and loads them into AdamNormalizer. Mutually exclusive with
+    fitting normalizers via --normalizer."""
+
     normalizer: Literal["adafactor", "adam", "none"] = "none"
     """Type of normalizer to use for the gradients."""
 
@@ -208,6 +214,10 @@ class IndexConfig:
     """If provided, a glob pattern to filter out modules from gradient collection.
     For example, "transformer.h.*.mlp.*" will exclude all MLP layers in a
     standard transformer architecture."""
+
+    build_subsets: bool = False
+    """When enabled, iterate over all subsets of the dataset and build a
+    separate index for each one in a subdirectory of run_path."""
 
     overwrite: bool = False
     """Whether to overwrite any existing index in the run path."""

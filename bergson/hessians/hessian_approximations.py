@@ -145,7 +145,7 @@ def hessian_worker(
             world_size=world_size,
         )
 
-    model, target_modules = setup_model_and_peft(index_cfg)
+    model, target_modules, _ = setup_model_and_peft(index_cfg)
 
     attention_cfgs = {
         module: index_cfg.attention for module in index_cfg.split_attention_modules

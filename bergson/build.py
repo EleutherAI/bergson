@@ -66,8 +66,8 @@ def build_worker(
             world_size=world_size,
         )
 
-    model, target_modules = setup_model_and_peft(index_cfg)
-    processor = create_processor(model, ds, index_cfg, target_modules)
+    model, target_modules, adam_buffer = setup_model_and_peft(index_cfg)
+    processor = create_processor(model, ds, index_cfg, target_modules, adam_buffer)
 
     maybe_auto_batch_size(index_cfg, model, ds, processor, target_modules, rank)
 

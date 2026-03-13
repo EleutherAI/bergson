@@ -159,12 +159,8 @@ def dist_worker(
             worker(*worker_args)
     finally:
         if dist.is_initialized():
-            try:
-                dist.barrier()
-            except Exception as e:
-                print(f"Barrier failed during cleanup: {e}")
-                pass
-
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
             dist.destroy_process_group()
 
 

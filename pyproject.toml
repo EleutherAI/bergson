@@ -51,6 +51,8 @@ example = [
     "bitsandbytes>=0.49.0",
     "pydantic>=2.12.5",
     "trl",
+    "lm_eval",
+    "sentencepiece"
 ]
 faiss = [
     "faiss-gpu-cu12",

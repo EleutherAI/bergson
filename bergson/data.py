@@ -509,9 +509,9 @@ class Scores:
     def __len__(self) -> int:
         return len(self.mmap)
 
-    def __getitem__(self, key: Any) -> Any:
-        items = self.mmap[key]
-        return structured_to_unstructured(items[self._score_fields])
+    def __getitem__(self, key: Any) -> np.ndarray:
+        score_data = structured_to_unstructured(self.mmap[self._score_fields])
+        return score_data[key]
 
     def get(self, key: Any, score_idx: int = 0) -> Any:
         """Get scores for a specific score index."""
@@ -521,6 +521,11 @@ class Scores:
         """Check whether all scores in the structured mmap have
         been written to (i.e. are not still zeros)"""
         return all(np.all(self.mmap[f"written_{i}"]) for i in range(self.num_scores))
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        num_rows = len(self.mmap)
+        return (num_rows, self.num_scores)
 
 
 def load_scores(
@@ -615,17 +620,26 @@ def tokenize(
     labels_list: list[list[int]] = []
 
     for i, convo in enumerate(convos):
-        # Find the spans of the assistant's responses in the tokenized output
-        pos = 0
+        # Find the spans (start, end) of the assistant's responses in the tokens
         spans: list[tuple[int, int]] = []
 
-        for msg in convo:
+        # We use rfind to find the last match in the string so if the answer is
+        # duplicated in the user prompt we don't select that.
+
+        # We work backwards through the messages and restrict the search to not
+        # use previously matching substrings so if two assistant messages
+        # have the same content they won't both match the right-most substring.
+        search_end = len(strings[i])
+
+        for msg in reversed(convo):
             if msg["role"] != "assistant":
                 continue
 
             ans = msg["content"]
-            start = strings[i].rfind(ans, pos)
+            start = strings[i].rfind(ans, 0, search_end)
             if start < 0:
+                print("String under test: ", strings[i])
+                print("Substring search: ", ans)
                 raise RuntimeError(
                     "Failed to find completion in the chat-formatted conversation. "
                     "Make sure the chat template does not alter the completion, e.g. "
@@ -633,18 +647,35 @@ def tokenize(
                 )
 
             # move past this match
-            pos = start + len(ans)
+            end = start + len(ans)
 
-            start_token = encodings.char_to_token(i, start)
-            end_token = encodings.char_to_token(i, pos)
-            spans.append((start_token, end_token))
+            start_token_idx = encodings.char_to_token(i, start)
+            end_token_idx = encodings.char_to_token(i, end)
+            # When end falls on the last char, char_to_token returns None;
+            # look up the token for the previous char and advance by one.
+            if end_token_idx is None and end > 0:
+                prev = encodings.char_to_token(i, end - 1)
+                if prev is not None:
+                    end_token_idx = prev + 1
+            spans.append((start_token_idx, end_token_idx))
+
+            # Update the boundary; the next message must be found before this one
+            search_end = start
+
+        spans = list(reversed(spans))
 
         # Labels are -100 everywhere except where the assistant's response is
         tokens = encodings["input_ids"][i]
         labels = [-100] * len(tokens)
         for start, end in spans:
-            if start is not None and end is not None:
-                labels[start:end] = tokens[start:end]
+            if start is None:
+                # Entire span is beyond the truncation boundary, so we skip.
+                continue
+            if end is None:
+                # Span starts in-bounds but extends past truncation, so we
+                # label up to the end of the truncated sequence
+                end = len(tokens)
+            labels[start:end] = tokens[start:end]
 
         labels_list.append(labels)
 

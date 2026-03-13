@@ -1,7 +1,9 @@
+import copy
 from dataclasses import dataclass
 from typing import Optional, Union
 
 from simple_parsing import ArgumentParser, ConflictResolution
+from datasets import get_dataset_config_names
 
 from .build import build
 from .config import (
@@ -19,7 +21,7 @@ from .query.query_index import query
 from .score.score import score_dataset
 from .trackstar import trackstar
 from .utils.worker_utils import validate_run_path
-
+from .utils.utils import simple_parse_args_string
 
 @dataclass
 class Build:
@@ -34,9 +36,40 @@ class Build:
         if self.index_cfg.skip_index and self.index_cfg.skip_preconditioners:
             raise ValueError("Either skip_index or skip_preconditioners must be False")
 
-        validate_run_path(self.index_cfg)
+        if self.index_cfg.build_subsets:
+            self._build_all_subsets()
+        else:
+            validate_run_path(self.index_cfg)
+            build(self.index_cfg, self.preprocess_cfg)
 
-        build(self.index_cfg, self.preprocess_cfg)
+    def _build_all_subsets(self):
+        """Build a separate index per dataset subset."""
+        configs = get_dataset_config_names(
+            self.index_cfg.data.dataset, 
+            **simple_parse_args_string(self.index_cfg.data.data_args) # type: ignore
+        )
+
+        # Filter out the implicit "default" config that single-config datasets use
+        configs = [c for c in configs if c != "default"]
+        subsets = sorted(configs)
+
+        assert subsets, (
+            f"No subsets found for dataset '{self.index_cfg.data.dataset}'. "
+            "Remove --build_subsets or specify a --subset manually."
+        )
+
+        print(f"Building {len(subsets)} subset indices: {subsets}")
+        for subset_name in subsets:
+            sub_cfg = copy.deepcopy(self.index_cfg)
+            sub_cfg.data.subset = subset_name
+            sub_cfg.run_path = f"{self.index_cfg.run_path}/{subset_name}"
+            sub_cfg.build_subsets = False
+
+            print(f"Building subset: {subset_name}")
+            print(f"Run path: {sub_cfg.run_path}")
+
+            validate_run_path(sub_cfg)
+            build(sub_cfg, self.preprocess_cfg)
 
 
 @dataclass

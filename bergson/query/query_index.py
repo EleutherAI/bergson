@@ -71,12 +71,12 @@ def query(
             model=query_cfg.model,
         )
         tokenizer = AutoTokenizer.from_pretrained(query_cfg.model)
-        model, target_modules = setup_model_and_peft(
+        model, target_modules, _ = setup_model_and_peft(
             query_index_cfg, device_map_auto=query_cfg.device_map_auto
         )
     else:
         tokenizer = AutoTokenizer.from_pretrained(index_cfg.model)
-        model, target_modules = setup_model_and_peft(
+        model, target_modules, _ = setup_model_and_peft(
             index_cfg, device_map_auto=query_cfg.device_map_auto
         )
 

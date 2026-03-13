@@ -6,7 +6,7 @@ from .config import (
     IndexConfig,
     PreprocessConfig,
     ScoreConfig,
-    TrackstarConfig,
+    TrackStarConfig,
 )
 from .process_grads import mix_preconditioners
 from .score.score import score_dataset
@@ -48,7 +48,7 @@ def trackstar(
     index_cfg: IndexConfig,
     score_cfg: ScoreConfig,
     preprocess_cfg: PreprocessConfig,
-    trackstar_cfg: TrackstarConfig,
+    trackstar_cfg: TrackStarConfig,
 ):
     """Run the full trackstar pipeline: preconditioners -> mix -> build -> score."""
     run_path = index_cfg.run_path
@@ -57,7 +57,6 @@ def trackstar(
     mixed_preconditioner_path = f"{run_path}/mixed_preconditioner"
     query_path = f"{run_path}/query"
     scores_path = f"{run_path}/scores"
-    resume = trackstar_cfg.resume
 
     # Steps 1-2 only compute preconditioners, so don't preprocess grads.
     precond_preprocess_cfg = PreprocessConfig()
@@ -118,6 +117,9 @@ def trackstar(
         query_index_cfg.data = trackstar_cfg.query
         query_index_cfg.processor_path = query_processsor_path
         query_index_cfg.skip_preconditioners = True
+        # Step 4 applies the mixed preconditioner during gradient collection,
+        # which uses more memory than steps 1-2. Use the smaller batch size.
+        query_index_cfg.token_batch_size = precond_batch_size
         validate(trackstar_cfg.resume, query_index_cfg)
         build(query_index_cfg, preprocess_cfg)
 
@@ -128,6 +130,9 @@ def trackstar(
         score_index_cfg.run_path = scores_path
         score_index_cfg.processor_path = value_processor_path
         score_index_cfg.skip_preconditioners = True
+        # Scoring applies preconditioners during gradient collection, so use
+        # the smaller batch size to avoid OOM.
+        score_index_cfg.token_batch_size = precond_batch_size
         score_cfg.query_path = query_path
         validate(trackstar_cfg.resume, score_index_cfg)
         score_dataset(score_index_cfg, score_cfg, preprocess_cfg)
