@@ -20,6 +20,7 @@ from .score.score import score_dataset
 from .trackstar import trackstar
 from .utils.worker_utils import validate_run_path
 
+
 @dataclass
 class Build:
     """Build a gradient index."""

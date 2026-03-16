@@ -4,13 +4,11 @@ import math
 from multiprocessing import cpu_count
 from typing import TypeVar, Union
 
-import numpy as np
-import torch
 from datasets import Dataset, DatasetDict
-from torch.utils.data import Dataset as TorchDataset
 from transformers import PreTrainedTokenizerBase
 
 T = TypeVar("T", bound=Union[Dataset, DatasetDict])
+
 
 def tokenize_and_pad(raw_ds, tokenizer, max_seq_len):
     tokenizer.pad_token = tokenizer.eos_token  # GPT-2 has no pad token by default

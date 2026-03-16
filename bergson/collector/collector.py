@@ -39,7 +39,6 @@ from bergson.utils.peft import set_peft_enabled
 from bergson.utils.utils import assert_type
 
 
-
 @dataclass
 class HookCollectorBase(ContextDecorator, ABC):
     """

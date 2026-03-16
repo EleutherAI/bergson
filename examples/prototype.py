@@ -5,18 +5,18 @@ import tempfile
 
 import torch
 import torchopt
-from datasets import Dataset, load_dataset
+from datasets import load_dataset
 from scipy.stats import spearmanr
 from torchopt.pytree import tree_iter
-from transformers import AutoTokenizer, GPT2LMHeadModel, GPT2Config
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+)
 
+from bergson.chunk_and_tokenize import chunk_and_tokenize
 from bergson.distributed import grad_tree
 from bergson.trainer import BackwardState, DataStream, Trainer, TrainerState
 from bergson.utils.math import weighted_causal_lm_ce
-from bergson.chunk_and_tokenize import chunk_and_tokenize, tokenize_and_pad
-
-from transformers import AutoTokenizer, AutoModelForCausalLM
-
 
 # Disable autocast
 torch.cuda.is_bf16_supported = lambda *a, **k: False
@@ -26,11 +26,13 @@ class ChunkedDataStream(DataStream):
     def __getitem__(self, i):
         if i < 0 or i >= self.num_batches:
             raise IndexError()
-        indices = list(range(
-            i * self.batch_size + self.rank,
-            (i + 1) * self.batch_size,
-            self.world_size,
-        ))
+        indices = list(
+            range(
+                i * self.batch_size + self.rank,
+                (i + 1) * self.batch_size,
+                self.world_size,
+            )
+        )
         raw = self.dataset[indices]
         input_ids = raw["input_ids"].detach().clone().to(self.device)
         return {
@@ -38,15 +40,15 @@ class ChunkedDataStream(DataStream):
             "attention_mask": torch.ones_like(input_ids),
             "labels": input_ids.clone(),
             "example_weight": self.weights[
-                i * self.batch_size + self.rank:(i + 1) * self.batch_size:self.world_size
+                i * self.batch_size
+                + self.rank : (i + 1) * self.batch_size : self.world_size
             ],
         }
 
+
 def make_gpt2_model(device):
     model = AutoModelForCausalLM.from_pretrained(
-        "gpt2",
-        torch_dtype=torch.float32,
-        attn_implementation="eager"
+        "gpt2", torch_dtype=torch.float32, attn_implementation="eager"
     )
     model.loss_function = weighted_causal_lm_ce
     # untie weights, otherwise bergson blows up
@@ -55,14 +57,23 @@ def make_gpt2_model(device):
     return model
 
 
-def run_test(max_length, train_ds, test_ids, batch_size, device, num_subsets=20, seed=42):
+def run_test(
+    max_length, train_ds, test_ids, batch_size, device, num_subsets=20, seed=42
+):
     n_train = (len(train_ds) // batch_size) * batch_size
     input_ids = torch.tensor([test_ids], device=device)
 
     # Save pretrained params/buffers for LDS retraining
     init_model = make_gpt2_model(device)
-    init_params = {k: v.detach().clone() for k, v in init_model.named_parameters(remove_duplicate=False) if v.requires_grad}
-    init_buffers = {k: v.detach().clone() for k, v in init_model.named_buffers(remove_duplicate=False)}
+    init_params = {
+        k: v.detach().clone()
+        for k, v in init_model.named_parameters(remove_duplicate=False)
+        if v.requires_grad
+    }
+    init_buffers = {
+        k: v.detach().clone()
+        for k, v in init_model.named_buffers(remove_duplicate=False)
+    }
     del init_model
 
     # MAGIC forward pass
@@ -72,25 +83,53 @@ def run_test(max_length, train_ds, test_ids, batch_size, device, num_subsets=20,
     trainer, fwd_state = Trainer.initialize(model, optimizer)
     ckpt_dir = tempfile.mkdtemp()
 
-    train_stream = ChunkedDataStream(train_ds, processor=None, batch_size=batch_size, device=device, max_length=max_length)
+    train_stream = ChunkedDataStream(
+        train_ds,
+        processor=None,
+        batch_size=batch_size,
+        device=device,
+        max_length=max_length,
+    )
     fwd_state = trainer.train(fwd_state, train_stream, inplace=True, save_dir=ckpt_dir)
     fwd_state.save(os.path.join(ckpt_dir, "final_state.ckpt")).result()
 
     # MAGIC backward pass
-    bwd_stream = ChunkedDataStream(train_ds, processor=None, batch_size=batch_size, device=device, max_length=max_length)
+    bwd_stream = ChunkedDataStream(
+        train_ds,
+        processor=None,
+        batch_size=batch_size,
+        device=device,
+        max_length=max_length,
+    )
     with fwd_state.activate(model) as params:
-        test_loss = model(input_ids=input_ids, attention_mask=torch.ones_like(input_ids), labels=input_ids.clone()).loss
+        test_loss = model(
+            input_ids=input_ids,
+            attention_mask=torch.ones_like(input_ids),
+            labels=input_ids.clone(),
+        ).loss
         query_grads = grad_tree(test_loss, params)
         query_grads = {k: g.detach().clone() for k, g in query_grads.items()}
-        opt_grads = [torch.zeros_like(buf) for buf in tree_iter(fwd_state.opt_state) if isinstance(buf, torch.Tensor) and buf.is_floating_point()]
-        bwd_state = BackwardState(query_grads, opt_grads, torch.zeros_like(bwd_stream.weights))
+        opt_grads = [
+            torch.zeros_like(buf)
+            for buf in tree_iter(fwd_state.opt_state)
+            if isinstance(buf, torch.Tensor) and buf.is_floating_point()
+        ]
+        bwd_state = BackwardState(
+            query_grads, opt_grads, torch.zeros_like(bwd_stream.weights)
+        )
 
-    bwd_state = trainer.backward(ckpt_dir, bwd_stream, bwd_state, fwd_state, inplace=True, cleanup=True)
+    bwd_state = trainer.backward(
+        ckpt_dir, bwd_stream, bwd_state, fwd_state, inplace=True, cleanup=True
+    )
     scores = bwd_state.weight_grads.detach().cpu()
 
     # Baseline: eval loss from the fully-trained forward pass
     with torch.no_grad(), fwd_state.activate(model):
-        baseline_loss = model(input_ids=input_ids, attention_mask=torch.ones_like(input_ids), labels=input_ids.clone()).loss.item()
+        baseline_loss = model(
+            input_ids=input_ids,
+            attention_mask=torch.ones_like(input_ids),
+            labels=input_ids.clone(),
+        ).loss.item()
 
     shutil.rmtree(ckpt_dir, ignore_errors=True)
     del trainer, fwd_state, bwd_state, query_grads, opt_grads, test_loss
@@ -99,10 +138,16 @@ def run_test(max_length, train_ds, test_ids, batch_size, device, num_subsets=20,
 
     def make_fresh_state():
         """Create a fresh TrainerState from saved pretrained weights."""
-        params = {k: v.detach().clone().requires_grad_(False) for k, v in init_params.items()}
+        params = {
+            k: v.detach().clone().requires_grad_(False) for k, v in init_params.items()
+        }
         opt = torchopt.adamw(1e-5, betas=(0.95, 0.975), eps_root=1e-2)
         trainer = Trainer(model, opt)
-        state = TrainerState(params, opt.init(params), {k: v.detach().clone() for k, v in init_buffers.items()})
+        state = TrainerState(
+            params,
+            opt.init(params),
+            {k: v.detach().clone() for k, v in init_buffers.items()},
+        )
         return trainer, state
 
     # LDS: leave-subset-out retraining
@@ -115,7 +160,13 @@ def run_test(max_length, train_ds, test_ids, batch_size, device, num_subsets=20,
     for i, subset in enumerate(subsets):
         torch.manual_seed(seed)
         subset_trainer, subset_state = make_fresh_state()
-        subset_stream = ChunkedDataStream(train_ds, processor=None, batch_size=batch_size, device=device, max_length=max_length)
+        subset_stream = ChunkedDataStream(
+            train_ds,
+            processor=None,
+            batch_size=batch_size,
+            device=device,
+            max_length=max_length,
+        )
         subset_stream.weights.data.fill_(1.0)
         subset_stream.weights.data[subset] = 0.0
 
@@ -123,13 +174,23 @@ def run_test(max_length, train_ds, test_ids, batch_size, device, num_subsets=20,
             subset_state = subset_trainer.step(subset_state, batch)
 
         with torch.no_grad(), subset_state.activate(model):
-            subset_loss = model(input_ids=input_ids, attention_mask=torch.ones_like(input_ids), labels=input_ids.clone()).loss.item()
+            subset_loss = model(
+                input_ids=input_ids,
+                attention_mask=torch.ones_like(input_ids),
+                labels=input_ids.clone(),
+            ).loss.item()
 
         loss_diffs.append(baseline_loss - subset_loss)
         score_sums.append(scores[subset].sum().item())
 
-        running_rho = spearmanr(loss_diffs, score_sums).statistic if len(loss_diffs) > 2 else float("nan")
-        print(f"    subset {i+1}/{len(subsets)}: diff={loss_diffs[-1]:.6f}  score_sum={score_sums[-1]:.6f}  running_rho={running_rho:.4f}")
+        running_rho = (
+            spearmanr(loss_diffs, score_sums).statistic
+            if len(loss_diffs) > 2
+            else float("nan")
+        )
+        print(
+            f"    subset {i+1}/{len(subsets)}: diff={loss_diffs[-1]:.6f}  score_sum={score_sums[-1]:.6f}  running_rho={running_rho:.4f}"
+        )
 
         del subset_trainer, subset_state, subset_stream
         gc.collect()
@@ -137,8 +198,10 @@ def run_test(max_length, train_ds, test_ids, batch_size, device, num_subsets=20,
 
     rho = spearmanr(loss_diffs, score_sums).statistic
 
-    print(f"  {max_length:4d} tok:  LDS Spearman={rho:.4f}  "
-          f"n_subsets={num_subsets}  n_train={n_train}")
+    print(
+        f"  {max_length:4d} tok:  LDS Spearman={rho:.4f}  "
+        f"n_subsets={num_subsets}  n_train={n_train}"
+    )
 
     del model, init_params, init_buffers
     gc.collect()
@@ -169,11 +232,7 @@ def main():
         test_ids = tokens[n_train - 1].tolist()
 
         rho, diffs, score_sums = run_test(
-            max_length, 
-            train_ds, 
-            test_ids, 
-            batch_size, 
-            device
+            max_length, train_ds, test_ids, batch_size, device
         )
         results[max_length] = rho
 

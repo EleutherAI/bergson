@@ -140,9 +140,7 @@ def worker(
     model.loss_function = weighted_causal_lm_ce
 
     if run_cfg.untie_weights and hasattr(model, "lm_head"):
-        model.lm_head.weight = torch.nn.Parameter(
-            model.lm_head.weight.data.clone()
-        )
+        model.lm_head.weight = torch.nn.Parameter(model.lm_head.weight.data.clone())
 
     model.to(f"cuda:{rank}")  # type: ignore[reportArgumentType]
     if run_cfg.grad_checkpointing:
