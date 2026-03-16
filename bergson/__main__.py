@@ -11,7 +11,7 @@ from .config import (
     PreprocessConfig,
     QueryConfig,
     ScoreConfig,
-    TrackstarConfig,
+    TrackStarConfig,
 )
 from .double_backward import DoubleBackwardConfig, double_backward
 from .hessians.hessian_approximations import approximate_hessians
@@ -19,7 +19,6 @@ from .query.query_index import query
 from .score.score import score_dataset
 from .trackstar import trackstar
 from .utils.worker_utils import validate_run_path
-
 
 @dataclass
 class Build:
@@ -35,7 +34,6 @@ class Build:
             raise ValueError("Either skip_index or skip_preconditioners must be False")
 
         validate_run_path(self.index_cfg)
-
         build(self.index_cfg, self.preprocess_cfg)
 
 
@@ -120,7 +118,7 @@ class Hessian:
 
 
 @dataclass
-class Trackstar:
+class TrackStar:
     """Run preconditioners, build, and score as a single pipeline."""
 
     index_cfg: IndexConfig
@@ -129,13 +127,13 @@ class Trackstar:
 
     preprocess_cfg: PreprocessConfig
 
-    trackstar_cfg: TrackstarConfig
+    trackstar_cfg: TrackStarConfig
 
     def execute(self):
         if self.index_cfg.normalizer != "adafactor":
             print(
                 "Warning: not using Adafactor normalizer. Pass --normalizer adafactor "
-                "to match the Trackstar paper."
+                "to match the TrackStar paper."
             )
 
         trackstar(
@@ -160,7 +158,7 @@ class Main:
     """Routes to the subcommands."""
 
     command: Union[
-        Build, Query, Preconditioners, Reduce, Score, Hessian, Trackstar, Magic
+        Build, Query, Preconditioners, Reduce, Score, Hessian, TrackStar, Magic
     ]
 
     def execute(self):

@@ -123,11 +123,16 @@ def setup_model_and_peft(
     """Handle model loading, quantization, FSDP, and PEFT detection"""
     local_rank = cfg.distributed.local_rank
 
+    # When mixed_precision is enabled for half-precision modes, load weights in
+    # fp32 so the residual stream stays fp32 during the forward pass. Autocast in
+    # fwd_bwd_factory handles downcasting matmuls to bf16/fp16.
+    use_mp = cfg.mixed_precision and cfg.precision in ("bf16", "fp16")
+
     match cfg.precision:
         case "bf16":
-            dtype = torch.bfloat16
+            dtype = torch.float32 if use_mp else torch.bfloat16
         case "fp16":
-            dtype = torch.float16
+            dtype = torch.float32 if use_mp else torch.float16
         case "fp32":
             dtype = torch.float32
         case "int4" | "int8":

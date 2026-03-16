@@ -23,11 +23,12 @@ from bergson.utils.utils import assert_type, get_gradient_dtype
 @dataclass(kw_only=True)
 class NormalizerCollector(HookCollectorBase):
     """
-    Collects per-sample gradients from model layers and writes them to disk.
+    Collects per-sample gradients from model layers and uses them to fit
+    an optimizer-based second moment normalizer.
 
     - For each forward/backward hook, we compute the the gradient or a low-rank
     approximation via random projections, if cfg.projection_dim is set.
-    - Supports normalization via Adam or Adafactor normalizers.
+    - Fit Adam or Adafactor normalizers.
     """
 
     data: Dataset
@@ -57,7 +58,9 @@ class NormalizerCollector(HookCollectorBase):
         bias_sq = None
         if bias_grad is not None:
             # [N, S, O] -> [N, O] -> [O]
-            bias_sq = bias_grad.float().sum(dim=1).square().sum(0)
+            # Sum over sequence dim in compute dtype, then upcast to fp32
+            # to match training (autograd reduces before optimizer upcasts)
+            bias_sq = bias_grad.sum(dim=1).float().square().sum(0)
 
         if (normalizer := self.normalizers.get(name)) is None:
             # initialize accumulators at zero
@@ -88,7 +91,9 @@ class NormalizerCollector(HookCollectorBase):
         # bias_avg_sq = E[bias_grad^2] where bias_grad = g.sum(dim=seq)
         bias_sq = None
         if bias_grad is not None:
-            bias_sq = bias_grad.float().sum(dim=1).square().sum(0)
+            # Sum over sequence dim in compute dtype, then upcast to fp32
+            # to match training (autograd reduces before optimizer upcasts)
+            bias_sq = bias_grad.sum(dim=1).float().square().sum(0)
 
         # initialize accumulators at zero
         if (normalizer := self.normalizers.get(name)) is None:
@@ -142,6 +147,7 @@ class NormalizerCollector(HookCollectorBase):
         a = module._inputs  # [N, S, I]
 
         assert isinstance(a, torch.Tensor), "Activation cache missing for module"
+
         name = assert_type(str, module._name)
 
         P = g.mT @ a  # [N, O, S] @ [N, S, I] → [N, O, I]

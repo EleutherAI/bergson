@@ -6,7 +6,12 @@ import pytest
 import torch
 from transformers import AutoModelForCausalLM
 
-from bergson import GradientProcessor, collect_gradients
+from bergson import (
+    CollectorComputer,
+    GradientProcessor,
+    InMemoryCollector,
+    collect_gradients,
+)
 from bergson.config import AttentionConfig, IndexConfig
 from bergson.data import load_gradients
 
@@ -77,6 +82,44 @@ def test_build_consistency(tmp_path: Path, model, dataset):
     first_module_grad = index[index.dtype.names[0]][0]
 
     assert np.allclose(first_module_grad, cached_item_grad, atol=1e-6)
+    assert np.allclose(first_module_grad, cached_item_grad, atol=1e-6)
+    assert np.allclose(first_module_grad, cached_item_grad, atol=1e-3)
+
+    # Test BF16 consistency
+    model = model.to(torch.bfloat16)
+    cfg = IndexConfig(
+        run_path=str(tmp_path),
+        skip_preconditioners=True,
+        token_batch_size=1024,
+        precision="bf16",
+    )
+
+    collector = InMemoryCollector(
+        model.base_model,
+        processor=GradientProcessor(projection_dim=cfg.projection_dim),
+        data=dataset,
+        cfg=cfg,
+    )
+    computer = CollectorComputer(
+        model=model,  # type: ignore
+        data=dataset,
+        collector=collector,
+        batches=[[idx] for idx in range(len(dataset))],
+        cfg=cfg,
+    )
+    computer.run_with_collector_hooks(desc="New worker - Collecting gradients")
+
+    print(list(collector.gradients.keys()))
+    first_bf16_mod_grad = collector.gradients[index.dtype.names[0]][0]
+
+    # Assert BF16 gradients are relatively close to FP32 ones
+    assert (
+        torch.nn.functional.cosine_similarity(
+            first_bf16_mod_grad, torch.from_numpy(cached_item_grad), dim=0
+        )
+        > 0.99
+    )
+    assert np.allclose(first_bf16_mod_grad.float().numpy(), cached_item_grad, atol=1e-3)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")

@@ -30,7 +30,7 @@ def process_preconditioners(
         print("Computing preconditioner eigen decompositions...")
 
     for name in preconditioners.keys():
-        prec = preconditioners[name].to(dtype=torch.float64, device=device)
+        prec = preconditioners[name].to(dtype=torch.float64)
         eigvals, eigvecs = torch.linalg.eigh(prec)
         preconditioners_eigen[name] = (
             eigvals.to(dtype=dtype).contiguous().cpu(),
