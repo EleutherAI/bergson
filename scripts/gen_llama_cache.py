@@ -98,9 +98,7 @@ print(f"{'=' * 60}")
 
 torch.manual_seed(42)
 torch.cuda.manual_seed(42)
-model = AutoModelForCausalLM.from_pretrained(
-    MODEL, torch_dtype=torch.float32
-).cuda()
+model = AutoModelForCausalLM.from_pretrained(MODEL, torch_dtype=torch.float32).cuda()
 fp32_grads, module_name = collect_grads(model, dataset, "fp32", False)
 fp32_ref = torch.stack(list(fp32_grads)).float()
 np.save(out_dir / "fp32.npy", fp32_ref.numpy())
@@ -115,9 +113,7 @@ rows: list[tuple[str, float, float]] = []
 for label, precision, mixed_precision, model_dtype in CONFIGS:
     torch.manual_seed(42)
     torch.cuda.manual_seed(42)
-    model = AutoModelForCausalLM.from_pretrained(
-        MODEL, torch_dtype=model_dtype
-    ).cuda()
+    model = AutoModelForCausalLM.from_pretrained(MODEL, torch_dtype=model_dtype).cuda()
     grads, _ = collect_grads(model, dataset, precision, mixed_precision)
     grads_f32 = torch.stack([g.float() for g in grads])
 
@@ -137,7 +133,7 @@ del fp32_grads, fp32_ref
 print(f"\n{'=' * 60}")
 print("  Summary")
 print(f"{'=' * 60}\n")
-print(f"| Config | Cosine sim | Rel L2 error |")
-print(f"|---|---|---|")
+print("| Config | Cosine sim | Rel L2 error |")
+print("|---|---|---|")
 for label, cos, l2 in rows:
     print(f"| {label} | {cos:.6f} | {l2:.6f} |")

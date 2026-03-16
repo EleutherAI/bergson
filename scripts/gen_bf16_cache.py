@@ -76,9 +76,7 @@ def collect_grads(model, dataset, precision, mixed_precision):
 
 
 def load_model(model_name, dtype):
-    return AutoModelForCausalLM.from_pretrained(
-        model_name, torch_dtype=dtype
-    ).cuda()
+    return AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=dtype).cuda()
 
 
 def metrics_vs_ref(grads, fp32_ref):
