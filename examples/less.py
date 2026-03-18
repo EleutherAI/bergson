@@ -7,6 +7,7 @@ import logging
 import math
 import os
 import subprocess
+import sys
 import time
 import zipfile
 from dataclasses import dataclass
@@ -204,7 +205,7 @@ def run_sft(
 
     trainer = SFTTrainer(
         model=model,  # type: ignore
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         train_dataset=ds,
         args=SFTConfig(
             max_length=8192,
@@ -357,6 +358,8 @@ def build_subset_indices(
             continue
 
         cmd = [
+            sys.executable,
+            "-m",
             "bergson",
             "build",
             str(sub_index),
@@ -481,15 +484,23 @@ def _compute_epoch_scores(
 
     # Stack per-subject mean gradients into a (num_subjects, grad_dim) tensor
     query = torch.stack(eval_queries)
-    query /= query.norm(dim=-1, keepdim=True)
+    query_norms = query.norm(dim=-1, keepdim=True)
+    zero_query = (query_norms == 0).sum().item()
+    if zero_query:
+        print(f"WARNING: {zero_query}/{len(query)} eval query gradients have zero norm")
+    query = torch.nan_to_num(query / query_norms)
 
     # Score the training set
-    acc = {"scores": []}
+    acc = {"scores": [], "zero_norm_count": 0, "total_count": 0}
 
     def score_nearest(batch):
         gradients_batch = batch.cuda()
 
-        gradients_batch /= gradients_batch.norm(dim=1, keepdim=True)
+        norms = gradients_batch.norm(dim=1, keepdim=True)
+        acc["zero_norm_count"] += (norms == 0).sum().item()
+        acc["total_count"] += gradients_batch.shape[0]
+        gradients_batch = torch.nan_to_num(gradients_batch / norms)
+
         batch_scores = gradients_batch @ query.T
 
         # Take the maximum batch score for each item in the batch
@@ -504,6 +515,15 @@ def _compute_epoch_scores(
         batched=True,
         batch_size=cfg.map_batch_size,
     )
+
+    zero_pct = acc["zero_norm_count"] / max(acc["total_count"], 1) * 100
+    print(
+        f"Zero-norm train gradients: {acc['zero_norm_count']}/{acc['total_count']} "
+        f"({zero_pct:.2f}%)"
+    )
+    if zero_pct > 1:
+        print("WARNING: >1% zero-norm gradients — this may indicate a bug")
+
     return torch.cat(acc["scores"], dim=0).cuda()
 
 
@@ -723,10 +743,13 @@ def main(
 
     # Build gradient indices and score at each warmup epoch checkpoint,
     # weighting by the checkpoint's learning rate, then sum for final scores.
-    checkpoint_dirs = sorted(warmup_path.glob("checkpoint-*"))
-    assert checkpoint_dirs, f"No checkpoints found in {warmup_path}"
+    all_checkpoint_dirs = sorted(warmup_path.glob("checkpoint-*"))
+    assert all_checkpoint_dirs, f"No checkpoints found in {warmup_path}"
+    # TODO: use all checkpoints once fp16 eval index bug is fixed
+    checkpoint_dirs = [all_checkpoint_dirs[0], all_checkpoint_dirs[-1]]
     print(
-        f"Using {len(checkpoint_dirs)} checkpoints: {[d.name for d in checkpoint_dirs]}"
+        f"Using {len(checkpoint_dirs)}/{len(all_checkpoint_dirs)} checkpoints: "
+        f"{[d.name for d in checkpoint_dirs]}"
     )
 
     accumulated_scores: Tensor | None = None
@@ -741,7 +764,14 @@ def main(
         epoch_train_index = train_index_path / ckpt_dir.name
 
         lr: float = _get_checkpoint_lr(ckpt_dir)
-        print(f"Epoch checkpoint: {ckpt_dir.name}, lr={lr:.6e}")
+        # Use checkpoint-106's lr as a stand-in when lr is zero (end of cosine)
+        if lr == 0:
+            lr = 1.0
+            print(
+                f"Epoch checkpoint: {ckpt_dir.name}, lr=0 -> using lr=1.0 (equal weight)"
+            )
+        else:
+            print(f"Epoch checkpoint: {ckpt_dir.name}, lr={lr:.6e}")
 
         if local_rank == 0:
             # Use 1 GPU for eval (subjects have ~100 examples each)
@@ -762,37 +792,52 @@ def main(
                 adam_path=str(ckpt_dir),
             )
 
-        _file_barrier(eval_index_path, run_id, local_rank, world_size)
-
-        # Load train gradients for this epoch
-        train_grad_parts = []
-        for subdir in sorted(epoch_train_index.iterdir()):
-            if subdir.is_dir():
-                grad_ds = load_gradient_dataset(subdir, structured=False)
-                grad_ds = grad_ds.add_column("ds_name", [subdir.stem] * len(grad_ds))
-                train_grad_parts.append(grad_ds)
-
-        train_grad_ds = concatenate_datasets(train_grad_parts)
-        train_grad_ds.set_format("torch")
-
-        epoch_scores = _compute_epoch_scores(cfg, train_grad_ds, epoch_eval_index)
-        weighted_scores = epoch_scores * lr
-
-        if accumulated_scores is None:
-            accumulated_scores = weighted_scores
-        else:
-            accumulated_scores += weighted_scores
-
-        print(
-            f"Epoch {ckpt_dir.name} scores: "
-            f"mean={epoch_scores.mean():.4f}, lr={lr:.6e}, "
-            f"weighted_mean={weighted_scores.mean():.6e}"
+        _file_barrier(
+            eval_index_path, f"{run_id}_{ckpt_dir.name}", local_rank, world_size
         )
 
-    if local_rank == 0:
-        print("\nSelecting from accumulated lr-weighted scores...")
+        # Score on rank 0
+        if local_rank == 0:
+            train_grad_parts = []
+            for subdir in sorted(epoch_train_index.iterdir()):
+                if subdir.is_dir():
+                    grad_ds = load_gradient_dataset(subdir, structured=False)
+                    grad_ds = grad_ds.add_column(
+                        "ds_name", [subdir.stem] * len(grad_ds)
+                    )
+                    train_grad_parts.append(grad_ds)
 
-    selected_indices = _select_from_scores(cfg, accumulated_scores, scores_path)
+            train_grad_ds = concatenate_datasets(train_grad_parts)
+            train_grad_ds.set_format("torch")
+
+            epoch_scores = _compute_epoch_scores(cfg, train_grad_ds, epoch_eval_index)
+            weighted_scores = epoch_scores * lr
+
+            if accumulated_scores is None:
+                accumulated_scores = weighted_scores
+            else:
+                accumulated_scores += weighted_scores
+
+            print(
+                f"Epoch {ckpt_dir.name} scores: "
+                f"mean={epoch_scores.mean():.4f}, lr={lr:.6e}, "
+                f"weighted_mean={weighted_scores.mean():.6e}"
+            )
+            del train_grad_ds, train_grad_parts
+
+    # Scoring runs on rank 0 only; broadcast selected_indices to all ranks
+    if local_rank == 0:
+        assert accumulated_scores is not None
+        print("\nSelecting from accumulated lr-weighted scores...")
+        selected_indices = _select_from_scores(cfg, accumulated_scores, scores_path)
+        torch.save(selected_indices, scores_path.parent / "selected_indices.pt")
+
+    _file_barrier(scores_path.parent, "scoring", local_rank, world_size)
+
+    if local_rank != 0:
+        selected_indices = torch.load(
+            scores_path.parent / "selected_indices.pt", map_location="cpu"
+        )
     filtered_ds = ds.select(selected_indices)
 
     # Build the ordered sampler before removing _orig_idx.
@@ -821,22 +866,28 @@ def main(
     )
     print(f"SFT checkpoint saved to {final_path}")
 
-    # Load model from final checkpoint
-    final_model = AutoModelForCausalLM.from_pretrained(final_path)
+    # Re-init dist for MMLU eval (run_sft destroys the process group)
+    if not dist.is_initialized() and world_size > 1:
+        dist.init_process_group("nccl")
+
+    final_model = AutoModelForCausalLM.from_pretrained(
+        final_path, device_map={"": f"cuda:{local_rank}"}, torch_dtype=torch.bfloat16
+    )
     tokenizer = AutoTokenizer.from_pretrained(final_path)
 
-    # Evaluate on MMLU (limit to test subjects in test mode)
     eval_subjects = None
     if cfg.test:
         eval_subjects = sorted(p.name for p in eval_data_path.iterdir() if p.is_dir())
-    mmlu_results = evaluate_mmlu(final_model, tokenizer, subjects=eval_subjects)
+    mmlu_results = evaluate_mmlu(
+        final_model, tokenizer, subjects=eval_subjects, batch_size=32
+    )
 
-    print(f"SFT checkpoint saved to {final_path}")
-    print(f"\n{'='*60}")
-    print(f"MMLU 5-shot accuracy: {mmlu_results['overall_acc']:.4f}")
-    for subject, acc in sorted(mmlu_results["subject_accs"].items()):
-        print(f"  {subject}: {acc:.4f}")
-    print(f"{'='*60}\n")
+    if local_rank == 0:
+        print(f"\n{'='*60}")
+        print(f"MMLU 5-shot accuracy: {mmlu_results['overall_acc']:.4f}")
+        for subject, acc in sorted(mmlu_results["subject_accs"].items()):
+            print(f"  {subject}: {acc:.4f}")
+        print(f"{'='*60}\n")
 
 
 if __name__ == "__main__":
