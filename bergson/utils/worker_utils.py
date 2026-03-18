@@ -106,7 +106,8 @@ def create_processor(
         if adam_buffer:
             normalizers = adam_buffer
         else:
-            normalizers = create_normalizers(model, ds, cfg, target_modules)
+            # Disable normalizers due to lack of empirical validation
+            normalizers = {}  # create_normalizers(model, ds, cfg, target_modules)
 
         processor = GradientProcessor(
             normalizers,
