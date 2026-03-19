@@ -15,35 +15,27 @@ from torch.distributed.tensor import init_device_mesh
 from torchopt.pytree import tree_iter
 from torchopt.typing import Numeric
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from ..config import DataConfig, DistributedConfig
-from ..data import load_data_string
+from ..config import AttributionConfig, DataConfig, DistributedConfig
+from ..data import allocate_batches
 from ..distributed import grad_tree, launch_distributed_run, simple_fsdp
 from ..utils.math import weighted_causal_lm_ce
+from ..utils.worker_utils import (
+    setup_data_pipeline,
+    setup_model_and_peft,
+)
 from .data_stream import DataStream
 from .dtensor_patch import apply_dtensor_patch
 from .trainer import BackwardState, Trainer, TrainerState
 
 
 @dataclass
-class MagicConfig:
-    run_path: str = field(positional=True)
-    """Directory to save checkpoints and results."""
+class MagicConfig(AttributionConfig):
+    """Special config for MAGIC attribution."""
 
-    overwrite: bool = False
-    """Whether to overwrite the run directory if it already exists."""
-
-    model: str = "EleutherAI/pythia-160m"
-    """HuggingFace model name."""
-
-    revision: str | None = None
-    """Model revision (branch, tag, or commit hash)."""
-
-    data: DataConfig = field(default_factory=DataConfig)
-    """Training dataset."""
-
-    query: DataConfig = field(default_factory=DataConfig)
+    query: DataConfig = field(
+        default_factory=lambda: DataConfig(split="train"),
+    )
     """Query/eval dataset for computing attribution target gradients.
     If not specified, defaults to the training dataset."""
 
@@ -62,15 +54,6 @@ class MagicConfig:
     warmup_steps: int = 10
     """Number of warmup steps before applying base lr."""
 
-    batch_size: int = 8
-    """Per-device batch size."""
-
-    num_steps: int = 100
-    """Number of training steps."""
-
-    max_length: int = 256
-    """Maximum token sequence length."""
-
     num_subsets: int = 100
     """Number of leave-one-out subsets for Spearman correlation."""
 
@@ -87,23 +70,27 @@ class MagicConfig:
     """Epsilon root for AdamW optimizer. Use 1e-2 for better stability
     with small models."""
 
+    def __post_init__(self):
+        assert not self.fsdp, "PyTorch FSDP is not currently supported for MAGIC."
+
 
 def compute_query_gradients(
     fwd_state: TrainerState,
     model: torch.nn.Module,
     query_stream: DataStream,
     method: str = "mean",
-) -> dict[str, torch.Tensor]:
+) -> tuple[dict[str, torch.Tensor], float]:
     """Compute reduced query gradients over the query dataset.
 
     Iterates over the query stream, computing per-batch parameter gradients
     and reducing them (mean or sum) into a single gradient dict.
     """
     grad_accum: dict[str, torch.Tensor] | None = None
+    loss_accum = 0.0
     n_batches = 0
 
     with fwd_state.activate(model) as params:
-        for batch in query_stream:
+        for batch in tqdm(query_stream, desc="Query"):
             del batch["example_weight"]
             loss = model(**batch).loss
             grads = grad_tree(loss, params)
@@ -113,6 +100,8 @@ def compute_query_gradients(
             else:
                 for k, g in grads.items():
                     grad_accum[k] += g.detach()
+
+            loss_accum += loss.item() / len(query_stream)
             n_batches += 1
 
     assert grad_accum is not None, "Query stream was empty"
@@ -121,7 +110,10 @@ def compute_query_gradients(
         for k in grad_accum:
             grad_accum[k] /= n_batches
 
-    return grad_accum
+    if dist.is_initialized():
+        dist.all_reduce(loss_accum, op=dist.ReduceOp.AVG)
+
+    return grad_accum, loss_accum
 
 
 def worker(
@@ -134,22 +126,25 @@ def worker(
 ):
     torch.cuda.set_device(rank)
 
-    model = AutoModelForCausalLM.from_pretrained(
-        run_cfg.model,
-        revision=run_cfg.revision,
-        torch_dtype=torch.float32,
+    model, target_modules = setup_model_and_peft(
+        run_cfg,
         attn_implementation="eager",
     )
     model.loss_function = weighted_causal_lm_ce
     model.to(f"cuda:{rank}")  # type: ignore[reportArgumentType]
 
+    # For PEFT
+    if target_modules:
+        for name in target_modules:
+            module = model.get_submodule(name)
+            module.requires_grad_(True)
+    else:
+        model.requires_grad_(True)
+
     if run_cfg.grad_checkpointing:
         model.gradient_checkpointing_enable(
             gradient_checkpointing_kwargs=dict(use_reentrant=False),
         )
-
-    processor = AutoTokenizer.from_pretrained(run_cfg.model)
-    processor.pad_token = processor.eos_token
 
     if world_size > 1:
         addr = os.environ.get("MASTER_ADDR", "localhost")
@@ -185,13 +180,11 @@ def worker(
     path0 = os.path.join(ckpts_path, "state0.pt")
     save_fut = fwd_state.save(path0)
 
+    batches = allocate_batches(train_dataset["length"][:], run_cfg.token_batch_size)
     stream = DataStream(
         train_dataset,
-        processor,
-        batch_size=run_cfg.batch_size,
-        num_batches=run_cfg.num_steps,
+        batches,
         device=f"cuda:{rank}",
-        max_length=run_cfg.max_length,
         input_key=run_cfg.data.prompt_column,
     )
     fwd_state = trainer.train(
@@ -202,17 +195,14 @@ def worker(
     )
 
     # Compute query gradients
+    batches = allocate_batches(query_dataset["length"][:], run_cfg.token_batch_size)
     query_stream = DataStream(
         query_dataset,
-        processor,
-        batch_size=run_cfg.batch_size,
-        num_batches=run_cfg.query_batches,
+        batches,
         device=f"cuda:{rank}",
-        max_length=run_cfg.max_length,
         input_key=run_cfg.query.prompt_column,
     )
-
-    query_grads = compute_query_gradients(
+    query_grads, baseline = compute_query_gradients(
         fwd_state, model, query_stream, run_cfg.query_method
     )
 
@@ -224,17 +214,6 @@ def worker(
     ]
     bwd_state = BackwardState(query_grads, opt_grads, torch.zeros_like(stream.weights))
 
-    # Compute baseline eval loss for validation
-    with fwd_state.activate(model):
-        baseline = torch.tensor(0.0, device=stream.weights.device)
-        for batch in query_stream:
-            del batch["example_weight"]
-
-            baseline += model(**batch).loss.detach() / len(query_stream)
-
-    if world_size > 1:
-        dist.all_reduce(baseline, op=dist.ReduceOp.AVG)
-
     bwd_state = trainer.backward(
         ckpts_path,
         stream,
@@ -245,7 +224,6 @@ def worker(
     if world_size > 1:
         dist.all_reduce(bwd_state.weight_grads, op=dist.ReduceOp.SUM)
 
-    baseline = baseline.item()
     scores = bwd_state.weight_grads.cpu()
     if global_rank == 0:
         print(f"Baseline loss: {baseline}")
@@ -317,19 +295,8 @@ def run_magic(run_cfg: MagicConfig, dist_cfg: DistributedConfig):
     with (run_path / "dist_config.json").open("w") as f:
         json.dump(asdict(dist_cfg), f, indent=2)
 
-    train_ds = load_data_string(
-        run_cfg.data.dataset,
-        run_cfg.data.split,
-        run_cfg.data.subset,
-        run_cfg.data.data_args,
-    )
-
-    query_ds = load_data_string(
-        run_cfg.query.dataset,
-        run_cfg.query.split,
-        run_cfg.query.subset,
-        run_cfg.query.data_args,
-    )
+    train_ds = setup_data_pipeline(run_cfg)
+    query_ds = setup_data_pipeline(run_cfg, run_cfg.query)
 
     launch_distributed_run("run_magic", worker, [train_ds, query_ds, run_cfg], dist_cfg)
 

@@ -17,9 +17,9 @@ from torchopt.typing import GradientTransformation, OptState
 from tqdm.auto import tqdm
 
 from ..distributed import grad_tree, shallow_copy
-from ..swap import swap_parameters
 from .data_stream import DataStream
 from .rtl_tqdm import RtlTqdm
+from .swap import swap_parameters
 
 
 def _maybe_get_cuda_rng_state() -> torch.Tensor:
@@ -320,6 +320,8 @@ class Trainer:
             total=expected_idx + 1,
             disable=not main,
             position=0,
+            # Get rid of jitters in the ETA due to rematerialization
+            smoothing=0,
         )
         sub_pbar = None
 
@@ -355,6 +357,7 @@ class Trainer:
                         disable=not main,
                         leave=False,
                         position=1,
+                        smoothing=0,
                     )
 
                 fwd_state = self.step(

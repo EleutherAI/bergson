@@ -20,7 +20,7 @@ from transformers import (
     PreTrainedModel,
 )
 
-from bergson.config import DataConfig, IndexConfig
+from bergson.config import AttributionConfig, DataConfig, IndexConfig
 from bergson.data import allocate_batches, load_data_string, tokenize
 from bergson.format import apply_format
 from bergson.gradients import GradientProcessor, Normalizer
@@ -117,8 +117,9 @@ def create_processor(
 
 
 def setup_model_and_peft(
-    cfg: IndexConfig,
+    cfg: AttributionConfig,
     device_map_auto: bool = False,
+    **model_kwargs,
 ) -> tuple[PreTrainedModel, set | None]:
     """Handle model loading, quantization, FSDP, and PEFT detection"""
     local_rank = cfg.distributed.local_rank
@@ -170,9 +171,9 @@ def setup_model_and_peft(
             quantization_config=quantization_config,
             torch_dtype=dtype,
             revision=cfg.revision,
+            **model_kwargs,
         )
         target_modules = None
-
     else:
         # Load PEFT model
         base_model = AutoModelForCausalLM.from_pretrained(
@@ -181,6 +182,7 @@ def setup_model_and_peft(
             quantization_config=quantization_config,
             torch_dtype=dtype,
             revision=cfg.revision,
+            **model_kwargs,
         )
 
         model = PeftModel.from_pretrained(
@@ -233,7 +235,7 @@ def estimate_advantage(ds: Dataset, cfg: DataConfig):
 
 
 def filter_by_max_tokens(
-    ds: Dataset | IterableDataset, cfg: IndexConfig
+    ds: Dataset | IterableDataset, cfg: AttributionConfig
 ) -> Dataset | IterableDataset:
     """Filter the dataset by the max tokens limit. This is an experimental
     benchmarking feature that may be removed in the future.
@@ -297,10 +299,14 @@ def filter_by_max_tokens(
     return ds
 
 
-def setup_data_pipeline(cfg: IndexConfig) -> Dataset | IterableDataset:
+def setup_data_pipeline(
+    cfg: AttributionConfig,
+    data_cfg: DataConfig | None = None,
+) -> Dataset | IterableDataset:
     """Handle data loading and preprocessing"""
+    data_cfg = data_cfg or cfg.data
     ds = load_data_string(
-        cfg.data.dataset, cfg.data.split, cfg.data.subset, cfg.data.data_args
+        data_cfg.dataset, data_cfg.split, data_cfg.subset, data_cfg.data_args
     )
 
     tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer or cfg.model)
@@ -338,16 +344,16 @@ def setup_data_pipeline(cfg: IndexConfig) -> Dataset | IterableDataset:
 
     remove_columns = ds.column_names if cfg.drop_columns else None
 
-    tokenize_cfg = cfg.data
-    if cfg.data.format_template:
+    tokenize_cfg = data_cfg
+    if data_cfg.format_template:
         assert isinstance(
             ds, Dataset
         ), "format_template requires a non-streaming dataset"
-        ds = apply_format(ds, cfg.data.format_template)
+        ds = apply_format(ds, data_cfg.format_template)
         tokenize_cfg = DataConfig(
             prompt_column="prompt" if "completion" in ds.column_names else "text",
             completion_column="completion" if "completion" in ds.column_names else "",
-            truncation=cfg.data.truncation,
+            truncation=data_cfg.truncation,
         )
 
     if not ds.column_names or "input_ids" not in ds.column_names:
@@ -359,7 +365,7 @@ def setup_data_pipeline(cfg: IndexConfig) -> Dataset | IterableDataset:
             ),
         )
 
-    if not cfg.data.truncation and isinstance(ds, Dataset):
+    if not data_cfg.truncation and isinstance(ds, Dataset):
         max_doc_len = max(ds["length"])
         if max_pos_emb is not None and max_doc_len > max_pos_emb:
             warnings.warn(
@@ -374,23 +380,23 @@ def setup_data_pipeline(cfg: IndexConfig) -> Dataset | IterableDataset:
                 f"Consider increasing --token_batch_size or using --truncation."
             )
 
-    if cfg.data.reward_column:
+    if data_cfg.reward_column:
         assert isinstance(ds, Dataset), "Dataset required for advantage estimation"
 
-        rewards = np.array(ds[cfg.data.reward_column], dtype=np.float64)
+        rewards = np.array(ds[data_cfg.reward_column], dtype=np.float64)
         nan_mask = np.isnan(rewards)
         if nan_mask.any():
-            if cfg.data.skip_nan_rewards:
+            if data_cfg.skip_nan_rewards:
                 print(f"Warning: Filtering out {nan_mask.sum()} rows with NaN rewards")
                 ds = ds.filter(lambda _, idx: not nan_mask[idx], with_indices=True)
             else:
                 raise ValueError(
-                    f"Reward column '{cfg.data.reward_column}' contains NaN values"
+                    f"Reward column '{data_cfg.reward_column}' contains NaN values"
                 )
 
         ds = ds.add_column(
             "advantage",
-            estimate_advantage(ds, cfg.data),
+            estimate_advantage(ds, data_cfg),
             new_fingerprint="advantage",  # type: ignore
         )
 

@@ -1,4 +1,5 @@
 import os
+from abc import ABC
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -65,10 +66,10 @@ class AttentionConfig:
 
 @dataclass
 class DistributedConfig:
-    """Configuration for multi-node preconditioner computation."""
+    """Configuration for multi-node computation."""
 
     nnode: int = 1
-    """The number of nodes to use for preconditioner computation."""
+    """The number of nodes to use for computation."""
 
     nproc_per_node: int = field(default_factory=lambda: torch.cuda.device_count())
     """The number of processes per node."""
@@ -114,26 +115,51 @@ class DistributedConfig:
 
 
 @dataclass
-class IndexConfig:
-    """Config for building the index and running the model/dataset pipeline."""
+class AttributionConfig(ABC):
+    """Base config for attribution methods."""
 
     run_path: str = field(positional=True)
-    """Name of the run. Used to create a directory for run artifacts."""
+    """Directory to save results."""
 
     data: DataConfig = field(default_factory=DataConfig)
     """Specification of the data on which to build the index."""
 
+    distributed: DistributedConfig = field(default_factory=DistributedConfig)
+    """Configuration for multi-node distributed computation."""
+
     model: str = "EleutherAI/pythia-160m"
     """Name of the model to load."""
+
+    precision: Literal["auto", "bf16", "fp16", "fp32", "int4", "int8"] = "fp32"
+    """Precision (dtype) to use for the model parameters."""
 
     tokenizer: str = ""
     """Name of the tokenizer to use. If not set the model tokenizer is used."""
 
+    token_batch_size: int = 2048
+    """Batch size in tokens for building the index."""
+
+    drop_columns: bool = True
+    """Only save the new dataset columns. If false, the original dataset
+    columns will be saved as well."""
+
+    max_tokens: int | None = None
+    """Max tokens to process. If None, all tokens processed. Dataset only.
+    This experimental feature may be removed in the future."""
+
+    revision: str | None = None
+    """Revision of the model."""
+
     fsdp: bool = False
     """Whether to use Fully Sharded Data Parallel (FSDP) for collecting gradients."""
 
-    precision: Literal["auto", "bf16", "fp16", "fp32", "int4", "int8"] = "fp32"
-    """Precision (dtype) to use for the model parameters."""
+    overwrite: bool = False
+    """Whether to overwrite any existing index in the run path."""
+
+
+@dataclass
+class IndexConfig(AttributionConfig):
+    """Config for building the index and running the model/dataset pipeline."""
 
     projection_dim: int = 16
     """Dimension of the random projection for the index, or 0 to disable it."""
@@ -146,9 +172,6 @@ class IndexConfig:
 
     projection_type: Literal["normal", "rademacher"] = "rademacher"
     """Type of random projections to use for the gradients."""
-
-    token_batch_size: int = 2048
-    """Batch size in tokens for building the index."""
 
     auto_batch_size: bool = False
     """Whether to automatically determine the optimal token batch size.
@@ -169,10 +192,6 @@ class IndexConfig:
     stats_sample_size: int | None = 10_000
     """Number of examples to use for estimating normalizer statistics."""
 
-    drop_columns: bool = True
-    """Only save the new dataset columns. If false, the original dataset
-    columns will be saved as well."""
-
     loss_fn: Literal["ce", "kl"] = "ce"
     """Loss function to use."""
 
@@ -186,9 +205,6 @@ class IndexConfig:
 
     stream_shard_size: int = 400_000
     """Shard size for streaming the dataset into Dataset objects."""
-
-    revision: str | None = None
-    """Revision of the model."""
 
     split_attention_modules: list[str] = field(default_factory=list)
     """Modules to split into head matrices."""
@@ -208,16 +224,6 @@ class IndexConfig:
     """If provided, a glob pattern to filter out modules from gradient collection.
     For example, "transformer.h.*.mlp.*" will exclude all MLP layers in a
     standard transformer architecture."""
-
-    overwrite: bool = False
-    """Whether to overwrite any existing index in the run path."""
-
-    distributed: DistributedConfig = field(default_factory=DistributedConfig)
-    """Configuration for multi-node distributed preconditioner computation."""
-
-    max_tokens: int | None = None
-    """Max tokens to process. If None, all tokens processed. Dataset only.
-    This experimental feature may be removed in the future."""
 
     attribute_tokens: bool = False
     """Whether to compute per-token gradients instead of per-example.
