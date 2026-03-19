@@ -116,11 +116,26 @@ def create_processor(
     return processor
 
 
+def apply_force_math_sdp(cfg: IndexConfig) -> None:
+    """Disable flash and memory-efficient SDPA backends when requested.
+
+    Forces the math-only SDPA kernel, which produces consistent gradients
+    across different padding lengths and batch compositions.
+    """
+    if not cfg.force_math_sdp:
+        return
+
+    torch.backends.cuda.enable_flash_sdp(False)
+    torch.backends.cuda.enable_mem_efficient_sdp(False)
+    print("force_math_sdp: disabled flash and memory-efficient SDPA backends")
+
+
 def setup_model_and_peft(
     cfg: IndexConfig,
     device_map_auto: bool = False,
 ) -> tuple[PreTrainedModel, set | None]:
     """Handle model loading, quantization, FSDP, and PEFT detection"""
+    apply_force_math_sdp(cfg)
     local_rank = cfg.distributed.local_rank
 
     match cfg.precision:

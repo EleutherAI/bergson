@@ -220,6 +220,12 @@ class IndexConfig:
     overwrite: bool = False
     """Whether to overwrite any existing index in the run path."""
 
+    force_math_sdp: bool = False
+    """Disable flash and memory-efficient SDPA backends, forcing the
+    math-only kernel. Some models produce inconsistent gradients across
+    different padding lengths when using optimized attention backends.
+    Run `bergson diagnose` to check whether your model needs this."""
+
     distributed: DistributedConfig = field(default_factory=DistributedConfig)
     """Configuration for multi-node distributed preconditioner computation."""
 
