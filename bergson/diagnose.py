@@ -110,7 +110,10 @@ def _measure(model, short_ids, long_ids, device):
 
 
 def _run_trials(model, all_docs, n_trials, seed, threshold, device):
-    """Run n_trials gradient consistency checks. Returns (min_cos_sim, n_flagged, results)."""
+    """Run n_trials gradient consistency checks.
+
+    Returns (min_cos_sim, n_flagged, results).
+    """
     rng = random.Random(seed)
     results = []
 
@@ -180,6 +183,7 @@ def diagnose(diagnose_cfg: DiagnoseConfig):
     ds = load_dataset(diagnose_cfg.dataset, split=diagnose_cfg.split)
     all_docs = []
     for row in ds:
+        assert isinstance(row, dict)
         ids = tokenizer(row["text"])["input_ids"]
         if len(ids) < diagnose_cfg.min_len:
             continue
@@ -225,7 +229,8 @@ def diagnose(diagnose_cfg: DiagnoseConfig):
             diagnose_cfg.model,
             torch_dtype=dtype,
             attn_implementation="sdpa",
-        ).to(device)
+            device_map={"": device},
+        )
         model.eval()
 
         min_cos_sim, n_flagged, results = _run_trials(
