@@ -373,6 +373,20 @@ class FaissConfig:
 
 
 @dataclass
+class EkfacPipelineConfig:
+    """Config for the EKFAC influence pipeline."""
+
+    query: DataConfig = field(default_factory=DataConfig)
+    """Query dataset specification."""
+
+    lambda_damp_factor: float = 0.1
+    """Damping factor for EKFAC eigenvalue correction."""
+
+    resume: bool = False
+    """Skip pipeline steps whose output directory already exists."""
+
+
+@dataclass
 class TrackstarConfig:
     """Config for the trackstar pipeline query dataset."""
 

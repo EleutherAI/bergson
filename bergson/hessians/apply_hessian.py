@@ -78,6 +78,7 @@ class EkfacApplicator:
             f"Loaded gradients for {len(mmap)} queries and computing IVHP..."
         )
 
+        # Forward rotation into eigenbasis: Q_S^T @ G @ Q_A
         transformed_gradients: dict[str, Tensor] = {}
         for k, v in eigen_a.items():
             gradients_noi = torch.from_numpy(mmap[k][:]).to(
@@ -91,20 +92,15 @@ class EkfacApplicator:
             )
 
         self.logger.debug("Finished G @ Q_A")
-        del eigen_a
-        gc.collect()
-        torch.cuda.empty_cache()
 
         for k, v in eigen_g.items():
             transformed_gradients[k] = self.sharded_computer._matmul(
                 vector_nsa=transformed_gradients[k].transpose(-2, -1), matrix_cb=v
             ).transpose(-2, -1)
 
-        self.logger.debug("Finished G'=Q_S.T @ G @ Q_A")
-        del eigen_g
-        gc.collect()
-        torch.cuda.empty_cache()
+        self.logger.debug("Finished G' = Q_S^T @ G @ Q_A")
 
+        # Divide by damped eigenvalues in eigenbasis
         for k, v in lambda_factor.items():
             self.sharded_computer._hadamard(
                 matrix_noi=transformed_gradients[k],
@@ -112,7 +108,28 @@ class EkfacApplicator:
                 lambda_damp_factor=self.cfg.lambda_damp_factor,
             )
 
-        self.logger.debug("Finished G'/lambda")
+        self.logger.debug("Finished G' / lambda")
+        del lambda_factor
+        gc.collect()
+
+        # Rotate back to parameter space: Q_S @ G' @ Q_A^T
+        for k, v in eigen_g.items():
+            transformed_gradients[k] = self.sharded_computer._transpose_matmul(
+                vector_nsa=transformed_gradients[k].transpose(-2, -1), matrix_cb=v
+            ).transpose(-2, -1)
+
+        self.logger.debug("Finished Q_S @ G'")
+        del eigen_g
+        gc.collect()
+
+        for k, v in eigen_a.items():
+            transformed_gradients[k] = self.sharded_computer._transpose_matmul(
+                vector_nsa=transformed_gradients[k], matrix_cb=v
+            )
+
+        self.logger.debug("Finished H^{-1} G = Q_S @ (G' / lambda) @ Q_A^T")
+        del eigen_a
+        gc.collect()
 
         torch.cuda.synchronize()
         for k, v in transformed_gradients.items():

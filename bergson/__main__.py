@@ -5,6 +5,7 @@ from simple_parsing import ArgumentParser, ConflictResolution
 
 from .build import build
 from .config import (
+    EkfacPipelineConfig,
     HessianConfig,
     IndexConfig,
     PreprocessConfig,
@@ -12,6 +13,7 @@ from .config import (
     ScoreConfig,
     TrackstarConfig,
 )
+from .ekfac import ekfac_pipeline
 from .hessians.hessian_approximations import approximate_hessians
 from .query.query_index import query
 from .score.score import score_dataset
@@ -62,9 +64,7 @@ class Reduce:
     def execute(self):
         """Reduce a gradient index."""
         if self.index_cfg.projection_dim != 0:
-            print(
-                f"Using a projection dimension of " f"{self.index_cfg.projection_dim}. "
-            )
+            print(f"Using a projection dimension of {self.index_cfg.projection_dim}. ")
 
         validate_run_path(self.index_cfg)
         build(self.index_cfg, self.preprocess_cfg)
@@ -85,9 +85,7 @@ class Score:
         assert self.score_cfg.query_path
 
         if self.index_cfg.projection_dim != 0:
-            print(
-                f"Using a projection dimension of " f"{self.index_cfg.projection_dim}. "
-            )
+            print(f"Using a projection dimension of {self.index_cfg.projection_dim}. ")
 
         validate_run_path(self.index_cfg)
         score_dataset(self.index_cfg, self.score_cfg, self.preprocess_cfg)
@@ -142,10 +140,44 @@ class Trackstar:
 
 
 @dataclass
+class Ekfac:
+    """Run the full EKFAC influence pipeline end-to-end.
+
+    Given a query dataset, index (training) dataset, and model, produces
+    influence scores by:
+    1. Building a mean query gradient.
+    2. Fitting EKFAC factors on the training dataset.
+    3. Applying the EKFAC inverse Hessian to the mean query gradient.
+    4. Scoring each training example against the EKFAC-transformed query.
+    """
+
+    index_cfg: IndexConfig
+
+    hessian_cfg: HessianConfig
+
+    score_cfg: ScoreConfig
+
+    preprocess_cfg: PreprocessConfig
+
+    ekfac_pipeline_cfg: EkfacPipelineConfig
+
+    def execute(self):
+        ekfac_pipeline(
+            self.index_cfg,
+            self.hessian_cfg,
+            self.score_cfg,
+            self.preprocess_cfg,
+            self.ekfac_pipeline_cfg,
+        )
+
+
+@dataclass
 class Main:
     """Routes to the subcommands."""
 
-    command: Union[Build, Query, Preconditioners, Reduce, Score, Hessian, Trackstar]
+    command: Union[
+        Build, Query, Preconditioners, Reduce, Score, Hessian, Trackstar, Ekfac
+    ]
 
     def execute(self):
         """Run the script."""
