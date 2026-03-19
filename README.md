@@ -163,6 +163,43 @@ Where a reward signal is available we compute gradients using a weighted advanta
 bergson build <output_path> --model <model_name> --dataset <dataset_name> --reward_column <reward_column_name>
 ```
 
+## Numerical Stability
+
+Some models produce inconsistent per-example gradients when sequences of different lengths are batched together. This is caused by optimized SDPA attention backends (flash, memory-efficient) computing slightly different results depending on the padding length.
+
+Use the built-in diagnostic to check your model:
+
+```bash
+bergson test_numerical_stability --model <model_name>
+```
+
+This automatically tests escalating configurations and reports exactly which flags (if any) you need. If your model fails the default test, add the recommended flags to your `build`/`score`/`trackstar` commands:
+
+```bash
+bergson build <output_path> --model <model_name> --force_math_sdp
+# or if needed:
+bergson build <output_path> --model <model_name> --force_math_sdp --precision fp32
+```
+
+### Performance impact
+
+The overhead of `--force_math_sdp` varies by model. Benchmarked on A100-80GB with 500 documents from pile-10k:
+
+| Model | Precision | `--force_math_sdp` | Build time | Overhead | Needs it? |
+|-------|-----------|-------------------|------------|----------|-----------|
+| Pythia-160M | bf16 | no | 30.2s | baseline | |
+| Pythia-160M | bf16 | yes | 30.4s | +0.8% | |
+| Pythia-160M | fp32 | no | 35.6s | baseline | |
+| Pythia-160M | fp32 | yes | 39.6s | +11.5% | Yes (needs both) |
+| OLMo-2-1B | bf16 | no | 43.1s | baseline | No |
+| OLMo-2-1B | bf16 | yes | 53.6s | +24.5% | |
+| OLMo-2-7B | bf16 | no | 105.5s | baseline | |
+| OLMo-2-7B | bf16 | yes | 151.1s | +43.2% | Yes (`--force_math_sdp` only) |
+| OLMo-2-7B | fp32 | no | 569.2s | baseline | |
+| OLMo-2-7B | fp32 | yes | 603.6s | +6.1% | |
+
+Not all models are affected — run `bergson test_numerical_stability` before enabling these flags to avoid unnecessary overhead.
+
 # Benchmarks
 
 ![CLI Benchmark](docs/benchmarks/cli_benchmark_NVIDIA_GH200_120GB.png)
