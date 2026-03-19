@@ -144,7 +144,7 @@ def build(
     with (index_cfg.partial_run_path / "preprocess_config.json").open("w") as f:
         json.dump(asdict(preprocess_cfg), f, indent=2)
 
-    ds = setup_data_pipeline(index_cfg)
+    ds, _ = setup_data_pipeline(index_cfg)
 
     launch_distributed_run(
         "build",

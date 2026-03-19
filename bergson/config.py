@@ -49,6 +49,10 @@ class DataConfig:
     """Arguments to pass to the dataset constructor in the format
     arg1=val1,arg2=val2."""
 
+    chunk: bool = False
+    """Whether to concatenate and chunk the documents into fixed-length token
+    sequences."""
+
 
 @dataclass
 class AttentionConfig:

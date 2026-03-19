@@ -70,7 +70,7 @@ def approximate_hessians(index_cfg: IndexConfig, hessian_cfg: HessianConfig) -> 
     with (index_cfg.partial_run_path / "hessian_config.json").open("w") as f:
         json.dump(asdict(hessian_cfg), f, indent=2)
 
-    ds = setup_data_pipeline(index_cfg)
+    ds, _ = setup_data_pipeline(index_cfg)
 
     launch_distributed_run(
         "hessian",

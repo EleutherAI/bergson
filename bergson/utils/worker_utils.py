@@ -21,7 +21,12 @@ from transformers import (
 )
 
 from bergson.config import AttributionConfig, DataConfig, IndexConfig
-from bergson.data import allocate_batches, load_data_string, tokenize
+from bergson.data import (
+    allocate_batches,
+    load_data_string,
+    tokenize,
+    tokenize_and_chunk,
+)
 from bergson.format import apply_format
 from bergson.gradients import GradientProcessor, Normalizer
 from bergson.normalizer.fit_normalizers import fit_normalizers
@@ -234,9 +239,7 @@ def estimate_advantage(ds: Dataset, cfg: DataConfig):
     return advantages.tolist()
 
 
-def filter_by_max_tokens(
-    ds: Dataset | IterableDataset, cfg: AttributionConfig
-) -> Dataset | IterableDataset:
+def filter_by_max_tokens(ds: Dataset, cfg: AttributionConfig) -> Dataset:
     """Filter the dataset by the max tokens limit. This is an experimental
     benchmarking feature that may be removed in the future.
 
@@ -302,13 +305,13 @@ def filter_by_max_tokens(
 def setup_data_pipeline(
     cfg: AttributionConfig,
     data_cfg: DataConfig | None = None,
-) -> Dataset | IterableDataset:
+) -> tuple[Dataset, int]:
     """Handle data loading and preprocessing"""
     data_cfg = data_cfg or cfg.data
+
     ds = load_data_string(
         data_cfg.dataset, data_cfg.split, data_cfg.subset, data_cfg.data_args
     )
-
     tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer or cfg.model)
 
     default_model_max_len = getattr(tokenizer, "model_max_length", None)
@@ -342,9 +345,9 @@ def setup_data_pipeline(
     else:
         max_length = cfg.token_batch_size
 
-    remove_columns = ds.column_names if cfg.drop_columns else None
-
+    remove_columns = set(ds.column_names) if cfg.drop_columns else set()
     tokenize_cfg = data_cfg
+
     if data_cfg.format_template:
         assert isinstance(
             ds, Dataset
@@ -356,16 +359,26 @@ def setup_data_pipeline(
             truncation=data_cfg.truncation,
         )
 
+    num_docs = len(ds)
     if not ds.column_names or "input_ids" not in ds.column_names:
-        ds = ds.map(
-            tokenize,
-            batched=True,
-            fn_kwargs=dict(
-                args=tokenize_cfg, tokenizer=tokenizer, max_length=max_length
-            ),
-        )
+        if data_cfg.chunk:
+            ds = tokenize_and_chunk(
+                ds,
+                tokenizer,
+                chunk_size=max_length,
+            )
+        else:
+            ds = ds.map(
+                tokenize,
+                batched=True,
+                fn_kwargs=dict(
+                    args=tokenize_cfg,
+                    tokenizer=tokenizer,
+                    max_length=max_length,
+                ),
+            )
 
-    if not data_cfg.truncation and isinstance(ds, Dataset):
+    if not data_cfg.chunk and not data_cfg.truncation and isinstance(ds, Dataset):
         max_doc_len = max(ds["length"])
         if max_pos_emb is not None and max_doc_len > max_pos_emb:
             warnings.warn(
@@ -405,10 +418,10 @@ def setup_data_pipeline(
         ds = filter_by_max_tokens(ds, cfg)
 
     # Remove extraneous columns
-    if remove_columns is not None:
-        keep = {"length", "input_ids", "labels"}
-        columns_to_remove = [col for col in remove_columns if col not in keep]
-        if columns_to_remove:
-            ds = ds.remove_columns(columns_to_remove)
+    keep = {"length", "input_ids", "labels"}
+    remove_columns -= keep
+    remove_columns &= set(ds.column_names)
+    if remove_columns:
+        ds = ds.remove_columns(list(remove_columns))
 
-    return ds
+    return ds, num_docs

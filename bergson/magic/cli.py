@@ -9,6 +9,7 @@ from typing import Literal
 import torch
 import torch.distributed as dist
 import torchopt
+from datasets import Dataset
 from scipy.stats import describe, spearmanr
 from simple_parsing import ArgumentParser, field
 from torch.distributed.tensor import init_device_mesh
@@ -17,7 +18,6 @@ from torchopt.typing import Numeric
 from tqdm import tqdm
 
 from ..config import AttributionConfig, DataConfig, DistributedConfig
-from ..data import allocate_batches
 from ..distributed import grad_tree, launch_distributed_run, simple_fsdp
 from ..utils.math import weighted_causal_lm_ce
 from ..utils.worker_utils import (
@@ -101,7 +101,7 @@ def compute_query_gradients(
                 for k, g in grads.items():
                     grad_accum[k] += g.detach()
 
-            loss_accum += loss.item() / len(query_stream)
+            loss_accum += loss.detach() / len(query_stream)
             n_batches += 1
 
     assert grad_accum is not None, "Query stream was empty"
@@ -120,8 +120,10 @@ def worker(
     global_rank: int,
     rank: int,
     world_size: int,
-    train_dataset,
-    query_dataset,
+    train_dataset: Dataset,
+    query_dataset: Dataset,
+    num_train_docs: int,
+    num_query_docs: int,
     run_cfg: MagicConfig,
 ):
     torch.cuda.set_device(rank)
@@ -180,12 +182,13 @@ def worker(
     path0 = os.path.join(ckpts_path, "state0.pt")
     save_fut = fwd_state.save(path0)
 
-    batches = allocate_batches(train_dataset["length"][:], run_cfg.token_batch_size)
+    # batches = allocate_batches(train_dataset["length"][:], run_cfg.token_batch_size)
     stream = DataStream(
         train_dataset,
-        batches,
+        16,
         device=f"cuda:{rank}",
         input_key=run_cfg.data.prompt_column,
+        num_docs=num_train_docs,
     )
     fwd_state = trainer.train(
         fwd_state,
@@ -195,12 +198,12 @@ def worker(
     )
 
     # Compute query gradients
-    batches = allocate_batches(query_dataset["length"][:], run_cfg.token_batch_size)
     query_stream = DataStream(
         query_dataset,
-        batches,
+        16,
         device=f"cuda:{rank}",
         input_key=run_cfg.query.prompt_column,
+        num_docs=num_query_docs,
     )
     query_grads, baseline = compute_query_gradients(
         fwd_state, model, query_stream, run_cfg.query_method
@@ -295,10 +298,15 @@ def run_magic(run_cfg: MagicConfig, dist_cfg: DistributedConfig):
     with (run_path / "dist_config.json").open("w") as f:
         json.dump(asdict(dist_cfg), f, indent=2)
 
-    train_ds = setup_data_pipeline(run_cfg)
-    query_ds = setup_data_pipeline(run_cfg, run_cfg.query)
+    train_ds, train_n = setup_data_pipeline(run_cfg)
+    query_ds, query_n = setup_data_pipeline(run_cfg, run_cfg.query)
 
-    launch_distributed_run("run_magic", worker, [train_ds, query_ds, run_cfg], dist_cfg)
+    launch_distributed_run(
+        "run_magic",
+        worker,
+        [train_ds, query_ds, train_n, query_n, run_cfg],
+        dist_cfg,
+    )
 
 
 def main():

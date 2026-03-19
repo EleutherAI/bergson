@@ -10,37 +10,13 @@ from scipy.stats import spearmanr
 from torchopt.pytree import tree_iter
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from bergson.chunk_and_tokenize import chunk_and_tokenize
+from bergson.data import tokenize_and_chunk
 from bergson.distributed import grad_tree
 from bergson.magic import BackwardState, DataStream, Trainer, TrainerState
 from bergson.utils.math import weighted_causal_lm_ce
 
 # Disable autocast
 torch.cuda.is_bf16_supported = lambda *a, **k: False
-
-
-class ChunkedDataStream(DataStream):
-    def __getitem__(self, i):
-        if i < 0 or i >= self.num_batches:
-            raise IndexError()
-        indices = list(
-            range(
-                i * self.batch_size + self.rank,
-                (i + 1) * self.batch_size,
-                self.world_size,
-            )
-        )
-        raw = self.dataset[indices]
-        input_ids = raw["input_ids"].detach().clone().to(self.device)
-        return {
-            "input_ids": input_ids,
-            "attention_mask": torch.ones_like(input_ids),
-            "labels": input_ids.clone(),
-            "example_weight": self.weights[
-                i * self.batch_size
-                + self.rank : (i + 1) * self.batch_size : self.world_size
-            ],
-        }
 
 
 def make_gpt2_model(device):
@@ -80,23 +56,19 @@ def run_test(
     trainer, fwd_state = Trainer.initialize(model, optimizer)
     ckpt_dir = tempfile.mkdtemp()
 
-    train_stream = ChunkedDataStream(
+    train_stream = DataStream(
         train_ds,
-        processor=None,
         batch_size=batch_size,
         device=device,
-        max_length=max_length,
     )
     fwd_state = trainer.train(fwd_state, train_stream, inplace=True, save_dir=ckpt_dir)
     fwd_state.save(os.path.join(ckpt_dir, "final_state.ckpt")).result()
 
     # MAGIC backward pass
-    bwd_stream = ChunkedDataStream(
+    bwd_stream = DataStream(
         train_ds,
-        processor=None,
         batch_size=batch_size,
         device=device,
-        max_length=max_length,
     )
     with fwd_state.activate(model) as params:
         test_loss = model(
@@ -153,12 +125,10 @@ def run_test(
             opt.init(params),
             {k: v.detach().clone() for k, v in init_buffers.items()},
         )
-        subset_stream = ChunkedDataStream(
+        subset_stream = DataStream(
             train_ds,
-            processor=None,
             batch_size=batch_size,
             device=device,
-            max_length=max_length,
         )
         subset_stream.weights.data.fill_(1.0)
         subset_stream.weights.data[subset] = 0.0
@@ -218,7 +188,7 @@ def main():
     results = {}
     for max_length in [512]:
         raw_ds = raw_ds.filter(lambda x: len(x["text"].strip()) > 0)
-        ds = chunk_and_tokenize(raw_ds, tokenizer, max_seq_len=max_length)
+        ds = tokenize_and_chunk(raw_ds, tokenizer, max_length)
         tokens = ds["input_ids"][:]
         ds = ds.select(range(n_train))
 
