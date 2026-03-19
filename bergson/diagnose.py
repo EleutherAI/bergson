@@ -166,9 +166,7 @@ def _print_results(results, threshold):
 
 def diagnose(diagnose_cfg: DiagnoseConfig):
     """Run the gradient consistency test across escalating configurations."""
-    device = torch.device(
-        diagnose_cfg.device if torch.cuda.is_available() else "cpu"
-    )
+    device = torch.device(diagnose_cfg.device if torch.cuda.is_available() else "cpu")
 
     print(f"Model:     {diagnose_cfg.model}")
     print(f"Precision: {diagnose_cfg.precision}")
@@ -269,7 +267,7 @@ def diagnose(diagnose_cfg: DiagnoseConfig):
         )
     elif passing_config is not None:
         # Extract the flags from the passing config label
-        print(f"RESULT: Gradients require non-default settings for consistency.")
+        print("RESULT: Gradients require non-default settings for consistency.")
         print(f"  Minimum required: {passing_config}")
         # Build the recommended CLI flags
         flags = []
@@ -282,8 +280,10 @@ def diagnose(diagnose_cfg: DiagnoseConfig):
                 break
         if flags:
             flag_str = " ".join(flags)
-            print(f"\n  Add to your bergson commands:")
-            print(f"    bergson build <run_path> --model {diagnose_cfg.model} {flag_str}")
+            print("\n  Add to your bergson commands:")
+            print(
+                f"    bergson build <run_path> --model {diagnose_cfg.model} {flag_str}"
+            )
     else:
         print(
             "RESULT: Gradient inconsistency persists across all tested"

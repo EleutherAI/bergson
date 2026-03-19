@@ -85,12 +85,12 @@ def test_force_math_sdp_persists_through_collect(
     )
 
     # Verify SDPA backends are still disabled after collection
-    assert not torch.backends.cuda.flash_sdp_enabled(), (
-        "flash SDP was re-enabled during collect_gradients"
-    )
-    assert not torch.backends.cuda.mem_efficient_sdp_enabled(), (
-        "mem-efficient SDP was re-enabled during collect_gradients"
-    )
+    assert (
+        not torch.backends.cuda.flash_sdp_enabled()
+    ), "flash SDP was re-enabled during collect_gradients"
+    assert (
+        not torch.backends.cuda.mem_efficient_sdp_enabled()
+    ), "mem-efficient SDP was re-enabled during collect_gradients"
 
     mixed_index = load_gradients(cfg.partial_run_path)
     mixed_grad_short = torch.from_numpy(
