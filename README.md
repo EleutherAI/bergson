@@ -183,20 +183,22 @@ bergson build <output_path> --model <model_name> --force_math_sdp --precision fp
 
 ### Performance impact
 
-The overhead of `--force_math_sdp` varies by model. Benchmarked on A100-80GB with 500 documents from pile-10k:
+The overhead of `--force_math_sdp` and `--precision fp32` varies by model. Benchmarked on A100-80GB with 500 documents from pile-10k:
 
-| Model | Precision | `--force_math_sdp` | Build time | Overhead | Needs it? |
-|-------|-----------|-------------------|------------|----------|-----------|
-| Pythia-160M | bf16 | no | 30.2s | baseline | |
-| Pythia-160M | bf16 | yes | 30.4s | +0.8% | |
-| Pythia-160M | fp32 | no | 35.6s | baseline | |
-| Pythia-160M | fp32 | yes | 39.6s | +11.5% | Yes (needs both) |
-| OLMo-2-1B | bf16 | no | 43.1s | baseline | No |
-| OLMo-2-1B | bf16 | yes | 53.6s | +24.5% | |
-| OLMo-2-7B | bf16 | no | 105.5s | baseline | |
-| OLMo-2-7B | bf16 | yes | 151.1s | +43.2% | Yes (`--force_math_sdp` only) |
-| OLMo-2-7B | fp32 | no | 569.2s | baseline | |
-| OLMo-2-7B | fp32 | yes | 603.6s | +6.1% | |
+| Model | Settings | Build time | vs bf16 baseline |
+|-------|----------|------------|------------------|
+| Pythia-160M | bf16 | 30.2s | — |
+| Pythia-160M | bf16 + `--force_math_sdp` | 30.4s | +0.8% |
+| Pythia-160M | fp32 | 35.6s | +17.9% |
+| Pythia-160M | fp32 + `--force_math_sdp` | 39.6s | +31.1% |
+| OLMo-2-1B | bf16 | 43.1s | — |
+| OLMo-2-1B | bf16 + `--force_math_sdp` | 53.6s | +24.5% |
+| OLMo-2-1B | fp32 | 132.8s | +208.1% |
+| OLMo-2-1B | fp32 + `--force_math_sdp` | 141.8s | +229.0% |
+| OLMo-2-7B | bf16 | 105.5s | — |
+| OLMo-2-7B | bf16 + `--force_math_sdp` | 151.1s | +43.2% |
+| OLMo-2-7B | fp32 | 569.2s | +439.5% |
+| OLMo-2-7B | fp32 + `--force_math_sdp` | 603.6s | +472.1% |
 
 Not all models are affected — run `bergson test_numerical_stability` before enabling these flags to avoid unnecessary overhead.
 
