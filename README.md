@@ -153,6 +153,25 @@ Where a reward signal is available we compute gradients using a weighted advanta
 bergson build <output_path> --model <model_name> --dataset <dataset_name> --reward_column <reward_column_name>
 ```
 
+## Numerical Stability
+
+Some models produce inconsistent per-example gradients when sequences of different lengths are batched together. This is caused by optimized SDPA attention backends (flash, memory-efficient) computing slightly different results depending on the padding length.
+
+Use the built-in diagnostic to check your model:
+
+```bash
+bergson test_numerical_stability --model <model_name>
+```
+
+This automatically tests escalating configurations and reports exactly which flags (if any) you need. If your model fails the default test, add the recommended flags to your `build`/`score` commands:
+
+```bash
+bergson build <output_path> --model <model_name> --force_math_sdp
+# or if needed:
+bergson build <output_path> --model <model_name> --force_math_sdp --precision fp32
+```
+
+Not all models are affected — run `bergson test_numerical_stability` before enabling these flags to avoid unnecessary overhead.
 # Development
 
 ```bash
