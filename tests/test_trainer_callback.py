@@ -1,4 +1,10 @@
 import os
+from pathlib import Path
+
+from torch import nn
+
+from bergson import GradientProcessor
+from bergson.gradients import AdafactorNormalizer, AdamNormalizer
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 os.environ["WANDB_MODE"] = "disabled"
@@ -6,7 +12,13 @@ os.environ["WANDB_MODE"] = "disabled"
 import pytest
 import torch
 from datasets import Dataset
-from transformers import AutoConfig, AutoModelForCausalLM, Trainer, TrainingArguments
+from transformers import (
+    Adafactor,
+    AutoConfig,
+    AutoModelForCausalLM,
+    Trainer,
+    TrainingArguments,
+)
 from trl import SFTConfig, SFTTrainer
 
 from bergson.config import AttentionConfig
@@ -303,3 +315,132 @@ class TestGradientCollectorCallback:
             assert (
                 gradients[head_name][0].sum().item() != 0.0
             ), f"Gradient for {head_name} is all zeros"
+
+    @pytest.mark.parametrize("optimizer_name", ["adam", "adafactor"])
+    @pytest.mark.parametrize("include_bias", [True, False])
+    def test_optimizer_state_extraction(self, optimizer_name: str, include_bias: bool):
+        """Test that normalizers are correctly extracted from optimizer state.
+
+        This tests the huggingface.py callback by:
+        1. Training a model with an optimizer
+        2. Calling the callback's on_step_end method
+        3. Verifying against raw optimizer state
+        """
+        torch.manual_seed(42)
+        N = 4
+        S = 6
+        I = 5
+        O = 3
+
+        class SimpleModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.fc1 = nn.Linear(I, O * 2, bias=include_bias)
+                self.relu = nn.ReLU()
+                self.fc2 = nn.Linear(O * 2, O, bias=include_bias)
+
+            def forward(self, x):
+                return self.fc2(self.relu(self.fc1(x)))
+
+        torch.manual_seed(42)
+        model = SimpleModel()
+
+        # Create optimizer
+        if optimizer_name == "adam":
+            optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+        else:
+            optimizer = Adafactor(
+                model.parameters(), scale_parameter=False, relative_step=False, lr=0.001
+            )
+
+        # Train a few steps to build up second moments
+        for _ in range(5):
+            optimizer.zero_grad()
+            out = model(torch.randn(N, S, I))
+            loss = (out**2).sum()
+            loss.backward()
+            optimizer.step()
+
+        # Extract normalizers using the ACTUAL callback
+        from unittest.mock import Mock, patch
+
+        from bergson.huggingface import GradientCollectorCallback
+
+        # Create callback with minimal setup
+        callback = GradientCollectorCallback(
+            path=Path("/tmp/test"),
+            use_optimizer_state=True,
+            include_bias=include_bias,
+        )
+
+        # Mock the collector and processor
+        mock_collector = Mock()
+        mock_collector.processor = GradientProcessor(
+            normalizers={}, include_bias=include_bias
+        )
+        mock_collector.target_info = {"fc1": None, "fc2": None}  # Track these layers
+        callback.collector = mock_collector
+
+        # Mock on_substep_end to avoid needing train_grad_buffer
+        with patch.object(callback, "on_substep_end"):
+            # Call the ACTUAL callback method
+            callback.on_step_end(
+                args=Mock(),
+                state=Mock(epoch=0, global_step=1),
+                control=Mock(),
+                model=model,
+                optimizer=optimizer,
+            )
+
+        # Get the normalizers the callback extracted
+        normalizers = callback.collector.processor.normalizers
+
+        # Verify against raw optimizer state (independent ground truth)
+        for layer_name in ["fc1", "fc2"]:
+            layer = model.get_submodule(layer_name)
+            norm = normalizers[layer_name]
+
+            # Get raw state from optimizer
+            weight_state = optimizer.state[layer.weight]
+            lr = optimizer.param_groups[0]["lr"]
+
+            lr_sq = lr**2
+
+            if optimizer_name == "adam":
+                # Check normalizer type
+                assert isinstance(norm, AdamNormalizer)
+
+                # Ground truth: Adam stores full exp_avg_sq, scaled by 1/lr²
+                raw_exp_avg_sq = weight_state["exp_avg_sq"]
+                expected_avg_sq = raw_exp_avg_sq / lr_sq
+
+                torch.testing.assert_close(norm.weight_avg_sq, expected_avg_sq)
+
+            elif optimizer_name == "adafactor":
+                # Check normalizer type
+                assert isinstance(norm, AdafactorNormalizer)
+
+                # Ground truth: Adafactor row/col, scaled by 1/lr²
+                raw_row = weight_state["exp_avg_sq_row"]
+                raw_col = weight_state["exp_avg_sq_col"]
+
+                expected_row = raw_row / lr_sq
+                expected_col = raw_col / lr_sq
+
+                torch.testing.assert_close(norm.row, expected_row)
+                torch.testing.assert_close(norm.col, expected_col)
+
+            # Verify bias handling
+            if include_bias and layer.bias is not None:
+                bias_state = optimizer.state[layer.bias]  # type: ignore
+                raw_bias_exp_avg_sq = bias_state["exp_avg_sq"]
+                expected_bias = raw_bias_exp_avg_sq / lr_sq
+
+                assert (
+                    norm.bias_avg_sq is not None
+                ), f"Expected bias_avg_sq for {layer_name}"
+                torch.testing.assert_close(norm.bias_avg_sq, expected_bias)
+            else:
+                assert (
+                    norm.bias_avg_sq is None
+                ), f"Unexpected bias_avg_sq for {layer_name}"

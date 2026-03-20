@@ -12,14 +12,9 @@ from torch import Tensor
 from bergson.builder import Builder
 from bergson.collector.collector import HookCollectorBase
 from bergson.config import IndexConfig, PreprocessConfig
-from bergson.gradients import (
-    AdafactorNormalizer,
-    AdamNormalizer,
-    LayerAdapter,
-)
 from bergson.process_preconditioners import process_preconditioners
 from bergson.score.scorer import Scorer
-from bergson.utils.utils import assert_type, get_gradient_dtype
+from bergson.utils.utils import get_gradient_dtype
 
 
 @dataclass(kw_only=True)
@@ -29,9 +24,7 @@ class GradientCollector(HookCollectorBase):
 
     - For each forward/backward hook, we compute the the gradient or a low-rank
     approximation via random projections, if cfg.projection_dim is set.
-    - Supports also normalization via Adam or Adafactor normalizers.
-    - Uses Builder for index construction and gradient saving.
-    - Also supports Scorer for on-the-fly scoring of gradients.
+    - Supports normalization via Adam or Adafactor normalizers.
     """
 
     data: Dataset
@@ -61,11 +54,8 @@ class GradientCollector(HookCollectorBase):
         assert isinstance(
             self.model.device, torch.device
         ), "Model device is not set correctly"
-        if self.cfg.include_bias and self.processor.normalizers is not None:
-            raise NotImplementedError(
-                "Bias with normalizers not supported yet, "
-                "consider disabling bias inclusion for now."
-            )
+
+        self.attribute_tokens = self.cfg.attribute_tokens
 
         if self.cfg.attribute_tokens:
             assert (
@@ -99,108 +89,11 @@ class GradientCollector(HookCollectorBase):
         else:
             self.builder = None
 
-    def forward_hook(self, module: nn.Module, a: Float[Tensor, "N S I"]) -> None:
-        """
-        Cache activations for gradient computation with normalizer preprocessing
-        and compress via random projection if configured.
-        Stores result in module._inputs for use in backward_hook.
-        """
-        p = self.processor.projection_dim
-        name = assert_type(str, module._name)
-        i = getattr(module, LayerAdapter.in_attr(module))
-        normalizer = self.processor.normalizers.get(name)
-
-        if isinstance(normalizer, AdamNormalizer):
-            module._inputs = a
-            return
-        if isinstance(normalizer, AdafactorNormalizer):
-            a_factor = normalizer.col.add(1e-30)
-            a_factor = a_factor.rsqrt()
-            a = a * a_factor.type_as(a)  # [N, S, I] * [I] → [N, S, I]
-
-        if module._has_bias:
-            # Append ones to activation for bias term
-            ones = torch.ones(a.size(0), a.size(1), 1, device=a.device, dtype=a.dtype)
-            a = torch.cat([a, ones], dim=-1)
-            i = i + 1
-            setattr(module, LayerAdapter.in_attr(module), i)
-        if p is not None:
-            a_projection = self.projection(name, p, i, "right", a.device, a.dtype).T
-            a = a @ a_projection  # type: ignore
-        # set module._inputs to a
-        module._inputs = a
-
     @HookCollectorBase.split_attention_heads
     def backward_hook(self, module: nn.Module, g: Float[Tensor, "N S O"]):
-        """
-        Compute per-sample gradient and store in mod_grads.
-
-        Computes gradient as outer product g.T @ a (again with optional projection and
-        normalization).
-
-        When ``self.cfg.attribute_tokens`` is True, the gradient is computed
-        per-position instead of per-example then filtered to valid positions
-        using the valid mask.
-        The valid mask (from ``self._current_valid_mask``) marks positions
-        where ``labels[t+1] != -100``.
-        """
-        a = module._inputs  # [N, S, I/q]
-
-        assert isinstance(a, torch.Tensor), "Activation cache missing for module"
-        name = assert_type(str, module._name)
-        p = self.processor.projection_dim
-        i = getattr(module, LayerAdapter.in_attr(module))
-        o = getattr(module, LayerAdapter.out_attr(module))
-        normalizer = self.processor.normalizers.get(name)
-
-        if isinstance(normalizer, AdamNormalizer):
-            if self.cfg.attribute_tokens:
-                # Per-position outer product: [N,S,O,1]*[N,S,1,I] → [N,S,O,I]
-                P = g.unsqueeze(-1) * a.unsqueeze(-2)
-                P = normalizer.normalize_(P)  # broadcasts [O,I] over [N,S,O,I]
-                if p is not None:
-                    g_projection = self.projection(
-                        name, p, o, "left", g.device, g.dtype
-                    )
-                    a_projection = self.projection(
-                        name, p, i, "right", g.device, g.dtype
-                    ).T
-                    P = g_projection @ P @ a_projection  # [N, S, p, q]
-                P = P.flatten(2)  # [N, S, grad_dim]
-                P = P[self._current_valid_mask]  # [total_valid, grad_dim]
-            else:
-                full_gradient = g.mT @ a  # [N, O, S] @ [N, S, I] → [N, O, I]
-                P = normalizer.normalize_(full_gradient)
-                if p is not None:
-                    g_projection = self.projection(
-                        name, p, o, "left", g.device, g.dtype
-                    )
-                    a_projection = self.projection(
-                        name, p, i, "right", g.device, g.dtype
-                    ).T
-                    P = g_projection @ P @ a_projection
-        else:
-            if isinstance(normalizer, AdafactorNormalizer):
-                g_factor = normalizer.row.add(1e-30)
-                g_factor = g_factor.mean().sqrt() * g_factor.rsqrt()
-                g = g * g_factor.type_as(g)  # [N, S, O] * [O] → [N, S, O]
-
-            if p is not None:
-                g_projection = self.projection(name, p, o, "left", g.device, g.dtype)
-                g = g @ g_projection.T  # [N, S, p]
-
-            if self.cfg.attribute_tokens:
-                # [N, S, O/p, 1] * [N, S, 1, I/q] → [N, S, O/p, I/q]
-                P = g.unsqueeze(-1) * a.unsqueeze(-2)
-                P = P.flatten(2)  # [N, S, grad_dim]
-
-                # Filter to valid positions only
-                # Mask is [N, S]
-                P = P[self._current_valid_mask]  # [total_valid, grad_dim]
-            else:
-                P = g.mT @ a  # [N, O/p, S] @ [N, S, I/q] → [N, O/p, I/q]
-
-        P = P.flatten(1).clamp_(self.lo, self.hi)
+        """Compute per-sample gradient, accumulate preconditioner, and store."""
+        name: str = module._name  # type: ignore[assignment]
+        P = self._compute_gradient(module, g)
 
         if not self.cfg.skip_preconditioners:
             P = P.float()
@@ -303,74 +196,11 @@ class TraceCollector(HookCollectorBase):
         self.lo = torch.finfo(self.save_dtype).min
         self.hi = torch.finfo(self.save_dtype).max
 
-    def forward_hook(self, module: nn.Module, a: Float[Tensor, "N S I"]) -> None:
-        """
-        Cache activations for gradient computation with normalizer preprocessing
-        and compress via random projection if configured.
-        Stores result in module._inputs for use in backward_hook.
-        """
-        p = self.processor.projection_dim
-        name = assert_type(str, module._name)
-        i = getattr(module, LayerAdapter.in_attr(module))
-        normalizer = self.processor.normalizers.get(name)
-
-        if isinstance(normalizer, AdamNormalizer):
-            module._inputs = a
-            return
-        if isinstance(normalizer, AdafactorNormalizer):
-            a_factor = normalizer.col.add(1e-30)
-            a_factor = a_factor.rsqrt()
-            a = a * a_factor.type_as(a)  # [N, S, I] * [I] → [N, S, I]
-
-        if module._has_bias:
-            # Append ones to activation for bias term
-            ones = torch.ones(a.size(0), a.size(1), 1, device=a.device, dtype=a.dtype)
-            a = torch.cat([a, ones], dim=-1)
-            i = i + 1
-            setattr(module, LayerAdapter.in_attr(module), i)
-        if p is not None:
-            a_projection = self.projection(name, p, i, "right", a.device, a.dtype).T
-            a = a @ a_projection  # type: ignore
-        # set module._inputs to a
-        module._inputs = a
-
     @HookCollectorBase.split_attention_heads
     def backward_hook(self, module: nn.Module, g: Float[Tensor, "N S O"]):
-        """
-        Compute per-sample gradient for the Attributor trace.
-
-        Computes gradient as outer product g.T @ a (again with optional projection and
-        normalization).
-        """
-        a = module._inputs  # [N, S, I/q]
-
-        assert isinstance(a, torch.Tensor), "Activation cache missing for module"
-        name = assert_type(str, module._name)
-        p = self.processor.projection_dim
-        i = getattr(module, LayerAdapter.in_attr(module))
-        o = getattr(module, LayerAdapter.out_attr(module))
-        normalizer = self.processor.normalizers.get(name)
-
-        if isinstance(normalizer, AdamNormalizer):
-            full_gradient = g.mT @ a  # [N, O, S] @ [N, S, I] → [N, O, I]
-            P = normalizer.normalize_(full_gradient)
-            if p is not None:
-                g_projection = self.projection(name, p, o, "left", g.device, g.dtype)
-                a_projection = self.projection(name, p, i, "right", g.device, g.dtype).T
-                P = g_projection @ P @ a_projection
-        else:
-            if isinstance(normalizer, AdafactorNormalizer):
-                g_factor = normalizer.row.add(1e-30)
-                g_factor = g_factor.mean().sqrt() * g_factor.rsqrt()
-                g = g * g_factor.type_as(g)  # [N, S, O] * [O] → [N, S, O]
-
-            if p is not None:
-                g_projection = self.projection(name, p, o, "left", g.device, g.dtype)
-                g = g @ g_projection.T  # [N, S, p]
-
-            P = g.mT @ a  # [N, O/p, S] @ [N, S, I/q] → [N, O/p, I/q]
-
-        P = P.flatten(1).clamp_(self.lo, self.hi)
+        """Compute per-sample gradient, optionally precondition, and store."""
+        name: str = module._name  # type: ignore[assignment]
+        P = self._compute_gradient(module, g)
 
         # Store the gradient for later use
         self.mod_grads[name].append(P.to(self.device, self.dtype, non_blocking=True))
@@ -408,74 +238,11 @@ class StreamingGradientCollector(HookCollectorBase):
     def process_batch(self, indices: list[int], **kwargs) -> None:
         pass
 
-    def forward_hook(self, module: nn.Module, a: Float[Tensor, "N S I"]) -> None:
-        """
-        Cache activations for gradient computation with normalizer preprocessing
-        and compress via random projection if configured.
-        Stores result in module._inputs for use in backward_hook.
-        """
-        p = self.processor.projection_dim
-        name = assert_type(str, module._name)
-        i = getattr(module, LayerAdapter.in_attr(module))
-        normalizer = self.processor.normalizers.get(name)
-
-        if isinstance(normalizer, AdamNormalizer):
-            module._inputs = a
-            return
-        if isinstance(normalizer, AdafactorNormalizer):
-            a_factor = normalizer.col.add(1e-30)
-            a_factor = a_factor.rsqrt()
-            a = a * a_factor.type_as(a)  # [N, S, I] * [I] → [N, S, I]
-
-        if module._has_bias:
-            # Append ones to activation for bias term
-            ones = torch.ones(a.size(0), a.size(1), 1, device=a.device, dtype=a.dtype)
-            a = torch.cat([a, ones], dim=-1)
-            i = i + 1
-            setattr(module, LayerAdapter.in_attr(module), i)
-        if p is not None:
-            a_projection = self.projection(name, p, i, "right", a.device, a.dtype).T
-            a = a @ a_projection  # type: ignore
-        # set module._inputs to a
-        module._inputs = a
-
     @HookCollectorBase.split_attention_heads
     def backward_hook(self, module: nn.Module, g: Float[Tensor, "N S O"]):
-        """
-        Compute per-sample gradient for the hf callback.
-
-        Computes gradient as outer product g.T @ a (again with optional projection and
-        normalization).
-        """
-        a = module._inputs  # [N, S, I/q]
-
-        assert isinstance(a, torch.Tensor), "Activation cache missing for module"
-        name = assert_type(str, module._name)
-        p = self.processor.projection_dim
-        i = getattr(module, LayerAdapter.in_attr(module))
-        o = getattr(module, LayerAdapter.out_attr(module))
-        normalizer = self.processor.normalizers.get(name)
-
-        if isinstance(normalizer, AdamNormalizer):
-            full_gradient = g.mT @ a  # [N, O, S] @ [N, S, I] → [N, O, I]
-            P = normalizer.normalize_(full_gradient)
-            if p is not None:
-                g_projection = self.projection(name, p, o, "left", g.device, g.dtype)
-                a_projection = self.projection(name, p, i, "right", g.device, g.dtype).T
-                P = g_projection @ P @ a_projection
-        else:
-            if isinstance(normalizer, AdafactorNormalizer):
-                g_factor = normalizer.row.add(1e-30)
-                g_factor = g_factor.mean().sqrt() * g_factor.rsqrt()
-                g = g * g_factor.type_as(g)  # [N, S, O] * [O] → [N, S, O]
-
-            if p is not None:
-                g_projection = self.projection(name, p, o, "left", g.device, g.dtype)
-                g = g @ g_projection.T  # [N, S, p]
-
-            P = g.mT @ a  # [N, O/p, S] @ [N, S, I/q] → [N, O/p, I/q]
-
-        P = P.flatten(1).clamp_(self.lo, self.hi)
+        """Compute per-sample gradient and store on CPU."""
+        name: str = module._name  # type: ignore[assignment]
+        P = self._compute_gradient(module, g)
 
         self.mod_grads[name] = P.to(
             device="cpu", dtype=self.save_dtype, non_blocking=True

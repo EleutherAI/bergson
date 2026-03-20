@@ -34,16 +34,32 @@ class Normalizer(ABC):
         if (cls := NORMALIZER_TYPES.get(class_name)) is None:
             raise ValueError(f"Unknown normalizer class: '{class_name}'")
 
+        # Migration: avg_sq was renamed to weight_avg_sq
+        if "avg_sq" in state_dict:
+            state_dict["weight_avg_sq"] = state_dict.pop("avg_sq")
+
         return cls(**state_dict)
 
     @abstractmethod
-    def normalize_(
+    def normalize_weight(
         self,
         grad: Tensor,
         eps: float = 1e-8,
     ) -> Tensor:
         """
-        Normalize gradients in-place, adding a small epsilon to avoid division by zero.
+        Normalize weight gradients in-place.
+        Adds a small epsilon to avoid division by zero.
+        """
+
+    @abstractmethod
+    def normalize_bias(
+        self,
+        grad: Tensor,
+        eps: float = 1e-8,
+    ) -> Tensor:
+        """
+        Normalize bias gradients in-place.
+        Adds a small epsilon to avoid division by zero.
         """
 
     def state_dict(self) -> dict[str, str | Tensor]:
@@ -227,17 +243,28 @@ class LayerAdapter:
 class AdafactorNormalizer(Normalizer):
     """
     Row and column sums of second moments of gradients for a matrix-valued parameter.
+    Weight normalization mutates gradient values in-place.
+
+    Args:
+        row: Row statistics [O]
+        col: Column statistics [I]
+        bias_avg_sq: Optional second moments for bias [O]
     """
 
     row: Tensor  # shape [O]
     col: Tensor  # shape [I]
+    bias_avg_sq: Tensor | None = None  # shape [O]
 
     def __post_init__(self):
         assert self.row.ndim == 1, f"Expected 1D tensor for row, got {self.row.ndim}D"
         assert self.col.ndim == 1, f"Expected 1D tensor for col, got {self.col.ndim}D"
+        if self.bias_avg_sq is not None:
+            assert (
+                self.bias_avg_sq.ndim == 1
+            ), f"Expected 1D tensor for bias_avg_sq, got {self.bias_avg_sq.ndim}D"
 
     @torch.compile
-    def normalize_(
+    def normalize_weight(
         self,
         grad: Tensor,
         eps: float = 1e-30,
@@ -273,53 +300,91 @@ class AdafactorNormalizer(Normalizer):
         # Implicitly do the Hadamard product
         grad *= a[:, None]  # [N, O] * [O] → [N, O]
         grad *= b[None, :]
+
         return grad
+
+    @torch.compile
+    def normalize_bias(
+        self,
+        grad: Tensor,
+        eps: float = 1e-8,
+    ) -> Tensor:
+        """Normalize the gradients by the square root of the second moments."""
+        assert self.bias_avg_sq is not None
+
+        # Adafactor-style epsilon is added inside the square root.
+        # Differs slightly from the PyTorch implementation which uses clamp.
+        return grad * self.bias_avg_sq.add(eps).rsqrt_()
 
     def to_adam(self) -> "AdamNormalizer":
         """
         Convert this Adafactor normalizer to an Adam normalizer by materializing the
         rank-one second moment matrix.
+
+        Preserves bias_avg_sq if present.
         """
         # Compute the second moment matrix as a square matrix of shape [O, I]
         # NOTE: We don't add the epsilon here, since the AdamNormalizer is going to
         # add it outside the square root. This could cause infs though if there are
         # any exactly zero rows or columns, so we should be careful.
-        avg_sq = torch.outer(self.row, self.col) / self.row.mean()
-        return AdamNormalizer(avg_sq=avg_sq)
+        weight_avg_sq = torch.outer(self.row, self.col) / self.row.mean()
+        return AdamNormalizer(weight_avg_sq=weight_avg_sq, bias_avg_sq=self.bias_avg_sq)
 
 
 @dataclass
 class AdamNormalizer(Normalizer):
     """
-    Contains the second moments of the gradients.
+    Contains the second moments of the gradients. Weight normalization mutates gradient
+    values in-place.
+
+    Args:
+        weight_avg_sq: Second moments for weights [O, I]
+        bias_avg_sq: Optional second moments for bias [O]
     """
 
-    avg_sq: Tensor
+    weight_avg_sq: Tensor
+    bias_avg_sq: Tensor | None = None
 
     @torch.compile
-    def normalize_(
+    def normalize_weight(
         self,
         grad: Tensor,
         eps: float = 1e-8,
     ) -> Tensor:
         """Normalize the gradients by the square root of the second moments."""
         # Adam-style epsilon is added outside the square root
-        denom = self.avg_sq.sqrt()
+        denom = self.weight_avg_sq.sqrt()
         return grad.div_(denom.add_(eps))
+
+    @torch.compile
+    def normalize_bias(
+        self,
+        grad: Tensor,
+        eps: float = 1e-8,
+    ) -> Tensor:
+        """Normalize the gradients by the square root of the second moments."""
+        assert self.bias_avg_sq is not None
+        denom = self.bias_avg_sq.sqrt()
+
+        # Adam-style epsilon is added outside the square root
+        return grad / (denom.add_(eps))
 
     def to_adafactor(self) -> AdafactorNormalizer:
         """
         Convert this Adam normalizer to an Adafactor normalizer, minimizing the
         I-divergence (generalized Kullback-Leibler divergence) between the original
         and the factored second moments.
+
+        Preserves bias_avg_sq if present.
         """
-        # We assume avg_sq is a square matrix of shape [O, I]
+        # We assume weight_avg_sq is a square matrix of shape [O, I]
         assert (
-            self.avg_sq.ndim == 2
-        ), f"Expected 2D tensor for avg_sq, got {self.avg_sq.ndim}D"
+            self.weight_avg_sq.ndim == 2
+        ), f"Expected 2D tensor for avg_sq, got {self.weight_avg_sq.ndim}D"
 
         # Compute row and column means
         return AdafactorNormalizer(
-            row=self.avg_sq.mean(dim=1),  # shape [O]
-            col=self.avg_sq.mean(dim=0),  # shape [I]
+            row=self.weight_avg_sq.mean(dim=1),  # shape [O]
+            col=self.weight_avg_sq.mean(dim=0),  # shape [I]
+            bias_avg_sq=self.bias_avg_sq,
         )

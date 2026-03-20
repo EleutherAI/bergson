@@ -6,6 +6,7 @@ from simple_parsing import ArgumentParser, ConflictResolution
 
 from .build import build
 from .config import (
+    DistributedConfig,
     HessianPipelineConfig,
     HessianConfig,
     IndexConfig,
@@ -16,6 +17,7 @@ from .config import (
 )
 from .hessians.pipeline import hessian_pipeline
 from .hessians.hessian_approximations import approximate_hessians
+from .magic import MagicConfig, run_magic
 from .query.query_index import query
 from .score.score import score_dataset
 from .trackstar import trackstar
@@ -132,15 +134,21 @@ class Trackstar:
     trackstar_cfg: TrackstarConfig
 
     def execute(self):
-        if self.index_cfg.normalizer != "adafactor":
-            print(
-                "Warning: not using Adafactor normalizer. Pass --normalizer adafactor "
-                "to match the Trackstar paper."
-            )
-
         trackstar(
             self.index_cfg, self.score_cfg, self.preprocess_cfg, self.trackstar_cfg
         )
+
+
+@dataclass
+class Magic:
+    """Run MAGIC attribution."""
+
+    run_cfg: MagicConfig
+    dist_cfg: DistributedConfig
+
+    def execute(self):
+        """Run MAGIC attribution."""
+        run_magic(self.run_cfg, self.dist_cfg)
 
 
 @dataclass
@@ -180,7 +188,9 @@ class Main:
     """Routes to the subcommands."""
 
     command: Union[
-        Build, Query, Preconditioners, Reduce, Score, Hessian, Trackstar, Ekfac
+        
+        Build, Query, Preconditioners, Reduce, Score, Hessian, Trackstar, Magic
+    , Ekfac
     ]
 
     def execute(self):

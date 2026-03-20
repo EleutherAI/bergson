@@ -128,9 +128,14 @@ class Attributor:
                         self.grads[name] = self.grads[name].float() @ h_inv.to(device)
                         self.grads[name] = self.grads[name].to(dtype=dtype)
 
-            norm = torch.cat(
-                [self.grads[name] for name in self.ordered_modules], dim=1
-            ).norm(dim=1, keepdim=True)
+            norm_sq = sum(
+                (
+                    torch.square(self.grads[name]).sum(dim=1, keepdim=True)
+                    for name in self.ordered_modules
+                ),
+                start=0.0,
+            )
+            norm = norm_sq**0.5
 
             for name in self.grads:
                 # Divide by norm (may create NaN/inf if norm is zero)

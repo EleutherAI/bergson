@@ -186,7 +186,7 @@ If you found Bergson useful in your research, please cite us:
 
 ```bibtex
 @software{bergson,
-  author       = {Lucia Quirke and Nora Belrose and Louis Jaburi and William Li and David Johnston and Michael Mulet and Guillaume Martres and Goncalo Paulo},
+  author       = {Lucia Quirke and Nora Belrose and Louis Jaburi and William Li and David Johnston and Michael Mulet and Guillaume Martres and Goncalo Paulo and Stella Biderman},
   title        = {Bergson: Mapping out the "memory" of neural nets with data attribution},
   year         = {2026},
   publisher    = {Zenodo},

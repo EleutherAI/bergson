@@ -17,13 +17,15 @@ dependencies = [
     "ml_dtypes",
     "natsort",
     "numpy",
+    "scipy",
     "peft>=0.17.0",
     "pyarrow",
     "simple-parsing",
     "torch",
-    "transformers"
+    "torchopt",
+    "transformers",
 ]
-version = "0.8.0"
+version = "0.9.0"
 [project.optional-dependencies]
 dev = [
     "pre-commit",
@@ -33,6 +35,7 @@ dev = [
     # Generate documentation
     "furo",
     "myst-parser",
+    "scipy-stubs",
     "sphinx",
     "sphinx-autodoc-typehints",
     "sphinx-rtd-theme",
@@ -49,6 +52,7 @@ example = [
     "bitsandbytes>=0.49.0",
     "pydantic>=2.12.5",
     "trl",
+    "wandb",
 ]
 faiss = [
     "faiss-gpu-cu12",
