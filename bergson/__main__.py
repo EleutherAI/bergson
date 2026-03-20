@@ -7,16 +7,16 @@ from simple_parsing import ArgumentParser, ConflictResolution
 from .build import build
 from .config import (
     DistributedConfig,
-    HessianPipelineConfig,
     HessianConfig,
+    HessianPipelineConfig,
     IndexConfig,
     PreprocessConfig,
     QueryConfig,
     ScoreConfig,
     TrackstarConfig,
 )
-from .hessians.pipeline import hessian_pipeline
 from .hessians.hessian_approximations import approximate_hessians
+from .hessians.pipeline import hessian_pipeline
 from .magic import MagicConfig, run_magic
 from .query.query_index import query
 from .score.score import score_dataset
@@ -188,9 +188,7 @@ class Main:
     """Routes to the subcommands."""
 
     command: Union[
-        
-        Build, Query, Preconditioners, Reduce, Score, Hessian, Trackstar, Magic
-    , Ekfac
+        Build, Query, Preconditioners, Reduce, Score, Hessian, Trackstar, Magic, Ekfac
     ]
 
     def execute(self):
