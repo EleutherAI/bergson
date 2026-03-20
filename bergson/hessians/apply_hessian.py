@@ -140,18 +140,14 @@ class EkfacApplicator:
         self.logger.info(f"Saved IVHP gradients to {self.cfg.run_path}")
 
 
-if __name__ == "__main__":
+def apply_worker(
+    rank: int,
+    local_rank: int,
+    world_size: int,
+    cfg: EkfacConfig,
+):
+    """Worker function for distributed IVHP computation."""
     from datetime import timedelta
-
-    from simple_parsing import ArgumentParser
-
-    parser = ArgumentParser()
-    parser.add_arguments(EkfacConfig, dest="cfg")
-    args = parser.parse_args()
-
-    rank = int(os.environ.get("RANK", 0))
-    local_rank = int(os.environ.get("LOCAL_RANK", 0))
-    world_size = int(os.environ.get("WORLD_SIZE", 1))
 
     if torch.cuda.is_available():
         torch.cuda.set_device(local_rank)
@@ -169,8 +165,23 @@ if __name__ == "__main__":
             world_size=world_size,
         )
 
-    applicator = EkfacApplicator(args.cfg)
+    applicator = EkfacApplicator(cfg)
     applicator.compute_ivhp_sharded()
 
-    if dist.is_initialized():
-        dist.destroy_process_group()
+
+if __name__ == "__main__":
+    from simple_parsing import ArgumentParser
+
+    from bergson.config import DistributedConfig
+    from bergson.distributed import launch_distributed_run
+
+    parser = ArgumentParser()
+    parser.add_arguments(EkfacConfig, dest="cfg")
+    args = parser.parse_args()
+
+    launch_distributed_run(
+        "apply_hessian",
+        apply_worker,
+        [args.cfg],
+        DistributedConfig(),
+    )

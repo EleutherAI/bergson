@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass
 from typing import Optional, Union
 
@@ -5,7 +6,7 @@ from simple_parsing import ArgumentParser, ConflictResolution
 
 from .build import build
 from .config import (
-    EkfacPipelineConfig,
+    HessianPipelineConfig,
     HessianConfig,
     IndexConfig,
     PreprocessConfig,
@@ -13,12 +14,15 @@ from .config import (
     ScoreConfig,
     TrackstarConfig,
 )
-from .ekfac import ekfac_pipeline
+from .hessians.pipeline import hessian_pipeline
 from .hessians.hessian_approximations import approximate_hessians
 from .query.query_index import query
 from .score.score import score_dataset
 from .trackstar import trackstar
 from .utils.worker_utils import validate_run_path
+
+# ignore httpx
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 @dataclass
@@ -159,15 +163,15 @@ class Ekfac:
 
     preprocess_cfg: PreprocessConfig
 
-    ekfac_pipeline_cfg: EkfacPipelineConfig
+    hessian_pipeline_cfg: HessianPipelineConfig
 
     def execute(self):
-        ekfac_pipeline(
+        hessian_pipeline(
             self.index_cfg,
             self.hessian_cfg,
             self.score_cfg,
             self.preprocess_cfg,
-            self.ekfac_pipeline_cfg,
+            self.hessian_pipeline_cfg,
         )
 
 

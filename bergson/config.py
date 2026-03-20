@@ -373,8 +373,8 @@ class FaissConfig:
 
 
 @dataclass
-class EkfacPipelineConfig:
-    """Config for the EKFAC influence pipeline."""
+class HessianPipelineConfig:
+    """Config for the Hessian-preconditioned influence pipeline."""
 
     query: DataConfig = field(default_factory=DataConfig)
     """Query dataset specification."""
