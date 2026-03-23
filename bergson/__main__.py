@@ -156,17 +156,6 @@ class Trackstar:
 
 
 @dataclass
-class Validate:
-    """Validate an existing set of scores with leave-k-out retraining."""
-
-    run_path: str
-    """Path to the run directory containing the scores and checkpoints."""
-
-    def execute(self):
-        pass
-
-
-@dataclass
 class Main:
     """Routes to the subcommands."""
 
