@@ -1151,7 +1151,7 @@ def score_attribute_eval_with_pca(
 
     from bergson.data import load_gradients
     from bergson.gradients import GradientProcessor
-    from bergson.utils.math import compute_damped_inverse
+    from bergson.utils.math import damped_psd_power
 
     from .preconditioners import project_orthogonal_to_style_subspace
 
@@ -1219,7 +1219,7 @@ def score_attribute_eval_with_pca(
         device = torch.device("cuda:0")
         for name in tqdm(module_names, desc="Computing H^(-1)"):
             H = proc.preconditioners[name].to(device=device)
-            h_inv[name] = compute_damped_inverse(H, damping_factor=damping_factor)
+            h_inv[name] = damped_psd_power(H, -1.0, damping_factor=damping_factor)
 
     def load_grad_as_float(grads: np.memmap, name: str) -> np.ndarray:
         g = grads[name]
@@ -1403,7 +1403,7 @@ def compute_attribute_metrics_with_pca(
     style_only_top1 = style_only_top5 = style_only_top10 = 0
     same_employer_type = same_university_type = 0
 
-    field_top1: dict[str, list[int, int]] = {
+    field_top1: dict[str, list[int]] = {
         f: [0, 0] for f in ["employer", "university", "degree", "title"]
     }
 

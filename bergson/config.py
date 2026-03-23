@@ -108,6 +108,9 @@ class DistributedConfig(Serializable):
 class ModelConfig(ABC):
     """Base config for model loading."""
 
+    run_path: str = field(positional=True)
+    """Directory to save results."""
+
     model: str = "EleutherAI/pythia-160m"
     """Name of the model to load."""
 
@@ -154,9 +157,6 @@ class TrainingConfig(ModelConfig, Serializable):
 @dataclass
 class AttributionConfig(ModelConfig, ABC):
     """Base config for attribution methods."""
-
-    run_path: str = field(positional=True)
-    """Directory to save results."""
 
     data: DataConfig = field(default_factory=DataConfig)
     """Specification of the data on which to build the index."""
