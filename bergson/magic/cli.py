@@ -21,6 +21,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from ..config import DataConfig, DistributedConfig
 from ..data import load_data_string
 from ..distributed import grad_tree, launch_distributed_run, simple_fsdp
+from ..utils.logging import wandb_log_fn
 from ..utils.math import weighted_causal_lm_ce
 from .data_stream import DataStream
 from .dtensor_patch import apply_dtensor_patch
@@ -128,6 +129,9 @@ class MagicConfig:
 
     resume: bool = False
     """Resume a previously interrupted run from the last checkpoint."""
+
+    wandb_project: str = ""
+    """Weights & Biases project name. If set, logs training loss to W&B."""
 
 
 def compute_query_gradients(
@@ -283,12 +287,17 @@ def worker(
         if pending_fut is not None:
             pending_fut.result()
     else:
+        log_fn = None
+        if run_cfg.wandb_project and global_rank == 0:
+            log_fn = wandb_log_fn(run_cfg.wandb_project, config=asdict(run_cfg))
+
         save_fut = fwd_state.save(path0)
         fwd_state = trainer.train(
             fwd_state,
             stream,
             inplace=True,
             save_dir=ckpts_path,
+            log_fn=log_fn,
         )
         save_fut.result()  # ensure state0 is saved before validation loads it
 
