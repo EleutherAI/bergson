@@ -186,12 +186,10 @@ def setup_paths_and_config(
             print(f"Using existing config from {config_path}")
         else:
             print(f"Overwriting existing config at {config_path}")
-            with open(config_path, "w") as f:
-                json.dump(asdict(cfg), f, indent=4)
+            cfg.save_json(config_path)
     else:
         # Save new config
-        with open(config_path, "w") as f:
-            json.dump(asdict(cfg), f, indent=4)
+        cfg.save_json(config_path)
 
     # Setup
     workers = world_size

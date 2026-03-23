@@ -11,6 +11,7 @@ import ml_dtypes  # noqa: F401  # registers bfloat16 dtype with numpy
 import numpy as np
 from datasets import Dataset, DatasetDict, concatenate_datasets, load_from_disk
 
+from bergson.config import IndexConfig
 from examples.semantic.data import (
     HF_ANALYSIS_MODEL,
     load_experiment_data,
@@ -556,16 +557,15 @@ def score_asymmetric_eval(
         )
 
     if not eval_grads_path.exists():
-        with open(index_path / "index_config.json") as f:
-            index_cfg = json.load(f)
+        index_cfg = IndexConfig.load_json(index_path / "index_config.json")
 
         _run_bergson_build(
             eval_grads_path,
-            model=index_cfg["model"],
+            model=index_cfg.model,
             dataset_path=data_path / "eval.hf",
             prompt_column=eval_prompt_column,
             completion_column=eval_completion_column,
-            projection_dim=index_cfg.get("projection_dim", 16),
+            projection_dim=index_cfg.projection_dim or 16,
             label="eval",
         )
 
@@ -908,16 +908,15 @@ def score_asymmetric_eval_with_pca_projection(
         )
 
     if not eval_grads_path.exists():
-        with open(index_path / "index_config.json") as f:
-            index_cfg = json.load(f)
+        index_cfg = IndexConfig.load_json(index_path / "index_config.json")
 
         _run_bergson_build(
             eval_grads_path,
-            model=index_cfg["model"],
+            model=index_cfg.model,
             dataset_path=data_path / "eval.hf",
             prompt_column=eval_prompt_column,
             completion_column=eval_completion_column,
-            projection_dim=index_cfg.get("projection_dim", 16),
+            projection_dim=index_cfg.projection_dim or 16,
             label="eval",
         )
 
@@ -1225,14 +1224,13 @@ def score_majority_style_eval(
     print("Computing majority style eval gradients...")
     majority_eval_grads_path = base_path / "eval_grads_majority"
     if not majority_eval_grads_path.exists():
-        with open(index_path / "index_config.json") as f:
-            index_cfg = json.load(f)
+        index_cfg = IndexConfig.load_json(index_path / "index_config.json")
 
         _run_bergson_build(
             majority_eval_grads_path,
-            model=index_cfg["model"],
+            model=index_cfg.model,
             dataset_path=data_path / "eval_majority_style.hf",
-            projection_dim=index_cfg.get("projection_dim", 16),
+            projection_dim=index_cfg.projection_dim or 16,
             label="majority eval",
         )
 
@@ -1412,17 +1410,16 @@ def score_summed_eval(
     eval_minority_grads_path = base_path / "eval_grads"
     eval_majority_grads_path = base_path / "eval_grads_majority"
 
-    with open(index_path / "index_config.json") as f:
-        index_cfg = json.load(f)
+    index_cfg = IndexConfig.load_json(index_path / "index_config.json")
 
     # Build minority eval grads if needed
     if not eval_minority_grads_path.exists():
         print("Computing minority style eval gradients...")
         _run_bergson_build(
             eval_minority_grads_path,
-            model=index_cfg["model"],
+            model=index_cfg.model,
             dataset_path=data_path / "eval.hf",
-            projection_dim=index_cfg.get("projection_dim", 16),
+            projection_dim=index_cfg.projection_dim or 16,
             label="minority eval",
         )
 
@@ -1431,9 +1428,9 @@ def score_summed_eval(
         print("Computing majority style eval gradients...")
         _run_bergson_build(
             eval_majority_grads_path,
-            model=index_cfg["model"],
+            model=index_cfg.model,
             dataset_path=data_path / "eval_majority_style.hf",
-            projection_dim=index_cfg.get("projection_dim", 16),
+            projection_dim=index_cfg.projection_dim or 16,
             label="majority eval",
         )
 
@@ -2451,17 +2448,16 @@ def score_summed_rewrites(
     shakespeare_grads_path = base_path / "eval_grads"  # minority = shakespeare
     pirate_grads_path = base_path / "eval_grads_pirate"
 
-    with open(index_path / "index_config.json") as f:
-        index_cfg = json.load(f)
+    index_cfg = IndexConfig.load_json(index_path / "index_config.json")
 
     # Build shakespeare eval grads if needed
     if not shakespeare_grads_path.exists():
         print("Computing shakespeare style eval gradients...")
         _run_bergson_build(
             shakespeare_grads_path,
-            model=index_cfg["model"],
+            model=index_cfg.model,
             dataset_path=data_path / "eval.hf",
-            projection_dim=index_cfg.get("projection_dim", 16),
+            projection_dim=index_cfg.projection_dim or 16,
             label="shakespeare eval",
         )
 
@@ -2470,9 +2466,9 @@ def score_summed_rewrites(
         print("Computing pirate style eval gradients...")
         _run_bergson_build(
             pirate_grads_path,
-            model=index_cfg["model"],
+            model=index_cfg.model,
             dataset_path=data_path / "eval_pirate_style.hf",
-            projection_dim=index_cfg.get("projection_dim", 16),
+            projection_dim=index_cfg.projection_dim or 16,
             label="pirate eval",
         )
 
@@ -2611,16 +2607,15 @@ def score_original_style_eval(
     # Build original style eval grads if needed
     original_grads_path = base_path / "eval_grads_original"
 
-    with open(index_path / "index_config.json") as f:
-        index_cfg = json.load(f)
+    index_cfg = IndexConfig.load_json(index_path / "index_config.json")
 
     if not original_grads_path.exists():
         print("Computing original style eval gradients...")
         _run_bergson_build(
             original_grads_path,
-            model=index_cfg["model"],
+            model=index_cfg.model,
             dataset_path=data_path / "eval_original_style.hf",
-            projection_dim=index_cfg.get("projection_dim", 16),
+            projection_dim=index_cfg.projection_dim or 16,
             label="original style eval",
         )
 
@@ -2787,16 +2782,15 @@ def _score_single_style_eval(
     train_grad_tensor = train_grad_tensor.cuda()
 
     # Build eval grads if needed
-    with open(index_path / "index_config.json") as f:
-        index_cfg = json.load(f)
+    index_cfg = IndexConfig.load_json(index_path / "index_config.json")
 
     if not grads_path.exists():
         print(f"Computing {style} style eval gradients...")
         _run_bergson_build(
             grads_path,
-            model=index_cfg["model"],
+            model=index_cfg.model,
             dataset_path=eval_path,
-            projection_dim=index_cfg.get("projection_dim", 16),
+            projection_dim=index_cfg.projection_dim or 16,
             label=f"{style} eval",
         )
 

@@ -191,7 +191,7 @@ class AttentionConfig:
 
 
 @dataclass
-class IndexConfig(AttributionConfig):
+class IndexConfig(AttributionConfig, Serializable):
     """Config for building the index and running the model/dataset pipeline."""
 
     projection_dim: int = 16
@@ -285,7 +285,7 @@ class IndexConfig(AttributionConfig):
 
 
 @dataclass
-class QueryConfig:
+class QueryConfig(Serializable):
     """Config for querying an existing gradient index."""
 
     index: str = ""
@@ -317,7 +317,7 @@ class QueryConfig:
 
 
 @dataclass
-class PreprocessConfig:
+class PreprocessConfig(Serializable):
     """Config for gradient preprocessing, shared across build, reduce, and score."""
 
     unit_normalize: bool = False
@@ -337,7 +337,7 @@ class PreprocessConfig:
 
 
 @dataclass
-class ScoreConfig:
+class ScoreConfig(Serializable):
     """Config for querying an index on the fly."""
 
     query_path: str = ""
@@ -361,7 +361,7 @@ class ScoreConfig:
 
 
 @dataclass
-class HessianConfig:
+class HessianConfig(Serializable):
     """Config for reducing the gradients."""
 
     method: Literal["kfac", "tkfac", "shampoo"] = "kfac"

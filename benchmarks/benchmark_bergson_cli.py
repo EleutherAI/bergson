@@ -263,9 +263,8 @@ class Run:
             raise RuntimeError(f"Failed to build query index: {err}")
 
         # Read the determined batch size from the query index
-        with open(query_index_path / "index_config.json", "r") as f:
-            query_cfg = IndexConfig(**json.load(f))
-            determined_batch_size = query_cfg.token_batch_size
+        query_cfg = IndexConfig.load_json(query_index_path / "index_config.json")
+        determined_batch_size = query_cfg.token_batch_size
         print(
             f"Using token_batch_size: {determined_batch_size}"
             " (determined before timing)"
@@ -341,9 +340,8 @@ class Run:
         end_wall = timestamp()
 
         # Load index config
-        with open(index_path / "index_config.json", "r") as f:
-            index_cfg = IndexConfig(**json.load(f))
-            token_batch_size = index_cfg.token_batch_size
+        index_cfg = IndexConfig.load_json(index_path / "index_config.json")
+        token_batch_size = index_cfg.token_batch_size
 
         record = CLIRunRecord(
             schema_version=SCHEMA_VERSION,
