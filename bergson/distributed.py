@@ -120,7 +120,8 @@ def simple_fsdp(model: torch.nn.Module) -> torch.nn.Module:
 
         # Create a new distributed version of this param
         dist_param = torch.nn.Parameter(
-            distribute_tensor(param, placements=(Shard(0),))
+            distribute_tensor(param, placements=(Shard(0),)),
+            requires_grad=param.requires_grad,
         )
 
         # Update all occurrences of this parameter in the model

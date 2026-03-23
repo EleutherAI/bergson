@@ -2,6 +2,7 @@ import json
 import math
 import os
 import random
+import re
 from multiprocessing import cpu_count
 from pathlib import Path
 from typing import Any, Sequence
@@ -541,6 +542,25 @@ def load_scores(
     )
 
     return Scores(mmap, info)
+
+
+def sorted_checkpoints(folder: str) -> list[tuple[int, str]]:
+    """
+    Return a list of (step, filepath) sorted by step
+    for files named like: step_<index>.ckpt
+    """
+    pattern = re.compile(r"step_(\d+)\.ckpt$")
+
+    checkpoints = []
+    for name in os.listdir(folder):
+        path = os.path.join(folder, name)
+
+        match = pattern.match(name)
+        if match:
+            step = int(match.group(1))
+            checkpoints.append((step, path))
+
+    return sorted(checkpoints, key=lambda x: x[0])
 
 
 def pad_and_tensor(

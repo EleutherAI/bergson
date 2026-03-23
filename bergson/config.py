@@ -49,9 +49,9 @@ class DataConfig:
     """Arguments to pass to the dataset constructor in the format
     arg1=val1,arg2=val2."""
 
-    chunk: bool = False
-    """Whether to concatenate and chunk the documents into fixed-length token
-    sequences."""
+    chunk_length: int = 0
+    """When non-zero, concatenate and chunk the documents into fixed-length token
+    sequences of length `chunk_length`."""
 
 
 @dataclass
@@ -140,9 +140,6 @@ class AttributionConfig(ABC):
     tokenizer: str = ""
     """Name of the tokenizer to use. If not set the model tokenizer is used."""
 
-    token_batch_size: int = 2048
-    """Batch size in tokens for building the index."""
-
     drop_columns: bool = True
     """Only save the new dataset columns. If false, the original dataset
     columns will be saved as well."""
@@ -176,6 +173,9 @@ class IndexConfig(AttributionConfig):
 
     projection_type: Literal["normal", "rademacher"] = "rademacher"
     """Type of random projections to use for the gradients."""
+
+    token_batch_size: int = 2048
+    """Batch size in tokens for building the index."""
 
     auto_batch_size: bool = False
     """Whether to automatically determine the optimal token batch size.

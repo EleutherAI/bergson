@@ -54,6 +54,9 @@ class MagicConfig(AttributionConfig):
     warmup_steps: int = 10
     """Number of warmup steps before applying base lr."""
 
+    batch_size: int = 16
+    """Batch size for both training and query streams. Adjust based on GPU memory."""
+
     num_subsets: int = 100
     """Number of leave-one-out subsets for Spearman correlation."""
 
@@ -113,7 +116,7 @@ def compute_query_gradients(
     if dist.is_initialized():
         dist.all_reduce(loss_accum, op=dist.ReduceOp.AVG)
 
-    return grad_accum, loss_accum
+    return grad_accum, float(loss_accum)
 
 
 def worker(
@@ -135,8 +138,10 @@ def worker(
     model.loss_function = weighted_causal_lm_ce
     model.to(f"cuda:{rank}")  # type: ignore[reportArgumentType]
 
-    # For PEFT
+    # Only train the PEFT adapter parameters if applicable
     if target_modules:
+        model.requires_grad_(False)
+
         for name in target_modules:
             module = model.get_submodule(name)
             module.requires_grad_(True)
@@ -182,10 +187,9 @@ def worker(
     path0 = os.path.join(ckpts_path, "state0.pt")
     save_fut = fwd_state.save(path0)
 
-    # batches = allocate_batches(train_dataset["length"][:], run_cfg.token_batch_size)
     stream = DataStream(
         train_dataset,
-        16,
+        run_cfg.batch_size,
         device=f"cuda:{rank}",
         input_key=run_cfg.data.prompt_column,
         num_docs=num_train_docs,
@@ -200,7 +204,7 @@ def worker(
     # Compute query gradients
     query_stream = DataStream(
         query_dataset,
-        16,
+        run_cfg.batch_size,
         device=f"cuda:{rank}",
         input_key=run_cfg.query.prompt_column,
         num_docs=num_query_docs,

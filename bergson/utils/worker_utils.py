@@ -309,22 +309,32 @@ def setup_data_pipeline(
     """Handle data loading and preprocessing"""
     data_cfg = data_cfg or cfg.data
 
+    if isinstance(cfg, IndexConfig):
+        # TrackStar doesn't support chunked datasets
+        if data_cfg.chunk_length > 0:
+            raise ValueError("Chunked datasets are not supported for TrackStar")
+
+        token_batch_size = cfg.token_batch_size
+    else:
+        # TODO: Maybe do something less hacky here
+        token_batch_size = 10**20
+
     ds = load_data_string(
         data_cfg.dataset, data_cfg.split, data_cfg.subset, data_cfg.data_args
     )
     tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer or cfg.model)
 
-    default_model_max_len = getattr(tokenizer, "model_max_length", None)
-    if (
-        default_model_max_len is not None
-        and cfg.token_batch_size > default_model_max_len
-    ):
+    max_length = getattr(tokenizer, "model_max_length", None)
+    if max_length is not None and token_batch_size > max_length:
         raise ValueError(
-            f"Token batch size {cfg.token_batch_size} exceeds model_max_length "
-            f"({default_model_max_len}). "
-            f"Use --token_batch_size {default_model_max_len} or smaller."
+            f"Token batch size {token_batch_size} exceeds model_max_length "
+            f"({max_length}). "
+            f"Use --token_batch_size {max_length} or smaller."
         )
 
+    # You might think model_max_length should always be the same as
+    # max_position_embeddings, but some models (e.g. Pythia!) have a smaller
+    # max_position_embeddings than model_max_length, so we need to check both.
     # Resolve the base model for config loading (PEFT adapters don't have
     # a full config.json, so we need the base model path).
     config_model: str = cfg.model
@@ -335,15 +345,12 @@ def setup_data_pipeline(
     except ValueError:
         pass
 
-    max_pos_emb = getattr(
-        AutoConfig.from_pretrained(config_model, revision=cfg.revision),
-        "max_position_embeddings",
-        None,
-    )
+    model_cfg = AutoConfig.from_pretrained(config_model, revision=cfg.revision)
+    max_pos_emb = getattr(model_cfg, "max_position_embeddings", None)
     if max_pos_emb is not None:
-        max_length = min(max_pos_emb, cfg.token_batch_size)
+        max_length = min(max_pos_emb, token_batch_size)
     else:
-        max_length = cfg.token_batch_size
+        max_length = token_batch_size
 
     remove_columns = set(ds.column_names) if cfg.drop_columns else set()
     tokenize_cfg = data_cfg
@@ -361,11 +368,11 @@ def setup_data_pipeline(
 
     num_docs = len(ds)
     if not ds.column_names or "input_ids" not in ds.column_names:
-        if data_cfg.chunk:
+        if data_cfg.chunk_length > 0:
             ds = tokenize_and_chunk(
                 ds,
                 tokenizer,
-                chunk_size=max_length,
+                chunk_size=data_cfg.chunk_length,
             )
         else:
             ds = ds.map(
@@ -378,7 +385,11 @@ def setup_data_pipeline(
                 ),
             )
 
-    if not data_cfg.chunk and not data_cfg.truncation and isinstance(ds, Dataset):
+    if (
+        not data_cfg.chunk_length > 0
+        and not data_cfg.truncation
+        and isinstance(ds, Dataset)
+    ):
         max_doc_len = max(ds["length"])
         if max_pos_emb is not None and max_doc_len > max_pos_emb:
             warnings.warn(
@@ -386,10 +397,10 @@ def setup_data_pipeline(
                 f"({max_doc_len} > {max_pos_emb}). "
                 f"Consider using --truncation."
             )
-        elif max_doc_len > cfg.token_batch_size:
+        elif max_doc_len > token_batch_size:
             warnings.warn(
                 f"Dataset contains a document longer than token_batch_size "
-                f"({max_doc_len} > {cfg.token_batch_size}). "
+                f"({max_doc_len} > {token_batch_size}). "
                 f"Consider increasing --token_batch_size or using --truncation."
             )
 
