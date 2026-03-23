@@ -5,11 +5,11 @@ from pathlib import Path
 from typing import Literal
 
 import torch
-from simple_parsing import field
+from simple_parsing import Serializable, field
 
 
 @dataclass
-class DataConfig:
+class DataConfig(Serializable):
     dataset: str = "NeelNanda/pile-10k"
     """Dataset identifier to build the index from."""
 
@@ -55,21 +55,7 @@ class DataConfig:
 
 
 @dataclass
-class AttentionConfig:
-    """Config for splitting an attention module into head matrices."""
-
-    num_heads: int = 0
-    """Number of attention heads."""
-
-    head_size: int = 0
-    """Size of each attention head."""
-
-    head_dim: int = 0
-    """Axis index for `num_heads` in the weight matrix."""
-
-
-@dataclass
-class DistributedConfig:
+class DistributedConfig(Serializable):
     """Configuration for multi-node computation."""
 
     nnode: int = 1
@@ -119,7 +105,54 @@ class DistributedConfig:
 
 
 @dataclass
-class AttributionConfig(ABC):
+class ModelConfig(ABC):
+    """Base config for model loading."""
+
+    model: str = "EleutherAI/pythia-160m"
+    """Name of the model to load."""
+
+    precision: Literal["auto", "bf16", "fp16", "fp32", "int4", "int8"] = "fp32"
+    """Precision (dtype) to use for the model parameters."""
+
+    revision: str | None = None
+    """Revision of the model."""
+
+    distributed: DistributedConfig = field(default_factory=DistributedConfig)
+    """Configuration for multi-node distributed computation."""
+
+    fsdp: bool = False
+    """Whether to use PyTorch Fully Sharded Data Parallel (FSDP)"""
+
+
+@dataclass
+class TrainingConfig(ModelConfig, Serializable):
+    """Configuration for the MAGIC trainer."""
+
+    lr: float = 1e-5
+    """Base learning rate after warmup."""
+
+    warmup_steps: int = 10
+    """Number of warmup steps before applying base lr."""
+
+    batch_size: int = 16
+    """Batch size for both training and query streams. Adjust based on GPU memory."""
+
+    beta1: float = 0.95
+    """Beta1 for AdamW optimizer."""
+
+    beta2: float = 0.975
+    """Beta2 for AdamW optimizer."""
+
+    eps_root: float = 1e-8
+    """Epsilon root for AdamW optimizer. Use 1e-2 for better stability
+    with small models."""
+
+    grad_checkpointing: bool = False
+    """Whether to use gradient checkpointing during the forward pass."""
+
+
+@dataclass
+class AttributionConfig(ModelConfig, ABC):
     """Base config for attribution methods."""
 
     run_path: str = field(positional=True)
@@ -127,15 +160,6 @@ class AttributionConfig(ABC):
 
     data: DataConfig = field(default_factory=DataConfig)
     """Specification of the data on which to build the index."""
-
-    distributed: DistributedConfig = field(default_factory=DistributedConfig)
-    """Configuration for multi-node distributed computation."""
-
-    model: str = "EleutherAI/pythia-160m"
-    """Name of the model to load."""
-
-    precision: Literal["auto", "bf16", "fp16", "fp32", "int4", "int8"] = "fp32"
-    """Precision (dtype) to use for the model parameters."""
 
     tokenizer: str = ""
     """Name of the tokenizer to use. If not set the model tokenizer is used."""
@@ -148,14 +172,22 @@ class AttributionConfig(ABC):
     """Max tokens to process. If None, all tokens processed. Dataset only.
     This experimental feature may be removed in the future."""
 
-    revision: str | None = None
-    """Revision of the model."""
-
-    fsdp: bool = False
-    """Whether to use Fully Sharded Data Parallel (FSDP) for collecting gradients."""
-
     overwrite: bool = False
     """Whether to overwrite any existing index in the run path."""
+
+
+@dataclass
+class AttentionConfig:
+    """Config for splitting an attention module into head matrices."""
+
+    num_heads: int = 0
+    """Number of attention heads."""
+
+    head_size: int = 0
+    """Size of each attention head."""
+
+    head_dim: int = 0
+    """Axis index for `num_heads` in the weight matrix."""
 
 
 @dataclass

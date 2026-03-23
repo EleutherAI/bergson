@@ -27,18 +27,15 @@ def main():
         revision="step0",
         data=DataConfig(
             dataset="EleutherAI/SmolLM2-135M-10B",
-            split="train",
+            split="train[:200]",
         ),
         query=DataConfig(
             dataset="EleutherAI/SmolLM2-135M-10B",
             split="train[:1]",
         ),
-        query_batches=1,
         lr=1e-5,
         warmup_steps=10,
         batch_size=8,
-        num_steps=25,
-        max_length=256,
         num_subsets=100,
         seed=42,
     )

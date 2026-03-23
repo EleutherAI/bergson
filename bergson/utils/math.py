@@ -13,6 +13,7 @@ def weighted_causal_lm_ce(
     example_weight: Tensor | None = None,
     ignore_index: int = -100,
     vocab_size: int | None = None,
+    **kwargs,  # Ignored
 ) -> Tensor:
     """
     HuggingFace-compatible causal LM loss with per-example weighting.

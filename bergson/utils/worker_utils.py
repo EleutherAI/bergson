@@ -20,7 +20,7 @@ from transformers import (
     PreTrainedModel,
 )
 
-from bergson.config import AttributionConfig, DataConfig, IndexConfig
+from bergson.config import AttributionConfig, DataConfig, IndexConfig, ModelConfig
 from bergson.data import (
     allocate_batches,
     load_data_string,
@@ -122,7 +122,7 @@ def create_processor(
 
 
 def setup_model_and_peft(
-    cfg: AttributionConfig,
+    cfg: ModelConfig,
     device_map_auto: bool = False,
     **model_kwargs,
 ) -> tuple[PreTrainedModel, set | None]:

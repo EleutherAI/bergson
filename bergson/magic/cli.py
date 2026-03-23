@@ -1,7 +1,6 @@
-import json
 import os
 import shutil
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from typing import Literal
@@ -17,7 +16,7 @@ from torchopt.pytree import tree_iter
 from torchopt.typing import Numeric
 from tqdm import tqdm
 
-from ..config import AttributionConfig, DataConfig, DistributedConfig
+from ..config import AttributionConfig, DataConfig, DistributedConfig, TrainingConfig
 from ..distributed import grad_tree, launch_distributed_run, simple_fsdp
 from ..utils.math import weighted_causal_lm_ce
 from ..utils.worker_utils import (
@@ -30,7 +29,7 @@ from .trainer import BackwardState, Trainer, TrainerState
 
 
 @dataclass
-class MagicConfig(AttributionConfig):
+class MagicConfig(AttributionConfig, TrainingConfig):
     """Special config for MAGIC attribution."""
 
     query: DataConfig = field(
@@ -42,36 +41,11 @@ class MagicConfig(AttributionConfig):
     query_method: Literal["mean", "sum"] = "mean"
     """Method for reducing query gradients across batches."""
 
-    query_batches: int = 1
-    """Number of query batches to use for computing eval gradients."""
-
-    grad_checkpointing: bool = False
-    """Whether to use gradient checkpointing during the forward pass."""
-
-    lr: float = 1e-5
-    """Base learning rate after warmup."""
-
-    warmup_steps: int = 10
-    """Number of warmup steps before applying base lr."""
-
-    batch_size: int = 16
-    """Batch size for both training and query streams. Adjust based on GPU memory."""
-
     num_subsets: int = 100
     """Number of leave-one-out subsets for Spearman correlation."""
 
     seed: int = 42
     """Random seed for subset permutation."""
-
-    beta1: float = 0.95
-    """Beta1 for AdamW optimizer."""
-
-    beta2: float = 0.975
-    """Beta2 for AdamW optimizer."""
-
-    eps_root: float = 1e-8
-    """Epsilon root for AdamW optimizer. Use 1e-2 for better stability
-    with small models."""
 
     def __post_init__(self):
         assert not self.fsdp, "PyTorch FSDP is not currently supported for MAGIC."
@@ -119,20 +93,12 @@ def compute_query_gradients(
     return grad_accum, float(loss_accum)
 
 
-def worker(
-    global_rank: int,
-    rank: int,
-    world_size: int,
-    train_dataset: Dataset,
-    query_dataset: Dataset,
-    num_train_docs: int,
-    num_query_docs: int,
-    run_cfg: MagicConfig,
-):
+def prepare_trainer(cfg: TrainingConfig, rank: int, world_size: int):
+    """Prepare the model, optimizer, and trainer for training."""
     torch.cuda.set_device(rank)
 
     model, target_modules = setup_model_and_peft(
-        run_cfg,
+        cfg,
         attn_implementation="eager",
     )
     model.loss_function = weighted_causal_lm_ce
@@ -148,7 +114,7 @@ def worker(
     else:
         model.requires_grad_(True)
 
-    if run_cfg.grad_checkpointing:
+    if cfg.grad_checkpointing:
         model.gradient_checkpointing_enable(
             gradient_checkpointing_kwargs=dict(use_reentrant=False),
         )
@@ -172,16 +138,30 @@ def worker(
             model = simple_fsdp(model)
 
     def schedule(step: Numeric) -> Numeric:
-        if step < run_cfg.warmup_steps:
+        if step < cfg.warmup_steps:
             return 0.0
-        return run_cfg.lr
+        return cfg.lr
 
     opt = torchopt.adamw(
         schedule,
-        betas=(run_cfg.beta1, run_cfg.beta2),
-        eps_root=run_cfg.eps_root,
+        betas=(cfg.beta1, cfg.beta2),
+        eps_root=cfg.eps_root,
     )
     trainer, fwd_state = Trainer.initialize(model, opt)
+    return trainer, fwd_state, model
+
+
+def worker(
+    global_rank: int,
+    rank: int,
+    world_size: int,
+    train_dataset: Dataset,
+    query_dataset: Dataset,
+    num_train_docs: int,
+    num_query_docs: int,
+    run_cfg: MagicConfig,
+):
+    trainer, fwd_state, model = prepare_trainer(run_cfg, rank, world_size)
 
     ckpts_path = os.path.join(run_cfg.run_path, "checkpoints")
     path0 = os.path.join(ckpts_path, "state0.pt")
@@ -297,10 +277,8 @@ def run_magic(run_cfg: MagicConfig, dist_cfg: DistributedConfig):
             )
 
     run_path.mkdir(parents=True)
-    with (run_path / "run_config.json").open("w") as f:
-        json.dump(asdict(run_cfg), f, indent=2)
-    with (run_path / "dist_config.json").open("w") as f:
-        json.dump(asdict(dist_cfg), f, indent=2)
+    run_cfg.save_json(run_path / "run_config.json")
+    dist_cfg.save_json(run_path / "dist_config.json")
 
     train_ds, train_n = setup_data_pipeline(run_cfg)
     query_ds, query_n = setup_data_pipeline(run_cfg, run_cfg.query)

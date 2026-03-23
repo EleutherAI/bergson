@@ -40,6 +40,31 @@ class Build:
 
 
 @dataclass
+class Hessian:
+    """Approximate Hessian matrices using KFAC or EKFAC."""
+
+    hessian_cfg: HessianConfig
+    index_cfg: IndexConfig
+
+    def execute(self):
+        """Compute Hessian approximation."""
+        validate_run_path(self.index_cfg)
+        approximate_hessians(self.index_cfg, self.hessian_cfg)
+
+
+@dataclass
+class Magic:
+    """Run MAGIC attribution."""
+
+    run_cfg: MagicConfig
+    dist_cfg: DistributedConfig
+
+    def execute(self):
+        """Run MAGIC attribution."""
+        run_magic(self.run_cfg, self.dist_cfg)
+
+
+@dataclass
 class Preconditioners:
     """Compute normalizers and preconditioners without gradient collection."""
 
@@ -51,6 +76,17 @@ class Preconditioners:
         self.index_cfg.skip_preconditioners = False
         validate_run_path(self.index_cfg)
         build(self.index_cfg, PreprocessConfig())
+
+
+@dataclass
+class Query:
+    """Query an existing gradient index."""
+
+    query_cfg: QueryConfig
+
+    def execute(self):
+        """Query an existing gradient index."""
+        query(self.query_cfg)
 
 
 @dataclass
@@ -96,30 +132,6 @@ class Score:
 
 
 @dataclass
-class Query:
-    """Query an existing gradient index."""
-
-    query_cfg: QueryConfig
-
-    def execute(self):
-        """Query an existing gradient index."""
-        query(self.query_cfg)
-
-
-@dataclass
-class Hessian:
-    """Approximate Hessian matrices using KFAC or EKFAC."""
-
-    hessian_cfg: HessianConfig
-    index_cfg: IndexConfig
-
-    def execute(self):
-        """Compute Hessian approximation."""
-        validate_run_path(self.index_cfg)
-        approximate_hessians(self.index_cfg, self.hessian_cfg)
-
-
-@dataclass
 class Trackstar:
     """Run preconditioners, build, and score as a single pipeline."""
 
@@ -144,15 +156,14 @@ class Trackstar:
 
 
 @dataclass
-class Magic:
-    """Run MAGIC attribution."""
+class Validate:
+    """Validate an existing set of scores with leave-k-out retraining."""
 
-    run_cfg: MagicConfig
-    dist_cfg: DistributedConfig
+    run_path: str
+    """Path to the run directory containing the scores and checkpoints."""
 
     def execute(self):
-        """Run MAGIC attribution."""
-        run_magic(self.run_cfg, self.dist_cfg)
+        pass
 
 
 @dataclass
@@ -160,7 +171,14 @@ class Main:
     """Routes to the subcommands."""
 
     command: Union[
-        Build, Query, Preconditioners, Reduce, Score, Hessian, Trackstar, Magic
+        Build,
+        Hessian,
+        Magic,
+        Preconditioners,
+        Query,
+        Reduce,
+        Score,
+        Trackstar,
     ]
 
     def execute(self):
