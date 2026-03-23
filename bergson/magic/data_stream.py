@@ -14,11 +14,13 @@ class DataStream:
         device: torch.device | str = "cpu",
         input_key: str = "text",
         max_length: int = 256,
+        wrap: bool = False,
     ):
         self.dataset = dataset
         self.processor = processor
         self.input_key = input_key
         self.max_length = max_length
+        self.wrap = wrap
 
         self.batch_size = batch_size
         self.device = device
@@ -33,11 +35,12 @@ class DataStream:
             )
 
         needed = self.batch_size * self.num_batches
-        assert len(self.dataset) >= needed, (
-            f"Dataset has {len(self.dataset)} examples but {self.num_batches} "
-            f"batches of size {self.batch_size} require {needed}. "
-            f"Pass a larger split or reduce --num_batches."
-        )
+        if not wrap:
+            assert len(self.dataset) >= needed, (
+                f"Dataset has {len(self.dataset)} examples but {self.num_batches} "
+                f"batches of size {self.batch_size} require {needed}. "
+                f"Pass a larger split or reduce --num_batches."
+            )
 
         n = self.batch_size * self.num_batches
         self.weights = torch.nn.Parameter(torch.ones(n, device=device))
@@ -63,6 +66,8 @@ class DataStream:
                 self.world_size,
             )
         )
+        if self.wrap:
+            indices = [idx % len(self.dataset) for idx in indices]
         raw = self.dataset[indices]
 
         # padding="max_length" ensures uniform shape across ranks without needing
