@@ -8,7 +8,6 @@ from .build import build
 from .config import (
     DistributedConfig,
     HessianConfig,
-    HessianPipelineConfig,
     IndexConfig,
     PreprocessConfig,
     QueryConfig,
@@ -16,7 +15,6 @@ from .config import (
     TrackstarConfig,
 )
 from .hessians.hessian_approximations import approximate_hessians
-from .hessians.pipeline import hessian_pipeline
 from .magic import MagicConfig, run_magic
 from .query.query_index import query
 from .score.score import score_dataset
