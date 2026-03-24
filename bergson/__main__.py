@@ -4,10 +4,13 @@ from typing import Optional, Union
 
 from simple_parsing import ArgumentParser, ConflictResolution
 
+from bergson.hessians.pipeline import hessian_pipeline
+
 from .build import build
 from .config import (
     DistributedConfig,
     HessianConfig,
+    HessianPipelineConfig,
     IndexConfig,
     PreprocessConfig,
     QueryConfig,
@@ -41,6 +44,30 @@ class Build:
         validate_run_path(self.index_cfg)
 
         build(self.index_cfg, self.preprocess_cfg)
+
+
+@dataclass
+class Ekfac:
+    """Run the full EKFAC influence pipeline end-to-end."""
+
+    index_cfg: IndexConfig
+
+    hessian_cfg: HessianConfig
+
+    score_cfg: ScoreConfig
+
+    preprocess_cfg: PreprocessConfig
+
+    hessian_pipeline_cfg: HessianPipelineConfig
+
+    def execute(self):
+        hessian_pipeline(
+            self.index_cfg,
+            self.hessian_cfg,
+            self.score_cfg,
+            self.preprocess_cfg,
+            self.hessian_pipeline_cfg,
+        )
 
 
 @dataclass
@@ -155,6 +182,7 @@ class Main:
 
     command: Union[
         Build,
+        Ekfac,
         Hessian,
         Magic,
         Preconditioners,
