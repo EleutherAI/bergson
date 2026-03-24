@@ -1,11 +1,8 @@
-"""Test gradient consistency across padding and batch composition.
+"""Diagnostic tests for numerical stability and tokenizer correctness.
 
-Loads a model and dataset, samples random pairs of documents with different
-lengths, and checks whether the shorter document's gradient changes when
-it is batched alongside a longer document (padding divergence).
-
-Automatically tests escalating configurations (default → force_math_sdp →
-fp32 → both) to determine the minimum settings needed for consistency.
+Includes:
+- Gradient consistency across padding and batch composition
+- Special token (BOS/EOS) duplication detection for chat templates
 """
 
 import random
@@ -74,8 +71,8 @@ def _get_example_loss(model, x, y, idx=0):
 
 def _measure(model, short_ids, long_ids, device):
     """Measure gradient cosine similarity: alone vs mixed batch."""
-    x_alone, y_alone, _ = pad_and_tensor([short_ids], device=device)
-    x_mixed, y_mixed, _ = pad_and_tensor([short_ids, long_ids], device=device)
+    x_alone, y_alone = pad_and_tensor([short_ids], device=device)
+    x_mixed, y_mixed = pad_and_tensor([short_ids, long_ids], device=device)
 
     # Pass 1: alone
     model.zero_grad()
@@ -167,8 +164,166 @@ def _print_results(results, threshold):
     print(f"  Flagged:  {n_flagged}/{len(results)} trials below {threshold}")
 
 
+def diagnose_special_tokens(model_name: str):
+    """Check for special token duplication in the two-step chat template pattern.
+
+    Simulates what bergson's tokenize() does: apply_chat_template(tokenize=False)
+    then tokenizer(string). Tests both with and without add_special_tokens to
+    detect double BOS/EOS issues.
+
+    Returns True if all checks pass, False if issues were found.
+    """
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    bos_id = tokenizer.bos_token_id
+    eos_id = tokenizer.eos_token_id
+
+    print(f"\n{'=' * 60}")
+    print(f"Special token check: {model_name}")
+    print("=" * 60)
+    print(f"  bos_token: {tokenizer.bos_token!r} (id={bos_id})")
+    print(f"  eos_token: {tokenizer.eos_token!r} (id={eos_id})")
+
+    # Use a simple conversation to test the chat template
+    messages = [
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": "Hi there"},
+    ]
+
+    try:
+        template_str = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=False
+        )
+    except Exception as e:
+        print(f"\n  SKIP: Chat template failed: {e}")
+        print("  This model may not support chat templates.")
+        return True
+
+    # Two-step tokenization (what bergson does)
+    ids_with_special = tokenizer(template_str, add_special_tokens=True)["input_ids"]
+    ids_no_special = tokenizer(template_str, add_special_tokens=False)["input_ids"]
+
+    # One-step reference
+    ids_direct = tokenizer.apply_chat_template(
+        messages, tokenize=True, add_generation_prompt=False
+    )
+
+    all_pass = True
+
+    print("\n  Template string (first 200 chars):")
+    print(f"    {template_str[:200]!r}")
+
+    # Check BOS
+    if bos_id is not None:
+        bos_count_with = sum(1 for t in ids_with_special[:3] if t == bos_id)
+        bos_count_no = sum(1 for t in ids_no_special[:3] if t == bos_id)
+        bos_count_direct = sum(1 for t in ids_direct[:3] if t == bos_id)
+
+        print(f"\n  BOS token (id={bos_id}) in first 3 tokens:")
+        print(f"    apply_chat_template(tokenize=True):           {bos_count_direct}x")
+        print(
+            f"    two-step + add_special_tokens=True:            {bos_count_with}x"
+            f"{'  <<< DOUBLE BOS' if bos_count_with > 1 else ''}"
+        )
+        missing_bos = bos_count_no == 0 and bos_count_direct > 0
+        print(
+            f"    two-step + add_special_tokens=False (bergson): {bos_count_no}x"
+            f"{'  <<< MISSING BOS' if missing_bos else ''}"
+        )
+
+        if bos_count_with > 1:
+            print(
+                "\n  WARNING: add_special_tokens=True causes double BOS."
+                " bergson uses add_special_tokens=False to avoid this."
+            )
+
+        # The bergson path (add_special_tokens=False) should match the direct path
+        if bos_count_no == 0 and bos_count_direct > 0:
+            print(
+                "\n  FAIL: Chat template does not include BOS, but the model"
+                " expects one. add_special_tokens=False will produce"
+                " sequences missing BOS."
+            )
+            all_pass = False
+        elif bos_count_no != bos_count_direct:
+            print(
+                f"\n  FAIL: BOS count mismatch between direct ({bos_count_direct})"
+                f" and two-step ({bos_count_no})."
+            )
+            all_pass = False
+
+    # Check EOS duplication (less common but possible)
+    if eos_id is not None and eos_id != bos_id:
+        eos_count_with = sum(1 for t in ids_with_special if t == eos_id)
+        eos_count_no = sum(1 for t in ids_no_special if t == eos_id)
+        eos_count_direct = sum(1 for t in ids_direct if t == eos_id)
+
+        if eos_count_with != eos_count_direct:
+            print(
+                f"\n  WARNING: EOS count differs — direct: {eos_count_direct},"
+                f" two-step+special: {eos_count_with}"
+            )
+
+        if eos_count_no != eos_count_direct:
+            print(
+                f"\n  WARNING: EOS count differs — direct: {eos_count_direct},"
+                f" two-step+no_special (bergson): {eos_count_no}"
+            )
+
+    # Overall sequence comparison: check bergson default (add_special_tokens=False)
+    # first, then fall back to add_special_tokens=True if needed.
+    if ids_no_special == ids_direct:
+        print(
+            "\n  PASS: two-step (add_special_tokens=False)"
+            " matches direct tokenization"
+        )
+    elif ids_with_special == ids_direct:
+        print(
+            "\n  FAIL: add_special_tokens=False does NOT match,"
+            " but add_special_tokens=True does."
+        )
+        print(
+            "  This model's chat template does not include all special"
+            " tokens in the rendered string."
+        )
+        print(
+            "  To use this model with bergson chat tokenization, the"
+            " DataConfig or tokenize() call needs add_special_tokens=True."
+        )
+        all_pass = False
+    else:
+        # Neither matches — show where the default (False) diverges
+        min_len = min(len(ids_no_special), len(ids_direct))
+        first_diff = next(
+            (i for i in range(min_len) if ids_no_special[i] != ids_direct[i]),
+            min_len,
+        )
+        print(
+            "\n  FAIL: Neither add_special_tokens setting matches"
+            " direct tokenization."
+        )
+        print(
+            f"  Sequences diverge at position {first_diff}"
+            f" (lengths: bergson={len(ids_no_special)},"
+            f" direct={len(ids_direct)})"
+        )
+        if first_diff < min_len:
+            print(
+                f"    bergson[{first_diff}] ="
+                f" {ids_no_special[first_diff]}"
+                f" ({tokenizer.decode([ids_no_special[first_diff]])!r})"
+            )
+            print(
+                f"    direct[{first_diff}]  ="
+                f" {ids_direct[first_diff]}"
+                f" ({tokenizer.decode([ids_direct[first_diff]])!r})"
+            )
+        all_pass = False
+
+    return all_pass
+
+
 def diagnose(diagnose_cfg: DiagnoseConfig):
-    """Run the gradient consistency test across escalating configurations."""
+    """Run all diagnostic tests: special tokens + gradient consistency."""
     device = torch.device(diagnose_cfg.device if torch.cuda.is_available() else "cpu")
 
     print(f"Model:     {diagnose_cfg.model}")
@@ -176,6 +331,9 @@ def diagnose(diagnose_cfg: DiagnoseConfig):
     print(f"Device:    {device}")
     print(f"Trials:    {diagnose_cfg.n_trials} per configuration")
     print(f"Threshold: {diagnose_cfg.threshold}")
+
+    # ── Special token check ──────────────────────────────────────────────
+    diagnose_special_tokens(diagnose_cfg.model)
 
     # Load and tokenize dataset
     print(f"\nLoading {diagnose_cfg.dataset}...")

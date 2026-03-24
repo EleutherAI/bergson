@@ -493,8 +493,10 @@ def tokenize(batch: dict, *, args: DataConfig, tokenizer):
         return tokenizer(batch[args.prompt_column], **kwargs)
 
     # Make sure we only compute loss on the assistant's responses
+    # Chat templates already include special tokens (BOS/EOS) in the rendered
+    # string, so we must disable add_special_tokens to avoid duplicates.
     strings = tokenizer.apply_chat_template(convos, tokenize=False)
-    encodings = tokenizer(strings, **kwargs)
+    encodings = tokenizer(strings, add_special_tokens=False, **kwargs)
     labels_list: list[list[int]] = []
 
     for i, convo in enumerate(convos):
