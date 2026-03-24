@@ -14,7 +14,6 @@ from bergson import (
     InMemoryCollector,
     TokenGradients,
     collect_gradients,
-    fit_normalizers,
     load_token_gradients,
 )
 from bergson.builder import Builder
@@ -233,18 +232,6 @@ def test_token_score_writer(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_attribute_tokens_adam_allowed():
-    """Adam normalizer is now compatible with attribute_tokens."""
-    cfg = IndexConfig(run_path="test", attribute_tokens=True, normalizer="adam")
-    assert cfg.attribute_tokens is True
-    assert cfg.normalizer == "adam"
-
-
-def test_attribute_tokens_adafactor_allowed():
-    cfg = IndexConfig(run_path="test", attribute_tokens=True, normalizer="adafactor")
-    assert cfg.attribute_tokens is True
-
-
 # ---------------------------------------------------------------------------
 # End-to-end: build with attribute_tokens
 # ---------------------------------------------------------------------------
@@ -424,7 +411,6 @@ def test_token_build_adam_e2e(tmp_path: Path, model, dataset):
         skip_preconditioners=True,
         token_batch_size=1024,
         attribute_tokens=True,
-        normalizer="adam",
     )
 
     target_modules = {
@@ -433,13 +419,15 @@ def test_token_build_adam_e2e(tmp_path: Path, model, dataset):
         if isinstance(module, torch.nn.Linear)
     }
 
-    normalizers = fit_normalizers(
-        model,
-        dataset,
-        cfg=cfg,
-        batches=[[idx] for idx in range(len(dataset))],
-        target_modules=target_modules,
-    )
+    # Create AdamNormalizer instances with dummy second moments
+    from bergson.gradients import AdamNormalizer
+
+    normalizers = {}
+    for name, module in model.base_model.named_modules():
+        if isinstance(module, torch.nn.Linear) and name in target_modules:
+            normalizers[name] = AdamNormalizer(
+                weight_avg_sq=torch.ones_like(module.weight),
+            )
     processor = GradientProcessor(
         projection_dim=16,
         normalizers=normalizers,
@@ -543,23 +531,33 @@ def test_token_sum_equals_sequence(
         if isinstance(module, torch.nn.Linear)
     }
 
-    # Fit normalizers if needed
+    # Create normalizers if needed
+    from bergson.gradients import AdafactorNormalizer, AdamNormalizer
+
     if normalizer == "none":
         normalizers = {}
     else:
-        fit_cfg = IndexConfig(
-            run_path=str(tmp_path / "fit"),
-            skip_preconditioners=True,
-            normalizer=normalizer,
-            include_bias=include_bias,
-        )
-        normalizers = fit_normalizers(
-            model,
-            dataset,
-            cfg=fit_cfg,
-            batches=[[idx] for idx in range(len(dataset))],
-            target_modules=target_modules,
-        )
+        normalizers = {}
+        for name, module in model.base_model.named_modules():
+            if isinstance(module, torch.nn.Linear) and name in target_modules:
+                bias_sq = (
+                    torch.ones(module.out_features, device=module.weight.device)
+                    if include_bias
+                    else None
+                )
+                if normalizer == "adam":
+                    normalizers[name] = AdamNormalizer(
+                        weight_avg_sq=torch.ones_like(module.weight),
+                        bias_avg_sq=bias_sq,
+                    )
+                else:
+                    normalizers[name] = AdafactorNormalizer(
+                        row=torch.ones(
+                            module.out_features, device=module.weight.device
+                        ),
+                        col=torch.ones(module.in_features, device=module.weight.device),
+                        bias_avg_sq=bias_sq,
+                    )
 
     processor = GradientProcessor(
         normalizers=normalizers,
