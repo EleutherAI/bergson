@@ -20,8 +20,13 @@ from transformers import (
     PreTrainedModel,
 )
 
-from bergson.config import DataConfig, IndexConfig
-from bergson.data import allocate_batches, load_data_string, tokenize
+from bergson.config import AttributionConfig, DataConfig, IndexConfig, ModelConfig
+from bergson.data import (
+    allocate_batches,
+    load_data_string,
+    tokenize,
+    tokenize_and_chunk,
+)
 from bergson.format import apply_format
 from bergson.gradients import GradientProcessor, Normalizer
 from bergson.normalizer.fit_normalizers import fit_normalizers
@@ -117,8 +122,9 @@ def create_processor(
 
 
 def setup_model_and_peft(
-    cfg: IndexConfig,
+    cfg: ModelConfig,
     device_map_auto: bool = False,
+    **model_kwargs,
 ) -> tuple[PreTrainedModel, set | None]:
     """Handle model loading, quantization, FSDP, and PEFT detection"""
     local_rank = cfg.distributed.local_rank
@@ -170,9 +176,9 @@ def setup_model_and_peft(
             quantization_config=quantization_config,
             torch_dtype=dtype,
             revision=cfg.revision,
+            **model_kwargs,
         )
         target_modules = None
-
     else:
         # Load PEFT model
         base_model = AutoModelForCausalLM.from_pretrained(
@@ -181,6 +187,7 @@ def setup_model_and_peft(
             quantization_config=quantization_config,
             torch_dtype=dtype,
             revision=cfg.revision,
+            **model_kwargs,
         )
 
         model = PeftModel.from_pretrained(
@@ -232,9 +239,7 @@ def estimate_advantage(ds: Dataset, cfg: DataConfig):
     return advantages.tolist()
 
 
-def filter_by_max_tokens(
-    ds: Dataset | IterableDataset, cfg: IndexConfig
-) -> Dataset | IterableDataset:
+def filter_by_max_tokens(ds: Dataset, cfg: AttributionConfig) -> Dataset:
     """Filter the dataset by the max tokens limit. This is an experimental
     benchmarking feature that may be removed in the future.
 
@@ -297,25 +302,39 @@ def filter_by_max_tokens(
     return ds
 
 
-def setup_data_pipeline(cfg: IndexConfig) -> Dataset | IterableDataset:
+def setup_data_pipeline(
+    cfg: AttributionConfig,
+    data_cfg: DataConfig | None = None,
+) -> tuple[Dataset, int]:
     """Handle data loading and preprocessing"""
-    ds = load_data_string(
-        cfg.data.dataset, cfg.data.split, cfg.data.subset, cfg.data.data_args
-    )
+    data_cfg = data_cfg or cfg.data
 
+    if isinstance(cfg, IndexConfig):
+        # TrackStar doesn't support chunked datasets
+        if data_cfg.chunk_length > 0:
+            raise ValueError("Chunked datasets are not supported for TrackStar")
+
+        token_batch_size = cfg.token_batch_size
+    else:
+        # TODO: Maybe do something less hacky here
+        token_batch_size = 10**20
+
+    ds = load_data_string(
+        data_cfg.dataset, data_cfg.split, data_cfg.subset, data_cfg.data_args
+    )
     tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer or cfg.model)
 
-    default_model_max_len = getattr(tokenizer, "model_max_length", None)
-    if (
-        default_model_max_len is not None
-        and cfg.token_batch_size > default_model_max_len
-    ):
+    max_length = getattr(tokenizer, "model_max_length", None)
+    if max_length is not None and token_batch_size > max_length:
         raise ValueError(
-            f"Token batch size {cfg.token_batch_size} exceeds model_max_length "
-            f"({default_model_max_len}). "
-            f"Use --token_batch_size {default_model_max_len} or smaller."
+            f"Token batch size {token_batch_size} exceeds model_max_length "
+            f"({max_length}). "
+            f"Use --token_batch_size {max_length} or smaller."
         )
 
+    # You might think model_max_length should always be the same as
+    # max_position_embeddings, but some models (e.g. Pythia!) have a smaller
+    # max_position_embeddings than model_max_length, so we need to check both.
     # Resolve the base model for config loading (PEFT adapters don't have
     # a full config.json, so we need the base model path).
     config_model: str = cfg.model
@@ -326,40 +345,51 @@ def setup_data_pipeline(cfg: IndexConfig) -> Dataset | IterableDataset:
     except ValueError:
         pass
 
-    max_pos_emb = getattr(
-        AutoConfig.from_pretrained(config_model, revision=cfg.revision),
-        "max_position_embeddings",
-        None,
-    )
+    model_cfg = AutoConfig.from_pretrained(config_model, revision=cfg.revision)
+    max_pos_emb = getattr(model_cfg, "max_position_embeddings", None)
     if max_pos_emb is not None:
-        max_length = min(max_pos_emb, cfg.token_batch_size)
+        max_length = min(max_pos_emb, token_batch_size)
     else:
-        max_length = cfg.token_batch_size
+        max_length = token_batch_size
 
-    remove_columns = ds.column_names if cfg.drop_columns else None
+    remove_columns = set(ds.column_names) if cfg.drop_columns else set()
+    tokenize_cfg = data_cfg
 
-    tokenize_cfg = cfg.data
-    if cfg.data.format_template:
+    if data_cfg.format_template:
         assert isinstance(
             ds, Dataset
         ), "format_template requires a non-streaming dataset"
-        ds = apply_format(ds, cfg.data.format_template)
+        ds = apply_format(ds, data_cfg.format_template)
         tokenize_cfg = DataConfig(
             prompt_column="prompt" if "completion" in ds.column_names else "text",
             completion_column="completion" if "completion" in ds.column_names else "",
-            truncation=cfg.data.truncation,
+            truncation=data_cfg.truncation,
         )
 
+    num_docs = len(ds)
     if not ds.column_names or "input_ids" not in ds.column_names:
-        ds = ds.map(
-            tokenize,
-            batched=True,
-            fn_kwargs=dict(
-                args=tokenize_cfg, tokenizer=tokenizer, max_length=max_length
-            ),
-        )
+        if data_cfg.chunk_length > 0:
+            ds = tokenize_and_chunk(
+                ds,
+                tokenizer,
+                chunk_size=data_cfg.chunk_length,
+            )
+        else:
+            ds = ds.map(
+                tokenize,
+                batched=True,
+                fn_kwargs=dict(
+                    args=tokenize_cfg,
+                    tokenizer=tokenizer,
+                    max_length=max_length,
+                ),
+            )
 
-    if not cfg.data.truncation and isinstance(ds, Dataset):
+    if (
+        not data_cfg.chunk_length > 0
+        and not data_cfg.truncation
+        and isinstance(ds, Dataset)
+    ):
         max_doc_len = max(ds["length"])
         if max_pos_emb is not None and max_doc_len > max_pos_emb:
             warnings.warn(
@@ -367,30 +397,30 @@ def setup_data_pipeline(cfg: IndexConfig) -> Dataset | IterableDataset:
                 f"({max_doc_len} > {max_pos_emb}). "
                 f"Consider using --truncation."
             )
-        elif max_doc_len > cfg.token_batch_size:
+        elif max_doc_len > token_batch_size:
             warnings.warn(
                 f"Dataset contains a document longer than token_batch_size "
-                f"({max_doc_len} > {cfg.token_batch_size}). "
+                f"({max_doc_len} > {token_batch_size}). "
                 f"Consider increasing --token_batch_size or using --truncation."
             )
 
-    if cfg.data.reward_column:
+    if data_cfg.reward_column:
         assert isinstance(ds, Dataset), "Dataset required for advantage estimation"
 
-        rewards = np.array(ds[cfg.data.reward_column], dtype=np.float64)
+        rewards = np.array(ds[data_cfg.reward_column], dtype=np.float64)
         nan_mask = np.isnan(rewards)
         if nan_mask.any():
-            if cfg.data.skip_nan_rewards:
+            if data_cfg.skip_nan_rewards:
                 print(f"Warning: Filtering out {nan_mask.sum()} rows with NaN rewards")
                 ds = ds.filter(lambda _, idx: not nan_mask[idx], with_indices=True)
             else:
                 raise ValueError(
-                    f"Reward column '{cfg.data.reward_column}' contains NaN values"
+                    f"Reward column '{data_cfg.reward_column}' contains NaN values"
                 )
 
         ds = ds.add_column(
             "advantage",
-            estimate_advantage(ds, cfg.data),
+            estimate_advantage(ds, data_cfg),
             new_fingerprint="advantage",  # type: ignore
         )
 
@@ -399,10 +429,10 @@ def setup_data_pipeline(cfg: IndexConfig) -> Dataset | IterableDataset:
         ds = filter_by_max_tokens(ds, cfg)
 
     # Remove extraneous columns
-    if remove_columns is not None:
-        keep = {"length", "input_ids", "labels"}
-        columns_to_remove = [col for col in remove_columns if col not in keep]
-        if columns_to_remove:
-            ds = ds.remove_columns(columns_to_remove)
+    keep = {"length", "input_ids", "labels"}
+    remove_columns -= keep
+    remove_columns &= set(ds.column_names)
+    if remove_columns:
+        ds = ds.remove_columns(list(remove_columns))
 
-    return ds
+    return ds, num_docs

@@ -8,7 +8,7 @@ import numpy as np
 import torch
 from datasets import DatasetDict, load_from_disk
 
-from bergson import load_gradient_dataset
+from bergson import IndexConfig, load_gradient_dataset
 from bergson.data import load_gradients
 
 from .scoring import compute_scores_with_bergson, load_scores_matrix
@@ -222,9 +222,8 @@ def compute_metrics(
     # Load metadata from HF dataset (fast)
     print("Loading metadata...")
     # Get dataset path from index config
-    with open(index_path / "index_config.json") as f:
-        index_cfg = json.load(f)
-    dataset_path = index_cfg.get("data", {}).get("dataset", str(index_path / "data.hf"))
+    index_cfg = IndexConfig.load_json(index_path / "index_config.json")
+    dataset_path = index_cfg.data.dataset or str(index_path / "data.hf")
     meta_ds = load_from_disk(dataset_path)
     if isinstance(meta_ds, DatasetDict):
         meta_ds = meta_ds["train"]

@@ -13,6 +13,7 @@ def weighted_causal_lm_ce(
     example_weight: Tensor | None = None,
     ignore_index: int = -100,
     vocab_size: int | None = None,
+    **kwargs,  # Ignored
 ) -> Tensor:
     """
     HuggingFace-compatible causal LM loss with per-example weighting.
@@ -20,7 +21,7 @@ def weighted_causal_lm_ce(
     Args:
     logits         : [B, T, V] float tensor of prediction scores
     labels         : [B, T] long tensor of target token ids, or ignore_index
-    example_weight : [B] float tensor of per-example weights
+    example_weight : [B] or [B, T] float tensor of weights
     ignore_index   : int, label value to ignore in loss computation
     vocab_size     : optional int, vocabulary size (for validation)
     """
@@ -28,7 +29,7 @@ def weighted_causal_lm_ce(
     B, T, V = logits.shape
     assert labels.shape == (B, T)
     if example_weight is not None:
-        assert example_weight.shape == (B,)
+        assert example_weight.shape == (B,) or example_weight.shape == (B, T)
 
     # HuggingFace always passes a vocab_size kwarg
     if vocab_size is not None:
@@ -52,43 +53,12 @@ def weighted_causal_lm_ce(
     if example_weight is None:
         return tok_loss.mean()
 
-    w = example_weight.to(tok_loss.dtype).view(B, 1)  # [B,1]
-    return (tok_loss * w).mean()
+    # Per token weights
+    if example_weight.shape == (B, T):
+        w = example_weight[:, :-1].to(tok_loss.dtype)  # [B, T-1]
+    else:
+        w = example_weight.to(tok_loss.dtype).view(B, 1)  # [B,1]
 
-
-def weighted_ce(
-    labels: Tensor,
-    logits: Tensor,
-    cfg=None,
-    *,
-    example_weight: Tensor | None = None,
-) -> Tensor:
-    """
-    HuggingFace-compatible cross-entropy loss with per-example weighting.
-
-    Args:
-    labels         : [B] long tensor of target ids, or ignore_index
-    logits         : [B, V] float tensor of prediction scores
-    example_weight : [B] float tensor of per-example weights
-    """
-    assert logits.ndim == 2 and labels.ndim == 1
-    B, V = logits.shape
-    assert labels.shape == (B,)
-    if example_weight is not None:
-        assert example_weight.shape == (B,)
-
-    # Per-token loss (fused), no reduction
-    tok_loss = F.cross_entropy(
-        logits,
-        labels,
-        reduction="none",
-    )  # [B,]
-
-    # Implicitly assume the weights are all ones
-    if example_weight is None:
-        return tok_loss.mean()
-
-    w = example_weight.to(tok_loss.dtype)  # [B,]
     return (tok_loss * w).mean()
 
 

@@ -22,6 +22,7 @@ from typing import Any
 import numpy as np
 from datasets import Dataset, DatasetDict, concatenate_datasets, load_from_disk
 
+from bergson import IndexConfig
 from examples.semantic.data import (
     HF_ANALYSIS_MODEL,
     load_experiment_data,
@@ -829,8 +830,7 @@ def score_attribute_eval(
         eval_data_path = data_path / "eval.hf"
 
     if not eval_grads_path.exists():
-        with open(index_path / "index_config.json") as f:
-            index_cfg = json.load(f)
+        index_cfg = IndexConfig.load_json(index_path / "index_config.json")
 
         # Use smaller token batch size for semantic eval (short Q&A samples)
         # to ensure enough batches for distributed workers
@@ -841,7 +841,7 @@ def score_attribute_eval(
             "build",
             str(eval_grads_path),
             "--model",
-            index_cfg["model"],
+            index_cfg.model,
             "--dataset",
             str(eval_data_path),
             "--drop_columns",
@@ -852,7 +852,7 @@ def score_attribute_eval(
             eval_completion_column,
             "--fsdp",
             "--projection_dim",
-            str(index_cfg.get("projection_dim", 16)),
+            str(index_cfg.projection_dim or 16),
             "--token_batch_size",
             token_batch_size,
             "--skip_preconditioners",
@@ -1151,7 +1151,7 @@ def score_attribute_eval_with_pca(
 
     from bergson.data import load_gradients
     from bergson.gradients import GradientProcessor
-    from bergson.utils.math import compute_damped_inverse
+    from bergson.utils.math import damped_psd_power
 
     from .preconditioners import project_orthogonal_to_style_subspace
 
@@ -1219,7 +1219,7 @@ def score_attribute_eval_with_pca(
         device = torch.device("cuda:0")
         for name in tqdm(module_names, desc="Computing H^(-1)"):
             H = proc.preconditioners[name].to(device=device)
-            h_inv[name] = compute_damped_inverse(H, damping_factor=damping_factor)
+            h_inv[name] = damped_psd_power(H, -1.0, damping_factor=damping_factor)
 
     def load_grad_as_float(grads: np.memmap, name: str) -> np.ndarray:
         g = grads[name]
@@ -1254,9 +1254,7 @@ def score_attribute_eval_with_pca(
         eval_data_path = data_path / "eval.hf"
 
     if not eval_grads_path.exists():
-        with open(index_path / "index_config.json") as f:
-            index_cfg = json.load(f)
-
+        index_cfg = IndexConfig.load_json(index_path / "index_config.json")
         token_batch_size = "500" if is_semantic else "6000"
 
         cmd = [
@@ -1264,7 +1262,7 @@ def score_attribute_eval_with_pca(
             "build",
             str(eval_grads_path),
             "--model",
-            index_cfg["model"],
+            index_cfg.model,
             "--dataset",
             str(eval_data_path),
             "--drop_columns",
@@ -1275,7 +1273,7 @@ def score_attribute_eval_with_pca(
             eval_completion_column,
             "--fsdp",
             "--projection_dim",
-            str(index_cfg.get("projection_dim", 16)),
+            str(index_cfg.projection_dim or 16),
             "--token_batch_size",
             token_batch_size,
             "--skip_preconditioners",
@@ -1405,7 +1403,7 @@ def compute_attribute_metrics_with_pca(
     style_only_top1 = style_only_top5 = style_only_top10 = 0
     same_employer_type = same_university_type = 0
 
-    field_top1: dict[str, list[int, int]] = {
+    field_top1: dict[str, list[int]] = {
         f: [0, 0] for f in ["employer", "university", "degree", "title"]
     }
 
@@ -1843,15 +1841,14 @@ def score_majority_style_eval(
     print("Computing majority eval gradients...")
     majority_eval_grads_path = base_path / "eval_grads_majority"
     if not majority_eval_grads_path.exists():
-        with open(index_path / "index_config.json") as f:
-            index_cfg = json.load(f)
+        index_cfg = IndexConfig.load_json(index_path / "index_config.json")
 
         cmd = [
             "bergson",
             "build",
             str(majority_eval_grads_path),
             "--model",
-            index_cfg["model"],
+            index_cfg.model,
             "--dataset",
             str(data_path / "eval_majority.hf"),
             "--drop_columns",
@@ -1862,7 +1859,7 @@ def score_majority_style_eval(
             "reworded",
             "--fsdp",
             "--projection_dim",
-            str(index_cfg.get("projection_dim", 16)),
+            str(index_cfg.projection_dim or 16),
             "--token_batch_size",
             "6000",
             "--skip_preconditioners",

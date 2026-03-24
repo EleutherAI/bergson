@@ -8,6 +8,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
+from bergson import IndexConfig
 from bergson.data import load_gradients
 from bergson.gradients import GradientProcessor
 from bergson.process_grads import mix_preconditioners
@@ -255,21 +256,20 @@ def compute_scores_with_bergson(
         preconditioner_path = str(index_preconditioner_path)
 
     # Load index config to get model and dataset info
-    with open(index_path / "index_config.json") as f:
-        index_cfg = json.load(f)
+    index_cfg = IndexConfig.load_json(index_path / "index_config.json")
 
     # Get dataset and column info from config
-    data_cfg = index_cfg.get("data", {})
-    dataset_path = data_cfg.get("dataset", str(index_path / "data.hf"))
-    prompt_column = data_cfg.get("prompt_column", "text")
-    completion_column = data_cfg.get("completion_column", "")
+    data_cfg = index_cfg.data
+    dataset_path = data_cfg.dataset or str(index_path / "data.hf")
+    prompt_column = data_cfg.prompt_column or "text"
+    completion_column = data_cfg.completion_column or ""
 
     cmd = [
         "bergson",
         "score",
         str(output_path),
         "--model",
-        index_cfg["model"],
+        index_cfg.model,
         "--dataset",
         dataset_path,
         "--query_path",
@@ -277,7 +277,7 @@ def compute_scores_with_bergson(
         "--score",
         "individual",
         "--projection_dim",
-        str(index_cfg.get("projection_dim", 0)),
+        str(index_cfg.projection_dim or 0),
         "--fsdp",
         "--prompt_column",
         prompt_column,

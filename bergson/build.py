@@ -1,7 +1,5 @@
-import json
 import os
 import shutil
-from dataclasses import asdict
 from datetime import timedelta
 
 import torch
@@ -138,13 +136,10 @@ def build(
         setup_reproducibility()
 
     index_cfg.partial_run_path.mkdir(parents=True, exist_ok=True)
-    with (index_cfg.partial_run_path / "index_config.json").open("w") as f:
-        json.dump(asdict(index_cfg), f, indent=2)
+    index_cfg.save_json(index_cfg.partial_run_path / "index_config.json")
+    preprocess_cfg.save_json(index_cfg.partial_run_path / "preprocess_config.json")
 
-    with (index_cfg.partial_run_path / "preprocess_config.json").open("w") as f:
-        json.dump(asdict(preprocess_cfg), f, indent=2)
-
-    ds = setup_data_pipeline(index_cfg)
+    ds, _ = setup_data_pipeline(index_cfg)
 
     launch_distributed_run(
         "build",

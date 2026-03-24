@@ -1,6 +1,5 @@
 import math
 import os
-import re
 from concurrent.futures import Future
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -16,10 +15,11 @@ from torchopt.pytree import tree_flatten_with_path, tree_iter, tree_map
 from torchopt.typing import GradientTransformation, OptState
 from tqdm.auto import tqdm
 
+from ..data import sorted_checkpoints
 from ..distributed import grad_tree, shallow_copy
-from ..swap import swap_parameters
 from .data_stream import DataStream
 from .rtl_tqdm import RtlTqdm
+from .swap import swap_parameters
 
 
 def _maybe_get_cuda_rng_state() -> torch.Tensor:
@@ -31,23 +31,26 @@ def _maybe_get_cuda_rng_state() -> torch.Tensor:
     return torch.zeros(16, dtype=torch.uint8)
 
 
-def sorted_checkpoints(folder: str) -> list[tuple[int, str]]:
+class SaveFuture:
+    """Wraps a DCP async_save future, destroying the gloo process group in result().
+
+    The group must be destroyed synchronously inside result() rather than in a
+    done_callback, because concurrent.futures.Future notifies result() waiters
+    before invoking callbacks — so a callback-based destroy races with the next
+    save() call creating a new group, leaking gloo sockets.
     """
-    Return a list of (batch_index, filepath) sorted by batch_index
-    for files named like: step_<index>.ckpt
-    """
-    pattern = re.compile(r"step_(\d+)\.ckpt$")
 
-    checkpoints = []
-    for name in os.listdir(folder):
-        path = os.path.join(folder, name)
+    def __init__(self, fut: Future, grp: "dist.ProcessGroup | None"):
+        self._fut = fut
+        self._grp = grp
 
-        match = pattern.match(name)
-        if match:
-            batch_index = int(match.group(1))
-            checkpoints.append((batch_index, path))
+    def result(self):
+        result = self._fut.result()
+        if self._grp is not None:
+            dist.destroy_process_group(self._grp)
+            self._grp = None
 
-    return sorted(checkpoints, key=lambda x: x[0])
+        return result
 
 
 @dataclass
@@ -88,17 +91,13 @@ class TrainerState:
             checkpoint_id=path,
         )
 
-    def save(self, path: str) -> Future:
-        # Create a new process group so that we can overlap saves
+    def save(self, path: str) -> SaveFuture:
+        # Create a new process group so that we can overlap saves.
         if dist.is_initialized():
             grp = dist.new_group(backend="gloo", group_desc=path)
             assert isinstance(grp, dist.ProcessGroup)
         else:
             grp = None
-
-        def _done_callback(fut, g=grp):
-            if g is not None:
-                dist.destroy_process_group(g)
 
         fut = dcp.async_save(
             self.state_dict(),
@@ -106,8 +105,7 @@ class TrainerState:
             process_group=grp,
         )
         assert isinstance(fut, Future)
-        fut.add_done_callback(_done_callback)
-        return fut
+        return SaveFuture(fut, grp)
 
     def detach_(self):
         for k, p in self.params.items():
@@ -178,7 +176,7 @@ class TrainerState:
 
 
 class Trainer:
-    """Stateless, functional trainer for a model, optimizer, and dataset."""
+    """Stateless, functional trainer for a model and optimizer."""
 
     @classmethod
     def initialize(
@@ -276,7 +274,7 @@ class Trainer:
         chunk_size = math.isqrt(len(data)) if save_mode == "sqrt" else 1
         last_start = len(data) - chunk_size
 
-        pending_fut: Future | None = None
+        pending_save: SaveFuture | None = None
 
         main = not dist.is_initialized() or dist.get_rank() == 0
         pbar = tqdm(data, desc="Training", disable=not main)
@@ -288,16 +286,16 @@ class Trainer:
                 # Wait for the previous save before starting a new one to avoid
                 # multiple concurrent DCP saves with separate Gloo groups, which can
                 # deadlock when background threads call distributed operations.
-                if pending_fut is not None:
-                    pending_fut.result()
+                if pending_save is not None:
+                    pending_save.result()
 
                 p = os.path.join(save_dir, f"step_{i}.ckpt")
-                pending_fut = state.save(p)
+                pending_save = state.save(p)
 
             state = self.step(state, x, inplace=inplace, trace=trace)
 
-        if pending_fut is not None:
-            pending_fut.result()
+        if pending_save is not None:
+            pending_save.result()
 
         return state
 
@@ -320,14 +318,17 @@ class Trainer:
             total=expected_idx + 1,
             disable=not main,
             position=0,
+            # Get rid of jitters in the ETA due to rematerialization
+            smoothing=0,
         )
         sub_pbar = None
 
-        save_futures: list[Future] = []
+        save_futures: list[SaveFuture] = []
         while ckpt_list:
             # Make sure everything has been saved
             for fut in save_futures:
                 fut.result()
+            save_futures.clear()
 
             idx, path = ckpt_list[-1]
             fwd_state.batch_index = idx
@@ -355,6 +356,7 @@ class Trainer:
                         disable=not main,
                         leave=False,
                         position=1,
+                        smoothing=0,
                     )
 
                 fwd_state = self.step(
@@ -371,8 +373,7 @@ class Trainer:
                     path = os.path.join(ckpt_dir, f"step_{idx}.ckpt")
                     ckpt_list.append((idx, path))
 
-                    fut = fwd_state.save(path)
-                    save_futures.append(fut)
+                    save_futures.append(fwd_state.save(path))
 
             if sub_pbar is not None:
                 sub_pbar.close()

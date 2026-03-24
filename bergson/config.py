@@ -1,14 +1,15 @@
 import os
+from abc import ABC
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 import torch
-from simple_parsing import field
+from simple_parsing import Serializable, field
 
 
 @dataclass
-class DataConfig:
+class DataConfig(Serializable):
     dataset: str = "NeelNanda/pile-10k"
     """Dataset identifier to build the index from."""
 
@@ -48,27 +49,17 @@ class DataConfig:
     """Arguments to pass to the dataset constructor in the format
     arg1=val1,arg2=val2."""
 
-
-@dataclass
-class AttentionConfig:
-    """Config for splitting an attention module into head matrices."""
-
-    num_heads: int = 0
-    """Number of attention heads."""
-
-    head_size: int = 0
-    """Size of each attention head."""
-
-    head_dim: int = 0
-    """Axis index for `num_heads` in the weight matrix."""
+    chunk_length: int = 0
+    """When non-zero, concatenate and chunk the documents into fixed-length token
+    sequences of length `chunk_length`."""
 
 
 @dataclass
-class DistributedConfig:
-    """Configuration for multi-node preconditioner computation."""
+class DistributedConfig(Serializable):
+    """Configuration for multi-node computation."""
 
     nnode: int = 1
-    """The number of nodes to use for preconditioner computation."""
+    """The number of nodes to use for computation."""
 
     nproc_per_node: int = field(default_factory=lambda: torch.cuda.device_count())
     """The number of processes per node."""
@@ -114,26 +105,94 @@ class DistributedConfig:
 
 
 @dataclass
-class IndexConfig:
-    """Config for building the index and running the model/dataset pipeline."""
+class ModelConfig(ABC):
+    """Base config for model loading."""
 
     run_path: str = field(positional=True)
-    """Name of the run. Used to create a directory for run artifacts."""
-
-    data: DataConfig = field(default_factory=DataConfig)
-    """Specification of the data on which to build the index."""
+    """Directory to save results."""
 
     model: str = "EleutherAI/pythia-160m"
     """Name of the model to load."""
 
+    precision: Literal["auto", "bf16", "fp16", "fp32", "int4", "int8"] = "fp32"
+    """Precision (dtype) to use for the model parameters."""
+
+    revision: str | None = None
+    """Revision of the model."""
+
+    distributed: DistributedConfig = field(default_factory=DistributedConfig)
+    """Configuration for multi-node distributed computation."""
+
+    fsdp: bool = False
+    """Whether to use PyTorch Fully Sharded Data Parallel (FSDP)"""
+
+
+@dataclass
+class TrainingConfig(ModelConfig, Serializable):
+    """Configuration for the MAGIC trainer."""
+
+    lr: float = 1e-5
+    """Base learning rate after warmup."""
+
+    warmup_steps: int = 10
+    """Number of warmup steps before applying base lr."""
+
+    batch_size: int = 16
+    """Batch size for both training and query streams. Adjust based on GPU memory."""
+
+    beta1: float = 0.95
+    """Beta1 for AdamW optimizer."""
+
+    beta2: float = 0.975
+    """Beta2 for AdamW optimizer."""
+
+    eps_root: float = 1e-8
+    """Epsilon root for AdamW optimizer. Use 1e-2 for better stability
+    with small models."""
+
+    grad_checkpointing: bool = False
+    """Whether to use gradient checkpointing during the forward pass."""
+
+
+@dataclass
+class AttributionConfig(ModelConfig, ABC):
+    """Base config for attribution methods."""
+
+    data: DataConfig = field(default_factory=DataConfig)
+    """Specification of the data on which to build the index."""
+
     tokenizer: str = ""
     """Name of the tokenizer to use. If not set the model tokenizer is used."""
 
-    fsdp: bool = False
-    """Whether to use Fully Sharded Data Parallel (FSDP) for collecting gradients."""
+    drop_columns: bool = True
+    """Only save the new dataset columns. If false, the original dataset
+    columns will be saved as well."""
 
-    precision: Literal["auto", "bf16", "fp16", "fp32", "int4", "int8"] = "fp32"
-    """Precision (dtype) to use for the model parameters."""
+    max_tokens: int | None = None
+    """Max tokens to process. If None, all tokens processed. Dataset only.
+    This experimental feature may be removed in the future."""
+
+    overwrite: bool = False
+    """Whether to overwrite any existing index in the run path."""
+
+
+@dataclass
+class AttentionConfig:
+    """Config for splitting an attention module into head matrices."""
+
+    num_heads: int = 0
+    """Number of attention heads."""
+
+    head_size: int = 0
+    """Size of each attention head."""
+
+    head_dim: int = 0
+    """Axis index for `num_heads` in the weight matrix."""
+
+
+@dataclass
+class IndexConfig(AttributionConfig, Serializable):
+    """Config for building the index and running the model/dataset pipeline."""
 
     use_tf32: bool = False
     """Enable TF32 matmuls. Recommended for large FP32 runs."""
@@ -177,10 +236,6 @@ class IndexConfig:
     stats_sample_size: int | None = 10_000
     """Number of examples to use for estimating normalizer statistics."""
 
-    drop_columns: bool = True
-    """Only save the new dataset columns. If false, the original dataset
-    columns will be saved as well."""
-
     loss_fn: Literal["ce", "kl"] = "ce"
     """Loss function to use."""
 
@@ -194,9 +249,6 @@ class IndexConfig:
 
     stream_shard_size: int = 400_000
     """Shard size for streaming the dataset into Dataset objects."""
-
-    revision: str | None = None
-    """Revision of the model."""
 
     split_attention_modules: list[str] = field(default_factory=list)
     """Modules to split into head matrices."""
@@ -216,16 +268,6 @@ class IndexConfig:
     """If provided, a glob pattern to filter out modules from gradient collection.
     For example, "transformer.h.*.mlp.*" will exclude all MLP layers in a
     standard transformer architecture."""
-
-    overwrite: bool = False
-    """Whether to overwrite any existing index in the run path."""
-
-    distributed: DistributedConfig = field(default_factory=DistributedConfig)
-    """Configuration for multi-node distributed preconditioner computation."""
-
-    max_tokens: int | None = None
-    """Max tokens to process. If None, all tokens processed. Dataset only.
-    This experimental feature may be removed in the future."""
 
     attribute_tokens: bool = False
     """Whether to compute per-token gradients instead of per-example.
@@ -257,7 +299,7 @@ class IndexConfig:
 
 
 @dataclass
-class QueryConfig:
+class QueryConfig(Serializable):
     """Config for querying an existing gradient index."""
 
     index: str = ""
@@ -289,7 +331,7 @@ class QueryConfig:
 
 
 @dataclass
-class PreprocessConfig:
+class PreprocessConfig(Serializable):
     """Config for gradient preprocessing, shared across build, reduce, and score."""
 
     unit_normalize: bool = False
@@ -309,7 +351,7 @@ class PreprocessConfig:
 
 
 @dataclass
-class ScoreConfig:
+class ScoreConfig(Serializable):
     """Config for querying an index on the fly."""
 
     query_path: str = ""
@@ -333,7 +375,7 @@ class ScoreConfig:
 
 
 @dataclass
-class HessianConfig:
+class HessianConfig(Serializable):
     """Config for reducing the gradients."""
 
     method: Literal["kfac", "tkfac", "shampoo"] = "kfac"

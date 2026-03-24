@@ -46,6 +46,31 @@ class Build:
 
 
 @dataclass
+class Hessian:
+    """Approximate Hessian matrices using KFAC or EKFAC."""
+
+    hessian_cfg: HessianConfig
+    index_cfg: IndexConfig
+
+    def execute(self):
+        """Compute Hessian approximation."""
+        validate_run_path(self.index_cfg)
+        approximate_hessians(self.index_cfg, self.hessian_cfg)
+
+
+@dataclass
+class Magic:
+    """Run MAGIC attribution."""
+
+    run_cfg: MagicConfig
+    dist_cfg: DistributedConfig
+
+    def execute(self):
+        """Run MAGIC attribution."""
+        run_magic(self.run_cfg, self.dist_cfg)
+
+
+@dataclass
 class Preconditioners:
     """Compute normalizers and preconditioners without gradient collection."""
 
@@ -57,6 +82,17 @@ class Preconditioners:
         self.index_cfg.skip_preconditioners = False
         validate_run_path(self.index_cfg)
         build(self.index_cfg, PreprocessConfig())
+
+
+@dataclass
+class Query:
+    """Query an existing gradient index."""
+
+    query_cfg: QueryConfig
+
+    def execute(self):
+        """Query an existing gradient index."""
+        query(self.query_cfg)
 
 
 @dataclass
@@ -98,30 +134,6 @@ class Score:
 
 
 @dataclass
-class Query:
-    """Query an existing gradient index."""
-
-    query_cfg: QueryConfig
-
-    def execute(self):
-        """Query an existing gradient index."""
-        query(self.query_cfg)
-
-
-@dataclass
-class Hessian:
-    """Approximate Hessian matrices using KFAC or EKFAC."""
-
-    hessian_cfg: HessianConfig
-    index_cfg: IndexConfig
-
-    def execute(self):
-        """Compute Hessian approximation."""
-        validate_run_path(self.index_cfg)
-        approximate_hessians(self.index_cfg, self.hessian_cfg)
-
-
-@dataclass
 class Trackstar:
     """Run preconditioners, build, and score as a single pipeline."""
 
@@ -140,55 +152,18 @@ class Trackstar:
 
 
 @dataclass
-class Magic:
-    """Run MAGIC attribution."""
-
-    run_cfg: MagicConfig
-    dist_cfg: DistributedConfig
-
-    def execute(self):
-        """Run MAGIC attribution."""
-        run_magic(self.run_cfg, self.dist_cfg)
-
-
-@dataclass
-class Ekfac:
-    """Run the full EKFAC influence pipeline end-to-end.
-
-    Given a query dataset, index (training) dataset, and model, produces
-    influence scores by:
-    1. Building a mean query gradient.
-    2. Fitting EKFAC factors on the training dataset.
-    3. Applying the EKFAC inverse Hessian to the mean query gradient.
-    4. Scoring each training example against the EKFAC-transformed query.
-    """
-
-    index_cfg: IndexConfig
-
-    hessian_cfg: HessianConfig
-
-    score_cfg: ScoreConfig
-
-    preprocess_cfg: PreprocessConfig
-
-    hessian_pipeline_cfg: HessianPipelineConfig
-
-    def execute(self):
-        hessian_pipeline(
-            self.index_cfg,
-            self.hessian_cfg,
-            self.score_cfg,
-            self.preprocess_cfg,
-            self.hessian_pipeline_cfg,
-        )
-
-
-@dataclass
 class Main:
     """Routes to the subcommands."""
 
     command: Union[
-        Build, Query, Preconditioners, Reduce, Score, Hessian, Trackstar, Magic, Ekfac
+        Build,
+        Hessian,
+        Magic,
+        Preconditioners,
+        Query,
+        Reduce,
+        Score,
+        Trackstar,
     ]
 
     def execute(self):

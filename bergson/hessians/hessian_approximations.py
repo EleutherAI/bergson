@@ -1,7 +1,5 @@
-import json
 import os
 import shutil
-from dataclasses import asdict
 from datetime import timedelta
 
 import torch
@@ -65,12 +63,10 @@ def approximate_hessians(index_cfg: IndexConfig, hessian_cfg: HessianConfig) -> 
     index_cfg.partial_run_path.mkdir(parents=True, exist_ok=True)
 
     # Save both configs
-    with (index_cfg.partial_run_path / "index_config.json").open("w") as f:
-        json.dump(asdict(index_cfg), f, indent=2)
-    with (index_cfg.partial_run_path / "hessian_config.json").open("w") as f:
-        json.dump(asdict(hessian_cfg), f, indent=2)
+    index_cfg.save_json(index_cfg.partial_run_path / "index_config.json")
+    hessian_cfg.save_json(index_cfg.partial_run_path / "hessian_config.json")
 
-    ds = setup_data_pipeline(index_cfg)
+    ds, _ = setup_data_pipeline(index_cfg)
 
     launch_distributed_run(
         "hessian",

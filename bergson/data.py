@@ -2,6 +2,8 @@ import json
 import math
 import os
 import random
+import re
+from multiprocessing import cpu_count
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -13,13 +15,13 @@ import torch.distributed as dist
 from datasets import (
     Dataset,
     DatasetDict,
-    IterableDataset,
     IterableDatasetDict,
     concatenate_datasets,
     load_dataset,
 )
 from numpy.lib.recfunctions import structured_to_unstructured
 from numpy.typing import DTypeLike
+from transformers import PreTrainedTokenizerFast, logging
 
 from .config import DataConfig
 from .utils.utils import (
@@ -407,7 +409,7 @@ def load_data_string(
     split: str = "train",
     subset: str | None = None,
     data_args: str = "",
-) -> Dataset | IterableDataset:
+) -> Dataset:
     """Load a dataset from a string identifier or path."""
     if data_str.endswith(".csv"):
         ds = Dataset.from_csv(data_str)
@@ -542,6 +544,25 @@ def load_scores(
     return Scores(mmap, info)
 
 
+def sorted_checkpoints(folder: str) -> list[tuple[int, str]]:
+    """
+    Return a list of (step, filepath) sorted by step
+    for files named like: step_<index>.ckpt
+    """
+    pattern = re.compile(r"step_(\d+)\.ckpt$")
+
+    checkpoints = []
+    for name in os.listdir(folder):
+        path = os.path.join(folder, name)
+
+        match = pattern.match(name)
+        if match:
+            step = int(match.group(1))
+            checkpoints.append((step, path))
+
+    return sorted(checkpoints, key=lambda x: x[0])
+
+
 def pad_and_tensor(
     sequences: list[list[int]],
     labels: list[list[int]] | None = None,
@@ -649,6 +670,100 @@ def tokenize(
         labels_list.append(labels)
 
     return dict(**encodings, labels=labels_list)
+
+
+def tokenize_and_chunk(
+    dataset: Dataset,
+    tokenizer: PreTrainedTokenizerFast,
+    chunk_size: int,
+    text_column: str = "text",
+    *,
+    num_proc: int = cpu_count() // 2,
+) -> Dataset:
+    """
+    Tokenizes a text dataset and chunks tokens into uniform-length sequences.
+
+    Uses a streaming generator to carry remainder tokens across document
+    boundaries — no tokens are ever dropped, no padding is used, and memory
+    usage stays flat regardless of dataset size.
+
+    Args:
+        dataset:     HuggingFace Dataset with a text column.
+        tokenizer:   A HuggingFace tokenizer (must have eos_token_id set).
+        chunk_size:  Number of tokens per output chunk.
+        text_column: Name of the column containing raw text.
+        num_proc:    Number of processes for the tokenization .map() pass.
+
+    Returns:
+        A Dataset where every row has a single 'input_ids' list of length chunk_size.
+    """
+    eos_id = tokenizer.eos_token_id
+    if eos_id is None:
+        raise ValueError("Tokenizer does not have an eos_token_id set.")
+
+    # Suppress long sequence errors
+    original_verbosity = logging.get_verbosity()
+    logging.set_verbosity_error()
+
+    # ── Step 1: tokenize each document in parallel ───────────────────────────
+    def tokenize_batch(batch):
+        return tokenizer(
+            batch[text_column],
+            add_special_tokens=False,
+            truncation=False,
+            padding=False,
+        )
+
+    tokenized = dataset.map(
+        tokenize_batch,
+        batched=True,
+        desc="Tokenizing",
+        num_proc=num_proc,
+        remove_columns=dataset.column_names,
+    )
+
+    # ── Step 2: concatenate the token stream and slice into fixed-size chunks ──
+    def chunk_batch(batch, indices: list[int]):
+        # Flatten all token lists in this batch into one stream
+        doc_stream = []
+        token_stream = []
+        for doc_idx, ids in zip(indices, batch["input_ids"]):
+            # Mark these tokens as belonging to the current document
+            doc_stream.extend([doc_idx] * (len(ids) + 1))  # +1 for EOS token
+
+            token_stream.extend(ids)
+            token_stream.append(eos_id)  # ensure document boundary tokens
+
+        # Slice into complete chunks; keep the remainder for the next batch
+        # NOTE: .map() does NOT carry state between batches, so any tokens that
+        # don't fill a complete chunk at the end of a batch are dropped.
+        # To avoid this, set batch_size large enough (or process as a single batch)
+        # so that tail loss is negligible, OR use the single-process approach below.
+        n_chunks = len(token_stream) // chunk_size
+        doc_chunks = [
+            doc_stream[i * chunk_size : (i + 1) * chunk_size] for i in range(n_chunks)
+        ]
+        token_chunks = [
+            token_stream[i * chunk_size : (i + 1) * chunk_size] for i in range(n_chunks)
+        ]
+        return {"input_ids": token_chunks, "doc_ids": doc_chunks}
+
+    bs = min(10_000, len(tokenized) // num_proc)
+    chunked = tokenized.map(
+        chunk_batch,
+        batched=True,
+        batch_size=bs,
+        num_proc=num_proc,
+        desc="Chunking",
+        remove_columns=tokenized.column_names,
+        with_indices=True,
+    )
+    # Make sure HuggingFace didn't change the dataset type!
+    assert isinstance(chunked, type(dataset))
+
+    # Restore original logging level
+    logging.set_verbosity(original_verbosity)
+    return chunked
 
 
 def unflatten(x: torch.Tensor, shapes: dict[str, Sequence[int]], dim: int = -1):

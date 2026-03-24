@@ -1,7 +1,6 @@
 import json
 import os
 import shutil
-from dataclasses import asdict
 from datetime import timedelta
 from pathlib import Path
 
@@ -362,10 +361,9 @@ def score_dataset(
         Preprocessing configuration for gradient normalization/preconditioning.
     """
     index_cfg.partial_run_path.mkdir(parents=True, exist_ok=True)
-    with (index_cfg.partial_run_path / "index_config.json").open("w") as f:
-        json.dump(asdict(index_cfg), f, indent=2)
-    with (index_cfg.partial_run_path / "score_config.json").open("w") as f:
-        json.dump(asdict(score_cfg), f, indent=2)
+
+    index_cfg.save_json(index_cfg.partial_run_path / "index_config.json")
+    score_cfg.save_json(index_cfg.partial_run_path / "score_config.json")
 
     ds = setup_data_pipeline(index_cfg)
 
