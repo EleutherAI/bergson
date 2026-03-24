@@ -365,7 +365,7 @@ def score_dataset(
     index_cfg.save_json(index_cfg.partial_run_path / "index_config.json")
     score_cfg.save_json(index_cfg.partial_run_path / "score_config.json")
 
-    ds = setup_data_pipeline(index_cfg)
+    ds, _ = setup_data_pipeline(index_cfg)
 
     launch_distributed_run(
         "score",

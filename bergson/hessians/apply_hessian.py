@@ -8,6 +8,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from safetensors.torch import load_file
+from simple_parsing import ArgumentParser
 from torch import Tensor
 
 from bergson.data import create_index, load_gradients
@@ -170,8 +171,6 @@ def apply_worker(
 
 
 if __name__ == "__main__":
-    from simple_parsing import ArgumentParser
-
     from bergson.config import DistributedConfig
     from bergson.distributed import launch_distributed_run
 
