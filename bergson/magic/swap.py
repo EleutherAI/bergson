@@ -68,10 +68,9 @@ def swap_parameters(
             for b_name, buffer in mod.named_buffers(recurse=False):
                 full_name = f"{name}.{b_name}" if name else b_name
                 if full_name not in buffer_dict:
-                    if strict:
-                        raise ValueError(f"Buffer {full_name} not found in buffer_dict")
-                    else:
-                        continue
+                    # Non-persistent buffers (e.g. rotary embeddings) are
+                    # deterministic and not tracked in state, so skip them.
+                    continue
 
                 original_buffers[full_name] = buffer
                 mod.register_buffer(b_name, buffer_dict.pop(full_name))

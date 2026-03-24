@@ -195,7 +195,17 @@ class Trainer:
                 if v.requires_grad
             }
         )
-        buffers = shallow_copy(dict(model.named_buffers(remove_duplicate=False)))
+        # Only include persistent buffers- non-persistent ones (like causal masks)
+        # are deterministic and don't need to be saved/loaded/swapped.
+        param_keys = {k for k, _ in model.named_parameters(remove_duplicate=False)}
+        persistent_keys = set(model.state_dict().keys()) - param_keys
+        buffers = shallow_copy(
+            {
+                k: v
+                for k, v in model.named_buffers(remove_duplicate=False)
+                if k in persistent_keys
+            }
+        )
         opt_state = optimizer.init(params)
 
         state = TrainerState(params, opt_state, buffers)

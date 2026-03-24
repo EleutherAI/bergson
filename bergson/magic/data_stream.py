@@ -14,15 +14,18 @@ class DataStream:
         device: torch.device | str = "cpu",
         input_key: str = "text",
         num_docs: int | None = None,
+        num_batches: int | None = None,
+        wrap: bool = False,
     ):
         self.batch_size = batch_size
         self.dataset = dataset
         self.device = torch.device(device)
         self.input_key = input_key
+        self.wrap = wrap
 
         # Ceil division
         n = len(dataset)
-        self.num_batches = (n + batch_size - 1) // batch_size
+        self.num_batches = num_batches or (n + batch_size - 1) // batch_size
 
         self.rank = dist.get_rank() if dist.is_initialized() else 0
         self.world_size = dist.get_world_size() if dist.is_initialized() else 1
@@ -43,11 +46,10 @@ class DataStream:
         if i < 0 or i >= len(self):
             raise IndexError("DataStream index out of range")
 
-        indices = slice(
-            i + self.rank,
-            min(i + self.rank + self.batch_size, len(self.dataset)),
-            self.world_size,
-        )
+        n = len(self.dataset)
+        start = (i * self.batch_size + self.rank) % n if self.wrap else i + self.rank
+        end = min(start + self.batch_size, n)
+        indices = slice(start, end, self.world_size)
         batch = self.dataset[indices]
         x, y, _ = pad_and_tensor(
             batch["input_ids"],

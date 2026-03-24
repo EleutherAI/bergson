@@ -1,9 +1,10 @@
+import math
 import os
 import shutil
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal
 
 import torch
 import torch.distributed as dist
@@ -27,11 +28,74 @@ from ..utils.worker_utils import (
 )
 from .data_stream import DataStream
 from .dtensor_patch import apply_dtensor_patch
-from .trainer import BackwardState, Trainer, TrainerState
+from .trainer import BackwardState, Trainer, TrainerState, sorted_checkpoints
 
 
 @dataclass
-class MagicConfig(AttributionConfig, TrainingConfig):
+class TrainingConfig:
+    """Optimizer and learning rate schedule configuration."""
+
+    lr: float = 1e-5
+    """Peak learning rate."""
+
+    lr_start: float = 1e-6
+    """Initial learning rate at the beginning of warmup."""
+
+    lr_end_ratio: float = 0.1
+    """Final learning rate as a fraction of the peak learning rate."""
+
+    warmup_ratio: float = 0.25
+    """Fraction of total training steps used for linear warmup."""
+
+    batch_size: int = 8
+    """Per-device batch size."""
+
+    num_steps: int = 100
+    """Number of training steps. Overridden by num_epochs if set."""
+
+    num_epochs: int = 0
+    """Number of full passes over the training data. If set (> 0),
+    overrides num_steps."""
+
+    max_length: int = 256
+    """Maximum token sequence length."""
+
+    beta1: float = 0.95
+    """Beta1 for AdamW optimizer."""
+
+    beta2: float = 0.975
+    """Beta2 for AdamW optimizer."""
+
+    eps_root: float = 1e-8
+    """Epsilon root for AdamW optimizer. Use 1e-2 for better stability
+    with small models."""
+
+    grad_checkpointing: bool = False
+    """Whether to use gradient checkpointing during the forward pass."""
+
+    def schedule(self, num_steps: int) -> "Callable[[Numeric], Numeric]":
+        """Return a one-cycle linear schedule: warmup from lr_start to lr,
+        then decay to lr * lr_end_ratio."""
+        warmup_steps = int(num_steps * self.warmup_ratio)
+        lr_start = self.lr_start
+        lr_peak = self.lr
+        lr_end = self.lr * self.lr_end_ratio
+
+        def _schedule(step: Numeric) -> Numeric:
+            if step < warmup_steps:
+                # Linear warmup
+                return lr_start + (lr_peak - lr_start) * step / max(warmup_steps, 1)
+            else:
+                # Linear decay
+                decay_steps = num_steps - warmup_steps
+                progress = (step - warmup_steps) / max(decay_steps, 1)
+                return lr_peak - (lr_peak - lr_end) * progress
+
+        return _schedule
+
+
+@dataclass
+class MagicConfig(AttributionConfig):
     """Special config for MAGIC attribution."""
 
     query: DataConfig = field(
@@ -43,11 +107,21 @@ class MagicConfig(AttributionConfig, TrainingConfig):
     query_method: Literal["mean", "sum"] = "mean"
     """Method for reducing query gradients across batches."""
 
+    training: TrainingConfig = field(default_factory=TrainingConfig)
+    """Training hyperparameters and learning rate schedule."""
+
     num_subsets: int = 100
     """Number of leave-one-out subsets for Spearman correlation."""
 
     seed: int = 42
     """Random seed for subset permutation."""
+
+    resume: bool = False
+    """Resume a previously interrupted run from the last checkpoint."""
+
+    @property
+    def batch_size(self) -> int:
+        return self.training.batch_size
 
     def __post_init__(self):
         assert not self.fsdp, "PyTorch FSDP is not currently supported for MAGIC."
@@ -95,7 +169,9 @@ def compute_query_gradients(
     return grad_accum, float(loss_accum)
 
 
-def prepare_trainer(cfg: TrainingConfig, rank: int, world_size: int):
+def prepare_trainer(
+    cfg: "MagicConfig", rank: int, world_size: int, num_steps: int
+):
     """Prepare the model, optimizer, and trainer for training."""
     torch.cuda.set_device(rank)
 
@@ -119,7 +195,7 @@ def prepare_trainer(cfg: TrainingConfig, rank: int, world_size: int):
         model.loss_function = weighted_causal_lm_ce
         model.requires_grad_(True)
 
-    if cfg.grad_checkpointing:
+    if cfg.training.grad_checkpointing:
         model.gradient_checkpointing_enable(
             gradient_checkpointing_kwargs=dict(use_reentrant=False),
         )
@@ -142,15 +218,12 @@ def prepare_trainer(cfg: TrainingConfig, rank: int, world_size: int):
         with mesh:
             model = simple_fsdp(model)
 
-    def schedule(step: Numeric) -> Numeric:
-        if step < cfg.warmup_steps:
-            return 0.0
-        return cfg.lr
-
+    train_cfg = cfg.training
+    schedule = train_cfg.schedule(num_steps)
     opt = torchopt.adamw(
         schedule,
-        betas=(cfg.beta1, cfg.beta2),
-        eps_root=cfg.eps_root,
+        betas=(train_cfg.beta1, train_cfg.beta2),
+        eps_root=train_cfg.eps_root,
     )
     trainer, fwd_state = Trainer.initialize(model, opt)
     return trainer, fwd_state, model
@@ -166,11 +239,19 @@ def worker(
     num_query_docs: int,
     run_cfg: MagicConfig,
 ):
-    trainer, fwd_state, model = prepare_trainer(run_cfg, rank, world_size)
+    train_cfg = run_cfg.training
+    if train_cfg.num_epochs > 0:
+        batches_per_epoch = len(train_dataset) // train_cfg.batch_size
+        num_steps = train_cfg.num_epochs * batches_per_epoch
+        wrap = True
+    else:
+        num_steps = train_cfg.num_steps
+        wrap = False
+
+    trainer, fwd_state, model = prepare_trainer(run_cfg, rank, world_size, num_steps)
 
     ckpts_path = os.path.join(run_cfg.run_path, "checkpoints")
     path0 = os.path.join(ckpts_path, "state0.pt")
-    save_fut = fwd_state.save(path0)
 
     stream = DataStream(
         train_dataset,
@@ -178,13 +259,58 @@ def worker(
         device=f"cuda:{rank}",
         input_key=run_cfg.data.prompt_column,
         num_docs=num_train_docs,
+        num_batches=num_steps,
+        wrap=wrap,
     )
-    fwd_state = trainer.train(
-        fwd_state,
-        stream,
-        inplace=True,
-        save_dir=ckpts_path,
-    )
+
+    if run_cfg.resume:
+        # Replay forward from last valid checkpoint to regenerate deleted ones
+        ckpt_list = sorted_checkpoints(ckpts_path)
+
+        # Filter out incomplete checkpoints (missing .metadata from interrupted saves)
+        # and clean them up from disk
+        valid_ckpts = []
+        for idx, path in ckpt_list:
+            metadata = os.path.join(path, ".metadata")
+            if os.path.exists(metadata):
+                valid_ckpts.append((idx, path))
+            else:
+                shutil.rmtree(path) if os.path.isdir(path) else os.remove(path)
+
+        last_idx, last_path = valid_ckpts[-1]
+        fwd_state.batch_index = last_idx
+        fwd_state.load(last_path)
+        fwd_state.detach_()
+
+        chunk_size = math.isqrt(num_steps)
+        last_start = num_steps - chunk_size
+
+        main = not dist.is_initialized() or dist.get_rank() == 0
+        pending_fut = None
+        pbar = tqdm(
+            range(last_idx, num_steps), desc="Replaying forward", disable=not main
+        )
+        for i in pbar:
+            if i % chunk_size == 0 or i >= last_start:
+                p = os.path.join(ckpts_path, f"step_{i}.ckpt")
+                if not os.path.exists(p):
+                    if pending_fut is not None:
+                        pending_fut.result()
+                    pending_fut = fwd_state.save(p)
+
+            fwd_state = trainer.step(fwd_state, stream[i], inplace=True)
+
+        if pending_fut is not None:
+            pending_fut.result()
+    else:
+        save_fut = fwd_state.save(path0)
+        fwd_state = trainer.train(
+            fwd_state,
+            stream,
+            inplace=True,
+            save_dir=ckpts_path,
+        )
+        save_fut.result()  # ensure state0 is saved before validation loads it
 
     # Compute query gradients
     query_stream = DataStream(
@@ -238,7 +364,6 @@ def worker(
     subsets = perm.chunk(run_cfg.num_subsets)
 
     pbar = tqdm(subsets, desc="Validating", disable=global_rank != 0)
-    save_fut.result()  # ensure state0 is saved before loading in loop
 
     for subset in pbar:
         fwd_state.load(path0)
@@ -273,13 +398,20 @@ def worker(
 
 def run_magic(run_cfg: MagicConfig, dist_cfg: DistributedConfig):
     run_path = Path(run_cfg.run_path)
-    if run_path.exists():
-        if run_cfg.overwrite:
-            shutil.rmtree(run_path)
-        else:
-            raise FileExistsError(
-                f"Run path {run_path} already exists. Use --overwrite to overwrite it."
+    if run_cfg.resume:
+        if not run_path.exists():
+            raise FileNotFoundError(
+                f"Run path {run_path} does not exist. Cannot resume."
             )
+    else:
+        if run_path.exists():
+            if run_cfg.overwrite:
+                shutil.rmtree(run_path)
+            else:
+                raise FileExistsError(
+                    f"Run path {run_path} already exists. "
+                    f"Use --overwrite to overwrite it."
+                )
 
     run_path.mkdir(parents=True)
     run_cfg.save_json(run_path / "run_config.json")
