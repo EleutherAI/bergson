@@ -50,8 +50,17 @@ class DataConfig(Serializable):
     arg1=val1,arg2=val2."""
 
     chunk_length: int = 0
-    """When non-zero, concatenate and chunk the documents into fixed-length token
-    sequences of length `chunk_length`."""
+    """When positive, concatenate and chunk the documents into fixed-length token
+    sequences of this length. Incompatible with truncation and format_template."""
+
+    def __post_init__(self):
+        if self.chunk_length > 0:
+            if self.truncation:
+                raise ValueError("chunk_length and truncation cannot both be True")
+            if self.format_template:
+                raise ValueError(
+                    "chunk_length and format_template cannot both be specified"
+                )
 
 
 @dataclass
@@ -175,6 +184,13 @@ class AttributionConfig(ModelConfig, ABC):
     overwrite: bool = False
     """Whether to overwrite any existing index in the run path."""
 
+    use_tf32_matmuls: bool = False
+    """Set matmul precision to 'high'."""
+
+    def __post_init__(self):
+        if self.use_tf32_matmuls:
+            torch.set_float32_matmul_precision("high")
+
 
 @dataclass
 class AttentionConfig:
@@ -193,12 +209,6 @@ class AttentionConfig:
 @dataclass
 class IndexConfig(AttributionConfig, Serializable):
     """Config for building the index and running the model/dataset pipeline."""
-
-    use_tf32: bool = False
-    """Enable TF32 matmuls. Recommended for large FP32 runs."""
-
-    set_float32_matmul_precision_high: bool = False
-    """Set matmul precision to 'high'."""
 
     projection_dim: int = 16
     """Dimension of the random projection for the index, or 0 to disable it."""
@@ -280,22 +290,6 @@ class IndexConfig(AttributionConfig, Serializable):
     def partial_run_path(self) -> Path:
         """Temporary path to use while writing build artifacts."""
         return Path(self.run_path + ".part")
-
-    def __post_init__(self):
-        if isinstance(self.data, dict):
-            self.data = DataConfig(**self.data)
-
-        if isinstance(self.attention, dict):
-            self.attention = AttentionConfig(**self.attention)
-
-        if isinstance(self.distributed, dict):
-            self.distributed = DistributedConfig(**self.distributed)
-
-        if self.use_tf32:
-            torch.backends.cuda.matmul.allow_tf32 = True
-
-        if self.set_float32_matmul_precision_high:
-            torch.set_float32_matmul_precision("high")
 
 
 @dataclass

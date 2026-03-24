@@ -589,6 +589,7 @@ def pad_and_tensor(
     # convert to tensor
     padded_tokens = torch.tensor(padded, dtype=dtype, device=device)
     padded_labels = torch.tensor(labels, dtype=dtype, device=device)
+
     # Compute valid_masks: position i is valid if labels[i+1] != -100
     N, S = padded_tokens.shape
     valid_masks = torch.zeros(N, S, dtype=torch.bool, device=device)

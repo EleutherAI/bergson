@@ -15,13 +15,10 @@ from torch.distributed.tensor import init_device_mesh
 from torchopt.pytree import tree_iter
 from torchopt.typing import Numeric
 from tqdm import tqdm
-from transformers import PreTrainedModel
 
 from ..config import AttributionConfig, DataConfig, DistributedConfig, TrainingConfig
 from ..distributed import grad_tree, launch_distributed_run, simple_fsdp
-from ..utils import assert_type
 from ..utils.logging import wandb_log_fn
-from ..utils.math import weighted_causal_lm_ce
 from ..utils.worker_utils import (
     setup_data_pipeline,
     setup_model_and_peft,
@@ -110,17 +107,12 @@ def prepare_trainer(cfg: TrainingConfig, rank: int, world_size: int):
     model.to(f"cuda:{rank}")  # type: ignore[reportArgumentType]
 
     if target_modules:
-        # We need to access the base model to set the loss function
-        base = assert_type(PreTrainedModel, model.base_model)
-        base.loss_function = weighted_causal_lm_ce
-
         # Only train the PEFT adapter parameters
         model.requires_grad_(False)
         for name in target_modules:
             module = model.get_submodule(name)
             module.requires_grad_(True)
     else:
-        model.loss_function = weighted_causal_lm_ce
         model.requires_grad_(True)
 
     if cfg.grad_checkpointing:
