@@ -169,9 +169,7 @@ def compute_query_gradients(
     return grad_accum, float(loss_accum)
 
 
-def prepare_trainer(
-    cfg: "MagicConfig", rank: int, world_size: int, num_steps: int
-):
+def prepare_trainer(cfg: "MagicConfig", rank: int, world_size: int, num_steps: int):
     """Prepare the model, optimizer, and trainer for training."""
     torch.cuda.set_device(rank)
 

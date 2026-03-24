@@ -44,8 +44,7 @@ def test_magic_two_steps(model, dataset):
             del batch["example_weight"]
             loss = model(**batch).loss
             query_grads = {
-                k: g.detach().clone()
-                for k, g in grad_tree(loss, params).items()
+                k: g.detach().clone() for k, g in grad_tree(loss, params).items()
             }
 
             opt_grads = [
