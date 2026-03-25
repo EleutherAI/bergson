@@ -8,6 +8,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from safetensors.torch import load_file
+from simple_parsing import ArgumentParser
 from torch import Tensor
 
 from bergson.data import create_index, load_gradients
@@ -78,6 +79,7 @@ class EkfacApplicator:
             f"Loaded gradients for {len(mmap)} queries and computing IVHP..."
         )
 
+        # Forward rotation into eigenbasis: Q_S^T @ G @ Q_A
         transformed_gradients: dict[str, Tensor] = {}
         for k, v in eigen_a.items():
             gradients_noi = torch.from_numpy(mmap[k][:]).to(
@@ -91,20 +93,15 @@ class EkfacApplicator:
             )
 
         self.logger.debug("Finished G @ Q_A")
-        del eigen_a
-        gc.collect()
-        torch.cuda.empty_cache()
 
         for k, v in eigen_g.items():
             transformed_gradients[k] = self.sharded_computer._matmul(
                 vector_nsa=transformed_gradients[k].transpose(-2, -1), matrix_cb=v
             ).transpose(-2, -1)
 
-        self.logger.debug("Finished G'=Q_S.T @ G @ Q_A")
-        del eigen_g
-        gc.collect()
-        torch.cuda.empty_cache()
+        self.logger.debug("Finished G' = Q_S^T @ G @ Q_A")
 
+        # Divide by damped eigenvalues in eigenbasis
         for k, v in lambda_factor.items():
             self.sharded_computer._hadamard(
                 matrix_noi=transformed_gradients[k],
@@ -112,7 +109,28 @@ class EkfacApplicator:
                 lambda_damp_factor=self.cfg.lambda_damp_factor,
             )
 
-        self.logger.debug("Finished G'/lambda")
+        self.logger.debug("Finished G' / lambda")
+        del lambda_factor
+        gc.collect()
+
+        # Rotate back to parameter space: Q_S @ G' @ Q_A^T
+        for k, v in eigen_g.items():
+            transformed_gradients[k] = self.sharded_computer._transpose_matmul(
+                vector_nsa=transformed_gradients[k].transpose(-2, -1), matrix_cb=v
+            ).transpose(-2, -1)
+
+        self.logger.debug("Finished Q_S @ G'")
+        del eigen_g
+        gc.collect()
+
+        for k, v in eigen_a.items():
+            transformed_gradients[k] = self.sharded_computer._transpose_matmul(
+                vector_nsa=transformed_gradients[k], matrix_cb=v
+            )
+
+        self.logger.debug("Finished H^{-1} G = Q_S @ (G' / lambda) @ Q_A^T")
+        del eigen_a
+        gc.collect()
 
         torch.cuda.synchronize()
         for k, v in transformed_gradients.items():
@@ -123,18 +141,14 @@ class EkfacApplicator:
         self.logger.info(f"Saved IVHP gradients to {self.cfg.run_path}")
 
 
-if __name__ == "__main__":
+def apply_worker(
+    rank: int,
+    local_rank: int,
+    world_size: int,
+    cfg: EkfacConfig,
+):
+    """Worker function for distributed IVHP computation."""
     from datetime import timedelta
-
-    from simple_parsing import ArgumentParser
-
-    parser = ArgumentParser()
-    parser.add_arguments(EkfacConfig, dest="cfg")
-    args = parser.parse_args()
-
-    rank = int(os.environ.get("RANK", 0))
-    local_rank = int(os.environ.get("LOCAL_RANK", 0))
-    world_size = int(os.environ.get("WORLD_SIZE", 1))
 
     if torch.cuda.is_available():
         torch.cuda.set_device(local_rank)
@@ -152,8 +166,21 @@ if __name__ == "__main__":
             world_size=world_size,
         )
 
-    applicator = EkfacApplicator(args.cfg)
+    applicator = EkfacApplicator(cfg)
     applicator.compute_ivhp_sharded()
 
-    if dist.is_initialized():
-        dist.destroy_process_group()
+
+if __name__ == "__main__":
+    from bergson.config import DistributedConfig
+    from bergson.distributed import launch_distributed_run
+
+    parser = ArgumentParser()
+    parser.add_arguments(EkfacConfig, dest="cfg")
+    args = parser.parse_args()
+
+    launch_distributed_run(
+        "apply_hessian",
+        apply_worker,
+        [args.cfg],
+        DistributedConfig(),
+    )

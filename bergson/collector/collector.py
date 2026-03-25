@@ -157,7 +157,9 @@ class HookCollectorBase(ContextDecorator, ABC):
             if target_modules is not None and name not in target_modules:
                 continue
 
-            if filter_modules and fnmatchcase(name, filter_modules):
+            if filter_modules and any(
+                fnmatchcase(name, pat.strip()) for pat in filter_modules.split(",")
+            ):
                 continue
 
             collect_bias = getattr(layer, "bias", None) is not None and include_bias
@@ -639,7 +641,11 @@ class CollectorComputer:
         self.rank = dist.get_rank() if dist.is_initialized() else 0
         self.world_size = dist.get_world_size() if dist.is_initialized() else 1
 
-        self.logger.info("Computing with collector for target modules.")
+        self.logger.info(
+            "Tracking %d modules: %s",
+            len(collector.target_info),
+            list(collector.target_info.keys()),
+        )
 
     def _setup_profiler(self):
         """Set up profiler if profiling is enabled."""

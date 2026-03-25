@@ -12,6 +12,7 @@ def weighted_causal_lm_ce(
     *,
     example_weight: Tensor | None = None,
     ignore_index: int = -100,
+    valid_mask: Tensor | None = None,
     vocab_size: int | None = None,
     **kwargs,  # Ignored
 ) -> Tensor:
@@ -43,15 +44,15 @@ def weighted_causal_lm_ce(
     tok_loss = F.cross_entropy(
         shift_logits.view(-1, V),
         shift_labels.view(-1),
-        reduction="none",
+        reduction="mean" if example_weight is None else "none",
         ignore_index=ignore_index,
-    ).view(
-        B, T - 1
-    )  # [B, T-1]
+    )
 
     # Implicitly assume the weights are all ones
     if example_weight is None:
-        return tok_loss.mean()
+        return tok_loss
+    else:
+        tok_loss = tok_loss.view(B, T - 1)  # [B, T-1]
 
     # Per token weights
     if example_weight.shape == (B, T):
@@ -59,7 +60,8 @@ def weighted_causal_lm_ce(
     else:
         w = example_weight.to(tok_loss.dtype).view(B, 1)  # [B,1]
 
-    return (tok_loss * w).mean()
+    denom = valid_mask[:, :-1].sum() if valid_mask is not None else T - 1
+    return (tok_loss * w).sum() / denom
 
 
 def reshape_to_nearest_square(a: Tensor) -> Tensor:

@@ -43,13 +43,14 @@ class DataStream:
         if i < 0 or i >= len(self):
             raise IndexError("DataStream index out of range")
 
-        indices = slice(
-            i + self.rank,
-            min(i + self.rank + self.batch_size, len(self.dataset)),
-            self.world_size,
+        rng = range(
+            i * self.batch_size,
+            min((i + 1) * self.batch_size, len(self.dataset)),
         )
+        indices = list(rng)[self.rank :: self.world_size]
+
         batch = self.dataset[indices]
-        x, y, _ = pad_and_tensor(
+        x, y, valid_mask = pad_and_tensor(
             batch["input_ids"],
             labels=batch.get("labels"),
             device=self.device,
@@ -61,6 +62,7 @@ class DataStream:
             "input_ids": x,
             "labels": y,
             "example_weight": self.weights[indices],
+            "valid_mask": valid_mask,
         }
 
     def __iter__(self):

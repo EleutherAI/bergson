@@ -1,5 +1,6 @@
 import math
 import os
+from collections.abc import Callable
 from concurrent.futures import Future
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -243,6 +244,7 @@ class Trainer:
                 loss = outputs
 
             assert isinstance(loss, torch.Tensor), "Loss must be a Tensor"
+            self._last_loss = loss.detach().item()
             grads = grad_tree(loss, params, create_graph=trace)
 
         updates, new_state = self.optimizer.update(
@@ -266,6 +268,7 @@ class Trainer:
         save_dir: str | None = None,
         save_mode: Literal["linear", "sqrt"] = "sqrt",
         trace: bool = False,
+        log_fn: Callable[[int, float], None] | None = None,
     ) -> TrainerState:
         # Make sure the save directory exists
         if save_dir is not None:
@@ -293,6 +296,9 @@ class Trainer:
                 pending_save = state.save(p)
 
             state = self.step(state, x, inplace=inplace, trace=trace)
+
+            if log_fn is not None:
+                log_fn(i, self._last_loss)
 
         if pending_save is not None:
             pending_save.result()
