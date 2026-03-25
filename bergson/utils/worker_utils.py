@@ -28,7 +28,6 @@ from bergson.data import (
 )
 from bergson.format import apply_format
 from bergson.gradients import GradientProcessor, Normalizer
-from bergson.normalizer.fit_normalizers import fit_normalizers
 from bergson.utils import assert_type, get_layer_list, weighted_causal_lm_ce
 
 BIG_NUM = np.iinfo(np.int64).max
