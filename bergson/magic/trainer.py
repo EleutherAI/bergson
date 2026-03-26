@@ -11,6 +11,7 @@ from typing import Literal
 import torch
 import torch.distributed as dist
 import torch.distributed.checkpoint as dcp
+from torch.distributed.tensor import DTensor
 import torchopt
 from torch import nn
 from torchopt.pytree import tree_flatten_with_path, tree_iter, tree_map
@@ -18,7 +19,7 @@ from torchopt.typing import GradientTransformation, OptState
 from tqdm.auto import tqdm
 
 from ..data import sorted_checkpoints
-from ..distributed import grad_tree, shallow_copy
+from ..distributed import allreduce_avg, grad_tree, shallow_copy
 from .data_stream import DataStream
 from .rtl_tqdm import RtlTqdm
 from .swap import swap_parameters
@@ -261,6 +262,16 @@ class Trainer:
             assert isinstance(loss, torch.Tensor), "Loss must be a Tensor"
             self._last_loss = loss.detach().item()
             grads = grad_tree(loss, params, create_graph=trace)
+
+        # Average gradients across ranks for DDP (non-FSDP) distributed training.
+        # FSDP handles this via DTensor placements, but plain DDP with autograd.grad
+        # bypasses DDP hooks, so we need an explicit all-reduce. We use a
+        # differentiable all-reduce so the VJP in the MAGIC backward correctly
+        # propagates through the gradient averaging.
+        if dist.is_initialized() and not any(
+            isinstance(g, DTensor) for g in grads.values()
+        ):
+            grads = {k: allreduce_avg(g) for k, g in grads.items()}
 
         updates, new_state = self.optimizer.update(
             grads, state.opt_state, inplace=inplace, params=state.params

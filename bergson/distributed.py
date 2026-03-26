@@ -25,6 +25,32 @@ from torch.utils.checkpoint import (
 from bergson.config import DistributedConfig
 
 
+class _AllReduceAvg(torch.autograd.Function):
+    """All-reduce average that is differentiable.
+
+    Forward: replaces each rank's tensor with the mean across ranks.
+    Backward: all-reduce averages the incoming gradient, since
+    d/dx_i mean(x_0, ..., x_{n-1}) = 1/n on each rank.
+    """
+
+    @staticmethod
+    def forward(ctx, tensor: torch.Tensor) -> torch.Tensor:
+        out = tensor.clone()
+        dist.all_reduce(out, op=dist.ReduceOp.AVG)
+        return out
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor) -> torch.Tensor:
+        return grad_output / dist.get_world_size()
+
+
+def allreduce_avg(tensor: torch.Tensor) -> torch.Tensor:
+    """Differentiable all-reduce average. No-op when dist is not initialized."""
+    if not dist.is_initialized():
+        return tensor
+    return _AllReduceAvg.apply(tensor)
+
+
 def grad_tree(
     outputs: torch.Tensor,
     inputs: Mapping[str, torch.Tensor],

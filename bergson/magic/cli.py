@@ -57,9 +57,6 @@ class MagicConfig(AttributionConfig, TrainingConfig):
     resume: bool = False
     """Resume a previously interrupted run from the last checkpoint."""
 
-    def __post_init__(self):
-        assert not self.fsdp, "PyTorch FSDP is not currently supported for MAGIC."
-
 
 def compute_query_gradients(
     fwd_state: TrainerState,
@@ -184,15 +181,13 @@ def get_schedule(lr_cfg, num_steps: int):
 def prepare_trainer(
     cfg: TrainingConfig,
     rank: int,
-    world_size: int,
     schedule: Callable,
 ):
     """Prepare the model, optimizer, and trainer for training."""
-    torch.cuda.set_device(rank)
-
     model, target_modules = setup_model_and_peft(
         cfg,
         attn_implementation="eager",
+        apply_fsdp=False,
     )
     model.to(f"cuda:{rank}")  # type: ignore[reportArgumentType]
 
@@ -210,9 +205,9 @@ def prepare_trainer(
             gradient_checkpointing_kwargs=dict(use_reentrant=False),
         )
 
-    if world_size > 1:
+    if cfg.fsdp and dist.is_initialized():
         apply_dtensor_patch()
-        mesh = init_device_mesh("cuda", (world_size,))
+        mesh = init_device_mesh("cuda", (dist.get_world_size(),))
         with mesh:
             model = simple_fsdp(model)
 
@@ -235,6 +230,8 @@ def worker(
     num_query_docs: int,
     run_cfg: MagicConfig,
 ):
+    torch.cuda.set_device(rank)
+
     if world_size > 1:
         addr = os.environ.get("MASTER_ADDR", "localhost")
         port = os.environ.get("MASTER_PORT", "29500")
@@ -244,7 +241,6 @@ def worker(
             init_method=f"tcp://{addr}:{port}",
             device_id=torch.device(f"cuda:{rank}"),
             rank=rank,
-            timeout=timedelta(minutes=10),
             world_size=world_size,
         )
 
@@ -281,7 +277,6 @@ def worker(
     trainer, fwd_state, model = prepare_trainer(
         run_cfg,
         rank,
-        world_size,
         schedule,
     )
 
@@ -385,7 +380,7 @@ def worker(
         stream.weights[subset] = 0.0
 
         for x in stream:
-            fwd_state = trainer.step(fwd_state, x)
+            fwd_state = trainer.step(fwd_state, x, inplace=True)
 
         with fwd_state.activate(model), torch.no_grad():
             loss = torch.tensor(0.0, device=stream.weights.device)

@@ -140,6 +140,7 @@ def apply_force_math_sdp(cfg: ModelConfig) -> None:
 def setup_model_and_peft(
     cfg: ModelConfig,
     device_map_auto: bool = False,
+    apply_fsdp: bool = True,
     **model_kwargs,
 ) -> tuple[PreTrainedModel, set | None]:
     """Handle model loading, quantization, FSDP, and PEFT detection"""
@@ -191,7 +192,7 @@ def setup_model_and_peft(
             cfg.model,
             device_map=device_map,
             quantization_config=quantization_config,
-            torch_dtype=dtype,
+            dtype=dtype,
             revision=cfg.revision,
             **model_kwargs,
         )
@@ -203,7 +204,7 @@ def setup_model_and_peft(
             peft_config.base_model_name_or_path,  # type: ignore
             device_map=device_map,
             quantization_config=quantization_config,
-            torch_dtype=dtype,
+            dtype=dtype,
             revision=cfg.revision,
             **model_kwargs,
         )
@@ -236,7 +237,7 @@ def setup_model_and_peft(
     model.get_input_embeddings().requires_grad_(True)  # type: ignore
 
     # Apply FSDP if needed
-    if cfg.fsdp:
+    if cfg.fsdp and apply_fsdp:
         for layer in get_layer_list(model):  # type: ignore
             fully_shard(layer)
         fully_shard(model)
