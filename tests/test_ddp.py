@@ -67,9 +67,7 @@ def _run_magic(model, dataset, device="cpu", ckpt_dir=None):
         ckpt_dir = _tmpdir.name
 
     try:
-        fwd_state = trainer.train(
-            fwd_state, stream, inplace=True, save_dir=ckpt_dir
-        )
+        fwd_state = trainer.train(fwd_state, stream, inplace=True, save_dir=ckpt_dir)
 
         with fwd_state.activate(model) as params:
             batch = stream[0]
@@ -120,9 +118,7 @@ def _ddp_worker(rank, world_size, port, dataset, result_dict, ckpt_dir):
         )
 
         model = _make_model().to(f"cuda:{rank}")
-        scores = _run_magic(
-            model, dataset, device=f"cuda:{rank}", ckpt_dir=ckpt_dir
-        )
+        scores = _run_magic(model, dataset, device=f"cuda:{rank}", ckpt_dir=ckpt_dir)
         result_dict[rank] = scores
     finally:
         if dist.is_initialized():

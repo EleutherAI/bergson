@@ -11,9 +11,9 @@ from typing import Literal
 import torch
 import torch.distributed as dist
 import torch.distributed.checkpoint as dcp
-from torch.distributed.tensor import DTensor
 import torchopt
 from torch import nn
+from torch.distributed.tensor import DTensor
 from torchopt.pytree import tree_flatten_with_path, tree_iter, tree_map
 from torchopt.typing import GradientTransformation, OptState
 from tqdm.auto import tqdm
