@@ -49,7 +49,7 @@ def run_pipeline(tmp_path, model_name, token_batch_size, doc_tokens, truncation)
         skip_preconditioners=True,
         data=DataConfig(dataset=documents_file, truncation=truncation),
     )
-    ds = setup_data_pipeline(cfg)
+    ds, _ = setup_data_pipeline(cfg)
     batches = allocate_batches(ds["length"][:], token_batch_size)
     model = AutoModelForCausalLM.from_pretrained(model_name)
     collect_gradients(
@@ -84,6 +84,7 @@ def test_short_documents(tmp_path, model, token_batch_size, truncation):
     max_position_embeddings = get_max_position_embeddings(model)
     doc_tokens = min(token_batch_size, max_position_embeddings) // 2
     ds = run_pipeline(tmp_path, model, token_batch_size, doc_tokens, truncation)
+
     assert max(ds["length"]) == doc_tokens
 
 
@@ -133,7 +134,7 @@ def test_long_documents_truncated(tmp_path, model, token_batch_size):
 def test_long_documents_fail_without_truncation(tmp_path, model, token_batch_size):
     """Without truncation, we fail when a document exceeds token_batch_size."""
     doc_tokens = token_batch_size + 1
-    with pytest.warns(UserWarning, match="max_position_embeddings|token_batch_size"):
+    with pytest.warns(UserWarning, match="longer than the model can handle"):
         with pytest.raises(RuntimeError, match="too long"):
             run_pipeline(
                 tmp_path, model, token_batch_size, doc_tokens, truncation=False
@@ -150,7 +151,7 @@ def test_long_documents_warn_without_truncation(tmp_path):
     doc_tokens = (
         PYTHIA_MAX_POS_EMB * 2
     )  # max_position_embeddings < doc_tokens < token_batch_size
-    with pytest.warns(UserWarning, match="max_position_embeddings"):
+    with pytest.warns(UserWarning, match="longer than the model can handle"):
         run_pipeline(tmp_path, PYTHIA, token_batch_size, doc_tokens, truncation=False)
 
 
@@ -161,5 +162,5 @@ def test_token_batch_size_exceeds_model_max_length(tmp_path):
     """
     token_batch_size = GPT2_MAX_POS_EMB * 2
     doc_tokens = GPT2_MAX_POS_EMB // 2
-    with pytest.raises(ValueError, match="model_max_length"):
+    with pytest.raises(ValueError, match="exceeds model max length"):
         run_pipeline(tmp_path, GPT2, token_batch_size, doc_tokens, truncation=True)
