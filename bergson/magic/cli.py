@@ -1,3 +1,4 @@
+import csv
 import math
 import os
 import shutil
@@ -10,7 +11,7 @@ import torch
 import torch.distributed as dist
 import torchopt
 from datasets import Dataset
-from scipy.stats import describe, spearmanr
+from scipy.stats import describe, pearsonr, spearmanr
 from simple_parsing import ArgumentParser, field
 from torch.distributed.tensor import init_device_mesh
 from torchopt.pytree import tree_iter
@@ -179,6 +180,30 @@ def get_schedule(lr_cfg, num_steps: int):
         raise ValueError(f"Unknown lr_scheduler_type: {scheduler_type!r}")
 
     return _schedule
+
+
+class CSVWriter:
+    """CSV writer that no-ops when disabled."""
+
+    def __init__(self, path: str, columns: list[str], enabled: bool = True):
+        self.path = path
+        if enabled:
+            self._file = open(path, "w", newline="")
+            self._writer = csv.writer(self._file)
+            self._writer.writerow(columns)
+        else:
+            self._file = None
+            self._writer = None
+
+    def writerow(self, *args):
+        if self._writer is None or self._file is None:
+            return
+        self._writer.writerow([*args])
+        self._file.flush()
+
+    def close(self):
+        if self._file is not None:
+            self._file.close()
 
 
 def prepare_trainer(
@@ -377,8 +402,15 @@ def worker(
     perm = torch.randperm(len(stream.weights), generator=gen)
     subsets = perm.chunk(run_cfg.num_subsets)
 
+    csv_path = os.path.join(run_cfg.run_path, "validation.csv")
+    val_csv_writer = CSVWriter(
+        csv_path,
+        columns=["subset", "diff", "score_sum"],
+        enabled=global_rank == 0,
+    )
+
     pbar = tqdm(subsets, desc="Validating", disable=global_rank != 0)
-    for subset in pbar:
+    for i, subset in enumerate(pbar):
         fwd_state.load(path0)
 
         stream.weights.fill_(1.0)
@@ -397,16 +429,43 @@ def worker(
         if world_size > 1:
             dist.all_reduce(loss, op=dist.ReduceOp.AVG)
 
-        diffs.append(baseline - loss.item())
-        score_sums.append(scores[subset].sum().item())
+        diff = baseline - loss.item()
+        score_sum = scores[subset].sum().item()
+        val_csv_writer.writerow(i, diff, score_sum)
 
-        corr = spearmanr(diffs, score_sums)
         if global_rank == 0:
-            pbar.set_postfix({"rho": corr.statistic})
+            diffs.append(diff)
+            score_sums.append(score_sum)
 
+            if len(diffs) >= 2:
+                sp = spearmanr(diffs, score_sums)
+                pe = pearsonr(diffs, score_sums)
+                pbar.set_postfix({"rho": sp.statistic, "r": pe.statistic})
+            else:
+                pbar.set_postfix({"rho": "n/a", "r": "n/a"})
+
+    val_csv_writer.close()
     if global_rank == 0:
-        corr = spearmanr(diffs, score_sums)
-        print(f"Final Spearman correlation: {corr.statistic:.4f} (p={corr.pvalue:.2e})")
+        sp = spearmanr(diffs, score_sums)
+        pe = pearsonr(diffs, score_sums)
+        print(f"Final Spearman correlation: {sp.statistic:.4f} (p={sp.pvalue:.2e})")
+        print(f"Final Pearson correlation:  {pe.statistic:.4f} (p={pe.pvalue:.2e})")
+        print(f"Saved validation data to {csv_path}")
+
+        summary_csv_writer = CSVWriter(
+            os.path.join(run_cfg.run_path, "summary.csv"),
+            columns=[
+                "spearman_corr",
+                "spearman_p",
+                "pearson_corr",
+                "pearson_p",
+                "N",
+                "baseline_loss",
+            ],
+        )
+        summary_csv_writer.writerow(
+            sp.statistic, sp.pvalue, pe.statistic, pe.pvalue, len(subsets), baseline
+        )
 
 
 def run_magic(run_cfg: MagicConfig):

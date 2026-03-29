@@ -751,6 +751,10 @@ def tokenize_and_chunk(
         ]
         return {"input_ids": token_chunks, "doc_ids": doc_chunks}
 
+    # Cap parallelism so each worker gets enough documents to fill many chunks,
+    # since tail tokens that don't fill a chunk are dropped per-worker.
+    min_docs_per_worker = chunk_size * 4
+    num_proc = min(num_proc, max(len(tokenized) // min_docs_per_worker, 1))
     bs = min(10_000, len(tokenized) // num_proc)
     chunked = tokenized.map(
         chunk_batch,
@@ -763,6 +767,21 @@ def tokenize_and_chunk(
     )
     # Make sure HuggingFace didn't change the dataset type!
     assert isinstance(chunked, type(dataset))
+
+    # Warn if chunking dropped a significant number of documents
+    n_docs = len(dataset)
+    if n_docs > 0 and "doc_ids" in chunked.column_names:
+        represented = set()
+        for doc_ids in chunked["doc_ids"]:
+            represented.update(doc_ids)
+        n_dropped = n_docs - len(represented)
+        if n_dropped > 0:
+            pct = n_dropped / n_docs * 100
+            print(
+                f"Warning: chunking dropped {n_dropped}/{n_docs} documents "
+                f"({pct:.1f}%) that didn't fill a {chunk_size}-token chunk "
+                f"when using a document batch size of {bs}."
+            )
 
     # Restore original logging level
     logging.set_verbosity(original_verbosity)
