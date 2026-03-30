@@ -11,9 +11,9 @@ from typing import Literal
 import torch
 import torch.distributed as dist
 import torch.distributed.checkpoint as dcp
+import torch.distributed.tensor  # noqa: F401 — register DTensor for torch.load
 import torchopt
 from torch import nn
-import torch.distributed.tensor  # noqa: F401 — register DTensor for torch.load
 from torchopt.pytree import tree_flatten_with_path, tree_iter, tree_map
 from torchopt.typing import GradientTransformation, OptState
 from tqdm.auto import tqdm
