@@ -57,6 +57,9 @@ class MagicConfig(AttributionConfig, TrainingConfig):
     resume: bool = False
     """Resume a previously interrupted run from the last checkpoint."""
 
+    backward_save_every: int = 0
+    """How often (in steps) to save backward state for resume."""
+
     def __post_init__(self):
         assert not self.fsdp, "PyTorch FSDP is not currently supported for MAGIC."
 
@@ -352,6 +355,8 @@ def worker(
         fwd_state,
         debug=run_cfg.debug,
         inplace=True,
+        resume=run_cfg.resume,
+        save_every=run_cfg.backward_save_every,
     )
     if world_size > 1:
         dist.all_reduce(bwd_state.weight_grads, op=dist.ReduceOp.SUM)
