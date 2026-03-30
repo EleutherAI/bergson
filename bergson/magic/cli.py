@@ -254,15 +254,20 @@ def worker(
     # Ensure total effective batch size is divisible by world size
     assert run_cfg.batch_size % world_size == 0
 
-    # Drop items that are nondivisible by batch_size to prevent deadlock
+    # Pad train dataset to be divisible by batch_size (weight=0 for padding)
     remainder = len(train_dataset) % run_cfg.batch_size
+    pad_count = 0
     if remainder:
+        pad_count = run_cfg.batch_size - remainder
         total = len(train_dataset)
-        train_dataset = train_dataset.select(range(total - remainder))
+        pad_indices = list(range(total)) + [total - 1] * pad_count
+        train_dataset = train_dataset.select(pad_indices)
+        if "doc_ids" not in train_dataset.column_names:
+            num_train_docs = len(train_dataset)
         if global_rank == 0:
             print(
-                f"Train: dropped {remainder}/{total} examples "
-                f"({remainder / total * 100:.1f}%) to even batches"
+                f"Train: padded {pad_count}/{total} examples "
+                f"(weight=0) to fill last batch"
             )
 
     stream = DataStream(
@@ -272,6 +277,10 @@ def worker(
         input_key=run_cfg.data.prompt_column,
         num_docs=num_train_docs,
     )
+
+    if pad_count:
+        with torch.no_grad():
+            stream.weights.data[-pad_count:] = 0.0
 
     log_fn = None
     if run_cfg.wandb_project and global_rank == 0:
@@ -357,6 +366,8 @@ def worker(
         dist.all_reduce(bwd_state.weight_grads, op=dist.ReduceOp.SUM)
 
     scores = bwd_state.weight_grads.cpu()
+    if pad_count:
+        scores = scores[:-pad_count]
     if global_rank == 0:
         print(f"Baseline loss: {baseline}")
 
@@ -374,7 +385,8 @@ def worker(
     score_sums = []
 
     gen = torch.Generator().manual_seed(run_cfg.seed)
-    perm = torch.randperm(len(stream.weights), generator=gen)
+    num_real = len(stream.weights) - pad_count
+    perm = torch.randperm(num_real, generator=gen)
     subsets = perm.chunk(run_cfg.num_subsets)
 
     pbar = tqdm(subsets, desc="Validating", disable=global_rank != 0)
@@ -382,6 +394,8 @@ def worker(
         fwd_state.load(path0)
 
         stream.weights.fill_(1.0)
+        if pad_count:
+            stream.weights.data[-pad_count:] = 0.0
         stream.weights[subset] = 0.0
 
         for x in stream:
@@ -424,6 +438,10 @@ def run_magic(run_cfg: MagicConfig):
     run_cfg.save_yaml(run_path / "run_config.yaml")
 
     train_ds, train_n = setup_data_pipeline(run_cfg)
+
+    # shuffle the train_ds with the seed.
+    train_ds = train_ds.shuffle(seed=run_cfg.seed)
+
     query_ds, query_n = setup_data_pipeline(run_cfg, run_cfg.query)
 
     launch_distributed_run(
