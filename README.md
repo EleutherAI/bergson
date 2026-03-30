@@ -50,7 +50,7 @@ bergson trackstar runs/trackstar --model EleutherAI/pythia-14m --query.dataset N
 To use MAGIC on a GPT-2 WikiText fine-tune:
 
 ```bash
-bergson magic examples/gpt2_wikitext.yaml
+bergson magic examples/magic/gpt2_wikitext_tiny.yaml
 ```
 
 # Usage
