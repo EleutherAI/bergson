@@ -439,7 +439,7 @@ def run_magic(run_cfg: MagicConfig):
 
     train_ds, train_n = setup_data_pipeline(run_cfg)
 
-    # shuffle the train_ds with the seed.
+    # Shuffle the train_ds with the seed.
     train_ds = train_ds.shuffle(seed=run_cfg.seed)
 
     query_ds, query_n = setup_data_pipeline(run_cfg, run_cfg.query)
