@@ -10,7 +10,7 @@ import torch
 import torch.distributed as dist
 import torchopt
 from datasets import Dataset
-from scipy.stats import describe, spearmanr
+from scipy.stats import describe, pearsonr, spearmanr
 from simple_parsing import ArgumentParser, field
 from torch.distributed.tensor import init_device_mesh
 from torchopt.pytree import tree_iter
@@ -400,13 +400,22 @@ def worker(
         diffs.append(baseline - loss.item())
         score_sums.append(scores[subset].sum().item())
 
-        corr = spearmanr(diffs, score_sums)
+        spearman = spearmanr(diffs, score_sums)
+        pearson_statistic = (
+            pearsonr(diffs, score_sums).statistic if len(diffs) > 1 else "..."
+        )
         if global_rank == 0:
-            pbar.set_postfix({"rho": corr.statistic})
+            pbar.set_postfix({"rho": spearman.statistic, "r": pearson_statistic})
 
     if global_rank == 0:
-        corr = spearmanr(diffs, score_sums)
-        print(f"Final Spearman correlation: {corr.statistic:.4f} (p={corr.pvalue:.2e})")
+        spearman = spearmanr(diffs, score_sums)
+        rho = spearman.statistic
+        print(f"Final Spearman correlation: {rho:.4f} (p={spearman.pvalue:.2e})")
+
+        if len(diffs) > 1:
+            pearson = pearsonr(diffs, score_sums)
+            r = pearson.statistic
+            print(f"Final Pearson correlation:  {r:.4f} (p={pearson.pvalue:.2e})")
 
 
 def run_magic(run_cfg: MagicConfig):
