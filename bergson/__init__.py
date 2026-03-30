@@ -1,5 +1,7 @@
 __version__ = "0.9.0"
 
+import logging
+
 from .builder import Builder
 from .collection import collect_gradients
 from .collector.collector import CollectorComputer
@@ -26,6 +28,9 @@ from .query.attributor import Attributor
 from .query.faiss_index import FaissConfig
 from .score.scorer import Scorer
 from .utils.gradcheck import FiniteDiff
+
+# Silence noisy HF logs
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 __all__ = [
     "collect_gradients",

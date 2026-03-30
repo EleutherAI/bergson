@@ -1,8 +1,8 @@
 import math
 import os
 import shutil
+import time
 from dataclasses import asdict, dataclass
-from datetime import timedelta
 from pathlib import Path
 from typing import Callable, Literal
 
@@ -12,6 +12,7 @@ import torchopt
 from datasets import Dataset
 from scipy.stats import describe, spearmanr
 from simple_parsing import ArgumentParser, field
+from torch.distributed.nn.functional import all_reduce as differentiable_all_reduce
 from torch.distributed.tensor import init_device_mesh
 from torchopt.pytree import tree_iter
 from tqdm import tqdm
@@ -63,6 +64,7 @@ def compute_query_gradients(
     model: torch.nn.Module,
     query_stream: DataStream,
     method: str = "mean",
+    fsdp: bool = False,
 ) -> tuple[dict[str, torch.Tensor], float]:
     """Compute reduced query gradients over the query dataset.
 
@@ -71,7 +73,7 @@ def compute_query_gradients(
     """
     grad_accum: dict[str, torch.Tensor] | None = None
     loss_accum = 0.0
-    n_batches = 0
+    n_batches = len(query_stream)
 
     with fwd_state.activate(model) as params:
         for batch in tqdm(query_stream, desc="Query"):
@@ -85,8 +87,7 @@ def compute_query_gradients(
                 for k, g in grads.items():
                     grad_accum[k] += g.detach()
 
-            loss_accum += loss.detach() / len(query_stream)
-            n_batches += 1
+            loss_accum += loss.detach()
 
     assert grad_accum is not None, "Query stream was empty"
 
@@ -94,8 +95,14 @@ def compute_query_gradients(
         for k in grad_accum:
             grad_accum[k] /= n_batches
 
+        loss_accum /= n_batches
+
     if dist.is_initialized():
-        dist.all_reduce(loss_accum, op=dist.ReduceOp.AVG)
+        if not fsdp:
+            for k in grad_accum:
+                differentiable_all_reduce(grad_accum[k], op=dist.ReduceOp.SUM)
+        # Loss is never a DTensor
+        dist.all_reduce(loss_accum, op=dist.ReduceOp.SUM)
 
     return grad_accum, float(loss_accum)
 
@@ -298,6 +305,7 @@ def worker(
         save_mode=run_cfg.save_mode,
         log_fn=log_fn,
         resume=resume,
+        fsdp=run_cfg.fsdp,
     )
 
     if save_fut is not None:
@@ -329,7 +337,7 @@ def worker(
         num_docs=num_query_docs,
     )
     query_grads, baseline = compute_query_gradients(
-        fwd_state, model, query_stream, run_cfg.query_method
+        fwd_state, model, query_stream, run_cfg.query_method, run_cfg.fsdp
     )
 
     stream.requires_grad = True
@@ -347,6 +355,7 @@ def worker(
         fwd_state,
         debug=run_cfg.debug,
         inplace=True,
+        fsdp=run_cfg.fsdp,
     )
     if world_size > 1:
         dist.all_reduce(bwd_state.weight_grads, op=dist.ReduceOp.SUM)
@@ -375,12 +384,13 @@ def worker(
     pbar = tqdm(subsets, desc="Validating", disable=global_rank != 0)
     for subset in pbar:
         fwd_state.load(path0)
+        fwd_state.detach_()
 
         stream.weights.fill_(1.0)
         stream.weights[subset] = 0.0
 
         for x in stream:
-            fwd_state = trainer.step(fwd_state, x, inplace=True)
+            fwd_state = trainer.step(fwd_state, x, inplace=True, fsdp=run_cfg.fsdp)
 
         with fwd_state.activate(model), torch.no_grad():
             loss = torch.tensor(0.0, device=stream.weights.device)
@@ -406,20 +416,35 @@ def worker(
 
 def run_magic(run_cfg: MagicConfig):
     run_path = Path(run_cfg.run_path)
-    if run_path.exists() and not run_cfg.resume:
-        if run_cfg.overwrite:
-            shutil.rmtree(run_path)
-        else:
-            raise FileExistsError(
-                f"Run path {run_path} already exists. "
-                f"Use --overwrite to overwrite it."
-            )
+    is_main_node = int(os.environ.get("SLURM_PROCID", 0)) == 0
+    multi_node = run_cfg.distributed.nnode > 1
 
-    run_path.mkdir(parents=True, exist_ok=True)
-    run_cfg.save_yaml(run_path / "run_config.yaml")
+    if is_main_node:
+        if run_path.exists() and not run_cfg.resume:
+            if run_cfg.overwrite:
+                shutil.rmtree(run_path)
+            else:
+                raise FileExistsError(
+                    f"Run path {run_path} already exists. "
+                    f"Use --overwrite to overwrite it."
+                )
+
+        run_path.mkdir(parents=True, exist_ok=True)
+        run_cfg.save_yaml(run_path / "run_config.yaml")
+
+    # HF datasets caches are not safe for concurrent writers, so the main node
+    # must finish populating the cache before others read from it.
+    barrier = run_path / ".preprocess_done" if multi_node else None
+    if barrier is not None and not is_main_node:
+        run_path.mkdir(parents=True, exist_ok=True)
+        while not barrier.exists():
+            time.sleep(0.5)
 
     train_ds, train_n = setup_data_pipeline(run_cfg)
     query_ds, query_n = setup_data_pipeline(run_cfg, run_cfg.query)
+
+    if barrier is not None and is_main_node:
+        barrier.touch()
 
     launch_distributed_run(
         "run_magic",
