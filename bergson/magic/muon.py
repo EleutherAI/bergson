@@ -97,7 +97,7 @@ def muon(
         state: OptState,
         *,
         params: Params | None = None,
-        inplace: bool = True,
+        inplace: bool = False,
     ) -> tuple[Updates, OptState]:
         assert params is not None, "Muon needs params for WD and LR adjustment"
         nonlocal first_call
@@ -145,13 +145,7 @@ def muon(
                     )
                     ns_input = update.add(new_trace, alpha=momentum)
 
-                ns = _zeropower_via_newtonschulz(
-                    ns_input,
-                    (DEFAULT_A, DEFAULT_B, DEFAULT_C),
-                    DEFAULT_NS_STEPS,
-                    EPS,
-                    inplace=inplace,
-                )
+                ns = _zeropower_via_newtonschulz(ns_input, inplace=inplace)
                 ratio = _adjust_lr(1.0, "match_rms_adamw", param.shape)
                 ns_update = ns.to(update.dtype) * ratio
                 if weight_decay != 0.0:
@@ -222,13 +216,7 @@ DEFAULT_C = 2.0315
 DEFAULT_NS_STEPS = 5
 
 
-def _zeropower_via_newtonschulz(
-    grad: Tensor,
-    ns_coefficients: tuple[float, float, float],
-    ns_steps: int,
-    eps: float,
-    inplace: bool = True,
-) -> Tensor:
+def _zeropower_via_newtonschulz(grad: Tensor, inplace: bool = False) -> Tensor:
     """
     Newton-Schulz iteration to compute the zeroth power / orthogonalization of G. We
     opt to use a quintic iteration whose coefficients are selected to maximize the
@@ -242,28 +230,21 @@ def _zeropower_via_newtonschulz(
     Implementation reference: https://github.com/KellerJordan/Muon/blob/master/muon.py
     with suggestions by @jxbz, @leloykun, and @YouJiacheng.
     """
-    if ns_steps >= 100:
-        raise ValueError(
-            "Number of steps must be less than 100 for computational efficiency"
-        )
-
     if len(grad.shape) != 2:
         raise ValueError("Input tensor gradient must be a 2D matrix")
-    if len(ns_coefficients) != 3:
-        raise ValueError("Coefficients must be a tuple of exactly 3 values")
-    a, b, c = ns_coefficients
-    ortho_grad = grad.bfloat16()
+    a, b, c = DEFAULT_A, DEFAULT_B, DEFAULT_C
+    ortho_grad = grad
     if grad.size(0) > grad.size(1):
         ortho_grad = ortho_grad.T
     # Ensure spectral norm is at most 1
-    denom = ortho_grad.norm().clamp(min=eps)
+    denom = ortho_grad.norm().clamp(min=EPS)
     if inplace:
         ortho_grad.div_(denom)
     else:
         ortho_grad = ortho_grad / denom
 
     # Perform the NS iterations
-    for _ in range(ns_steps):
+    for _ in range(DEFAULT_NS_STEPS):
         gram_matrix = ortho_grad @ ortho_grad.T
         gram_update = torch.addmm(
             gram_matrix, gram_matrix, gram_matrix, beta=b, alpha=c
@@ -280,7 +261,6 @@ def _adjust_lr(lr: float, adjust_lr_fn: str | None, param_shape: torch.Size) -> 
     A, B = param_shape[:2]
 
     if adjust_lr_fn is None or adjust_lr_fn == "original":
-        # pyrefly: ignore [no-matching-overload]
         adjusted_ratio = math.sqrt(max(1, A / B))
     elif adjust_lr_fn == "match_rms_adamw":
         adjusted_ratio = 0.2 * math.sqrt(max(A, B))
