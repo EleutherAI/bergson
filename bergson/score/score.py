@@ -7,7 +7,6 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.distributed as dist
-import yaml
 from datasets import Dataset, IterableDataset
 from tqdm.auto import tqdm
 
@@ -65,9 +64,7 @@ def get_query_grads(
 
     preprocess_path = Path(query_path / "preprocess_config.yaml")
     if preprocess_path.exists():
-        with open(preprocess_path, "r") as f:
-            preprocess_data = yaml.safe_load(f)
-            preprocess_cfg = PreprocessConfig(**preprocess_data)
+        preprocess_cfg = PreprocessConfig.load(preprocess_path)
     else:
         preprocess_cfg = PreprocessConfig()
 
