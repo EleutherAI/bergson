@@ -1,3 +1,4 @@
+import math
 import os
 from abc import ABC
 from dataclasses import dataclass
@@ -171,6 +172,74 @@ class LRScheduleConfig(Serializable):
     power: float = 1.0
     """Exponent for polynomial decay."""
 
+    def get_schedule(self, num_steps: int):
+        """Return a learning rate schedule function: step → lr.
+
+        Supports HF-compatible scheduler types and an optional non-zero warmup
+        start (``lr_start``).
+        """
+        if self.warmup_steps >= 1:
+            warmup_steps = int(self.warmup_steps)
+        else:
+            warmup_steps = math.ceil(num_steps * self.warmup_steps)
+
+        lr = self.lr
+        lr_start = self.lr_start
+        decay_steps = max(num_steps - warmup_steps, 1)
+
+        def _warmup(step):
+            """Linear warmup from lr_start to lr."""
+            progress = step / max(warmup_steps, 1)
+            return lr_start + (lr - lr_start) * progress
+
+        match self.lr_scheduler_type:
+            case "constant":
+                return lambda step: lr
+            case "constant_with_warmup":
+                return lambda step: _warmup(step) if step < warmup_steps else lr
+            case "linear":
+
+                def lin_schedule(step):
+                    if step < warmup_steps:
+                        return _warmup(step)
+                    progress = (step - warmup_steps) / decay_steps
+                    return lr * (1 - progress)
+
+                return lin_schedule
+            case "cosine":
+
+                def cos_schedule(step):
+                    if step < warmup_steps:
+                        return _warmup(step)
+                    progress = (step - warmup_steps) / decay_steps
+                    omega = math.pi * self.num_cycles * 2.0 * progress
+                    return lr * 0.5 * (1 + math.cos(omega))
+
+                return cos_schedule
+            case "cosine_with_restarts":
+
+                def cos_restart_schedule(step):
+                    if step < warmup_steps:
+                        return _warmup(step)
+                    progress = (step - warmup_steps) / decay_steps
+                    omega = math.pi * 2.0 * ((self.num_cycles * progress) % 1.0)
+                    return lr * 0.5 * (1 + math.cos(omega))
+
+                return cos_restart_schedule
+            case "polynomial":
+
+                def poly_schedule(step):
+                    if step < warmup_steps:
+                        return _warmup(step)
+                    progress = (step - warmup_steps) / decay_steps
+                    return (
+                        self.lr_end + (lr - self.lr_end) * (1 - progress) ** self.power
+                    )
+
+                return poly_schedule
+            case other:
+                raise ValueError(f"Unknown lr_scheduler_type: {other!r}")
+
 
 @dataclass
 class TrainingConfig(ModelConfig, Serializable):
@@ -194,6 +263,13 @@ class TrainingConfig(ModelConfig, Serializable):
 
     eps_root: float = 1e-8
     """Epsilon root for AdamW optimizer."""
+
+    optimizer: Literal["adamw", "muon", "sgd"] = "adamw"
+    """Optimizer to use for the training steps. Muon is an efficient
+    optimizer that can reduce memory usage and speed up training."""
+
+    weight_decay: float = 0.01
+    """Weight decay coefficient for AdamW and Muon."""
 
     grad_checkpointing: bool = False
     """Whether to use gradient checkpointing during the forward pass."""

@@ -1,31 +1,13 @@
-# Copyright 2022-2024 MetaOPT Team. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
-"""Muon optimizer."""
-
 import math
+from typing import NamedTuple
 
 import torch
 from torch import Tensor
 from torchopt.alias.utils import (
     _get_use_chain_flat,
-    flip_sign_and_add_weight_decay,
     scale_by_neg_lr,
 )
 from torchopt.combine import chain
-from torchopt.pytree import tree_map, tree_map_
-from torchopt.transform.trace import TraceState
 from torchopt.typing import (
     GradientTransformation,
     OptState,
@@ -35,127 +17,197 @@ from torchopt.typing import (
 )
 
 
+class MuonState(NamedTuple):
+    traces: list  # per-param Nesterov momentum buffers; None for 1D params
+    exp_avgs: list  # per-param AdamW first moments; None for 2D params
+    exp_avg_sqs: list  # per-param AdamW second moments; None for 2D params
+    step: torch.Tensor  # scalar step count for AdamW bias correction
+
+
 def muon(
     lr: ScalarOrSchedule,
     momentum: float = 0.95,
     dampening: float = 0.0,
     weight_decay: float = 0.1,
+    adamw_betas: tuple[float | None, float] = (None, 0.999),
+    adamw_eps: float = 1e-8,
+    adamw_eps_root: float = 0.0,
     *,
     moment_requires_grad: bool = False,
-    maximize: bool = False,
 ) -> GradientTransformation:
-    """Create a functional version of the canonical Muon optimizer."""
-    # pylint: disable=unneeded-not
-    if not (callable(lr) or lr >= 0.0):  # pragma: no cover
+    """Create a functional version of the canonical Muon optimizer.
+
+    2D parameters are updated via Nesterov momentum + Newton-Schulz orthogonalization.
+    1D parameters (e.g. biases, scalar gains) are updated via AdamW.
+    Parameters with more than 2 dimensions raise a ValueError.
+    """
+    if not (callable(lr) or lr >= 0.0):
         raise ValueError(f"Invalid learning rate: {lr}")
-    if not momentum >= 0.0:  # pragma: no cover
+    if not momentum >= 0.0:
         raise ValueError(f"Invalid momentum value: {momentum}")
-    if not weight_decay >= 0.0:  # pragma: no cover
+    if not weight_decay >= 0.0:
         raise ValueError(f"Invalid weight_decay value: {weight_decay}")
-    if momentum <= 0.0 or dampening != 0.0:  # pragma: no cover
+    if momentum <= 0.0 or dampening != 0.0:
         raise ValueError("Nesterov momentum requires a momentum and zero dampening")
-    # pylint: enable=unneeded-not
 
     chain_fn = chain
-    flip_sign_add_wd_fn = flip_sign_and_add_weight_decay
     scale_by_neg_lr_fn = scale_by_neg_lr
+    beta1, beta2 = adamw_betas
+    if beta1 is None:
+        beta1 = momentum
+
+    def _to_list(x: Params) -> list:
+        return list(x.values()) if hasattr(x, "values") else list(x)
 
     def zpns_init_fn(params: Params) -> OptState:
-        return TraceState(
-            trace=tree_map(
-                lambda t: torch.zeros_like(t, requires_grad=moment_requires_grad),
-                params,
-            ),
+        traces, exp_avgs, exp_avg_sqs = [], [], []
+        for param in _to_list(params):
+            if param.ndim > 2:
+                raise ValueError(
+                    f"Muon does not support parameters with more than 2 dimensions, "
+                    f"got shape {param.shape}"
+                )
+            elif param.ndim == 2:
+                traces.append(
+                    torch.zeros_like(param, requires_grad=moment_requires_grad)
+                )
+                exp_avgs.append(None)
+                exp_avg_sqs.append(None)
+            else:  # 1D — will be updated via AdamW
+                traces.append(None)
+                exp_avgs.append(
+                    torch.zeros_like(param, requires_grad=moment_requires_grad)
+                )
+                exp_avg_sqs.append(
+                    torch.zeros_like(param, requires_grad=moment_requires_grad)
+                )
+        return MuonState(
+            traces=traces,
+            exp_avgs=exp_avgs,
+            exp_avg_sqs=exp_avg_sqs,
+            step=torch.tensor(0, dtype=torch.long),
         )
 
     first_call = True
 
     # Modeled after the TorchOpt `trace` implementation, but with the Muon update logic
-    # in place of the standard momentum update.
+    # in place of the standard momentum update. 1D params are routed to AdamW instead.
     def zpns_update_fn(
         updates: Params,
         state: OptState,
         *,
-        params: Params,
+        params: Params | None = None,
         inplace: bool = True,
     ) -> tuple[Updates, OptState]:
+        assert params is not None, "Muon needs params for WD and LR adjustment"
         nonlocal first_call
 
-        if inplace:
+        param_list = _to_list(params)
+        update_list = _to_list(updates)
+        step = state.step + 1
 
-            def f1(t: torch.Tensor, g: torch.Tensor | None) -> torch.Tensor | None:
-                if g is None:
-                    return t
-                if first_call:
-                    return t.add_(g)
-                return t.mul_(momentum).add_(g)
+        new_traces, new_exp_avgs, new_exp_avg_sqs, new_update_list = [], [], [], []
 
-            def f2(t: torch.Tensor, g: torch.Tensor | None) -> torch.Tensor | None:
-                return g.add_(t, alpha=momentum) if g is not None else g
-
-            new_trace = tree_map(f1, state.trace, updates)
-            tree_map_(f2, new_trace, updates)
-        else:
-
-            def f1(t: torch.Tensor, g: torch.Tensor | None) -> torch.Tensor | None:
-                if g is None:
-                    return t
-                if first_call:
-                    return t.add(g)
-                return t.mul(momentum).add(g)
-
-            def f2(t: torch.Tensor, g: torch.Tensor | None) -> torch.Tensor | None:
-                return g.add(t, alpha=momentum) if g is not None else g
-
-            new_trace = tree_map(f1, state.trace, updates)
-            updates = tree_map(f2, new_trace, updates)
-
-        # Apply Newton-Schulz orthogonalization and per-param lr adjustment ratio.
-        # Weight decay is added here (decoupled, matching torch.optim.Muon): wd*param is
-        # appended after NS so it is not mixed into the momentum buffer or
-        # orthogonalization. Base lr factor is applied downstream by scale_by_neg_lr
-        param_list = (
-            list(params.values()) if hasattr(params, "values") else list(params)
-        )
-        update_list = (
-            list(updates.values()) if hasattr(updates, "values") else list(updates)
-        )
-
-        ns_update_list = []
-        for update, param in zip(update_list, param_list):
+        for update, param, trace, exp_avg, exp_avg_sq in zip(
+            update_list, param_list, state.traces, state.exp_avgs, state.exp_avg_sqs
+        ):
             if update is None:
-                ns_update_list.append(None)
+                new_traces.append(trace)
+                new_exp_avgs.append(exp_avg)
+                new_exp_avg_sqs.append(exp_avg_sq)
+                new_update_list.append(None)
                 continue
-            if update.ndim != 2:
+
+            if param.ndim > 2:
                 raise ValueError(
-                    f"Muon requires 2D parameter gradients, got shape {update.shape}"
+                    f"Muon does not support parameters with more than 2 dimensions, "
+                    f"got shape {param.shape}"
                 )
-            ns = _zeropower_via_newtonschulz(
-                update, (DEFAULT_A, DEFAULT_B, DEFAULT_C), DEFAULT_NS_STEPS, EPS
-            )
-            ratio = _adjust_lr(1.0, "match_rms_adamw", param.shape)
-            ns_update = ns.to(update.dtype) * ratio
-            if weight_decay != 0.0:
-                ns_update = ns_update + weight_decay * param.detach()
-            ns_update_list.append(ns_update)
+            elif param.ndim == 2:
+                # --- Muon path: Nesterov momentum + Newton-Schulz ---
+                # Apply orthogonalization and per-param lr adjustment ratio.
+                # Weight decay is added here (decoupled, matching torch.optim.Muon):
+                # wd*param is appended after NS so it is not mixed into the momentum
+                # buffer or orthogonalization. Base lr factor is applied downstream by
+                # scale_by_neg_lr.
+                if inplace:
+                    new_trace = (
+                        trace.add_(update)
+                        if first_call
+                        else trace.mul_(momentum).add_(update)
+                    )
+                    ns_input = update.add_(new_trace, alpha=momentum)
+                else:
+                    new_trace = (
+                        trace.add(update)
+                        if first_call
+                        else trace.mul(momentum).add(update)
+                    )
+                    ns_input = update.add(new_trace, alpha=momentum)
+
+                ns = _zeropower_via_newtonschulz(
+                    ns_input,
+                    (DEFAULT_A, DEFAULT_B, DEFAULT_C),
+                    DEFAULT_NS_STEPS,
+                    EPS,
+                    inplace=inplace,
+                )
+                ratio = _adjust_lr(1.0, "match_rms_adamw", param.shape)
+                ns_update = ns.to(update.dtype) * ratio
+                if weight_decay != 0.0:
+                    ns_update = ns_update + weight_decay * param.detach()
+
+                new_traces.append(new_trace)
+                new_exp_avgs.append(None)
+                new_exp_avg_sqs.append(None)
+                new_update_list.append(ns_update)
+            else:
+                # --- AdamW path for 1D params (biases, norms, etc.) ---
+                # Weight decay applied decoupled (after moment normalization), matching
+                # the same convention used for 2D params above.
+                if inplace:
+                    new_exp_avg = exp_avg.mul_(beta1).add_(update, alpha=1 - beta1)
+                    new_exp_avg_sq = exp_avg_sq.mul_(beta2).addcmul_(
+                        update, update, value=1 - beta2
+                    )
+                else:
+                    new_exp_avg = exp_avg.mul(beta1).add(update, alpha=1 - beta1)
+                    new_exp_avg_sq = exp_avg_sq.mul(beta2).addcmul(
+                        update, update, value=1 - beta2
+                    )
+
+                bias_correction1 = 1 - beta1 ** step.item()
+                bias_correction2 = 1 - beta2 ** step.item()
+                adam_update = (new_exp_avg / bias_correction1) / (
+                    (new_exp_avg_sq / bias_correction2 + adamw_eps_root).sqrt()
+                    + adamw_eps
+                )
+                if weight_decay != 0.0:
+                    adam_update = adam_update + weight_decay * param.detach()
+
+                new_traces.append(None)
+                new_exp_avgs.append(new_exp_avg)
+                new_exp_avg_sqs.append(new_exp_avg_sq)
+                new_update_list.append(adam_update)
 
         if hasattr(updates, "keys"):
-            updates = dict(zip(updates.keys(), ns_update_list))
+            new_updates = dict(zip(updates.keys(), new_update_list))
         else:
-            updates = ns_update_list
+            new_updates = new_update_list
 
         first_call = False
-        return updates, TraceState(trace=new_trace)
+        return new_updates, MuonState(
+            traces=new_traces,
+            exp_avgs=new_exp_avgs,
+            exp_avg_sqs=new_exp_avg_sqs,
+            step=step,
+        )
 
     if _get_use_chain_flat():  # default behavior
         chain_fn = chain_fn.flat  # type: ignore[attr-defined]
-        flip_sign_add_wd_fn = flip_sign_add_wd_fn.flat  # type: ignore[attr-defined]
         scale_by_neg_lr_fn = scale_by_neg_lr_fn.flat  # type: ignore[attr-defined]
 
     return chain_fn(
-        # weight_decay=0.0 here: WD handled inside zpns_update_fn (decoupled, after NS)
-        # This transform is kept only to handle the sign flip when maximize=True.
-        flip_sign_add_wd_fn(weight_decay=0.0, maximize=maximize),
         GradientTransformation(zpns_init_fn, zpns_update_fn),
         scale_by_neg_lr_fn(lr),
     )
@@ -171,7 +223,11 @@ DEFAULT_NS_STEPS = 5
 
 
 def _zeropower_via_newtonschulz(
-    grad: Tensor, ns_coefficients: tuple[float, float, float], ns_steps: int, eps: float
+    grad: Tensor,
+    ns_coefficients: tuple[float, float, float],
+    ns_steps: int,
+    eps: float,
+    inplace: bool = True,
 ) -> Tensor:
     """
     Newton-Schulz iteration to compute the zeroth power / orthogonalization of G. We
@@ -200,7 +256,12 @@ def _zeropower_via_newtonschulz(
     if grad.size(0) > grad.size(1):
         ortho_grad = ortho_grad.T
     # Ensure spectral norm is at most 1
-    ortho_grad.div_(ortho_grad.norm().clamp(min=eps))
+    denom = ortho_grad.norm().clamp(min=eps)
+    if inplace:
+        ortho_grad.div_(denom)
+    else:
+        ortho_grad = ortho_grad / denom
+
     # Perform the NS iterations
     for _ in range(ns_steps):
         gram_matrix = ortho_grad @ ortho_grad.T
@@ -226,38 +287,3 @@ def _adjust_lr(lr: float, adjust_lr_fn: str | None, param_shape: torch.Size) -> 
     else:
         adjusted_ratio = 1.0
     return lr * adjusted_ratio
-
-
-def _single_tensor_muon(
-    params: list[Tensor],
-    grads: list[Tensor],
-    muon_momentum_bufs: list[Tensor],
-    *,
-    lr: float,
-    weight_decay: float,
-    momentum: float,
-    nesterov: bool,
-    ns_coefficients: tuple[float, float, float],
-    ns_steps: int,
-    eps: float,
-    adjust_lr_fn: str | None,
-    has_complex: bool,
-) -> None:
-    if has_complex:
-        raise ValueError("Complex parameters are not supported")
-
-    for i, param in enumerate(params):
-        grad = grads[i]
-        if grad.ndim != 2:
-            raise ValueError("Param gradient must be a 2D matrix")
-
-        buf = muon_momentum_bufs[i]
-        buf.lerp_(grad, 1 - momentum)
-        update = grad.lerp(buf, momentum) if nesterov else buf
-
-        update = _zeropower_via_newtonschulz(update, ns_coefficients, ns_steps, eps)
-
-        adjusted_lr = _adjust_lr(lr, adjust_lr_fn, param.shape)
-
-        param.mul_(1 - lr * weight_decay)
-        param.add_(update, alpha=-adjusted_lr)

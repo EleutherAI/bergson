@@ -1,4 +1,3 @@
-import math
 import os
 import shutil
 from dataclasses import asdict, dataclass
@@ -25,6 +24,7 @@ from ..utils.worker_utils import (
 )
 from .data_stream import DataStream
 from .dtensor_patch import apply_dtensor_patch
+from .muon import muon
 from .trainer import BackwardState, Trainer, TrainerState
 
 
@@ -103,84 +103,6 @@ def compute_query_gradients(
     return grad_accum, float(loss_accum)
 
 
-def get_schedule(lr_cfg, num_steps: int):
-    """Return a learning rate schedule function: step → lr.
-
-    Supports HF-compatible scheduler types and an optional non-zero warmup
-    start (``lr_start``).
-    """
-    if lr_cfg.warmup_steps >= 1:
-        warmup_steps = int(lr_cfg.warmup_steps)
-    else:
-        warmup_steps = math.ceil(num_steps * lr_cfg.warmup_steps)
-
-    lr = lr_cfg.lr
-    lr_start = lr_cfg.lr_start
-    decay_steps = max(num_steps - warmup_steps, 1)
-
-    def _warmup(step):
-        """Linear warmup from lr_start to lr."""
-        progress = step / max(warmup_steps, 1)
-        return lr_start + (lr - lr_start) * progress
-
-    scheduler_type = lr_cfg.lr_scheduler_type
-
-    if scheduler_type == "constant":
-
-        def _schedule(step):
-            return lr
-
-    elif scheduler_type == "constant_with_warmup":
-
-        def _schedule(step):
-            if step < warmup_steps:
-                return _warmup(step)
-            return lr
-
-    elif scheduler_type == "linear":
-
-        def _schedule(step):
-            if step < warmup_steps:
-                return _warmup(step)
-            progress = (step - warmup_steps) / decay_steps
-            return lr * (1 - progress)
-
-    elif scheduler_type == "cosine":
-
-        def _schedule(step):
-            if step < warmup_steps:
-                return _warmup(step)
-            progress = (step - warmup_steps) / decay_steps
-            return (
-                lr * 0.5 * (1 + math.cos(math.pi * lr_cfg.num_cycles * 2.0 * progress))
-            )
-
-    elif scheduler_type == "cosine_with_restarts":
-
-        def _schedule(step):
-            if step < warmup_steps:
-                return _warmup(step)
-            progress = (step - warmup_steps) / decay_steps
-            return (
-                lr
-                * 0.5
-                * (1 + math.cos(math.pi * ((lr_cfg.num_cycles * progress) % 1.0) * 2.0))
-            )
-
-    elif scheduler_type == "polynomial":
-
-        def _schedule(step):
-            if step < warmup_steps:
-                return _warmup(step)
-            progress = (step - warmup_steps) / decay_steps
-            return lr_cfg.lr_end + (lr - lr_cfg.lr_end) * (1 - progress) ** lr_cfg.power
-
-    else:
-        raise ValueError(f"Unknown lr_scheduler_type: {scheduler_type!r}")
-
-    return _schedule
-
-
 def prepare_trainer(
     cfg: TrainingConfig,
     rank: int,
@@ -216,11 +138,31 @@ def prepare_trainer(
         with mesh:
             model = simple_fsdp(model)
 
-    opt = torchopt.adamw(
-        schedule,
-        betas=(cfg.adam_beta1, cfg.adam_beta2),
-        eps_root=cfg.eps_root,
-    )
+    match cfg.optimizer:
+        case "adamw":
+            opt = torchopt.adamw(
+                schedule,
+                betas=(cfg.adam_beta1, cfg.adam_beta2),
+                eps_root=cfg.eps_root,
+                weight_decay=cfg.weight_decay,
+            )
+        case "muon":
+            opt = muon(
+                schedule,
+                momentum=cfg.adam_beta1,
+                adamw_betas=(cfg.adam_beta1, cfg.adam_beta2),
+                adamw_eps_root=cfg.eps_root,
+                weight_decay=cfg.weight_decay,
+            )
+        case "sgd":
+            opt = torchopt.sgd(
+                schedule,
+                momentum=cfg.adam_beta1,
+                weight_decay=cfg.weight_decay,
+            )
+        case other:
+            raise ValueError(f"Unsupported optimizer: {other}")
+
     trainer, fwd_state = Trainer.initialize(model, opt)
     return trainer, fwd_state, model
 
@@ -277,7 +219,7 @@ def worker(
     if run_cfg.wandb_project and global_rank == 0:
         log_fn = wandb_log_fn(run_cfg.wandb_project, config=asdict(run_cfg))
 
-    schedule = get_schedule(run_cfg.lr_schedule, len(stream))
+    schedule = run_cfg.lr_schedule.get_schedule(len(stream))
     trainer, fwd_state, model = prepare_trainer(
         run_cfg,
         rank,
