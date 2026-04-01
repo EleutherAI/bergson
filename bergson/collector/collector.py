@@ -14,6 +14,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from datasets import Dataset
 from jaxtyping import Float
+from peft import PeftModel
 from torch import Tensor
 from torch.profiler import (
     ProfilerActivity,
@@ -596,7 +597,7 @@ class CollectorComputer:
 
     def __init__(
         self,
-        model: PreTrainedModel,
+        model: PreTrainedModel | PeftModel,
         data: Dataset,
         *,
         collector: HookCollectorBase,
@@ -617,7 +618,7 @@ class CollectorComputer:
         """
         # Model
         self.model = model
-        self.device = model.device
+        self.device = torch.device(model.device)  # type: ignore[attr-defined]
 
         # Data
         self.data = data
@@ -685,7 +686,7 @@ class CollectorComputer:
         Args:
             desc: Optional description string for the tqdm progress bar.
         """
-        total_processed = torch.tensor(0, device=self.model.device)
+        total_processed = torch.tensor(0, device=self.device)
         prof = self._setup_profiler()
         step = 0
         with prof:
@@ -700,7 +701,7 @@ class CollectorComputer:
                 x, y, valid_mask = pad_and_tensor(
                     batch["input_ids"],
                     labels=batch.get("labels"),
-                    device=self.model.device,
+                    device=self.device,
                 )
                 total_processed += valid_mask.sum()
 

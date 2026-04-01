@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import torch
+from peft import PeftModel, get_peft_model_state_dict
 from transformers import PreTrainedModel
 
 from bergson.gradients import AdafactorNormalizer, AdamNormalizer, Normalizer
@@ -37,7 +38,7 @@ def _extract_second_moments(
 
 
 def load_from_optimizer(
-    model: PreTrainedModel,
+    model: PreTrainedModel | PeftModel,
     optimizer_state_path: str,
     include_bias: bool = False,
     target_modules: set[str] | None = None,
@@ -70,10 +71,10 @@ def load_from_optimizer(
     optimizer_state = torch.load(state_path, map_location="cpu", weights_only=False)
 
     # The optimizer state is keyed by position in the trainable parameter list.
-    # For LoRA checkpoints, only include LoRA params.
-    lora_params = [(n, p) for n, p in model.named_parameters() if "lora" in n]
-    if lora_params:
-        params_for_index = lora_params
+    # For PEFT checkpoints, only include PEFT params.
+    if isinstance(model, PeftModel):
+        st = get_peft_model_state_dict(model)
+        params_for_index = list(st.items())
     else:
         params_for_index = list(model.named_parameters())
 

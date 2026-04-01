@@ -1,7 +1,6 @@
 import shutil
 import warnings
 from pathlib import Path
-from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -51,8 +50,7 @@ def validate_run_path(index_cfg: IndexConfig):
 
 
 def create_processor(
-    model: PreTrainedModel,
-    ds: Dataset | IterableDataset,
+    model: PreTrainedModel | PeftModel,
     cfg: IndexConfig,
     target_modules: set[str] | None = None,
 ) -> GradientProcessor:
@@ -99,7 +97,7 @@ def setup_model_and_peft(
     cfg: ModelConfig,
     device_map_auto: bool = False,
     **model_kwargs,
-) -> tuple[PreTrainedModel, set | None]:
+) -> tuple[PreTrainedModel | PeftModel, set | None]:
     """Handle model loading, quantization, FSDP, and PEFT detection"""
     local_rank = cfg.distributed.local_rank
 
@@ -197,8 +195,6 @@ def setup_model_and_peft(
         for layer in get_layer_list(model):  # type: ignore
             fully_shard(layer)
         fully_shard(model)
-
-    model = cast(PreTrainedModel, model)
 
     return model, target_modules  # type: ignore
 

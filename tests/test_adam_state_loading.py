@@ -32,7 +32,7 @@ def _create_fake_optimizer_state(model, lr=1e-3):
         state[idx] = {
             "step": torch.tensor(100),
             "exp_avg": torch.zeros_like(param),
-            "exp_avg_sq": torch.rand_like(param).abs() * 0.01,
+            "exp_avg_sq": torch.rand_like(param) * 0.01,
         }
 
     return {"state": state, "param_groups": param_groups}

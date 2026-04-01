@@ -259,7 +259,7 @@ def _run_bergson_kfac(
         target_modules=target_modules,
         path=str(index_cfg.partial_run_path),
         filter_modules=index_cfg.filter_modules,
-        dtype=model.dtype,
+        dtype=model.dtype,  # type: ignore[attr-defined]
     )
     computer = CollectorComputer(
         model=model,

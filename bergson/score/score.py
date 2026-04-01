@@ -265,7 +265,7 @@ def score_worker(
         )
 
     model, target_modules = setup_model_and_peft(index_cfg)
-    processor = create_processor(model, ds, index_cfg, target_modules)
+    processor = create_processor(model, index_cfg, target_modules)
 
     attention_cfgs = {
         module: index_cfg.attention for module in index_cfg.split_attention_modules

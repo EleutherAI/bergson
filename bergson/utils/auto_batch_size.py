@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 import torch
 import torch.distributed as dist
 from datasets import Dataset, IterableDataset
+from peft import PeftModel
 from transformers import PreTrainedModel
 
 from bergson.config import IndexConfig
@@ -20,7 +21,7 @@ if TYPE_CHECKING:
 
 def maybe_auto_batch_size(
     cfg: IndexConfig,
-    model: PreTrainedModel,
+    model: PreTrainedModel | PeftModel,
     ds: Dataset | IterableDataset,
     processor: GradientProcessor,
     target_modules: set[str] | None,
@@ -142,7 +143,7 @@ def _append_to_cache(
 
 
 def _try_validate(
-    model: PreTrainedModel,
+    model: PreTrainedModel | PeftModel,
     token_budget: int,
     collector: "HookCollectorBase",
 ) -> bool:
@@ -203,7 +204,7 @@ def _try_validate(
 def determine_batch_size(
     root: Path,
     cfg: IndexConfig,
-    model: PreTrainedModel,
+    model: PreTrainedModel | PeftModel,
     collector: "HookCollectorBase",
     starting_batch_size: int = 8192,
 ) -> int:
