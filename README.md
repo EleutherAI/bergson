@@ -50,7 +50,7 @@ bergson trackstar runs/trackstar --model EleutherAI/pythia-14m --query.dataset N
 To use MAGIC on a GPT-2 WikiText fine-tune:
 
 ```bash
-bergson magic examples/gpt2_wikitext.yaml
+bergson magic examples/magic/gpt2_wikitext_tiny.yaml
 ```
 
 # Usage
@@ -77,7 +77,7 @@ At the lowest level of abstraction, the `GradientCollector` context manager allo
 You can score a large dataset against a previously built query index without saving its gradients to disk:
 
 ```bash
-bergson score <output_path> --model <model_name> --dataset <dataset_name> --query_path <existing_index_path> --score mean
+bergson score <output_path> --model <model_name> --dataset <dataset_name> --query_path <existing_index_path> --score individual --aggregation mean
 ```
 
 We provide a utility to reduce a dataset into its mean or sum query gradient, for use as a query index:
