@@ -1,5 +1,7 @@
 __version__ = "0.9.0"
 
+import logging
+
 from .builder import Builder
 from .collection import collect_gradients
 from .collector.collector import CollectorComputer
@@ -20,12 +22,15 @@ from .data import (
     load_token_gradients,
 )
 from .gradients import GradientProcessor
-from .normalizer.fit_normalizers import fit_normalizers
 from .process_grads import mix_preconditioners
 from .query.attributor import Attributor
 from .query.faiss_index import FaissConfig
 from .score.scorer import Scorer
 from .utils.gradcheck import FiniteDiff
+from .utils.load_from_optimizer import load_from_optimizer
+
+# Silence noisy HF logs
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 __all__ = [
     "collect_gradients",
@@ -34,7 +39,7 @@ __all__ = [
     "load_token_gradients",
     "TokenGradients",
     "Builder",
-    "fit_normalizers",
+    "load_from_optimizer",
     "Attributor",
     "FaissConfig",
     "FiniteDiff",

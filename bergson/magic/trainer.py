@@ -11,8 +11,10 @@ from typing import Literal
 import torch
 import torch.distributed as dist
 import torch.distributed.checkpoint as dcp
+import torch.distributed.tensor  # noqa: F401 — register DTensor for torch.load
 import torchopt
 from torch import nn
+from torch.distributed.nn.functional import all_reduce as differentiable_all_reduce
 from torchopt.pytree import tree_flatten_with_path, tree_iter, tree_map
 from torchopt.typing import GradientTransformation, OptState
 from tqdm.auto import tqdm
@@ -22,6 +24,20 @@ from ..distributed import grad_tree, shallow_copy
 from .data_stream import DataStream
 from .rtl_tqdm import RtlTqdm
 from .swap import swap_parameters
+
+
+@contextmanager
+def suppress_c_stdout():
+    """Suppress C-level stdout."""
+    fd = os.dup(1)
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(devnull, 1)
+    os.close(devnull)
+    try:
+        yield
+    finally:
+        os.dup2(fd, 1)
+        os.close(fd)
 
 
 def _maybe_get_cuda_rng_state() -> torch.Tensor:
@@ -105,13 +121,18 @@ class TrainerState:
     def save(self, path: str, debug_pbar: RtlTqdm | tqdm | None = None) -> SaveFuture:
         # Create a new process group so that we can overlap saves.
         if dist.is_initialized():
-            grp = dist.new_group(backend="gloo", group_desc=path)
+            with suppress_c_stdout():
+                grp = dist.new_group(backend="gloo", group_desc=path)
             assert isinstance(grp, dist.ProcessGroup)
         else:
             grp = None
 
+        state = {
+            k: v.detach() if isinstance(v, torch.Tensor) else v
+            for k, v in self.state_dict().items()
+        }
         fut = dcp.async_save(
-            self.state_dict(),
+            state,
             checkpoint_id=path,
             process_group=grp,
         )
@@ -237,6 +258,7 @@ class Trainer:
         *,
         inplace: bool = False,
         trace: bool = False,
+        fsdp: bool = False,
     ) -> TrainerState:
         torch.random.set_rng_state(state.cpu_rng_state)
 
@@ -261,6 +283,17 @@ class Trainer:
             assert isinstance(loss, torch.Tensor), "Loss must be a Tensor"
             self._last_loss = loss.detach().item()
             grads = grad_tree(loss, params, create_graph=trace)
+
+        if dist.is_initialized() and not fsdp:
+            if trace:
+                # Use differentiable all_reduce to preserve autograd graph
+                grads = {
+                    k: differentiable_all_reduce(g, op=dist.ReduceOp.AVG)
+                    for k, g in grads.items()
+                }
+            else:
+                for g in grads.values():
+                    dist.all_reduce(g, op=dist.ReduceOp.AVG)
 
         updates, new_state = self.optimizer.update(
             grads, state.opt_state, inplace=inplace, params=state.params
@@ -310,6 +343,7 @@ class Trainer:
         trace: bool = False,
         log_fn: Callable[[int, float], None] | None = None,
         resume: bool = False,
+        fsdp: bool = False,
     ) -> TrainerState:
         # Make sure the save directory exists
         if save_dir is not None:
@@ -342,7 +376,7 @@ class Trainer:
                 pending_save = state.save(p, debug_pbar=pbar if debug else None)
 
             x = data[i]
-            state = self.step(state, x, inplace=inplace, trace=trace)
+            state = self.step(state, x, inplace=inplace, trace=trace, fsdp=fsdp)
 
             if log_fn is not None:
                 log_fn(i, self._last_loss)
@@ -351,6 +385,53 @@ class Trainer:
             pending_save.result()
 
         return state
+
+    def save_backward_state(self, bwd_state, path, expected_idx, last_idx):
+        tmp_path = path + ".tmp"
+        torch.save(
+            {
+                "expected_idx": expected_idx,
+                "last_idx": last_idx,
+                "param_grads": bwd_state.param_grads,
+                "opt_grads": bwd_state.opt_grads,
+                "weight_grads": bwd_state.weight_grads,
+            },
+            tmp_path,
+        )
+        os.replace(tmp_path, path)
+
+    def load_backward_state(self, path, ckpt_list, device, main: bool):
+        saved = torch.load(path, map_location=device, weights_only=True)
+        bwd_state = BackwardState(
+            saved["param_grads"],
+            saved["opt_grads"],
+            saved["weight_grads"],
+        )
+        expected_idx = saved["expected_idx"]
+        last_idx = saved["last_idx"]
+
+        # Filter to valid checkpoints we still need to process
+        valid_ckpts = []
+        for idx, path in ckpt_list:
+            if idx > expected_idx:
+                continue
+            metadata = os.path.join(path, ".metadata")
+            if os.path.exists(metadata):
+                valid_ckpts.append((idx, path))
+            elif os.path.isdir(path) and main:
+                rmtree(path)
+        ckpt_list = valid_ckpts
+
+        if not ckpt_list and expected_idx >= 0:
+            raise RuntimeError(
+                f"Cannot resume backward: no valid checkpoints found "
+                f"for step {expected_idx}"
+            )
+
+        if main:
+            print(f"Resuming backward pass from step {expected_idx}")
+
+        return bwd_state, ckpt_list, expected_idx, last_idx
 
     def backward(
         self,
@@ -362,15 +443,28 @@ class Trainer:
         cleanup: bool = True,
         debug: bool = False,
         inplace: bool = False,
+        fsdp: bool = False,
+        resume: bool = False,
+        save_every: int = 0,
     ) -> BackwardState:
         ckpt_list = sorted_checkpoints(ckpt_dir)
-        expected_idx, _ = ckpt_list[-1]
-        last_idx = expected_idx
 
         main = not dist.is_initialized() or dist.get_rank() == 0
+        rank = dist.get_rank() if dist.is_initialized() else 0
+        bwd_ckpt_path = os.path.join(ckpt_dir, f"backward_rank{rank}.pt")
+
+        if resume and os.path.exists(bwd_ckpt_path):
+            bwd_state, ckpt_list, expected_idx, last_idx = self.load_backward_state(
+                bwd_ckpt_path, ckpt_list, data.device, main
+            )
+        else:
+            expected_idx, _ = ckpt_list[-1]
+            last_idx = expected_idx
+
         main_pbar = RtlTqdm(
             desc="Backward",
-            total=expected_idx + 1,
+            total=last_idx + 1,
+            initial=last_idx - expected_idx,
             disable=not main,
             position=0,
             # Get rid of jitters in the ETA due to rematerialization
@@ -425,6 +519,7 @@ class Trainer:
                     data[fwd_state.batch_index],
                     inplace=inplace,
                     trace=False,
+                    fsdp=fsdp,
                 )
                 idx += 1
                 sub_pbar.update()
@@ -456,6 +551,7 @@ class Trainer:
                 fwd_state,
                 data[fwd_state.batch_index],
                 trace=True,
+                fsdp=fsdp,
             )
             main_pbar.update()
 
@@ -489,8 +585,19 @@ class Trainer:
             weight_grads = result[-1] + w_grads
             bwd_state = BackwardState(param_grads, result[:-1], weight_grads)
 
+            # Save backward state for resume
+            steps_done = last_idx - expected_idx
+            if save_every > 0 and steps_done % save_every == 0:
+                self.save_backward_state(
+                    bwd_state, bwd_ckpt_path, expected_idx, last_idx
+                )
+
         for fut in save_futures:
             fut.result()
+
+        # Clean up backward state file on successful completion
+        if os.path.exists(bwd_ckpt_path):
+            os.remove(bwd_ckpt_path)
 
         main_pbar.close()
         return bwd_state

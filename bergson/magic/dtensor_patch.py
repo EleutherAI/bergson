@@ -68,9 +68,14 @@ def _patch_redistribute():
             current_spec = grad_output._spec
 
         normalized_placements = []
-        for current, target in zip(current_spec.placements, previous_spec.placements):
+        avg_dims = []
+        for i, (current, target) in enumerate(
+            zip(current_spec.placements, previous_spec.placements)
+        ):
             if (current.is_shard() or current.is_replicate()) and target.is_partial():
                 normalized_placements.append(Replicate())
+                if target.reduce_op == "avg":  # type: ignore[attr-defined]
+                    avg_dims.append(i)
             else:
                 normalized_placements.append(target)
 
@@ -86,6 +91,10 @@ def _patch_redistribute():
             previous_spec,
             async_op=async_op,
         )
+
+        # Partial("avg") → re-apply the local gradient
+        for dim in avg_dims:
+            output = output / previous_spec.device_mesh.size(dim)
 
         if output.dtype != original_dtype:
             output = output.to(original_dtype)

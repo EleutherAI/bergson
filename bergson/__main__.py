@@ -1,4 +1,3 @@
-import logging
 import os
 import sys
 from dataclasses import dataclass
@@ -25,9 +24,6 @@ from .query.query_index import query
 from .score.score import score_dataset
 from .trackstar import trackstar
 from .utils.worker_utils import validate_run_path
-
-# ignore httpx
-logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 @dataclass

@@ -64,9 +64,7 @@ def get_query_grads(
 
     preprocess_path = Path(query_path / "preprocess_config.yaml")
     if preprocess_path.exists():
-        with open(preprocess_path, "r") as f:
-            preprocess_data = json.load(f)
-            preprocess_cfg = PreprocessConfig(**preprocess_data)
+        preprocess_cfg = PreprocessConfig.load(preprocess_path)
     else:
         preprocess_cfg = PreprocessConfig()
 
@@ -265,7 +263,7 @@ def score_worker(
         )
 
     model, target_modules = setup_model_and_peft(index_cfg)
-    processor = create_processor(model, ds, index_cfg, target_modules)
+    processor = create_processor(model, index_cfg, target_modules)
 
     attention_cfgs = {
         module: index_cfg.attention for module in index_cfg.split_attention_modules

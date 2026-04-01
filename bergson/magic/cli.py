@@ -1,7 +1,8 @@
+import csv
 import os
 import shutil
+import time
 from dataclasses import asdict, dataclass
-from datetime import timedelta
 from pathlib import Path
 from typing import Callable, Literal
 
@@ -9,8 +10,9 @@ import torch
 import torch.distributed as dist
 import torchopt
 from datasets import Dataset
-from scipy.stats import describe, spearmanr
+from scipy.stats import describe, pearsonr, spearmanr
 from simple_parsing import ArgumentParser, field
+from torch.distributed.nn.functional import all_reduce as differentiable_all_reduce
 from torch.distributed.tensor import init_device_mesh
 from torchopt.pytree import tree_iter
 from tqdm import tqdm
@@ -57,6 +59,9 @@ class MagicConfig(AttributionConfig, TrainingConfig):
     resume: bool = False
     """Resume a previously interrupted run from the last checkpoint."""
 
+    backward_save_every: int = 0
+    """How often (in steps) to save backward state for resume."""
+
     def __post_init__(self):
         assert not self.fsdp, "PyTorch FSDP is not currently supported for MAGIC."
 
@@ -66,6 +71,7 @@ def compute_query_gradients(
     model: torch.nn.Module,
     query_stream: DataStream,
     method: str = "mean",
+    fsdp: bool = False,
 ) -> tuple[dict[str, torch.Tensor], float]:
     """Compute reduced query gradients over the query dataset.
 
@@ -74,7 +80,7 @@ def compute_query_gradients(
     """
     grad_accum: dict[str, torch.Tensor] | None = None
     loss_accum = 0.0
-    n_batches = 0
+    n_batches = len(query_stream)
 
     with fwd_state.activate(model) as params:
         for batch in tqdm(query_stream, desc="Query"):
@@ -88,8 +94,7 @@ def compute_query_gradients(
                 for k, g in grads.items():
                     grad_accum[k] += g.detach()
 
-            loss_accum += loss.detach() / len(query_stream)
-            n_batches += 1
+            loss_accum += loss.detach()
 
     assert grad_accum is not None, "Query stream was empty"
 
@@ -97,24 +102,52 @@ def compute_query_gradients(
         for k in grad_accum:
             grad_accum[k] /= n_batches
 
+        loss_accum /= n_batches
+
     if dist.is_initialized():
-        dist.all_reduce(loss_accum, op=dist.ReduceOp.AVG)
+        if not fsdp:
+            for k in grad_accum:
+                differentiable_all_reduce(grad_accum[k], op=dist.ReduceOp.SUM)
+        # Loss is never a DTensor
+        dist.all_reduce(loss_accum, op=dist.ReduceOp.SUM)
 
     return grad_accum, float(loss_accum)
+
+
+class CSVWriter:
+    """CSV writer that no-ops when disabled."""
+
+    def __init__(self, path: str, columns: list[str], enabled: bool = True):
+        self.path = path
+        if enabled:
+            self._file = open(path, "w", newline="")
+            self._writer = csv.writer(self._file)
+            self._writer.writerow(columns)
+        else:
+            self._file = None
+            self._writer = None
+
+    def writerow(self, *args):
+        if self._writer is None or self._file is None:
+            return
+        self._writer.writerow([*args])
+        self._file.flush()
+
+    def close(self):
+        if self._file is not None:
+            self._file.close()
 
 
 def prepare_trainer(
     cfg: TrainingConfig,
     rank: int,
-    world_size: int,
     schedule: Callable,
 ):
     """Prepare the model, optimizer, and trainer for training."""
-    torch.cuda.set_device(rank)
-
     model, target_modules = setup_model_and_peft(
         cfg,
         attn_implementation="eager",
+        apply_fsdp=False,
     )
     model.to(f"cuda:{rank}")  # type: ignore[reportArgumentType]
 
@@ -128,13 +161,13 @@ def prepare_trainer(
         model.requires_grad_(True)
 
     if cfg.grad_checkpointing:
-        model.gradient_checkpointing_enable(
+        model.gradient_checkpointing_enable(  # type: ignore[attr-defined]
             gradient_checkpointing_kwargs=dict(use_reentrant=False),
         )
 
-    if world_size > 1:
+    if cfg.fsdp and dist.is_initialized():
         apply_dtensor_patch()
-        mesh = init_device_mesh("cuda", (world_size,))
+        mesh = init_device_mesh("cuda", (dist.get_world_size(),))
         with mesh:
             model = simple_fsdp(model)
 
@@ -167,6 +200,37 @@ def prepare_trainer(
     return trainer, fwd_state, model
 
 
+def pad_dataset_to_batch_size(
+    dataset: Dataset,
+    batch_size: int,
+    num_docs: int,
+    label: str,
+    global_rank: int,
+) -> tuple[Dataset, int, int]:
+    """Pad dataset to be divisible by batch_size by repeating the last example.
+
+    Returns (padded_dataset, num_docs, pad_count). num_docs is updated only when
+    the dataset has no "doc_ids" column (i.e. each row is its own document).
+    pad_count is 0 if no padding was needed.
+    """
+    remainder = len(dataset) % batch_size
+    if not remainder:
+        return dataset, num_docs, 0
+
+    pad_count = batch_size - remainder
+    total = len(dataset)
+    pad_indices = list(range(total)) + [total - 1] * pad_count
+    dataset = dataset.select(pad_indices)
+    if "doc_ids" not in dataset.column_names:
+        num_docs = len(dataset)
+    if global_rank == 0:
+        print(
+            f"{label}: padded {pad_count}/{total} examples "
+            f"(weight=0) to fill last batch"
+        )
+    return dataset, num_docs, pad_count
+
+
 def worker(
     global_rank: int,
     rank: int,
@@ -177,6 +241,8 @@ def worker(
     num_query_docs: int,
     run_cfg: MagicConfig,
 ):
+    torch.cuda.set_device(rank)
+
     if world_size > 1:
         addr = os.environ.get("MASTER_ADDR", "localhost")
         port = os.environ.get("MASTER_PORT", "29500")
@@ -186,7 +252,6 @@ def worker(
             init_method=f"tcp://{addr}:{port}",
             device_id=torch.device(f"cuda:{rank}"),
             rank=rank,
-            timeout=timedelta(minutes=10),
             world_size=world_size,
         )
 
@@ -196,16 +261,10 @@ def worker(
     # Ensure total effective batch size is divisible by world size
     assert run_cfg.batch_size % world_size == 0
 
-    # Drop items that are nondivisible by batch_size to prevent deadlock
-    remainder = len(train_dataset) % run_cfg.batch_size
-    if remainder:
-        total = len(train_dataset)
-        train_dataset = train_dataset.select(range(total - remainder))
-        if global_rank == 0:
-            print(
-                f"Train: dropped {remainder}/{total} examples "
-                f"({remainder / total * 100:.1f}%) to even batches"
-            )
+    # Pad train dataset to be divisible by batch_size (weight=0 for padding)
+    train_dataset, num_train_docs, pad_count = pad_dataset_to_batch_size(
+        train_dataset, run_cfg.batch_size, num_train_docs, "Train", global_rank
+    )
 
     stream = DataStream(
         train_dataset,
@@ -214,6 +273,8 @@ def worker(
         input_key=run_cfg.data.prompt_column,
         num_docs=num_train_docs,
     )
+    if pad_count:
+        stream.weights.data[-pad_count:] = 0.0
 
     log_fn = None
     if run_cfg.wandb_project and global_rank == 0:
@@ -223,7 +284,6 @@ def worker(
     trainer, fwd_state, model = prepare_trainer(
         run_cfg,
         rank,
-        world_size,
         schedule,
     )
 
@@ -245,21 +305,16 @@ def worker(
         save_mode=run_cfg.save_mode,
         log_fn=log_fn,
         resume=resume,
+        fsdp=run_cfg.fsdp,
     )
 
     if save_fut is not None:
         save_fut.result()  # ensure state0 is saved before validation loads it
 
-    # Drop items that are nondivisible by batch_size to prevent deadlock
-    query_remainder = len(query_dataset) % run_cfg.batch_size
-    if query_remainder:
-        query_total = len(query_dataset)
-        query_dataset = query_dataset.select(range(query_total - query_remainder))
-        if global_rank == 0:
-            print(
-                f"Query: dropped {query_remainder}/{query_total} examples "
-                f"({query_remainder / query_total * 100:.1f}%) to even batches"
-            )
+    # Pad query dataset to be divisible by batch_size (weight=0 for padding)
+    query_dataset, num_query_docs, query_pad_count = pad_dataset_to_batch_size(
+        query_dataset, run_cfg.batch_size, num_query_docs, "Query", global_rank
+    )
     if len(query_dataset) < run_cfg.batch_size:
         raise ValueError(
             f"Query dataset has {len(query_dataset)} examples, fewer than "
@@ -275,8 +330,11 @@ def worker(
         input_key=run_cfg.query.prompt_column,
         num_docs=num_query_docs,
     )
+    if query_pad_count:
+        query_stream.weights.data[-query_pad_count:] = 0.0
+
     query_grads, baseline = compute_query_gradients(
-        fwd_state, model, query_stream, run_cfg.query_method
+        fwd_state, model, query_stream, run_cfg.query_method, run_cfg.fsdp
     )
 
     stream.requires_grad = True
@@ -294,11 +352,16 @@ def worker(
         fwd_state,
         debug=run_cfg.debug,
         inplace=True,
+        fsdp=run_cfg.fsdp,
+        resume=run_cfg.resume,
+        save_every=run_cfg.backward_save_every,
     )
     if world_size > 1:
         dist.all_reduce(bwd_state.weight_grads, op=dist.ReduceOp.SUM)
 
     scores = bwd_state.weight_grads.cpu()
+    if pad_count:
+        scores = scores[:-pad_count]
     if global_rank == 0:
         print(f"Baseline loss: {baseline}")
 
@@ -316,18 +379,29 @@ def worker(
     score_sums = []
 
     gen = torch.Generator().manual_seed(run_cfg.seed)
-    perm = torch.randperm(len(stream.weights), generator=gen)
+    num_real = len(stream.weights) - pad_count
+    perm = torch.randperm(num_real, generator=gen)
     subsets = perm.chunk(run_cfg.num_subsets)
 
+    csv_path = os.path.join(run_cfg.run_path, "validation.csv")
+    val_csv_writer = CSVWriter(
+        csv_path,
+        columns=["subset", "diff", "score_sum"],
+        enabled=global_rank == 0,
+    )
+
     pbar = tqdm(subsets, desc="Validating", disable=global_rank != 0)
-    for subset in pbar:
+    for i, subset in enumerate(pbar):
         fwd_state.load(path0)
+        fwd_state.detach_()
 
         stream.weights.fill_(1.0)
+        if pad_count:
+            stream.weights.data[-pad_count:] = 0.0
         stream.weights[subset] = 0.0
 
         for x in stream:
-            fwd_state = trainer.step(fwd_state, x)
+            fwd_state = trainer.step(fwd_state, x, inplace=True, fsdp=run_cfg.fsdp)
 
         with fwd_state.activate(model), torch.no_grad():
             loss = torch.tensor(0.0, device=stream.weights.device)
@@ -339,34 +413,80 @@ def worker(
         if world_size > 1:
             dist.all_reduce(loss, op=dist.ReduceOp.AVG)
 
-        diffs.append(baseline - loss.item())
-        score_sums.append(scores[subset].sum().item())
+        diff = baseline - loss.item()
+        score_sum = scores[subset].sum().item()
+        val_csv_writer.writerow(i, diff, score_sum)
 
-        corr = spearmanr(diffs, score_sums)
         if global_rank == 0:
-            pbar.set_postfix({"rho": corr.statistic})
+            diffs.append(diff)
+            score_sums.append(score_sum)
 
+            if len(diffs) >= 2:
+                sp = spearmanr(diffs, score_sums)
+                pe = pearsonr(diffs, score_sums)
+                pbar.set_postfix({"rho": sp.statistic, "r": pe.statistic})
+            else:
+                pbar.set_postfix({"rho": "n/a", "r": "n/a"})
+
+    val_csv_writer.close()
     if global_rank == 0:
-        corr = spearmanr(diffs, score_sums)
-        print(f"Final Spearman correlation: {corr.statistic:.4f} (p={corr.pvalue:.2e})")
+        sp = spearmanr(diffs, score_sums)
+        pe = pearsonr(diffs, score_sums)
+        print(f"Final Spearman correlation: {sp.statistic:.4f} (p={sp.pvalue:.2e})")
+        print(f"Final Pearson correlation:  {pe.statistic:.4f} (p={pe.pvalue:.2e})")
+        print(f"Saved validation data to {csv_path}")
+
+        summary_csv_writer = CSVWriter(
+            os.path.join(run_cfg.run_path, "summary.csv"),
+            columns=[
+                "spearman_corr",
+                "spearman_p",
+                "pearson_corr",
+                "pearson_p",
+                "N",
+                "baseline_loss",
+            ],
+        )
+        summary_csv_writer.writerow(
+            sp.statistic, sp.pvalue, pe.statistic, pe.pvalue, len(subsets), baseline
+        )
 
 
 def run_magic(run_cfg: MagicConfig):
     run_path = Path(run_cfg.run_path)
-    if run_path.exists() and not run_cfg.resume:
-        if run_cfg.overwrite:
-            shutil.rmtree(run_path)
-        else:
-            raise FileExistsError(
-                f"Run path {run_path} already exists. "
-                f"Use --overwrite to overwrite it."
-            )
+    is_main_node = int(os.environ.get("SLURM_PROCID", 0)) == 0
+    multi_node = run_cfg.distributed.nnode > 1
 
-    run_path.mkdir(parents=True, exist_ok=True)
-    run_cfg.save_yaml(run_path / "run_config.yaml")
+    if is_main_node:
+        if run_path.exists() and not run_cfg.resume:
+            if run_cfg.overwrite:
+                shutil.rmtree(run_path)
+            else:
+                raise FileExistsError(
+                    f"Run path {run_path} already exists. "
+                    f"Use --overwrite to overwrite it."
+                )
+
+        run_path.mkdir(parents=True, exist_ok=True)
+        run_cfg.save_yaml(run_path / "run_config.yaml")
+
+    # HF datasets caches are not safe for concurrent writers, so the main node
+    # must finish populating the cache before others read from it.
+    barrier = run_path / ".preprocess_done" if multi_node else None
+    if barrier is not None and not is_main_node:
+        run_path.mkdir(parents=True, exist_ok=True)
+        while not barrier.exists():
+            time.sleep(0.5)
 
     train_ds, train_n = setup_data_pipeline(run_cfg)
+
+    # Shuffle the train_ds with the seed.
+    train_ds = train_ds.shuffle(seed=run_cfg.seed)
+
     query_ds, query_n = setup_data_pipeline(run_cfg, run_cfg.query)
+
+    if barrier is not None and is_main_node:
+        barrier.touch()
 
     launch_distributed_run(
         "run_magic",

@@ -246,10 +246,27 @@ def _allocate_batches_world(
     """
     if ranks is None:
         ranks = list(range(world_size))
-    if len(doc_lengths) < world_size:
-        raise RuntimeError("Not enough documents to distribute across workers.")
-
-    docs_sorted = sorted(enumerate(doc_lengths), key=lambda x: x[1], reverse=True)
+    # Skip documents shorter than 2 tokens: they cannot produce a valid
+    # next-token label so they contribute no gradient.  Keeping them would
+    # also be problematic for length-0 documents which create [N, 0] tensors
+    # that hang the model forward pass.  These documents are simply omitted
+    # from batches; their gradient index entries stay at the pre-initialized
+    # zero value.
+    docs_sorted = sorted(
+        ((i, l) for i, l in enumerate(doc_lengths) if l >= 2),
+        key=lambda x: x[1],
+        reverse=True,
+    )
+    n_skipped = len(doc_lengths) - len(docs_sorted)
+    if n_skipped > 0 and (not dist.is_initialized() or dist.get_rank() == 0):
+        print(
+            f"Skipping {n_skipped} documents with fewer than 2 tokens "
+            f"(no valid next-token labels)."
+        )
+    if len(docs_sorted) < world_size:
+        raise RuntimeError(
+            "Not enough documents (with 2+ tokens) to distribute across workers."
+        )
     if docs_sorted[0][1] > N:  # a single document would overflow any batch
         raise RuntimeError(
             f"At least one document is too long for the token batch size {N}."
@@ -582,6 +599,11 @@ def pad_and_tensor(
 
     # find max length
     max_len = max(len(seq) for seq in sequences)
+    if dist.is_initialized():
+        max_len_tensor = torch.tensor(max_len, device=device)
+        dist.all_reduce(max_len_tensor, op=dist.ReduceOp.MAX)
+        max_len = int(max_len_tensor)
+
     # pad each sequence
     padded = [seq + [padding_value] * (max_len - len(seq)) for seq in sequences]
     labels = [label + [-100] * (max_len - len(label)) for label in labels]
@@ -751,6 +773,10 @@ def tokenize_and_chunk(
         ]
         return {"input_ids": token_chunks, "doc_ids": doc_chunks}
 
+    # Cap parallelism so each worker gets enough documents to fill many chunks,
+    # since tail tokens that don't fill a chunk are dropped per-worker.
+    min_docs_per_worker = chunk_size * 4
+    num_proc = min(num_proc, max(len(tokenized) // min_docs_per_worker, 1))
     bs = min(10_000, len(tokenized) // num_proc)
     chunked = tokenized.map(
         chunk_batch,
@@ -763,6 +789,21 @@ def tokenize_and_chunk(
     )
     # Make sure HuggingFace didn't change the dataset type!
     assert isinstance(chunked, type(dataset))
+
+    # Warn if chunking dropped a significant number of documents
+    n_docs = len(dataset)
+    if n_docs > 0 and "doc_ids" in chunked.column_names:
+        represented = set()
+        for doc_ids in chunked["doc_ids"]:
+            represented.update(doc_ids)
+        n_dropped = n_docs - len(represented)
+        if n_dropped > 0:
+            pct = n_dropped / n_docs * 100
+            print(
+                f"Warning: chunking dropped {n_dropped}/{n_docs} documents "
+                f"({pct:.1f}%) that didn't fill a {chunk_size}-token chunk "
+                f"when using a document batch size of {bs}."
+            )
 
     # Restore original logging level
     logging.set_verbosity(original_verbosity)

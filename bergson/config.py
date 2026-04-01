@@ -347,10 +347,10 @@ class IndexConfig(AttributionConfig, Serializable):
     processor_path: str = ""
     """Path to a precomputed processor."""
 
-    normalizer: Literal["none"] = "none"  # "adafactor", "adam",
-    """Type of normalizer to use for the gradients. We are disabling
-    optimizers due to lack of empirical validation - contact Eleuther
-    if you'd like to use them."""
+    optimizer_state_path: str = ""
+    """Path to a training checkpoint directory containing an optimizer.pt
+    or directly to an optimizer state file. Loads exp_avg_sq second
+    moments to normalize gradients."""
 
     skip_preconditioners: bool = False
     """Whether to skip estimating preconditioner statistics"""
