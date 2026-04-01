@@ -116,7 +116,7 @@ def prepare_trainer(cfg: TrainingConfig, rank: int, world_size: int):
         model.requires_grad_(True)
 
     if cfg.grad_checkpointing:
-        model.gradient_checkpointing_enable(
+        model.gradient_checkpointing_enable(  # type: ignore[attr-defined]
             gradient_checkpointing_kwargs=dict(use_reentrant=False),
         )
 

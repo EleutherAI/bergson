@@ -165,19 +165,20 @@ def _try_validate(
         seq_len = token_budget
     num_seqs = max(1, token_budget // seq_len)
 
+    device = torch.device(model.device)  # type: ignore[attr-defined]
     try:
         input_ids = torch.randint(
             0,
             10,
             (num_seqs, seq_len),
-            device=model.device,
+            device=device,
             dtype=torch.long,
         )
         labels = torch.randint(
             0,
             10,
             (num_seqs, seq_len),
-            device=model.device,
+            device=device,
             dtype=torch.long,
         )
 
