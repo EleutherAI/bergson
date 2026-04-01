@@ -582,6 +582,11 @@ def pad_and_tensor(
 
     # find max length
     max_len = max(len(seq) for seq in sequences)
+    if dist.is_initialized():
+        max_len_tensor = torch.tensor(max_len, device=device)
+        dist.all_reduce(max_len_tensor, op=dist.ReduceOp.MAX)
+        max_len = int(max_len_tensor)
+
     # pad each sequence
     padded = [seq + [padding_value] * (max_len - len(seq)) for seq in sequences]
     labels = [label + [-100] * (max_len - len(label)) for label in labels]
