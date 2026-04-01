@@ -1,6 +1,66 @@
 # CHANGELOG
 
 
+## v0.9.0 (2026-03-18)
+
+### Bug Fixes
+
+- Release
+  ([`dec3df9`](https://github.com/EleutherAI/bergson/commit/dec3df98a0707f0058bf193c27ef4f4e50fab6ac))
+
+### Features
+
+- Add flag to enable TF32
+  ([`35ab164`](https://github.com/EleutherAI/bergson/commit/35ab16400afda484ccff717b7a4b48ae6f06811d))
+
+
+## v0.8.1 (2026-03-18)
+
+### Bug Fixes
+
+- Release bergson without pinned transformers
+  ([`ef9dc9a`](https://github.com/EleutherAI/bergson/commit/ef9dc9a6bd4604162fcd9c1ba5bcca18f3936455))
+
+
+## v0.8.0 (2026-03-08)
+
+### Features
+
+- Set default precision to fp32 in IndexConfig and ScoreConfig
+  ([`92d4807`](https://github.com/EleutherAI/bergson/commit/92d4807df7b73cee21c6e375c79454b021998671))
+
+Co-authored-by: Lucia Quirke <luciaquirke@users.noreply.github.com>
+
+
+## v0.7.2 (2026-03-04)
+
+
+## v0.7.1 (2026-03-03)
+
+### Bug Fixes
+
+- Always compute mixing coefficient in Trackstar pipeline
+  ([`c990375`](https://github.com/EleutherAI/bergson/commit/c990375e69d309f348c489f9bfc9cf9cddc28f6d))
+
+Remove the conditional guard — lambda is always auto-computed from the preconditioner eigenvalues
+  since the cost is negligible.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+
+
+## v0.7.0 (2026-03-03)
+
+### Bug Fixes
+
+- Standardize trace collector preconditioning
+  ([`6a14e53`](https://github.com/EleutherAI/bergson/commit/6a14e534a403c72bae4a340009ab84d385b7928b))
+
+### Features
+
+- Enable trackstar
+  ([`2dd26d3`](https://github.com/EleutherAI/bergson/commit/2dd26d31fe4f88d1f2d19537958208b914cec2c8))
+
+
 ## v0.6.2 (2026-03-02)
 
 ### Bug Fixes

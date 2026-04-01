@@ -8,9 +8,11 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
+from bergson import IndexConfig
 from bergson.data import load_gradients
 from bergson.gradients import GradientProcessor
-from bergson.utils.math import compute_damped_inverse
+from bergson.process_grads import mix_preconditioners
+from bergson.utils.math import damped_psd_power
 
 
 def load_scores_matrix(scores_path: Path | str) -> np.ndarray:
@@ -106,7 +108,7 @@ def compute_scores_fast(
         device = torch.device("cuda:0")
         for name in tqdm(module_names, desc="Computing H^(-1)"):
             H = proc.preconditioners[name].to(device=device)
-            h_inv[name] = compute_damped_inverse(H)
+            h_inv[name] = damped_psd_power(H, power=-1)
 
         # Bergson's approach (from score.py):
         # 1. Query: precondition with H^(-1), then unit normalize
@@ -211,14 +213,17 @@ def compute_scores_fast(
 def compute_scores_with_bergson(
     index_path: Path | str,
     output_path: Path | str,
-    query_preconditioner_path: str | None = None,
-    index_preconditioner_path: str | None = None,
+    query_preconditioner_path: str | Path | None = None,
+    index_preconditioner_path: str | Path | None = None,
     unit_normalize: bool = True,
 ) -> None:
     """Run bergson score to compute pairwise similarities.
 
     NOTE: This recomputes gradients, which is slow. For index-vs-index
     scoring, use compute_scores_fast() instead.
+
+    If both query_preconditioner_path and index_preconditioner_path are given,
+    they are mixed internally before scoring.
 
     Args:
         index_path: Path to the gradient index.
@@ -230,26 +235,41 @@ def compute_scores_with_bergson(
     output_path = Path(output_path)
     index_path = Path(index_path)
 
-    if output_path.exists():
+    if (output_path / "info.json").exists():
         print(f"Scores already exist at {output_path}, skipping...")
         return
 
+    # Mix preconditioners if both paths are given, otherwise use whichever is provided
+    preconditioner_path = None
+    if query_preconditioner_path and index_preconditioner_path:
+        mixed_path = output_path / "mixed_preconditioner"
+        output_path.mkdir(parents=True, exist_ok=True)
+        mix_preconditioners(
+            query_preconditioner_path,
+            index_preconditioner_path,
+            mixed_path,
+        )
+        preconditioner_path = str(mixed_path)
+    elif query_preconditioner_path:
+        preconditioner_path = str(query_preconditioner_path)
+    elif index_preconditioner_path:
+        preconditioner_path = str(index_preconditioner_path)
+
     # Load index config to get model and dataset info
-    with open(index_path / "index_config.json") as f:
-        index_cfg = json.load(f)
+    index_cfg = IndexConfig.load_yaml(index_path / "index_config.yaml")
 
     # Get dataset and column info from config
-    data_cfg = index_cfg.get("data", {})
-    dataset_path = data_cfg.get("dataset", str(index_path / "data.hf"))
-    prompt_column = data_cfg.get("prompt_column", "text")
-    completion_column = data_cfg.get("completion_column", "")
+    data_cfg = index_cfg.data
+    dataset_path = data_cfg.dataset or str(index_path / "data.hf")
+    prompt_column = data_cfg.prompt_column or "text"
+    completion_column = data_cfg.completion_column or ""
 
     cmd = [
         "bergson",
         "score",
         str(output_path),
         "--model",
-        index_cfg["model"],
+        index_cfg.model,
         "--dataset",
         dataset_path,
         "--query_path",
@@ -257,7 +277,7 @@ def compute_scores_with_bergson(
         "--score",
         "individual",
         "--projection_dim",
-        str(index_cfg.get("projection_dim", 0)),
+        str(index_cfg.projection_dim or 0),
         "--fsdp",
         "--prompt_column",
         prompt_column,
@@ -269,11 +289,8 @@ def compute_scores_with_bergson(
     if unit_normalize:
         cmd.append("--unit_normalize")
 
-    if query_preconditioner_path:
-        cmd.extend(["--query_preconditioner_path", query_preconditioner_path])
-
-    if index_preconditioner_path:
-        cmd.extend(["--index_preconditioner_path", index_preconditioner_path])
+    if preconditioner_path:
+        cmd.extend(["--preconditioner_path", preconditioner_path])
 
     print("Running:", " ".join(cmd))
     result = subprocess.run(cmd, capture_output=True, text=True)

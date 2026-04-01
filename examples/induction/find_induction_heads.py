@@ -24,7 +24,7 @@ from transformers import (
 )
 
 from bergson import CollectorComputer, InMemoryCollector
-from bergson.config import FaissConfig, IndexConfig, ReduceConfig
+from bergson.config import FaissConfig, IndexConfig, PreprocessConfig
 from bergson.data import allocate_batches
 from bergson.gradients import GradientProcessor
 from bergson.huggingface import (
@@ -175,7 +175,7 @@ def reduce_query_gradients(
         cfg=cfg,
         processor=processor,
         attention_cfgs=HEAD_CFGS,
-        reduce_cfg=ReduceConfig(method="mean"),
+        preprocess_cfg=PreprocessConfig(aggregation="mean"),
     )
 
     doc_lengths = [len(ids) for ids in induction_dataset["input_ids"]]

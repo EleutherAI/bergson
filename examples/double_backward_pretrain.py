@@ -16,34 +16,29 @@ Usage:
         --query.split "train[:1]"
 """
 
-from bergson.config import DataConfig, DistributedConfig
-from bergson.double_backward import DoubleBackwardConfig, double_backward
+from bergson.config import DataConfig, LRScheduleConfig
+from bergson.magic import MagicConfig, run_magic
 
 
 def main():
-    run_cfg = DoubleBackwardConfig(
+    run_cfg = MagicConfig(
         run_path="runs/magic_pretrain",
         model="EleutherAI/pythia-160m",
         revision="step0",
         data=DataConfig(
             dataset="EleutherAI/SmolLM2-135M-10B",
-            split="train",
+            split="train[:200]",
         ),
         query=DataConfig(
             dataset="EleutherAI/SmolLM2-135M-10B",
             split="train[:1]",
         ),
-        query_batches=1,
-        lr=1e-5,
-        warmup_steps=10,
         batch_size=8,
-        num_batches=25,
-        max_length=256,
+        lr_schedule=LRScheduleConfig(lr=1e-5, warmup_steps=10),
         num_subsets=100,
         seed=42,
     )
-    dist_cfg = DistributedConfig()
-    double_backward(run_cfg, dist_cfg)
+    run_magic(run_cfg)
 
 
 if __name__ == "__main__":

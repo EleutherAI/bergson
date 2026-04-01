@@ -62,8 +62,6 @@ def maybe_auto_batch_size(
                 processor=processor,
                 target_modules=target_modules,
                 data=ds,  # type: ignore
-                scorer=None,
-                reduce_cfg=None,
             ),
             starting_batch_size=cfg.token_batch_size,
         )

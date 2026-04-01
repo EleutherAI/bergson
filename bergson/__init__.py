@@ -1,5 +1,6 @@
-__version__ = "0.6.2"
+__version__ = "0.9.0"
 
+from .builder import Builder
 from .collection import collect_gradients
 from .collector.collector import CollectorComputer
 from .collector.gradient_collectors import GradientCollector
@@ -8,22 +9,19 @@ from .config import (
     AttentionConfig,
     DataConfig,
     IndexConfig,
+    PreprocessConfig,
     QueryConfig,
-    ReduceConfig,
     ScoreConfig,
 )
 from .data import (
-    Builder,
-    InMemorySequenceBuilder,
-    InMemoryTokenBuilder,
     TokenGradients,
-    create_builder,
     load_gradient_dataset,
     load_gradients,
     load_token_gradients,
 )
 from .gradients import GradientProcessor
 from .normalizer.fit_normalizers import fit_normalizers
+from .process_grads import mix_preconditioners
 from .query.attributor import Attributor
 from .query.faiss_index import FaissConfig
 from .score.scorer import Scorer
@@ -36,9 +34,6 @@ __all__ = [
     "load_token_gradients",
     "TokenGradients",
     "Builder",
-    "InMemorySequenceBuilder",
-    "InMemoryTokenBuilder",
-    "create_builder",
     "fit_normalizers",
     "Attributor",
     "FaissConfig",
@@ -50,8 +45,9 @@ __all__ = [
     "IndexConfig",
     "DataConfig",
     "AttentionConfig",
+    "PreprocessConfig",
     "Scorer",
     "ScoreConfig",
-    "ReduceConfig",
     "QueryConfig",
+    "mix_preconditioners",
 ]

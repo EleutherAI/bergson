@@ -22,6 +22,7 @@ from typing import Any
 import numpy as np
 from datasets import Dataset, DatasetDict, concatenate_datasets, load_from_disk
 
+from bergson import IndexConfig
 from examples.semantic.data import (
     HF_ANALYSIS_MODEL,
     load_experiment_data,
@@ -167,6 +168,42 @@ FACT_TEMPLATES = {
         "{name} is a {value}.",
     ],
 }
+
+# Question templates for semantic-only eval (gradients only from answer tokens)
+QUESTION_TEMPLATES = {
+    "employer": "Where does {name} work?",
+    "university": "Where did {name} study?",
+    "degree": "What degree does {name} hold?",
+    "title": "What is {name}'s job title?",
+}
+
+
+def add_question_answer_columns(ds: Dataset) -> Dataset:
+    """Add question and answer columns to a dataset for semantic-only eval.
+
+    The question is generated from the field type and name, the answer is the value.
+    This allows computing gradients only from the answer tokens (semantic content)
+    rather than the full stylized text.
+
+    Args:
+        ds: Dataset with 'name', 'field', and 'value' columns.
+
+    Returns:
+        Dataset with added 'question' and 'answer' columns.
+    """
+
+    def generate_qa(example: dict) -> dict:
+        field = example["field"]
+        name = example["name"]
+        value = example["value"]
+
+        question_template = QUESTION_TEMPLATES.get(field, "What is {name}'s {field}?")
+        question = question_template.format(name=name, field=field)
+
+        return {"question": question, "answer": value}
+
+    return ds.map(generate_qa)
+
 
 # Name pools for synthetic people
 FIRST_NAMES = [
@@ -665,6 +702,9 @@ def score_attribute_eval(
     config: AttributePreservationConfig,
     base_path: Path | str,
     preconditioner_name: str | None = None,
+    eval_prompt_column: str = "fact",
+    eval_completion_column: str = "reworded",
+    damping_factor: float = 0.1,
 ) -> "np.ndarray":
     """Score eval queries against training index.
 
@@ -672,6 +712,11 @@ def score_attribute_eval(
         config: Experiment configuration.
         base_path: Base path for experiment outputs.
         preconditioner_name: Name of preconditioner (None for no precond).
+        eval_prompt_column: Column to use as prompt for eval gradients.
+            Set to "question" for semantic-only attribution.
+        eval_completion_column: Column to use as completion for eval gradients.
+            Set to "answer" for semantic-only attribution.
+        damping_factor: Damping factor for matrix inversion.
 
     Returns:
         Score matrix of shape (n_eval, n_train).
@@ -685,18 +730,23 @@ def score_attribute_eval(
 
     from bergson.data import load_gradients
     from bergson.gradients import GradientProcessor
-    from bergson.utils.math import compute_damped_inverse
+    from bergson.utils.math import damped_psd_power
 
     base_path = Path(base_path)
     index_path = base_path / "index"
     data_path = base_path / "data"
 
-    # Determine output path
+    # Determine output path - include column names for semantic eval caching
+    is_semantic = (
+        eval_prompt_column == "question" and eval_completion_column == "answer"
+    )
+    col_suffix = "_question_answer" if is_semantic else ""
+
     if preconditioner_name:
-        scores_path = base_path / f"scores_{preconditioner_name}"
+        scores_path = base_path / f"scores_{preconditioner_name}{col_suffix}"
         precond_path = base_path / preconditioner_name
     else:
-        scores_path = base_path / "scores_no_precond"
+        scores_path = base_path / f"scores_no_precond{col_suffix}"
         precond_path = None
 
     # Return cached
@@ -714,6 +764,13 @@ def score_attribute_eval(
         train_ds = train_ds["train"]
     if isinstance(eval_ds, DatasetDict):
         eval_ds = eval_ds["train"]
+
+    # Add question/answer columns if needed for semantic eval
+    if is_semantic and "question" not in eval_ds.column_names:
+        print("Adding question/answer columns to eval dataset...")
+        eval_ds = add_question_answer_columns(eval_ds)
+        # Save the updated dataset
+        eval_ds.save_to_disk(str(data_path / "eval_with_qa.hf"))
 
     n_train = len(train_ds)
     n_eval = len(eval_ds)
@@ -736,7 +793,7 @@ def score_attribute_eval(
         device = torch.device("cuda:0")
         for name in tqdm(module_names, desc="Computing H^(-1)"):
             H = proc.preconditioners[name].to(device=device)
-            h_inv[name] = compute_damped_inverse(H)
+            h_inv[name] = damped_psd_power(H, power=-1, damping_factor=damping_factor)
 
     def load_grad_as_float(grads: np.memmap, name: str) -> np.ndarray:
         g = grads[name]
@@ -759,30 +816,45 @@ def score_attribute_eval(
 
     # Compute eval gradients
     print("Computing eval gradients...")
-    eval_grads_path = base_path / "eval_grads"
+    eval_grads_suffix = "_semantic" if is_semantic else ""
+    eval_grads_path = base_path / f"eval_grads{eval_grads_suffix}"
+
+    # Determine which dataset to use for eval grads
+    if is_semantic:
+        eval_data_path = data_path / "eval_with_qa.hf"
+        if not eval_data_path.exists():
+            # Create it now
+            eval_ds_qa = add_question_answer_columns(eval_ds)
+            eval_ds_qa.save_to_disk(str(eval_data_path))
+    else:
+        eval_data_path = data_path / "eval.hf"
+
     if not eval_grads_path.exists():
-        with open(index_path / "index_config.json") as f:
-            index_cfg = json.load(f)
+        index_cfg = IndexConfig.load_yaml(index_path / "index_config.yaml")
+
+        # Use smaller token batch size for semantic eval (short Q&A samples)
+        # to ensure enough batches for distributed workers
+        token_batch_size = "500" if is_semantic else "6000"
 
         cmd = [
             "bergson",
             "build",
             str(eval_grads_path),
             "--model",
-            index_cfg["model"],
+            index_cfg.model,
             "--dataset",
-            str(data_path / "eval.hf"),
+            str(eval_data_path),
             "--drop_columns",
             "False",
             "--prompt_column",
-            "fact",
+            eval_prompt_column,
             "--completion_column",
-            "reworded",
+            eval_completion_column,
             "--fsdp",
             "--projection_dim",
-            str(index_cfg.get("projection_dim", 16)),
+            str(index_cfg.projection_dim or 16),
             "--token_batch_size",
-            "6000",
+            token_batch_size,
             "--skip_preconditioners",
         ]
         print("Running:", " ".join(cmd))
@@ -822,6 +894,9 @@ def compute_attribute_metrics(
     config: AttributePreservationConfig,
     base_path: Path | str,
     preconditioner_name: str | None = None,
+    eval_prompt_column: str = "fact",
+    eval_completion_column: str = "reworded",
+    damping_factor: float = 0.1,
 ) -> AttributePreservationMetrics:
     """Compute metrics for attribute preservation experiment.
 
@@ -829,6 +904,11 @@ def compute_attribute_metrics(
         config: Experiment configuration.
         base_path: Base path for experiment outputs.
         preconditioner_name: Name of preconditioner.
+        eval_prompt_column: Column to use as prompt for eval gradients.
+            Set to "question" for semantic-only attribution.
+        eval_completion_column: Column to use as completion for eval gradients.
+            Set to "answer" for semantic-only attribution.
+        damping_factor: Damping factor for matrix inversion.
 
     Returns:
         AttributePreservationMetrics dataclass.
@@ -846,7 +926,14 @@ def compute_attribute_metrics(
         eval_ds = eval_ds["train"]
 
     # Load scores
-    scores = score_attribute_eval(config, base_path, preconditioner_name)
+    scores = score_attribute_eval(
+        config,
+        base_path,
+        preconditioner_name,
+        eval_prompt_column=eval_prompt_column,
+        eval_completion_column=eval_completion_column,
+        damping_factor=damping_factor,
+    )
 
     n_eval = len(eval_ds)
     top_k = 10
@@ -1028,6 +1115,384 @@ def print_attribute_metrics(metrics: AttributePreservationMetrics, name: str) ->
     print("\nPer-Field Top-1 Accuracy:")
     for field_name, acc in sorted(metrics.top1_by_field.items()):
         print(f"  {field_name}: {acc:.2%}")
+
+
+def score_attribute_eval_with_pca(
+    config: AttributePreservationConfig,
+    base_path: Path | str,
+    style_subspace: dict[str, tuple],
+    top_k: int = 100,
+    preconditioner_name: str | None = None,
+    eval_prompt_column: str = "fact",
+    eval_completion_column: str = "reworded",
+    damping_factor: float = 0.1,
+) -> "np.ndarray":
+    """Score eval queries with PCA projection to remove style direction.
+
+    Args:
+        config: Experiment configuration.
+        base_path: Base path for experiment outputs.
+        style_subspace: Dictionary from compute_pca_style_subspace().
+        top_k: Number of principal components used (for cache naming).
+        preconditioner_name: Optional preconditioner to apply after projection.
+        eval_prompt_column: Column for eval prompt (use "question" for semantic).
+        eval_completion_column: Column for eval completion (use "answer" for semantic).
+        damping_factor: Damping factor for matrix inversion.
+
+    Returns:
+        Score matrix of shape (n_eval, n_train).
+    """
+    import json
+    import subprocess
+
+    import ml_dtypes  # noqa: F401
+    import torch
+    from tqdm import tqdm
+
+    from bergson.data import load_gradients
+    from bergson.gradients import GradientProcessor
+    from bergson.utils.math import damped_psd_power
+
+    from .preconditioners import project_orthogonal_to_style_subspace
+
+    base_path = Path(base_path)
+    index_path = base_path / "index"
+    data_path = base_path / "data"
+
+    # Determine output path
+    is_semantic = (
+        eval_prompt_column == "question" and eval_completion_column == "answer"
+    )
+    col_suffix = "_question_answer" if is_semantic else ""
+
+    if preconditioner_name:
+        scores_path = (
+            base_path / f"scores_pca_k{top_k}_{preconditioner_name}{col_suffix}"
+        )
+        precond_path = base_path / preconditioner_name
+    else:
+        scores_path = base_path / f"scores_pca_k{top_k}{col_suffix}"
+        precond_path = None
+
+    # Return cached
+    if (scores_path / "scores.npy").exists():
+        print(f"Loading cached scores from {scores_path}")
+        return np.load(scores_path / "scores.npy")
+
+    scores_path.mkdir(parents=True, exist_ok=True)
+
+    # Load datasets
+    train_ds = load_from_disk(str(data_path / "train.hf"))
+    eval_ds = load_from_disk(str(data_path / "eval.hf"))
+
+    if isinstance(train_ds, DatasetDict):
+        train_ds = train_ds["train"]
+    if isinstance(eval_ds, DatasetDict):
+        eval_ds = eval_ds["train"]
+
+    # Add question/answer columns if needed
+    if is_semantic and "question" not in eval_ds.column_names:
+        print("Adding question/answer columns to eval dataset...")
+        eval_ds = add_question_answer_columns(eval_ds)
+        eval_ds.save_to_disk(str(data_path / "eval_with_qa.hf"))
+
+    n_train = len(train_ds)
+    n_eval = len(eval_ds)
+
+    print(
+        f"Scoring {n_eval} eval queries against {n_train} train samples (PCA k={top_k})"
+    )
+
+    # Load train gradients
+    print("Loading train gradients...")
+    train_grads = load_gradients(index_path, structured=True)
+
+    with open(index_path / "info.json") as f:
+        info = json.load(f)
+    module_names = info["dtype"]["names"]
+
+    # Load preconditioner if specified
+    h_inv = {}
+    if precond_path and (precond_path / "preconditioners.pth").exists():
+        print(f"Loading preconditioner from {precond_path}")
+        proc = GradientProcessor.load(precond_path)
+        device = torch.device("cuda:0")
+        for name in tqdm(module_names, desc="Computing H^(-1)"):
+            H = proc.preconditioners[name].to(device=device)
+            h_inv[name] = damped_psd_power(H, -1.0, damping_factor=damping_factor)
+
+    def load_grad_as_float(grads: np.memmap, name: str) -> np.ndarray:
+        g = grads[name]
+        if g.dtype == np.dtype("|V2"):
+            g = g.view(ml_dtypes.bfloat16).astype(np.float32)
+        return g
+
+    # Prepare train gradients (no PCA projection on train - only on eval)
+    print("Preparing train gradients...")
+    train_grad_list = []
+    for name in tqdm(module_names, desc="Loading train grads"):
+        g = load_grad_as_float(train_grads, name)
+        train_grad_list.append(torch.from_numpy(g))
+    train_grad_tensor = torch.cat(train_grad_list, dim=1)
+
+    # Unit normalize
+    train_norms = train_grad_tensor.norm(dim=1, keepdim=True)
+    train_grad_tensor = train_grad_tensor / (train_norms + 1e-8)
+    train_grad_tensor = train_grad_tensor.cuda()
+
+    # Compute eval gradients
+    print("Computing eval gradients...")
+    eval_grads_suffix = "_semantic" if is_semantic else ""
+    eval_grads_path = base_path / f"eval_grads{eval_grads_suffix}"
+
+    if is_semantic:
+        eval_data_path = data_path / "eval_with_qa.hf"
+        if not eval_data_path.exists():
+            eval_ds_qa = add_question_answer_columns(eval_ds)
+            eval_ds_qa.save_to_disk(str(eval_data_path))
+    else:
+        eval_data_path = data_path / "eval.hf"
+
+    if not eval_grads_path.exists():
+        index_cfg = IndexConfig.load_yaml(index_path / "index_config.yaml")
+        token_batch_size = "500" if is_semantic else "6000"
+
+        cmd = [
+            "bergson",
+            "build",
+            str(eval_grads_path),
+            "--model",
+            index_cfg.model,
+            "--dataset",
+            str(eval_data_path),
+            "--drop_columns",
+            "False",
+            "--prompt_column",
+            eval_prompt_column,
+            "--completion_column",
+            eval_completion_column,
+            "--fsdp",
+            "--projection_dim",
+            str(index_cfg.projection_dim or 16),
+            "--token_batch_size",
+            token_batch_size,
+            "--skip_preconditioners",
+        ]
+        print("Running:", " ".join(cmd))
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            print("STDOUT:", result.stdout)
+            print("STDERR:", result.stderr)
+            raise RuntimeError("bergson build for eval failed")
+        print(result.stdout)
+
+    # Load eval gradients and apply PCA projection
+    eval_grads = load_gradients(eval_grads_path, structured=True)
+    eval_grad_list = []
+
+    for name in tqdm(module_names, desc="Loading and projecting eval grads"):
+        g = torch.from_numpy(load_grad_as_float(eval_grads, name))
+
+        # Apply PCA projection if we have the subspace for this module
+        if name in style_subspace:
+            eigvecs, _ = style_subspace[name]
+            g = g.cuda()
+            eigvecs = eigvecs.cuda()
+            g = project_orthogonal_to_style_subspace(g, eigvecs)
+            # Apply preconditioning after projection if specified
+            if h_inv:
+                g = g @ h_inv[name]
+            g = g.cpu()
+        elif h_inv:
+            g = (g.cuda() @ h_inv[name]).cpu()
+
+        eval_grad_list.append(g)
+
+    eval_grad_tensor = torch.cat(eval_grad_list, dim=1)
+
+    # Unit normalize
+    eval_norms = eval_grad_tensor.norm(dim=1, keepdim=True)
+    eval_grad_tensor = eval_grad_tensor / (eval_norms + 1e-8)
+    eval_grad_tensor = eval_grad_tensor.cuda()
+
+    # Compute scores
+    print("Computing scores...")
+    scores = (eval_grad_tensor @ train_grad_tensor.T).cpu().numpy()
+
+    np.save(scores_path / "scores.npy", scores)
+    print(f"Saved scores to {scores_path}")
+
+    return scores
+
+
+def compute_attribute_metrics_with_pca(
+    config: AttributePreservationConfig,
+    base_path: Path | str,
+    style_subspace: dict[str, tuple],
+    top_k: int = 100,
+    preconditioner_name: str | None = None,
+    eval_prompt_column: str = "fact",
+    eval_completion_column: str = "reworded",
+    damping_factor: float = 0.1,
+) -> AttributePreservationMetrics:
+    """Compute metrics with PCA style projection.
+
+    Args:
+        config: Experiment configuration.
+        base_path: Base path for experiment outputs.
+        style_subspace: Dictionary from compute_pca_style_subspace().
+        top_k: Number of principal components.
+        preconditioner_name: Optional preconditioner to combine with PCA.
+        eval_prompt_column: Column for eval prompt.
+        eval_completion_column: Column for eval completion.
+        damping_factor: Damping factor for matrix inversion.
+
+    Returns:
+        AttributePreservationMetrics dataclass.
+    """
+    base_path = Path(base_path)
+    data_path = base_path / "data"
+
+    # Load datasets
+    train_ds = load_from_disk(str(data_path / "train.hf"))
+    eval_ds = load_from_disk(str(data_path / "eval.hf"))
+
+    if isinstance(train_ds, DatasetDict):
+        train_ds = train_ds["train"]
+    if isinstance(eval_ds, DatasetDict):
+        eval_ds = eval_ds["train"]
+
+    # Load scores with PCA
+    scores = score_attribute_eval_with_pca(
+        config,
+        base_path,
+        style_subspace,
+        top_k=top_k,
+        preconditioner_name=preconditioner_name,
+        eval_prompt_column=eval_prompt_column,
+        eval_completion_column=eval_completion_column,
+        damping_factor=damping_factor,
+    )
+
+    n_eval = len(eval_ds)
+    top_k_eval = 10
+
+    # Extract metadata
+    train_facts = train_ds["fact"]
+    train_styles = train_ds["style"]
+    train_occupations = train_ds["occupation"]
+    train_fields = train_ds["field"]
+    train_values = train_ds["value"]
+
+    eval_facts = eval_ds["fact"]
+    eval_styles = eval_ds["style"]
+    eval_occupations = eval_ds["occupation"]
+    eval_fields = eval_ds["field"]
+
+    # Build occupation -> attribute pools
+    occupation_employers = {
+        occ: set(attrs["employers"]) for occ, attrs in OCCUPATION_CLUSTERS.items()
+    }
+    occupation_universities = {
+        occ: set(attrs["universities"]) for occ, attrs in OCCUPATION_CLUSTERS.items()
+    }
+
+    # Compute metrics
+    fact_top1 = fact_top5 = fact_top10 = 0
+    occ_top1 = occ_top5 = occ_top10 = 0
+    style_only_top1 = style_only_top5 = style_only_top10 = 0
+    same_employer_type = same_university_type = 0
+
+    field_top1: dict[str, list[int]] = {
+        f: [0, 0] for f in ["employer", "university", "degree", "title"]
+    }
+
+    for i in range(n_eval):
+        query_fact = eval_facts[i]
+        query_style = eval_styles[i]
+        query_occ = eval_occupations[i]
+        query_field = eval_fields[i]
+
+        top_indices = np.argsort(scores[i])[::-1][:top_k_eval]
+
+        for k, idx in enumerate(top_indices):
+            match_fact = train_facts[idx]
+            match_style = train_styles[idx]
+            match_occ = train_occupations[idx]
+
+            is_fact_match = match_fact == query_fact
+            is_occ_match = match_occ == query_occ
+            is_style_match = match_style == query_style
+            is_style_only = is_style_match and not is_occ_match
+
+            if k == 0:
+                if is_fact_match:
+                    fact_top1 += 1
+                if is_occ_match:
+                    occ_top1 += 1
+                if is_style_only:
+                    style_only_top1 += 1
+                if query_field in field_top1:
+                    field_top1[query_field][1] += 1
+                    if is_fact_match:
+                        field_top1[query_field][0] += 1
+
+            if k < 5:
+                if is_fact_match:
+                    fact_top5 += 1
+                if is_occ_match:
+                    occ_top5 += 1
+                if is_style_only:
+                    style_only_top5 += 1
+
+            if is_fact_match:
+                fact_top10 += 1
+            if is_occ_match:
+                occ_top10 += 1
+            if is_style_only:
+                style_only_top10 += 1
+
+        # Check attribute-level matching for top-1
+        top1_idx = top_indices[0]
+        top1_field = train_fields[top1_idx]
+        top1_value = train_values[top1_idx]
+
+        if query_field == "employer" and top1_field == "employer":
+            if top1_value in occupation_employers.get(query_occ, set()):
+                same_employer_type += 1
+
+        if query_field == "university" and top1_field == "university":
+            if top1_value in occupation_universities.get(query_occ, set()):
+                same_university_type += 1
+
+    top1_by_field = {
+        field: hits / total if total > 0 else 0.0
+        for field, (hits, total) in field_top1.items()
+    }
+
+    n_employer_queries = sum(1 for f in eval_fields if f == "employer")
+    n_university_queries = sum(1 for f in eval_fields if f == "university")
+
+    return AttributePreservationMetrics(
+        top1_fact_accuracy=fact_top1 / n_eval,
+        top5_fact_recall=fact_top5 / n_eval,
+        top10_fact_recall=fact_top10 / n_eval,
+        top1_occupation_accuracy=occ_top1 / n_eval,
+        top5_occupation_recall=occ_top5 / n_eval,
+        top10_occupation_recall=occ_top10 / n_eval,
+        top1_same_employer_type=(
+            same_employer_type / n_employer_queries if n_employer_queries > 0 else 0.0
+        ),
+        top1_same_university_type=(
+            same_university_type / n_university_queries
+            if n_university_queries > 0
+            else 0.0
+        ),
+        top1_style_only_match=style_only_top1 / n_eval,
+        top5_style_only_match=style_only_top5 / n_eval,
+        top10_style_only_match=style_only_top10 / n_eval,
+        top1_by_field=top1_by_field,
+    )
 
 
 def compute_style_preconditioner_from_data(
@@ -1276,6 +1741,7 @@ def score_majority_style_eval(
     config: AttributePreservationConfig,
     base_path: Path | str,
     preconditioner_name: str | None = None,
+    damping_factor: float = 0.1,
 ) -> "np.ndarray":
     """Score majority style eval queries against training index.
 
@@ -1283,6 +1749,7 @@ def score_majority_style_eval(
         config: Experiment configuration.
         base_path: Base path for experiment outputs.
         preconditioner_name: Name of preconditioner (None for no precond).
+        damping_factor: Damping factor for matrix inversion.
 
     Returns:
         Score matrix of shape (n_eval, n_train).
@@ -1296,7 +1763,7 @@ def score_majority_style_eval(
 
     from bergson.data import load_gradients
     from bergson.gradients import GradientProcessor
-    from bergson.utils.math import compute_damped_inverse
+    from bergson.utils.math import damped_psd_power
 
     base_path = Path(base_path)
     index_path = base_path / "index"
@@ -1349,7 +1816,7 @@ def score_majority_style_eval(
         device = torch.device("cuda:0")
         for name in tqdm(module_names, desc="Computing H^(-1)"):
             H = proc.preconditioners[name].to(device=device)
-            h_inv[name] = compute_damped_inverse(H)
+            h_inv[name] = damped_psd_power(H, power=-1, damping_factor=damping_factor)
 
     def load_grad_as_float(grads: np.memmap, name: str) -> np.ndarray:
         g = grads[name]
@@ -1374,15 +1841,14 @@ def score_majority_style_eval(
     print("Computing majority eval gradients...")
     majority_eval_grads_path = base_path / "eval_grads_majority"
     if not majority_eval_grads_path.exists():
-        with open(index_path / "index_config.json") as f:
-            index_cfg = json.load(f)
+        index_cfg = IndexConfig.load_yaml(index_path / "index_config.yaml")
 
         cmd = [
             "bergson",
             "build",
             str(majority_eval_grads_path),
             "--model",
-            index_cfg["model"],
+            index_cfg.model,
             "--dataset",
             str(data_path / "eval_majority.hf"),
             "--drop_columns",
@@ -1393,7 +1859,7 @@ def score_majority_style_eval(
             "reworded",
             "--fsdp",
             "--projection_dim",
-            str(index_cfg.get("projection_dim", 16)),
+            str(index_cfg.projection_dim or 16),
             "--token_batch_size",
             "6000",
             "--skip_preconditioners",
@@ -1615,6 +2081,11 @@ def run_attribute_preservation_experiment(
     reword_model: str = "Qwen/Qwen3-8B-Base",
     include_h_eval: bool = True,
     include_majority_control: bool = True,
+    include_semantic_eval: bool = True,
+    include_pca: bool = True,
+    pca_top_k: int = 100,
+    pca_subspace_path: Path | str | None = None,
+    damping_factor: float = 0.1,
 ) -> dict[str, AttributePreservationMetrics]:
     """Run the full attribute preservation experiment.
 
@@ -1627,6 +2098,14 @@ def run_attribute_preservation_experiment(
         base_path: Base path for outputs.
         analysis_model: Model for gradient collection. Defaults to HF_ANALYSIS_MODEL.
         reword_model: Model for style rewording (only used if not using HF dataset).
+        include_h_eval: Whether to include H_eval preconditioner.
+        include_majority_control: Whether to include majority style control.
+        include_semantic_eval: Whether to include semantic-only eval (Q&A format).
+        include_pca: Whether to include PCA style projection strategies.
+        pca_top_k: Number of principal components for PCA projection.
+        pca_subspace_path: Path to precomputed PCA subspace. If None, uses
+            runs/asymmetric_style/pca_subspace by default.
+        damping_factor: Damping factor for matrix inversion.
 
     Returns:
         Dictionary mapping preconditioner names to metrics.
@@ -1704,6 +2183,181 @@ def run_attribute_preservation_experiment(
         print_attribute_metrics(metrics, "majority_no_precond")
         all_metrics["majority_no_precond"] = metrics
 
+    # Step 5: Semantic-only eval (gradients only from answer tokens)
+    if include_semantic_eval:
+        print("\n" + "-" * 60)
+        print("STEP 5: Semantic-only eval (gradients from answer tokens only)")
+        print("-" * 60)
+
+        # Semantic strategies to test
+        semantic_strategies = [
+            ("index", "semantic_index"),  # Standard IF with H_train
+            (None, "semantic_no_precond"),
+            ("r_between", "semantic_r_between"),
+        ]
+
+        if include_h_eval:
+            semantic_strategies.append(("h_eval", "semantic_h_eval"))
+
+        for precond_name, display_name in semantic_strategies:
+            print(f"\n--- Strategy: {display_name} ---")
+            metrics = compute_attribute_metrics(
+                config,
+                base_path,
+                precond_name,
+                eval_prompt_column="question",
+                eval_completion_column="answer",
+                damping_factor=damping_factor,
+            )
+            print_attribute_metrics(metrics, display_name)
+            all_metrics[display_name] = metrics
+
+    # Step 6: PCA style projection (using external style subspace)
+    style_subspace = None
+    if include_pca:
+        from .preconditioners import compute_pca_style_subspace
+
+        print("\n" + "-" * 60)
+        print(f"STEP 6: PCA style projection (k={pca_top_k})")
+        print("-" * 60)
+
+        # Load or compute PCA subspace from asymmetric experiment
+        if pca_subspace_path is None:
+            pca_subspace_path = Path("runs/asymmetric_style/pca_subspace")
+
+        pca_subspace_path = Path(pca_subspace_path)
+        pirate_idx = Path("runs/precond_comparison/pirate")
+        shakespeare_idx = Path("runs/precond_comparison/shakespeare")
+
+        if pirate_idx.exists() and shakespeare_idx.exists():
+            print(f"Loading PCA style subspace from {pca_subspace_path}")
+            style_subspace = compute_pca_style_subspace(
+                pirate_idx,
+                shakespeare_idx,
+                pca_subspace_path,
+                top_k=pca_top_k,
+            )
+
+            # PCA without preconditioner
+            print(f"\n--- Strategy: pca_k{pca_top_k} ---")
+            metrics = compute_attribute_metrics_with_pca(
+                config,
+                base_path,
+                style_subspace,
+                top_k=pca_top_k,
+                damping_factor=damping_factor,
+            )
+            print_attribute_metrics(metrics, f"pca_k{pca_top_k}")
+            all_metrics[f"pca_k{pca_top_k}"] = metrics
+
+            # PCA + H_train (index)
+            print(f"\n--- Strategy: pca_k{pca_top_k}_index ---")
+            metrics = compute_attribute_metrics_with_pca(
+                config,
+                base_path,
+                style_subspace,
+                top_k=pca_top_k,
+                preconditioner_name="index",
+                damping_factor=damping_factor,
+            )
+            print_attribute_metrics(metrics, f"pca_k{pca_top_k}_index")
+            all_metrics[f"pca_k{pca_top_k}_index"] = metrics
+
+            # Semantic + PCA
+            if include_semantic_eval:
+                print(f"\n--- Strategy: semantic_pca_k{pca_top_k} ---")
+                metrics = compute_attribute_metrics_with_pca(
+                    config,
+                    base_path,
+                    style_subspace,
+                    top_k=pca_top_k,
+                    eval_prompt_column="question",
+                    eval_completion_column="answer",
+                    damping_factor=damping_factor,
+                )
+                print_attribute_metrics(metrics, f"semantic_pca_k{pca_top_k}")
+                all_metrics[f"semantic_pca_k{pca_top_k}"] = metrics
+
+                # Semantic + PCA + H_train
+                print(f"\n--- Strategy: semantic_pca_k{pca_top_k}_index ---")
+                metrics = compute_attribute_metrics_with_pca(
+                    config,
+                    base_path,
+                    style_subspace,
+                    top_k=pca_top_k,
+                    preconditioner_name="index",
+                    eval_prompt_column="question",
+                    eval_completion_column="answer",
+                    damping_factor=damping_factor,
+                )
+                print_attribute_metrics(metrics, f"semantic_pca_k{pca_top_k}_index")
+                all_metrics[f"semantic_pca_k{pca_top_k}_index"] = metrics
+
+            # k=500: test full subspace removal (capped at dim=256)
+            pca_k500 = 500
+            style_subspace_k500 = compute_pca_style_subspace(
+                pirate_idx,
+                shakespeare_idx,
+                pca_subspace_path,
+                top_k=pca_k500,
+            )
+
+            print(f"\n--- Strategy: pca_k{pca_k500} ---")
+            metrics = compute_attribute_metrics_with_pca(
+                config,
+                base_path,
+                style_subspace_k500,
+                top_k=pca_k500,
+                damping_factor=damping_factor,
+            )
+            print_attribute_metrics(metrics, f"pca_k{pca_k500}")
+            all_metrics[f"pca_k{pca_k500}"] = metrics
+
+            print(f"\n--- Strategy: pca_k{pca_k500}_index ---")
+            metrics = compute_attribute_metrics_with_pca(
+                config,
+                base_path,
+                style_subspace_k500,
+                top_k=pca_k500,
+                preconditioner_name="index",
+                damping_factor=damping_factor,
+            )
+            print_attribute_metrics(metrics, f"pca_k{pca_k500}_index")
+            all_metrics[f"pca_k{pca_k500}_index"] = metrics
+
+            if include_semantic_eval:
+                print(f"\n--- Strategy: semantic_pca_k{pca_k500} ---")
+                metrics = compute_attribute_metrics_with_pca(
+                    config,
+                    base_path,
+                    style_subspace_k500,
+                    top_k=pca_k500,
+                    eval_prompt_column="question",
+                    eval_completion_column="answer",
+                    damping_factor=damping_factor,
+                )
+                print_attribute_metrics(metrics, f"semantic_pca_k{pca_k500}")
+                all_metrics[f"semantic_pca_k{pca_k500}"] = metrics
+
+                print(f"\n--- Strategy: semantic_pca_k{pca_k500}_index ---")
+                metrics = compute_attribute_metrics_with_pca(
+                    config,
+                    base_path,
+                    style_subspace_k500,
+                    top_k=pca_k500,
+                    preconditioner_name="index",
+                    eval_prompt_column="question",
+                    eval_completion_column="answer",
+                    damping_factor=damping_factor,
+                )
+                print_attribute_metrics(metrics, f"semantic_pca_k{pca_k500}_index")
+                all_metrics[f"semantic_pca_k{pca_k500}_index"] = metrics
+        else:
+            print("WARNING: PCA indices not found at runs/precond_comparison/")
+            print(
+                "  Run the asymmetric style experiment first to generate PCA subspace."
+            )
+
     # Print summary comparison
     print("\n" + "=" * 70)
     print("SUMMARY: Style Suppression vs Attribute Preservation Trade-off")
@@ -1740,6 +2394,8 @@ def run_attribute_preservation_experiment(
         "  - majority_no_precond: Control showing baseline when eval "
         "style matches training"
     )
+    if include_semantic_eval:
+        print("  - semantic_*: Eval gradients only from answer tokens (Q&A format)")
 
     baseline = all_metrics.get("no_precond")
     r_between = all_metrics.get("r_between")

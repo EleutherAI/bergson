@@ -2,7 +2,8 @@ import json
 import math
 import os
 import random
-from abc import ABC, abstractmethod
+import re
+from multiprocessing import cpu_count
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -14,20 +15,18 @@ import torch.distributed as dist
 from datasets import (
     Dataset,
     DatasetDict,
-    IterableDataset,
     IterableDatasetDict,
     concatenate_datasets,
     load_dataset,
 )
 from numpy.lib.recfunctions import structured_to_unstructured
 from numpy.typing import DTypeLike
+from transformers import PreTrainedTokenizerFast, logging
 
-from .config import DataConfig, ReduceConfig
+from .config import DataConfig
 from .utils.utils import (
     assert_type,
-    convert_dtype_to_np,
     simple_parse_args_string,
-    tensor_to_numpy,
 )
 
 
@@ -181,301 +180,6 @@ class TokenGradients:
 
     def __getitem__(self, i: int) -> np.ndarray:
         return np.asarray(self.mmap[self._offsets[i] : self._offsets[i + 1]])
-
-
-class Builder(ABC):
-    """Interface for gradient index writers.
-
-    Use :func:`create_builder` to construct the appropriate concrete
-    subclass based on *attribute_tokens* and *path*.
-    """
-
-    grad_buffer: np.ndarray
-
-    @abstractmethod
-    def __call__(
-        self,
-        indices: list[int],
-        mod_grads: dict[str, torch.Tensor],
-    ) -> None: ...
-
-    def flush(self) -> None:
-        if isinstance(self.grad_buffer, np.memmap):
-            self.grad_buffer.flush()
-
-    def dist_reduce(self) -> None:
-        pass
-
-
-class TokenBuilder(Builder):
-    """Creates and writes per-token gradients to disk.
-
-    Parameters
-    ----------
-    data : Dataset
-        The dataset being indexed (used only for length).
-    grad_sizes : dict[str, int]
-        Per-module gradient dimensions.
-    dtype : torch.dtype
-        Torch dtype for the gradients (converted to numpy internally).
-    path : Path
-        Root directory for the index artifacts.
-    """
-
-    def __init__(
-        self,
-        data: Dataset,
-        grad_sizes: dict[str, int],
-        dtype: torch.dtype,
-        *,
-        attribute_tokens: bool = False,
-        path: Path | None = None,
-        reduce_cfg: ReduceConfig | None = None,
-    ):
-        assert path is not None
-        self.grad_sizes = grad_sizes
-        self.num_items = len(data)
-        np_dtype = convert_dtype_to_np(dtype)
-
-        self.num_token_grads = compute_num_token_grads(data)
-        self.grad_buffer, self.offsets = create_token_index(
-            path,
-            self.num_token_grads,
-            grad_sizes,
-            np_dtype,
-        )
-
-    def __call__(
-        self,
-        indices: list[int],
-        mod_grads: dict[str, torch.Tensor],
-    ):
-        """Write a batch of per-token gradients to the flat buffer.
-
-        ``mod_grads`` values have shape ``[total_valid_in_batch, grad_dim_mod]``
-        (already filtered to valid positions).  Batch indices may be
-        non-contiguous, so each example's chunk is written individually.
-        """
-        torch.cuda.synchronize()
-
-        per_example_lengths = self.num_token_grads[indices]
-
-        col_offset = 0
-        for module_name in self.grad_sizes.keys():
-            g_np = tensor_to_numpy(mod_grads[module_name])
-            dim = g_np.shape[1]
-            row = 0
-            for idx, sl in zip(indices, per_example_lengths):
-                buf_start = int(self.offsets[idx])
-                buf_end = int(self.offsets[idx + 1])
-                self.grad_buffer[buf_start:buf_end, col_offset : col_offset + dim] = (
-                    g_np[row : row + sl]
-                )
-                row += sl
-            col_offset += dim
-
-
-class InMemorySequenceBuilder(Builder):
-    """Stores per-example gradients in memory.
-
-    Drop-in replacement for :class:`SequenceBuilder` that keeps
-    gradients in a plain numpy array instead of a memory-mapped
-    file.  Supports optional gradient reduction via
-    *reduce_cfg*.
-
-    Parameters
-    ----------
-    data : Dataset
-        The dataset being indexed (used only for length).
-    grad_sizes : dict[str, int]
-        Per-module gradient dimensions.
-    dtype : torch.dtype
-        Torch dtype for the gradients.
-    reduce_cfg : ReduceConfig | None
-        When set, accumulate all gradients into a single
-        row (mean or sum) instead of storing per-example.
-    """
-
-    def __init__(
-        self,
-        data: Dataset,
-        grad_sizes: dict[str, int],
-        dtype: torch.dtype,
-        *,
-        attribute_tokens: bool = False,
-        path: Path | None = None,
-        reduce_cfg: ReduceConfig | None = None,
-    ):
-        self.grad_sizes = grad_sizes
-        self.num_items = len(data)
-        self.reduce_cfg = reduce_cfg
-        self.eps = torch.finfo(torch.float32).eps
-        total_grad_dim = sum(grad_sizes.values())
-
-        if reduce_cfg is not None:
-            np_dtype = np.float32
-            num_grads = 1
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            self.in_memory_grad_buffer = torch.zeros(
-                (1, total_grad_dim),
-                dtype=torch.float32,
-                device=device,
-            )
-        else:
-            np_dtype = convert_dtype_to_np(dtype)
-            num_grads = self.num_items
-            self.in_memory_grad_buffer = None
-
-        self.grad_buffer = np.zeros(
-            (num_grads, total_grad_dim),
-            dtype=np_dtype,
-        )
-
-    def reduce(
-        self,
-        indices: list[int],
-        mod_grads: dict[str, torch.Tensor],
-    ):
-        """Accumulate batch gradients into the reduce buffer."""
-        assert self.reduce_cfg is not None
-        assert self.in_memory_grad_buffer is not None
-        device = next(iter(mod_grads.values())).device
-
-        if self.reduce_cfg.unit_normalize:
-            ssqs = torch.zeros(len(indices), device=device)
-            for mod_grad in mod_grads.values():
-                ssqs += mod_grad.pow(2).sum(dim=-1)
-            norms = ssqs.sqrt()
-        else:
-            norms = torch.ones(len(indices), device=device)
-
-        offset = 0
-        for module_name in self.grad_sizes.keys():
-            grads = mod_grads[module_name]
-            if self.reduce_cfg.unit_normalize:
-                grads = grads / (norms.unsqueeze(1) + self.eps)
-            grads = grads.sum(dim=0).to(torch.float32)
-            self.in_memory_grad_buffer[
-                0,
-                offset : offset + grads.shape[0],
-            ] += grads
-            offset += grads.shape[0]
-
-    def __call__(
-        self,
-        indices: list[int],
-        mod_grads: dict[str, torch.Tensor],
-    ):
-        if self.reduce_cfg is not None:
-            self.reduce(indices, mod_grads)
-            return
-
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-        offset = 0
-        for module_name in self.grad_sizes.keys():
-            dim = mod_grads[module_name].shape[1]
-            self.grad_buffer[
-                indices,
-                offset : offset + dim,
-            ] = tensor_to_numpy(mod_grads[module_name])
-            offset += dim
-
-    def dist_reduce(self):
-        if self.reduce_cfg is None:
-            return
-
-        assert self.in_memory_grad_buffer is not None
-
-        if torch.cuda.is_available():
-            self.in_memory_grad_buffer = self.in_memory_grad_buffer.cuda()
-
-        if dist.is_initialized():
-            dist.reduce(
-                self.in_memory_grad_buffer,
-                dst=0,
-                op=dist.ReduceOp.SUM,
-            )
-
-        if self.reduce_cfg.method == "mean":
-            self.in_memory_grad_buffer /= self.num_items
-
-        self.in_memory_grad_buffer = self.in_memory_grad_buffer.cpu()
-
-        self.grad_buffer[:] = tensor_to_numpy(self.in_memory_grad_buffer).astype(
-            self.grad_buffer.dtype
-        )
-
-
-class InMemoryTokenBuilder(Builder):
-    """Stores per-token gradients in memory.
-
-    Drop-in replacement for :class:`TokenBuilder` that keeps
-    gradients in a plain numpy array instead of a memory-mapped
-    file.
-
-    Parameters
-    ----------
-    data : Dataset
-        The dataset being indexed (used only for length and
-        label information).
-    grad_sizes : dict[str, int]
-        Per-module gradient dimensions.
-    dtype : torch.dtype
-        Torch dtype for the gradients.
-    """
-
-    def __init__(
-        self,
-        data: Dataset,
-        grad_sizes: dict[str, int],
-        dtype: torch.dtype,
-        *,
-        attribute_tokens: bool = False,
-        path: Path | None = None,
-        reduce_cfg: ReduceConfig | None = None,
-    ):
-        self.grad_sizes = grad_sizes
-        self.num_items = len(data)
-        np_dtype = convert_dtype_to_np(dtype)
-        total_grad_dim = sum(grad_sizes.values())
-
-        self.num_token_grads = compute_num_token_grads(data)
-        self.offsets = np.zeros(len(self.num_token_grads) + 1, dtype=np.int64)
-        np.cumsum(self.num_token_grads, out=self.offsets[1:])
-        total_tokens = int(self.offsets[-1])
-
-        self.grad_buffer = np.zeros((total_tokens, total_grad_dim), dtype=np_dtype)
-
-    def __call__(
-        self,
-        indices: list[int],
-        mod_grads: dict[str, torch.Tensor],
-    ):
-        """Write a batch of per-token gradients.
-
-        ``mod_grads`` values have shape
-        ``[total_valid_in_batch, grad_dim_mod]``
-        (already filtered to valid positions).
-        """
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-        per_example_lengths = self.num_token_grads[indices]
-
-        col_offset = 0
-        for module_name in self.grad_sizes.keys():
-            g_np = tensor_to_numpy(mod_grads[module_name])
-            dim = g_np.shape[1]
-            row = 0
-            for idx, sl in zip(indices, per_example_lengths):
-                buf_start = int(self.offsets[idx])
-                buf_end = int(self.offsets[idx + 1])
-                self.grad_buffer[
-                    buf_start:buf_end,
-                    col_offset : col_offset + dim,
-                ] = g_np[row : row + sl]
-                row += sl
-            col_offset += dim
 
 
 def ceildiv(a: int, b: int) -> int:
@@ -705,7 +409,7 @@ def load_data_string(
     split: str = "train",
     subset: str | None = None,
     data_args: str = "",
-) -> Dataset | IterableDataset:
+) -> Dataset:
     """Load a dataset from a string identifier or path."""
     if data_str.endswith(".csv"):
         ds = Dataset.from_csv(data_str)
@@ -768,14 +472,20 @@ def load_gradient_dataset(root_dir: Path, structured: bool = True) -> Dataset:
         # Add gradients to HF dataset.
         mmap = load_gradients(dir, structured=structured)
 
+        def _to_arrow(arr: np.ndarray) -> pa.Array:
+            """Convert numpy array to PyArrow, casting bfloat16 to float32."""
+            if arr.dtype == np.dtype("bfloat16"):
+                arr = arr.astype(np.float32)
+            return pa.array(arr)
+
         if structured:
             assert mmap.dtype.names is not None
             for field_name in mmap.dtype.names:
-                flat = pa.array(mmap[field_name].reshape(-1).copy())
+                flat = _to_arrow(mmap[field_name].reshape(-1).copy())
                 col = pa.FixedSizeListArray.from_arrays(flat, mmap[field_name].shape[1])
                 ds = ds.add_column(field_name, col, new_fingerprint=field_name)
         else:
-            flat = pa.array(mmap.reshape(-1).copy())
+            flat = _to_arrow(mmap.reshape(-1).copy())
             col_arrow = pa.FixedSizeListArray.from_arrays(flat, mmap.shape[1])
             ds = ds.add_column("gradients", col_arrow, new_fingerprint="gradients")
 
@@ -834,146 +544,23 @@ def load_scores(
     return Scores(mmap, info)
 
 
-class SequenceBuilder(Builder):
-    """Creates and writes gradients to disk, with optional distributed reduction.
-    Scores are always saved as float32."""
-
-    num_items: int
-
-    reduce_cfg: ReduceConfig | None
-
-    def __init__(
-        self,
-        data: Dataset,
-        grad_sizes: dict[str, int],
-        dtype: torch.dtype,
-        *,
-        attribute_tokens: bool = False,
-        path: Path | None = None,
-        reduce_cfg: ReduceConfig | None = None,
-    ):
-        assert path is not None
-        self.grad_sizes = grad_sizes
-        self.num_items = len(data)
-        self.reduce_cfg = reduce_cfg
-        self.eps = torch.finfo(torch.float32).eps
-        self.rank = dist.get_rank() if dist.is_initialized() else 0
-        if reduce_cfg is not None:
-            num_grads = 1
-            np_dtype = np.float32
-            self.in_memory_grad_buffer = torch.zeros(
-                (num_grads, sum(self.grad_sizes.values())),
-                dtype=torch.float32,
-                device=f"cuda:{self.rank}",
-            )
-        else:
-            num_grads = self.num_items
-            np_dtype = convert_dtype_to_np(dtype)
-            self.in_memory_grad_buffer = None
-
-        self.grad_buffer = create_index(
-            path,
-            num_grads=num_grads,
-            grad_sizes=self.grad_sizes,
-            dtype=np_dtype,
-            with_structure=False,
-        )
-
-    def reduce(self, indices: list[int], mod_grads: dict[str, torch.Tensor]):
-        assert self.reduce_cfg is not None and self.in_memory_grad_buffer is not None
-        device = next(iter(mod_grads.values())).device
-
-        if self.reduce_cfg.unit_normalize:
-            ssqs = torch.zeros(len(indices), device=device)
-            for mod_grad in mod_grads.values():
-                ssqs += mod_grad.pow(2).sum(dim=-1)
-            norms = ssqs.sqrt()
-        else:
-            norms = torch.ones(len(indices), device=device)
-
-        offset = 0
-        for module_name in self.grad_sizes.keys():
-            grads = mod_grads[module_name]
-            if self.reduce_cfg.unit_normalize:
-                grads = grads / (norms.unsqueeze(1) + self.eps)
-
-            grads = grads.sum(dim=0).to(torch.float32)
-
-            self.in_memory_grad_buffer[0, offset : offset + grads.shape[0]] += grads
-            offset += grads.shape[0]
-
-    def __call__(self, indices: list[int], mod_grads: dict[str, torch.Tensor]):
-        torch.cuda.synchronize()
-
-        if self.reduce_cfg is not None:
-            self.reduce(indices, mod_grads)
-        else:
-            # It turns out that it's very important for efficiency to write the
-            # gradients sequentially instead of first concatenating them, then
-            # writing to one vector
-            offset = 0
-            for module_name in self.grad_sizes.keys():
-                self.grad_buffer[
-                    indices, offset : offset + mod_grads[module_name].shape[1]
-                ] = tensor_to_numpy(mod_grads[module_name])
-                offset += mod_grads[module_name].shape[1]
-
-    def dist_reduce(self):
-        if self.reduce_cfg is None:
-            return
-
-        assert self.in_memory_grad_buffer is not None
-
-        self.in_memory_grad_buffer = self.in_memory_grad_buffer.cuda()
-
-        if dist.is_initialized():
-            dist.reduce(self.in_memory_grad_buffer, dst=0, op=dist.ReduceOp.SUM)
-
-        if self.reduce_cfg.method == "mean":
-            self.in_memory_grad_buffer /= self.num_items
-
-        self.in_memory_grad_buffer = self.in_memory_grad_buffer.cpu()
-
-        rank = dist.get_rank() if dist.is_initialized() else 0
-        if rank == 0:
-            self.grad_buffer[:] = tensor_to_numpy(self.in_memory_grad_buffer).astype(
-                self.grad_buffer.dtype
-            )
-
-        self.in_memory_grad_buffer = self.in_memory_grad_buffer.cpu()
-
-
-def create_builder(
-    data: Dataset,
-    grad_sizes: dict[str, int],
-    dtype: torch.dtype,
-    *,
-    attribute_tokens: bool = False,
-    path: Path | None = None,
-    reduce_cfg: ReduceConfig | None = None,
-) -> Builder:
-    """Create the appropriate :class:`Builder` subclass.
-
-    Dispatches based on *attribute_tokens* and *path*:
-
-    * ``path`` given + ``attribute_tokens`` → :class:`TokenBuilder`
-    * ``path`` given                        → :class:`SequenceBuilder`
-    * no ``path`` + ``attribute_tokens``    → :class:`InMemoryTokenBuilder`
-    * no ``path``                           → :class:`InMemorySequenceBuilder`
+def sorted_checkpoints(folder: str) -> list[tuple[int, str]]:
     """
-    if path is not None:
-        cls = TokenBuilder if attribute_tokens else SequenceBuilder
-    else:
-        cls = InMemoryTokenBuilder if attribute_tokens else InMemorySequenceBuilder
+    Return a list of (step, filepath) sorted by step
+    for files named like: step_<index>.ckpt
+    """
+    pattern = re.compile(r"step_(\d+)\.ckpt$")
 
-    return cls(
-        data,
-        grad_sizes,
-        dtype,
-        attribute_tokens=attribute_tokens,
-        path=path,
-        reduce_cfg=reduce_cfg,
-    )
+    checkpoints = []
+    for name in os.listdir(folder):
+        path = os.path.join(folder, name)
+
+        match = pattern.match(name)
+        if match:
+            step = int(match.group(1))
+            checkpoints.append((step, path))
+
+    return sorted(checkpoints, key=lambda x: x[0])
 
 
 def pad_and_tensor(
@@ -995,6 +582,11 @@ def pad_and_tensor(
 
     # find max length
     max_len = max(len(seq) for seq in sequences)
+    if dist.is_initialized():
+        max_len_tensor = torch.tensor(max_len, device=device)
+        dist.all_reduce(max_len_tensor, op=dist.ReduceOp.MAX)
+        max_len = int(max_len_tensor)
+
     # pad each sequence
     padded = [seq + [padding_value] * (max_len - len(seq)) for seq in sequences]
     labels = [label + [-100] * (max_len - len(label)) for label in labels]
@@ -1002,6 +594,7 @@ def pad_and_tensor(
     # convert to tensor
     padded_tokens = torch.tensor(padded, dtype=dtype, device=device)
     padded_labels = torch.tensor(labels, dtype=dtype, device=device)
+
     # Compute valid_masks: position i is valid if labels[i+1] != -100
     N, S = padded_tokens.shape
     valid_masks = torch.zeros(N, S, dtype=torch.bool, device=device)
@@ -1044,8 +637,10 @@ def tokenize(
         return tokenizer(batch[args.prompt_column], **kwargs)
 
     # Make sure we only compute loss on the assistant's responses
+    # Chat templates already include special tokens (BOS/EOS) in the rendered
+    # string, so we must disable add_special_tokens to avoid duplicates.
     strings = tokenizer.apply_chat_template(convos, tokenize=False)
-    encodings = tokenizer(strings, **kwargs)
+    encodings = tokenizer(strings, add_special_tokens=False, **kwargs)
     labels_list: list[list[int]] = []
 
     for i, convo in enumerate(convos):
@@ -1083,6 +678,119 @@ def tokenize(
         labels_list.append(labels)
 
     return dict(**encodings, labels=labels_list)
+
+
+def tokenize_and_chunk(
+    dataset: Dataset,
+    tokenizer: PreTrainedTokenizerFast,
+    chunk_size: int,
+    text_column: str = "text",
+    *,
+    num_proc: int = cpu_count() // 2,
+) -> Dataset:
+    """
+    Tokenizes a text dataset and chunks tokens into uniform-length sequences.
+
+    Uses a streaming generator to carry remainder tokens across document
+    boundaries — no tokens are ever dropped, no padding is used, and memory
+    usage stays flat regardless of dataset size.
+
+    Args:
+        dataset:     HuggingFace Dataset with a text column.
+        tokenizer:   A HuggingFace tokenizer (must have eos_token_id set).
+        chunk_size:  Number of tokens per output chunk.
+        text_column: Name of the column containing raw text.
+        num_proc:    Number of processes for the tokenization .map() pass.
+
+    Returns:
+        A Dataset where every row has a single 'input_ids' list of length chunk_size.
+    """
+    eos_id = tokenizer.eos_token_id
+    if eos_id is None:
+        raise ValueError("Tokenizer does not have an eos_token_id set.")
+
+    # Suppress long sequence errors
+    original_verbosity = logging.get_verbosity()
+    logging.set_verbosity_error()
+
+    # ── Step 1: tokenize each document in parallel ───────────────────────────
+    def tokenize_batch(batch):
+        return tokenizer(
+            batch[text_column],
+            add_special_tokens=False,
+            truncation=False,
+            padding=False,
+        )
+
+    tokenized = dataset.map(
+        tokenize_batch,
+        batched=True,
+        desc="Tokenizing",
+        num_proc=num_proc,
+        remove_columns=dataset.column_names,
+    )
+
+    # ── Step 2: concatenate the token stream and slice into fixed-size chunks ──
+    def chunk_batch(batch, indices: list[int]):
+        # Flatten all token lists in this batch into one stream
+        doc_stream = []
+        token_stream = []
+        for doc_idx, ids in zip(indices, batch["input_ids"]):
+            # Mark these tokens as belonging to the current document
+            doc_stream.extend([doc_idx] * (len(ids) + 1))  # +1 for EOS token
+
+            token_stream.extend(ids)
+            token_stream.append(eos_id)  # ensure document boundary tokens
+
+        # Slice into complete chunks; keep the remainder for the next batch
+        # NOTE: .map() does NOT carry state between batches, so any tokens that
+        # don't fill a complete chunk at the end of a batch are dropped.
+        # To avoid this, set batch_size large enough (or process as a single batch)
+        # so that tail loss is negligible, OR use the single-process approach below.
+        n_chunks = len(token_stream) // chunk_size
+        doc_chunks = [
+            doc_stream[i * chunk_size : (i + 1) * chunk_size] for i in range(n_chunks)
+        ]
+        token_chunks = [
+            token_stream[i * chunk_size : (i + 1) * chunk_size] for i in range(n_chunks)
+        ]
+        return {"input_ids": token_chunks, "doc_ids": doc_chunks}
+
+    # Cap parallelism so each worker gets enough documents to fill many chunks,
+    # since tail tokens that don't fill a chunk are dropped per-worker.
+    min_docs_per_worker = chunk_size * 4
+    num_proc = min(num_proc, max(len(tokenized) // min_docs_per_worker, 1))
+    bs = min(10_000, len(tokenized) // num_proc)
+    chunked = tokenized.map(
+        chunk_batch,
+        batched=True,
+        batch_size=bs,
+        num_proc=num_proc,
+        desc="Chunking",
+        remove_columns=tokenized.column_names,
+        with_indices=True,
+    )
+    # Make sure HuggingFace didn't change the dataset type!
+    assert isinstance(chunked, type(dataset))
+
+    # Warn if chunking dropped a significant number of documents
+    n_docs = len(dataset)
+    if n_docs > 0 and "doc_ids" in chunked.column_names:
+        represented = set()
+        for doc_ids in chunked["doc_ids"]:
+            represented.update(doc_ids)
+        n_dropped = n_docs - len(represented)
+        if n_dropped > 0:
+            pct = n_dropped / n_docs * 100
+            print(
+                f"Warning: chunking dropped {n_dropped}/{n_docs} documents "
+                f"({pct:.1f}%) that didn't fill a {chunk_size}-token chunk "
+                f"when using a document batch size of {bs}."
+            )
+
+    # Restore original logging level
+    logging.set_verbosity(original_verbosity)
+    return chunked
 
 
 def unflatten(x: torch.Tensor, shapes: dict[str, Sequence[int]], dim: int = -1):

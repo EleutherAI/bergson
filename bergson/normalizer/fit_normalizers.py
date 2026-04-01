@@ -1,4 +1,3 @@
-import math
 import random
 from dataclasses import dataclass, field
 
@@ -15,10 +14,9 @@ from bergson.config import IndexConfig
 from bergson.gradients import (
     AdafactorNormalizer,
     AdamNormalizer,
-    LayerAdapter,
+    GradientProcessor,
     Normalizer,
 )
-from bergson.process_preconditioners import process_preconditioners
 from bergson.utils.utils import assert_type, get_gradient_dtype
 
 
@@ -29,9 +27,7 @@ class NormalizerCollector(HookCollectorBase):
 
     - For each forward/backward hook, we compute the the gradient or a low-rank
     approximation via random projections, if cfg.projection_dim is set.
-    - Supports also normalization via Adam or Adafactor normalizers.
-    - Uses Builder for index construction and gradient saving.
-    - Also supports Scorer for on-the-fly scoring of gradients.
+    - Supports normalization via Adam or Adafactor normalizers.
     """
 
     data: Dataset
@@ -42,20 +38,33 @@ class NormalizerCollector(HookCollectorBase):
 
     normalizers: dict[str, Normalizer] = field(default_factory=dict)
 
-    def adafactor_update(self, name: str, g: torch.Tensor):
+    def adafactor_update(
+        self,
+        name: str,
+        weight_grad: torch.Tensor,
+        bias_grad: torch.Tensor | None = None,
+    ):
+        # [N, O, I] -> [O, I]
         # We follow the tensor2tensor implementation of Adafactor, which
         # takes the mean rather than summing over the rows and columns.
+        sq = weight_grad.float().square_().sum(0)
         # row: mean over columns, shape [O]
-        sq = g.float().square_().sum(0)
         row_acc = sq.mean(dim=1)
         # col: mean over rows,    shape [I]
         col_acc = sq.mean(dim=0)
+
+        # bias_avg_sq = E[bias_grad^2] where bias_grad = g.sum(dim=seq)
+        bias_sq = None
+        if bias_grad is not None:
+            # [N, S, O] -> [N, O] -> [O]
+            bias_sq = bias_grad.float().sum(dim=1).square().sum(0)
 
         if (normalizer := self.normalizers.get(name)) is None:
             # initialize accumulators at zero
             self.normalizers[name] = normalizer = AdafactorNormalizer(
                 torch.zeros_like(row_acc),
                 torch.zeros_like(col_acc),
+                bias_avg_sq=torch.zeros_like(bias_sq) if bias_sq is not None else None,
             )
         else:
             assert isinstance(normalizer, AdafactorNormalizer)
@@ -63,18 +72,38 @@ class NormalizerCollector(HookCollectorBase):
         # in‐place accumulate
         normalizer.row.add_(row_acc)
         normalizer.col.add_(col_acc)
+        if bias_sq is not None:
+            assert normalizer.bias_avg_sq is not None
+            normalizer.bias_avg_sq.add_(bias_sq)
 
-    def adam_update(self, name: str, g: torch.Tensor):
-        sq = g.square_().float().sum(0)
+    def adam_update(
+        self,
+        name: str,
+        weight_grad: torch.Tensor,
+        bias_grad: torch.Tensor | None = None,
+    ):
+        # [N, O, I] -> [O, I]
+        sq = weight_grad.float().square_().sum(0)
+
+        # bias_avg_sq = E[bias_grad^2] where bias_grad = g.sum(dim=seq)
+        bias_sq = None
+        if bias_grad is not None:
+            bias_sq = bias_grad.float().sum(dim=1).square().sum(0)
 
         # initialize accumulators at zero
         if (normalizer := self.normalizers.get(name)) is None:
-            self.normalizers[name] = normalizer = AdamNormalizer(torch.zeros_like(sq))
+            self.normalizers[name] = normalizer = AdamNormalizer(
+                torch.zeros_like(sq),
+                bias_avg_sq=torch.zeros_like(bias_sq) if bias_sq is not None else None,
+            )
         else:
             assert isinstance(normalizer, AdamNormalizer)
 
         # in‐place accumulate
-        normalizer.avg_sq.add_(sq)
+        normalizer.weight_avg_sq.add_(sq)
+        if bias_sq is not None:
+            assert normalizer.bias_avg_sq is not None
+            normalizer.bias_avg_sq.add_(bias_sq)
 
     def setup(self) -> None:
         """
@@ -90,67 +119,61 @@ class NormalizerCollector(HookCollectorBase):
         assert isinstance(
             self.model.device, torch.device
         ), "Model device is not set correctly"
-        if self.cfg.include_bias and self.processor.normalizers is not None:
-            raise NotImplementedError(
-                "Bias with normalizers not supported yet, "
-                "consider disabling bias inclusion for now."
-            )
-
         self.save_dtype = get_gradient_dtype(self.model)
         self.lo = torch.finfo(self.save_dtype).min
         self.hi = torch.finfo(self.save_dtype).max
 
     def forward_hook(self, module: nn.Module, a: Float[Tensor, "N S I"]) -> None:
         """
-        Cache activations for gradient computation with normalizer preprocessing
-        and compress via random projection if configured.
-        Stores result in module._inputs for use in backward_hook.
+        Cache activations for gradient computation.
+        Bias second moments are computed directly from g in backward_hook,
+        so we don't append ones here.
         """
-        i = getattr(module, LayerAdapter.in_attr(module))
-
-        if module._has_bias:
-            # Append ones to activation for bias term
-            ones = torch.ones(a.size(0), a.size(1), 1, device=a.device, dtype=a.dtype)
-            a = torch.cat([a, ones], dim=-1)
-            i = i + 1
-            setattr(module, LayerAdapter.in_attr(module), i)
-
-        # set module._inputs to a
         module._inputs = a
 
     @HookCollectorBase.split_attention_heads
     def backward_hook(self, module: nn.Module, g: Float[Tensor, "N S O"]):
         """
-        Compute per-sample gradient and store in mod_grads.
+        Compute per-sample gradient and accumulate second-moment statistics.
 
-        Computes gradient as outer product g.T @ a (again with optional projection and
-        normalization).
+        Weight stats are computed from the outer product g.T @ a.
+        Bias stats (when present) are computed directly from g.
         """
-        a = module._inputs  # [N, S, I/q]
+        a = module._inputs  # [N, S, I]
 
         assert isinstance(a, torch.Tensor), "Activation cache missing for module"
         name = assert_type(str, module._name)
 
-        P = g.mT @ a  # [N, O/p, S] @ [N, S, I/q] → [N, O/p, I/q]
+        P = g.mT @ a  # [N, O, S] @ [N, S, I] → [N, O, I]
 
-        self.callback(name, P)
+        self.callback(name, P, g if module._collect_bias else None)
 
     def process_batch(self, indices: list[int], **kwargs):
         """Process collected gradients for a batch."""
 
     def teardown(self):
-        """
-        Finalize normalizer collection.
-        """
-        grad_sizes = {name: math.prod(s) for name, s in self.shapes().items()}
-        if self.processor.preconditioners:
-            process_preconditioners(
-                self.processor,
-                self.processor.preconditioners,
-                len(self.data),
-                grad_sizes,
-                self.rank,
-            )
+        """Finalize normalizer collection: average across samples and ranks."""
+        # n is the total number of samples across all ranks
+        n = len(self.data)
+        for normalizer in self.normalizers.values():
+            if isinstance(normalizer, AdamNormalizer):
+                normalizer.weight_avg_sq.div_(n)
+                if dist.is_initialized():
+                    dist.all_reduce(normalizer.weight_avg_sq, op=dist.ReduceOp.SUM)
+                if normalizer.bias_avg_sq is not None:
+                    normalizer.bias_avg_sq.div_(n)
+                    if dist.is_initialized():
+                        dist.all_reduce(normalizer.bias_avg_sq, op=dist.ReduceOp.SUM)
+            elif isinstance(normalizer, AdafactorNormalizer):
+                normalizer.row.div_(n)
+                normalizer.col.div_(n)
+                if dist.is_initialized():
+                    dist.all_reduce(normalizer.row, op=dist.ReduceOp.SUM)
+                    dist.all_reduce(normalizer.col, op=dist.ReduceOp.SUM)
+                if normalizer.bias_avg_sq is not None:
+                    normalizer.bias_avg_sq.div_(n)
+                    if dist.is_initialized():
+                        dist.all_reduce(normalizer.bias_avg_sq, op=dist.ReduceOp.SUM)
 
         if self.rank == 0:
             self.processor.save(self.cfg.partial_run_path)
@@ -177,6 +200,7 @@ def fit_normalizers(
         cfg=cfg,
         target_modules=target_modules,
         filter_modules=cfg.filter_modules,
+        processor=GradientProcessor(include_bias=cfg.include_bias),
     )
     computer = CollectorComputer(
         model=model,
@@ -187,22 +211,4 @@ def fit_normalizers(
     )
     computer.run_with_collector_hooks(desc="Estimating normalizers")
 
-    normalizers = collector.normalizers
-
-    # Divide by the number of documents processed and average across all ranks
-    for normalizer in normalizers.values():
-        if isinstance(normalizer, AdamNormalizer):
-            normalizer.avg_sq.div_(len(data))
-
-            if dist.is_initialized():
-                dist.all_reduce(normalizer.avg_sq, op=dist.ReduceOp.AVG)
-
-        elif isinstance(normalizer, AdafactorNormalizer):
-            normalizer.row.div_(len(data))
-            normalizer.col.div_(len(data))
-
-            if dist.is_initialized():
-                dist.all_reduce(normalizer.row, op=dist.ReduceOp.AVG)
-                dist.all_reduce(normalizer.col, op=dist.ReduceOp.AVG)
-
-    return normalizers
+    return collector.normalizers

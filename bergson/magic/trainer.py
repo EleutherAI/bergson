@@ -1,23 +1,27 @@
 import math
 import os
-import re
+import time
+from collections.abc import Callable
 from concurrent.futures import Future
 from contextlib import contextmanager
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field
 from shutil import rmtree
 from typing import Literal
 
 import torch
 import torch.distributed as dist
 import torch.distributed.checkpoint as dcp
+import torch.distributed.tensor  # noqa: F401 — register DTensor for torch.load
 import torchopt
-from datasets import Dataset
 from torch import nn
-from torchopt.pytree import tree_iter, tree_map
+from torchopt.pytree import tree_flatten_with_path, tree_iter, tree_map
 from torchopt.typing import GradientTransformation, OptState
 from tqdm.auto import tqdm
 
-from .distributed import grad_tree, shallow_copy
+from ..data import sorted_checkpoints
+from ..distributed import grad_tree, shallow_copy
+from .data_stream import DataStream
+from .rtl_tqdm import RtlTqdm
 from .swap import swap_parameters
 
 
@@ -30,121 +34,35 @@ def _maybe_get_cuda_rng_state() -> torch.Tensor:
     return torch.zeros(16, dtype=torch.uint8)
 
 
-def sorted_checkpoints(folder: str) -> list[tuple[int, str]]:
+@dataclass
+class SaveFuture:
+    """Wraps a DCP async_save future, destroying the gloo process group in result().
+
+    The group must be destroyed synchronously inside result() rather than in a
+    done_callback, because concurrent.futures.Future notifies result() waiters
+    before invoking callbacks — so a callback-based destroy races with the next
+    save() call creating a new group, leaking gloo sockets.
     """
-    Return a list of (batch_index, filepath) sorted by batch_index
-    for files named like: step_<index>.ckpt
-    """
-    pattern = re.compile(r"step_(\d+)\.ckpt$")
 
-    checkpoints = []
-    for name in os.listdir(folder):
-        path = os.path.join(folder, name)
+    fut: Future
+    grp: dist.ProcessGroup | None
+    debug_name: str = ""
+    debug_pbar: RtlTqdm | tqdm | None = None
 
-        match = pattern.match(name)
-        if match:
-            batch_index = int(match.group(1))
-            checkpoints.append((batch_index, path))
+    def result(self):
+        start = time.monotonic()
+        result = self.fut.result()
+        elapsed = time.monotonic() - start
 
-    return sorted(checkpoints, key=lambda x: x[0])
+        if self.debug_name and (not dist.is_initialized() or dist.get_rank() == 0):
+            print_fn = self.debug_pbar.write if self.debug_pbar else print
+            print_fn(f"Waiting for {self.debug_name} took {elapsed:.2f} seconds")
 
+        if self.grp is not None:
+            dist.destroy_process_group(self.grp)
+            self.grp = None
 
-class DataStream:
-    def __init__(
-        self,
-        dataset: Dataset,
-        processor,
-        batch_size: int,
-        num_batches: int = 0,
-        *,
-        device: torch.device | str = "cpu",
-        input_key: str = "text",
-        max_length: int = 256,
-        per_token: bool = False,
-    ):
-        self.dataset = dataset
-        self.processor = processor
-        self.input_key = input_key
-        self.max_length = max_length
-        self.per_token = per_token
-
-        self.batch_size = batch_size
-        self.device = device
-        self.num_batches = num_batches or len(self.dataset) // self.batch_size
-
-        self.rank = dist.get_rank() if dist.is_initialized() else 0
-        self.world_size = dist.get_world_size() if dist.is_initialized() else 1
-        if self.batch_size % self.world_size != 0:
-            raise ValueError(
-                f"Batch size {self.batch_size} must be divisible by world size "
-                f"{self.world_size}"
-            )
-
-        needed = self.batch_size * self.num_batches
-        if len(self.dataset) < needed:
-            raise ValueError(
-                f"Dataset has {len(self.dataset)} examples but {self.num_batches} "
-                f"batches of size {self.batch_size} require {needed}. "
-                f"Pass a larger split or reduce --num_batches."
-            )
-
-        n = self.batch_size * self.num_batches
-        shape = (n, max_length) if per_token else (n,)
-        self.weights = nn.Parameter(torch.ones(*shape, device=device))
-
-    @property
-    def requires_grad(self) -> bool:
-        return self.weights.requires_grad
-
-    @requires_grad.setter
-    def requires_grad(self, value: bool):
-        self.weights.requires_grad = value
-
-    def __getitem__(self, i: int) -> dict:
-        if i < 0 or i >= self.num_batches:
-            raise IndexError("DataStream index out of range")
-
-        # Fetch only this rank's interleaved slice of the batch directly from the
-        # dataset, avoiding tokenizing examples that will just be discarded.
-        indices = list(
-            range(
-                i * self.batch_size + self.rank,
-                (i + 1) * self.batch_size,
-                self.world_size,
-            )
-        )
-        raw = self.dataset[indices]
-
-        # padding="max_length" ensures uniform shape across ranks without needing
-        # to process all ranks' examples together.
-        x = self.processor(
-            raw[self.input_key],
-            max_length=self.max_length,
-            padding="max_length",
-            return_tensors="pt",
-            truncation=True,
-        )
-        x["labels"] = x["input_ids"]
-        w = self.weights[
-            i * self.batch_size
-            + self.rank : (i + 1) * self.batch_size : self.world_size
-        ]
-        if self.per_token and w.ndim == 2:
-            T_batch = x["input_ids"].shape[1]
-            w = w[:, :T_batch]
-        x["example_weight"] = w
-        return {k: v.to(self.device) for k, v in x.items()}
-
-    def __iter__(self):
-        for i in range(self.num_batches):
-            yield self[i]
-
-    def __len__(self):
-        return self.num_batches
-
-    def __reversed__(self):
-        for i in reversed(range(self.num_batches)):
-            yield self[i]
+        return result
 
 
 @dataclass
@@ -170,47 +88,41 @@ class TrainerState:
     cuda_rng_state: torch.Tensor = field(default_factory=_maybe_get_cuda_rng_state)
     cpu_rng_state: torch.Tensor = field(default_factory=torch.random.get_rng_state)
 
+    def to(self, device: torch.device | str) -> "TrainerState":
+        params = {k: p.to(device) for k, p in self.params.items()}
+        buffers = {k: b.to(device) for k, b in self.buffers.items()}
+        opt_state = tree_map(
+            lambda t: t.to(device) if isinstance(t, torch.Tensor) else t, self.opt_state
+        )
+        return TrainerState(params, opt_state, buffers, self.batch_index)
+
     def load(self, path: str):
         """Load state from a checkpoint file."""
         dcp.load(
             self.state_dict(),
             checkpoint_id=path,
-            no_dist=not dist.is_initialized(),
         )
 
-    def save(self, path: str) -> Future:
-        rank = dist.get_rank() if dist.is_initialized() else 0
-        print(f"[rank {rank}] save: starting async_save for {path}", flush=True)
-
-        # Create a new process group so that we can overlap saves
+    def save(self, path: str, debug_pbar: RtlTqdm | tqdm | None = None) -> SaveFuture:
+        # Create a new process group so that we can overlap saves.
         if dist.is_initialized():
             grp = dist.new_group(backend="gloo", group_desc=path)
             assert isinstance(grp, dist.ProcessGroup)
         else:
             grp = None
 
-        def _done_callback(fut, g=grp, p=path):
-            print(f"[rank {rank}] save: callback fired for {p}", flush=True)
-            if g is not None:
-                print(
-                    f"[rank {rank}] save: calling destroy_process_group for {p}",
-                    flush=True,
-                )
-                dist.destroy_process_group(g)
-                print(
-                    f"[rank {rank}] save: destroy_process_group done for {p}",
-                    flush=True,
-                )
-
         fut = dcp.async_save(
             self.state_dict(),
             checkpoint_id=path,
-            no_dist=grp is None,
             process_group=grp,
         )
         assert isinstance(fut, Future)
-        fut.add_done_callback(_done_callback)
-        return fut
+        return SaveFuture(
+            fut,
+            grp,
+            debug_name=path if debug_pbar is not None else "",
+            debug_pbar=debug_pbar,
+        )
 
     def detach_(self):
         for k, p in self.params.items():
@@ -262,11 +174,26 @@ class TrainerState:
 
     def state_dict(self) -> dict:
         # Convert to dict manually because dataclasses.asdict does a deep copy
-        return {f.name: getattr(self, f.name) for f in fields(self)}
+        state = {
+            **self.params,
+            **self.buffers,
+            ".batch_index": torch.tensor(self.batch_index),
+            ".cuda_rng_state": self.cuda_rng_state,
+            ".cpu_rng_state": self.cpu_rng_state,
+        }
+
+        # Flatten opt_state PyTree into the top-level dict with "opt_state/" prefix so
+        # that it can be saved with DCP, which doesn't support nested structures.
+        paths, elements, _ = tree_flatten_with_path(self.opt_state)
+        str_paths = ["opt_state/" + ".".join(map(str, p)) for p in paths]
+        opt_state = dict(zip(str_paths, elements))
+        state.update(opt_state)
+
+        return state
 
 
 class Trainer:
-    """Stateless, functional trainer for a model, optimizer, and dataset."""
+    """Stateless, functional trainer for a model and optimizer."""
 
     @classmethod
     def initialize(
@@ -316,14 +243,12 @@ class Trainer:
 
         # Trainable params live on the meta device and are swapped in from state.
         # Frozen params remain on-device in the model and are left untouched.
-        with (
-            torch.autocast(
-                "cuda",
-                dtype=torch.bfloat16,
-                enabled=torch.cuda.is_bf16_supported(),
-            ),
-            swap_parameters(self.model, state.params, state.buffers) as params,
-        ):
+        with swap_parameters(
+            self.model,
+            state.params,
+            state.buffers,
+            preserve_graph=trace,
+        ) as params:
             outputs = self.model(**inputs)
 
             # Currently we support two output types: HuggingFace, and "raw loss"
@@ -335,6 +260,7 @@ class Trainer:
                 loss = outputs
 
             assert isinstance(loss, torch.Tensor), "Loss must be a Tensor"
+            self._last_loss = loss.detach().item()
             grads = grad_tree(loss, params, create_graph=trace)
 
         updates, new_state = self.optimizer.update(
@@ -349,60 +275,130 @@ class Trainer:
         )
         return state
 
+    def resume(
+        self,
+        state: TrainerState,
+        save_dir: str,
+    ):
+        ckpt_list = sorted_checkpoints(save_dir)
+
+        # Filter out incomplete checkpoints (missing .metadata) and clean them up
+        valid_ckpts = []
+        for idx, path in ckpt_list:
+            metadata = os.path.join(path, ".metadata")
+            if os.path.exists(metadata):
+                valid_ckpts.append((idx, path))
+            else:
+                rmtree(path) if os.path.isdir(path) else os.remove(path)
+
+        # Load the most recent trainer state
+        last_idx, last_path = valid_ckpts[-1]
+        state.batch_index = last_idx
+        state.load(last_path)
+        state.detach_()
+
+        return state
+
     def train(
         self,
         state: TrainerState,
         data: DataStream,
         *,
+        debug: bool = False,
         inplace: bool = False,
         save_dir: str | None = None,
-        save_mode: Literal["linear", "sqrt"] = "sqrt",
+        save_mode: Literal["all", "sqrt"] = "sqrt",
         trace: bool = False,
+        log_fn: Callable[[int, float], None] | None = None,
+        resume: bool = False,
     ) -> TrainerState:
         # Make sure the save directory exists
         if save_dir is not None:
             os.makedirs(save_dir, exist_ok=True)
 
+        start = 0
+        if resume and save_dir is not None:
+            state = self.resume(state, save_dir)
+            start = state.batch_index
+
         chunk_size = math.isqrt(len(data)) if save_mode == "sqrt" else 1
         last_start = len(data) - chunk_size
 
-        pending_fut: Future | None = None
+        pending_save: SaveFuture | None = None
 
-        main = not dist.is_initialized() or dist.get_rank() != 0
-        pbar = tqdm(data, desc="Training", disable=main)
+        main = not dist.is_initialized() or dist.get_rank() == 0
+        pbar = tqdm(range(start, len(data)), desc="Training", disable=not main)
 
-        for i, x in enumerate(pbar):
+        for i in pbar:
             # Save checkpoint BEFORE each step. Step 0 is the initial state prior to
             # any updates, step 1 is the state after the first update, etc.
             if save_dir and (i % chunk_size == 0 or i >= last_start):
                 # Wait for the previous save before starting a new one to avoid
                 # multiple concurrent DCP saves with separate Gloo groups, which can
                 # deadlock when background threads call distributed operations.
-                if pending_fut is not None:
-                    _rank = dist.get_rank() if dist.is_initialized() else 0
-                    print(
-                        f"[rank {_rank}] train: waiting for pending save"
-                        f" before step {i}",
-                        flush=True,
-                    )
-                    pending_fut.result()
-                    print(
-                        f"[rank {_rank}] train: pending save done before step {i}",
-                        flush=True,
-                    )
+                if pending_save is not None:
+                    pending_save.result()
 
                 p = os.path.join(save_dir, f"step_{i}.ckpt")
-                pending_fut = state.save(p)
+                pending_save = state.save(p, debug_pbar=pbar if debug else None)
 
+            x = data[i]
             state = self.step(state, x, inplace=inplace, trace=trace)
 
-        if pending_fut is not None:
-            _rank = dist.get_rank() if dist.is_initialized() else 0
-            print(f"[rank {_rank}] train: waiting for final save", flush=True)
-            pending_fut.result()
-            print(f"[rank {_rank}] train: final save done", flush=True)
+            if log_fn is not None:
+                log_fn(i, self._last_loss)
+
+        if pending_save is not None:
+            pending_save.result()
 
         return state
+
+    def save_backward_state(self, bwd_state, path, expected_idx, last_idx):
+        tmp_path = path + ".tmp"
+        torch.save(
+            {
+                "expected_idx": expected_idx,
+                "last_idx": last_idx,
+                "param_grads": bwd_state.param_grads,
+                "opt_grads": bwd_state.opt_grads,
+                "weight_grads": bwd_state.weight_grads,
+            },
+            tmp_path,
+        )
+        os.replace(tmp_path, path)
+
+    def load_backward_state(self, path, ckpt_list, device, main: bool):
+        saved = torch.load(path, map_location=device, weights_only=True)
+        bwd_state = BackwardState(
+            saved["param_grads"],
+            saved["opt_grads"],
+            saved["weight_grads"],
+        )
+        expected_idx = saved["expected_idx"]
+        last_idx = saved["last_idx"]
+
+        # Filter to valid checkpoints we still need to process
+        valid_ckpts = []
+        for idx, path in ckpt_list:
+            if idx > expected_idx:
+                continue
+            metadata = os.path.join(path, ".metadata")
+            if os.path.exists(metadata):
+                valid_ckpts.append((idx, path))
+            elif os.path.isdir(path) and main:
+                rmtree(path)
+        ckpt_list = valid_ckpts
+
+        if not ckpt_list and expected_idx >= 0:
+            raise RuntimeError(
+                f"Cannot resume backward: no valid checkpoints found "
+                f"for step {expected_idx}"
+            )
+
+        if main:
+            print(f"Resuming backward pass from step {expected_idx}")
+
+        return bwd_state, ckpt_list, expected_idx, last_idx
 
     def backward(
         self,
@@ -412,20 +408,56 @@ class Trainer:
         fwd_state: TrainerState,
         *,
         cleanup: bool = True,
+        debug: bool = False,
         inplace: bool = False,
+        resume: bool = False,
+        save_every: int = 0,
     ) -> BackwardState:
         ckpt_list = sorted_checkpoints(ckpt_dir)
-        expected_idx, _ = ckpt_list[-1]
 
-        save_futures: list[Future] = []
+        main = not dist.is_initialized() or dist.get_rank() == 0
+        rank = dist.get_rank() if dist.is_initialized() else 0
+        bwd_ckpt_path = os.path.join(ckpt_dir, f"backward_rank{rank}.pt")
+
+        if resume and os.path.exists(bwd_ckpt_path):
+            bwd_state, ckpt_list, expected_idx, last_idx = self.load_backward_state(
+                bwd_ckpt_path, ckpt_list, data.device, main
+            )
+        else:
+            expected_idx, _ = ckpt_list[-1]
+            last_idx = expected_idx
+
+        main_pbar = RtlTqdm(
+            desc="Backward",
+            total=last_idx + 1,
+            initial=last_idx - expected_idx,
+            disable=not main,
+            position=0,
+            # Get rid of jitters in the ETA due to rematerialization
+            smoothing=0,
+        )
+        sub_pbar = None
+
+        save_futures: list[SaveFuture] = []
         while ckpt_list:
             # Make sure everything has been saved
             for fut in save_futures:
                 fut.result()
+            save_futures.clear()
 
             idx, path = ckpt_list[-1]
             fwd_state.batch_index = idx
+
+            start = time.monotonic()
             fwd_state.load(path)
+            elapsed = time.monotonic() - start
+
+            if debug and main:
+                main_pbar.write(f"Loaded checkpoint {path} in {elapsed:.2f} seconds")
+
+            # Detach after loading so that replay steps can use in-place ops
+            # (loaded tensors may retain requires_grad from the previous traced step)
+            fwd_state.detach_()
 
             # Detach after loading so that replay steps can use in-place ops
             # (loaded tensors may retain requires_grad from the previous traced step)
@@ -437,11 +469,21 @@ class Trainer:
                 del ckpt_list[-1]
 
                 # Only delete on the main rank
-                if cleanup and (not dist.is_initialized() or dist.get_rank() == 0):
+                if cleanup and main and idx != last_idx:
                     rmtree(path) if os.path.isdir(path) else os.remove(path)
 
             # Step forward in training if needed
             while idx < expected_idx:
+                if sub_pbar is None:
+                    sub_pbar = tqdm(
+                        total=expected_idx - idx,
+                        desc=f"Rematerializing steps {idx} to {expected_idx}",
+                        disable=not main,
+                        leave=False,
+                        position=1,
+                        smoothing=0,
+                    )
+
                 fwd_state = self.step(
                     fwd_state,
                     data[fwd_state.batch_index],
@@ -449,14 +491,20 @@ class Trainer:
                     trace=False,
                 )
                 idx += 1
+                sub_pbar.update()
 
                 # Save checkpoints for states we will need later
                 if idx < expected_idx:
                     path = os.path.join(ckpt_dir, f"step_{idx}.ckpt")
                     ckpt_list.append((idx, path))
 
-                    fut = fwd_state.save(path)
-                    save_futures.append(fut)
+                    save_futures.append(
+                        fwd_state.save(path, debug_pbar=main_pbar if debug else None)
+                    )
+
+            if sub_pbar is not None:
+                sub_pbar.close()
+                sub_pbar = None
 
             # The index we expect on the next iteration is one less than the current
             expected_idx = idx - 1
@@ -473,6 +521,8 @@ class Trainer:
                 data[fwd_state.batch_index],
                 trace=True,
             )
+            main_pbar.update()
+
             # Carefully consume the bwd state to save memory
             flat_f = state_f.differentiable_tensors()
             p_grads = list(bwd_state.param_grads.values())
@@ -503,7 +553,19 @@ class Trainer:
             weight_grads = result[-1] + w_grads
             bwd_state = BackwardState(param_grads, result[:-1], weight_grads)
 
+            # Save backward state for resume
+            steps_done = last_idx - expected_idx
+            if save_every > 0 and steps_done % save_every == 0:
+                self.save_backward_state(
+                    bwd_state, bwd_ckpt_path, expected_idx, last_idx
+                )
+
         for fut in save_futures:
             fut.result()
 
+        # Clean up backward state file on successful completion
+        if os.path.exists(bwd_ckpt_path):
+            os.remove(bwd_ckpt_path)
+
+        main_pbar.close()
         return bwd_state

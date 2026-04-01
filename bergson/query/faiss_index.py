@@ -12,6 +12,7 @@ from numpy.typing import NDArray
 from tqdm import tqdm
 
 from bergson.config import FaissConfig
+from bergson.process_grads import precondition_flat_grads
 
 if TYPE_CHECKING:
     import faiss  # noqa: F401  # pyright: ignore[reportMissingImports]
@@ -165,7 +166,7 @@ class FaissIndex:
     def __init__(self, path: Path, device: str, mmap_index: bool):
         faiss = _require_faiss()
 
-        config_path = Path(path) / "config.json"
+        config_path = Path(path) / "config.yaml"
 
         if not config_path.exists():
             raise FileNotFoundError(
@@ -205,6 +206,7 @@ class FaissIndex:
         faiss_cfg: FaissConfig,
         device: str,
         unit_norm: bool,
+        preconditioners: dict[str, torch.Tensor],
     ):
         faiss = _require_faiss()
 
@@ -258,6 +260,9 @@ class FaissIndex:
                 print(f"Building shard {shard_idx}...")
 
             grads_chunk = np.concatenate(buffer_parts, axis=0)
+            grads_chunk = precondition_flat_grads(
+                torch.from_numpy(grads_chunk), preconditioners, ordered_modules
+            ).numpy()
             buffer_parts.clear()
 
             index = faiss.index_factory(
@@ -311,7 +316,7 @@ class FaissIndex:
             del grads
 
         # Write the configuration to disk
-        with open(faiss_path / "config.json", "w") as f:
+        with open(faiss_path / "config.yaml", "w") as f:
             json.dump(
                 {
                     "faiss_cfg": faiss_cfg.__dict__,

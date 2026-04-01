@@ -52,7 +52,7 @@ precomputed query gradients.
    bergson reduce runs/my-index \
        --model EleutherAI/pythia-14m \
        --dataset NeelNanda/pile-10k \
-       --method mean \
+       --aggregation mean \
        --unit_normalize
        --projection_dim 0
 

@@ -83,6 +83,58 @@ def test_faiss(tmp_path: Path, model, dataset):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_attributor_precondition_split(tmp_path: Path, model, dataset):
+    """Test split preconditioning (unit_norm=True): H^(-1/2) on both query and index."""
+    cfg = IndexConfig(run_path=str(tmp_path), token_batch_size=1024)
+
+    collect_gradients(
+        model=model,
+        data=dataset,
+        processor=GradientProcessor(),
+        cfg=cfg,
+    )
+
+    attr = Attributor(
+        cfg.partial_run_path, device="cpu", unit_norm=True, precondition=True
+    )
+
+    x = torch.tensor(dataset[0]["input_ids"]).unsqueeze(0)
+
+    with attr.trace(model.base_model, 5) as result:
+        model(x, labels=x).loss.backward()
+        model.zero_grad()
+
+    assert result.scores[0, 0].item() > 0.90  # Same item, top match
+    assert result.indices[0, 0].item() == 0
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_attributor_precondition_one_sided(tmp_path: Path, model, dataset):
+    """Test one-sided preconditioning (unit_norm=False): H^(-1) on query only."""
+    cfg = IndexConfig(run_path=str(tmp_path), token_batch_size=1024)
+
+    collect_gradients(
+        model=model,
+        data=dataset,
+        processor=GradientProcessor(),
+        cfg=cfg,
+    )
+
+    attr = Attributor(
+        cfg.partial_run_path, device="cpu", unit_norm=False, precondition=True
+    )
+
+    x = torch.tensor(dataset[0]["input_ids"]).unsqueeze(0)
+
+    with attr.trace(model.base_model, 5) as result:
+        model(x, labels=x).loss.backward()
+        model.zero_grad()
+
+    # Same item should still be the top match
+    assert result.indices[0, 0].item() == 0
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_attributor_reverse(tmp_path: Path, model, dataset):
     """Test that reverse mode returns lowest influence examples."""
     cfg = IndexConfig(run_path=str(tmp_path), token_batch_size=1024)

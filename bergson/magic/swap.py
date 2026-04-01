@@ -15,18 +15,24 @@ def swap_parameters(
     buffer_dict: dict[str, torch.Tensor] | None = None,
     *,
     strict: bool = True,
-) -> Generator[dict[str, torch.nn.Parameter], None, None]:
+    preserve_graph: bool = False,
+) -> Generator[dict[str, torch.Tensor], None, None]:
     """
     Temporarily replace parameter values with tensors from tensor_dict.
 
     tensor_dict maps parameter names (from named_parameters) to tensors.
     Works even when module parameters are on the meta device.
+
+    When preserve_graph=True, the tensors are placed into the module directly
+    (without wrapping in nn.Parameter) so that the autograd graph connecting
+    the tensors to prior computations is preserved. This is required for
+    correct Hessian-vector products during traced backward passes.
     """
 
     buffer_dict = {} if buffer_dict is None else buffer_dict.copy()
     tensor_dict = tensor_dict.copy()
 
-    param_wrappers: dict[str, torch.nn.Parameter] = {}
+    param_wrappers: dict[str, torch.Tensor] = {}
     original_params: dict[str, torch.nn.Parameter] = {}
     original_buffers: dict[str, torch.Tensor] = {}
 
@@ -44,12 +50,19 @@ def swap_parameters(
 
                 original_params[full_name] = param
                 new_tensor = tensor_dict.pop(full_name)
-                new_param = torch.nn.Parameter(
-                    new_tensor, requires_grad=param.requires_grad
-                )
-                param_wrappers[full_name] = new_param
 
-                mod.register_parameter(p_name, new_param)
+                if preserve_graph:
+                    # Place the tensor directly to preserve autograd graph.
+                    # This avoids nn.Parameter() which creates a new leaf node.
+                    swapped = new_tensor
+                    mod._parameters[p_name] = swapped  # type: ignore[assignment]
+                else:
+                    swapped = torch.nn.Parameter(
+                        new_tensor, requires_grad=param.requires_grad
+                    )
+                    mod.register_parameter(p_name, swapped)
+
+                param_wrappers[full_name] = swapped
 
         for name, mod in module.named_modules():
             for b_name, buffer in mod.named_buffers(recurse=False):

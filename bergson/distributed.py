@@ -22,7 +22,7 @@ from torch.utils.checkpoint import (
     create_selective_checkpoint_contexts,
 )
 
-from .config import DistributedConfig
+from bergson.config import DistributedConfig
 
 
 def grad_tree(
@@ -82,35 +82,33 @@ class ReplicateComputation(torch.nn.Module):
 
 
 def shallow_copy(tensor_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-    """Create a shallow copy of a dict of tensors, handling tied weights."""
-    # For each unique tensor, construct a list of the places in the model where it
-    # appears. This is a bit wonky, but it is the best way to handle tied weights.
-    tensor_to_paths = defaultdict(list)
-    for path, param in tensor_dict.items():
-        tensor_to_paths[param].append(path)
+    """Create a shallow copy of a dict of tensors, handling tied weights.
 
-    # We reverse the list of paths so that when we pop from the front, we get the
-    # same order as the original dict. This is important for tied weights, since we
-    # want to make sure that all occurrences of a tied weight point to the same
-    # copied tensor.
-    tensor_to_paths = list(tensor_to_paths.items())
-    tensor_to_paths.reverse()
+    Preserves the original key order. All paths that shared the same tensor
+    (tied weights) will point to the same copied tensor in the output.
+    """
+    seen: dict[int, torch.Tensor] = {}  # id(original) -> copied tensor
+    result: dict[str, torch.Tensor] = {}
 
-    # Use a while loop to avoid modifying the dict while iterating over it. We don't
-    # want to hold onto both the original and copied versions of each parameter.
-    tensor_dict = {}
-    while tensor_to_paths:
-        t, paths = tensor_to_paths.pop()
+    for path, t in tensor_dict.items():
+        tid = id(t)
+        if tid not in seen:
+            if isinstance(t, DTensor):
+                t2 = DTensor.from_local(
+                    t.to_local(),
+                    t.device_mesh,
+                    t.placements,
+                    shape=t.shape,
+                    stride=t.stride(),
+                )
+            else:
+                t2 = torch.Tensor(t.data)
+            t2.requires_grad_(t.requires_grad)
+            seen[tid] = t2
 
-        if isinstance(t, DTensor):
-            t2 = DTensor.from_local(t.to_local(), t.device_mesh, t.placements)
-        else:
-            t2 = torch.Tensor(t.data)
+        result[path] = seen[tid]
 
-        t2.requires_grad_(t.requires_grad)
-        tensor_dict[paths[0]] = t2
-
-    return tensor_dict
+    return result
 
 
 def simple_fsdp(model: torch.nn.Module) -> torch.nn.Module:
@@ -128,7 +126,8 @@ def simple_fsdp(model: torch.nn.Module) -> torch.nn.Module:
 
         # Create a new distributed version of this param
         dist_param = torch.nn.Parameter(
-            distribute_tensor(param, placements=(Shard(0),))
+            distribute_tensor(param, placements=(Shard(0),)),
+            requires_grad=param.requires_grad,
         )
 
         # Update all occurrences of this parameter in the model
@@ -147,11 +146,6 @@ def simple_fsdp(model: torch.nn.Module) -> torch.nn.Module:
             )
 
     return model
-
-
-Args = ParamSpec("Args")
-Worker = Callable[Concatenate[int, int, int, Args], None]
-"""A worker function for distributed training."""
 
 
 def dist_worker(
@@ -175,7 +169,7 @@ def dist_worker(
 
 def launch_distributed_run(
     process_name: str,
-    worker: Worker,
+    worker,
     const_worker_args: list[Any],
     dist_config: DistributedConfig | None = None,
 ):
@@ -234,3 +228,47 @@ def launch_distributed_run(
         finally:
             if ctx is not None:
                 ctx.close()  # Kill any processes that are still running
+
+
+Args = ParamSpec("Args")
+Worker = Callable[Concatenate[int, int, int, Args], None]
+"""A worker function for distributed training."""
+
+
+def simple_dist_worker(rank: int, world_size: int, dataset, worker: Worker):
+    try:
+        worker(rank, world_size, dataset)
+    finally:
+        dist.destroy_process_group()
+
+
+def dist_main(dataset, worker: Worker):
+    world_size = torch.cuda.device_count()
+    if world_size <= 1:
+        # Run the worker directly if no distributed training is needed. This is great
+        # for debugging purposes.
+        worker(0, 1, dataset)
+    else:
+        # Set up multiprocessing and distributed training
+        mp.set_sharing_strategy("file_system")
+
+        # Find an available port for distributed training
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("", 0))
+            _, port = s.getsockname()
+
+        ctx = start_processes(
+            "train",
+            simple_dist_worker,
+            args={i: (i, world_size, dataset, worker) for i in range(world_size)},
+            envs={
+                i: {
+                    "LOCAL_RANK": str(i),
+                    "MASTER_ADDR": "localhost",
+                    "MASTER_PORT": str(port),
+                }
+                for i in range(world_size)
+            },
+            logs_specs=DefaultLogsSpecs(),
+        )
+        ctx.wait()

@@ -14,6 +14,9 @@ Options:
 - `--base-path PATH` - Output directory (default: runs/attribute_preservation)
 - `--no-h-eval` - Skip H_eval preconditioner comparison
 - `--no-majority` - Skip majority style control
+- `--no-semantic` - Skip semantic-only eval (Q&A format)
+- `--no-pca` - Skip PCA style projection strategies
+- `--pca-k K` - Number of principal components for PCA (default: 100)
 - `--recompute` - Clear cached results and recompute from scratch
 
 ## What this does
@@ -24,6 +27,8 @@ Options:
 4. Eval set: scientists in "wrong" style (pirate) to test style suppression
 5. Compares preconditioner strategies: none, R_between, H_eval
 6. Majority control: scientists in matching style (shakespeare) as upper bound
+7. Semantic-only eval: Gradients computed only from answer tokens (Q&A format) to isolate semantic content from style
+8. PCA style projection: Projects eval gradients orthogonal to style directions learned from the asymmetric experiment
 
 ## Strategies Tested
 
@@ -46,7 +51,25 @@ Transform gradients by `g' = g @ H^(-1)` before computing similarity.
 - **H_eval**: Second moment of eval gradients: `H = (1/n) * G_eval.T @ G_eval`. Hypothesis: the eval set is all scientists in pirate style, so directions with high variance in eval might capture style-independent scientist features. Downweighting these could paradoxically help by normalizing the representation.
 
 ### Controls
-- **majority_no_precond**: Scientists queried in shakespeare (their training style)—no style mismatch. This shows the upper bound: how well can we match occupation when style isn't a confounder? The gap between this and preconditioned results shows how much room for improvement remains.
+- **majority_no_precond**: Scientists queried in shakespeare (their training style)—no style mismatch.
+
+  ⚠️ **Data leak warning**: The eval facts are the same as training facts (100% overlap), just reworded separately. This means majority_no_precond is essentially matching the same semantic content with the same style, making it an inflated upper bound. It's useful for showing that style mismatch is the problem, but shouldn't be interpreted as the achievable accuracy for attribute matching with disjoint facts.
+
+### Semantic-only Eval
+- **semantic_index**, **semantic_no_precond**, **semantic_r_between**, **semantic_h_eval**: Instead of computing gradients from the full stylized text, compute gradients only from answer tokens using a Q&A format:
+  - Question: "Where does {name} work?" (masked, no gradient)
+  - Answer: "Fermilab" (gradient computed only here)
+
+  This isolates semantic content from style by removing style tokens entirely from the gradient computation. Combined with preconditioners, this can significantly improve attribute matching.
+
+  - **semantic_index**: Standard influence function approach (H_train preconditioner + semantic masking)
+
+### PCA Style Projection
+- **pca_k100**, **pca_k100_index**, **semantic_pca_k100**, **semantic_pca_k100_index**: Project eval gradients orthogonal to the top-k style directions before computing similarity.
+
+  The PCA style subspace is loaded from the asymmetric style experiment (`runs/asymmetric_style/pca_subspace`), which contains style directions learned from 9000 fact pairs reworded in both pirate and shakespeare styles. Since there's zero overlap between the asymmetric experiment facts and attribute preservation eval facts, this introduces no data leak.
+
+  - **semantic_pca_k100**: Best performing strategy - combines Q&A format with PCA projection
 
 ## Why This Experiment Matters
 
@@ -74,7 +97,10 @@ results = run_attribute_preservation_experiment(
     base_path='runs/attribute_preservation',
     # analysis_model defaults to EleutherAI/bergson-asymmetric-style-qwen3-8b-lora
     include_h_eval=True,
-    include_majority_control=True
+    include_majority_control=True,
+    include_semantic_eval=True,
+    include_pca=True,  # Uses asymmetric experiment's PCA subspace
+    pca_top_k=100,
 )
 ```
 
@@ -89,7 +115,10 @@ results = run_attribute_preservation_experiment(
     base_path='runs/attribute_preservation',
     reword_model='Qwen/Qwen3-8B-Base',
     include_h_eval=True,
-    include_majority_control=True
+    include_majority_control=True,
+    include_semantic_eval=True,
+    include_pca=True,  # Requires asymmetric experiment to be run first
+    pca_top_k=100,
 )
 ```
 
@@ -107,15 +136,18 @@ runs/attribute_preservation/
 │   ├── train.hf               # Combined styled training set
 │   ├── eval_pirate.hf         # Eval in minority style
 │   ├── eval.hf                # Final eval set
-│   └── eval_majority.hf       # Eval in majority style (control)
+│   ├── eval_majority.hf       # Eval in majority style (control)
+│   └── eval_with_qa.hf        # Eval with question/answer columns (for semantic eval)
 ├── index/                     # Training gradients (bergson build)
 ├── eval_grads/                # Eval gradients (minority style)
+├── eval_grads_semantic/       # Eval gradients (semantic Q&A format)
 ├── eval_grads_majority/       # Eval gradients (majority style)
 ├── r_between/                 # R_between preconditioner
 ├── h_eval/                    # H_eval preconditioner
 ├── scores_no_precond/         # Score matrix (no preconditioner)
 ├── scores_r_between/          # Score matrix (R_between)
 ├── scores_h_eval/             # Score matrix (H_eval)
+├── scores_*_question_answer/  # Score matrices for semantic eval
 └── scores_majority_no_precond/ # Score matrix (majority control)
 ```
 
@@ -164,5 +196,56 @@ Strategy                  Fact Acc     Occ Acc      Style Only   Trade-off
 no_precond                0.25%        7.75%        89.75%       -82.00%
 r_between                 0.50%        12.25%       84.00%       -71.75%
 h_eval                    3.25%        16.25%       80.50%       -64.25%
-majority_no_precond       6.75%        76.00%       23.25%       +52.75%
+majority_no_precond       6.75%        76.00%       23.25%       +52.75%  (⚠️ data leak)
+semantic_index            1.25%        48.00%       47.00%       +1.00%
+semantic_no_precond       0.75%        12.00%       86.00%       -74.00%
+semantic_r_between        0.25%        30.00%       67.50%       -37.50%
+semantic_h_eval           1.75%        23.50%       71.00%       -47.50%
+pca_k100                  1.50%        16.50%       79.50%       -63.00%
+pca_k100_index            4.25%        17.25%       80.75%       -63.50%
+semantic_pca_k100         1.25%        59.50%       33.50%       +26.00%  ← BEST
+semantic_pca_k100_index   2.25%        55.50%       40.00%       +15.50%
 ```
+
+**Key findings**: The `semantic_pca_k100` combination achieves the best legitimate results, with 59.5% occupation accuracy, only 33.5% style leakage, and +26% trade-off. This combines semantic gradients (Q&A format) with PCA style projection using the asymmetric experiment's precomputed style subspace. The PCA subspace learned from a separate dataset (asymmetric experiment) transfers effectively to attribute preservation.
+
+### LaTeX Table
+
+```latex
+\begin{table}[h]
+\centering
+\begin{tabular}{lccc}
+\toprule
+Strategy & Occ Acc & Style Only & Trade-off \\
+\midrule
+\multicolumn{4}{l}{\textit{Full stylized gradients}} \\
+\midrule
+no\_precond & 7.75\% & 89.75\% & -82.00\% \\
+r\_between & 12.25\% & 84.00\% & -71.75\% \\
+h\_eval & 16.25\% & 80.50\% & -64.25\% \\
+pca\_k100 & 16.50\% & 79.50\% & -63.00\% \\
+pca\_k100\_index & 17.25\% & 80.75\% & -63.50\% \\
+\midrule
+\multicolumn{4}{l}{\textit{Semantic-only gradients (Q\&A format)}} \\
+\midrule
+semantic\_no\_precond & 12.00\% & 86.00\% & -74.00\% \\
+semantic\_h\_eval & 23.50\% & 71.00\% & -47.50\% \\
+semantic\_r\_between & 30.00\% & 67.50\% & -37.50\% \\
+semantic\_index & 48.00\% & 47.00\% & +1.00\% \\
+semantic\_pca\_k100\_index & 55.50\% & 40.00\% & +15.50\% \\
+semantic\_pca\_k100 & \textbf{59.50\%} & \textbf{33.50\%} & \textbf{+26.00\%} \\
+\midrule
+\multicolumn{4}{l}{\textit{Control}} \\
+\midrule
+majority\_no\_precond$^\dagger$ & 76.00\% & 23.25\% & +52.75\% \\
+\bottomrule
+\end{tabular}
+\caption{Attribute preservation under style mismatch. Higher Occ Acc and lower Style Only is better. Trade-off = Occ Acc - Style Only. $^\dagger$Data leak: 100\% of eval facts overlap with training.}
+\end{table}
+```
+
+**Key observations:**
+- Full stylized gradients perform poorly (all negative trade-offs) because style dominates the similarity signal
+- Semantic-only gradients (Q&A format) dramatically improve results by removing style from the query
+- PCA style projection provides additional gains, with `semantic_pca_k100` achieving the best legitimate result (+26% trade-off)
+- The control (`majority_no_precond`) shows inflated numbers due to 100% fact overlap with training

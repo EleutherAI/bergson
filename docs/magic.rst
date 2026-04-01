@@ -19,7 +19,13 @@ The ``Trainer`` class handles all three phases. It uses `torchopt <https://githu
 Usage
 -----
 
-bergson magic runs/magic-ckpts --dataset NeelNanda/pile-10k --model EleutherAI/pythia-14m
+.. code-block:: bash
+
+   CUDA_VISIBLE_DEVICES="0" bergson magic runs/magic-ckpts \
+       --data.dataset NeelNanda/pile-10k \
+       --query.dataset NeelNanda/pile-10k \
+       --query.split "train[:8]" \
+       --model EleutherAI/pythia-14m
 
 Core components
 ^^^^^^^^^^^^^^^
@@ -36,7 +42,7 @@ Core components
    trainer, state = Trainer.initialize(model, opt)
 
    # Forward training with checkpoints
-   stream = DataStream(dataset, tokenizer, batch_size=4, num_batches=250, device="cuda")
+   stream = DataStream(dataset, tokenizer, batch_size=4, device="cuda")
    state = trainer.train(state, stream, save_dir="checkpoints/")
 
    # Compute eval gradients, then backward through training
@@ -48,10 +54,10 @@ Core components
 .. code-block:: python
 
    # Per-example attribution
-   stream = DataStream(dataset, tokenizer, batch_size=4, num_batches=250, device="cuda")
+   stream = DataStream(dataset, tokenizer, batch_size=4, device="cuda")
 
    # Per-token attribution
-   stream = DataStream(dataset, tokenizer, batch_size=4, num_batches=250, device="cuda", per_token=True)
+   stream = DataStream(dataset, tokenizer, batch_size=4, device="cuda", weight_shape=(len(dataset), max_length))
 
 **DTensor patch**: For multi-GPU runs with FSDP, apply the DTensor patch before any distributed operations:
 
@@ -65,7 +71,7 @@ Core components
 Per-token vs per-example attribution
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-By default, ``DataStream`` creates a 1D weight tensor ``[n_examples]`` for per-example attribution. With ``per_token=True``, it creates a 2D tensor ``[n_examples, max_length]`` so that each token receives its own attribution score. The ``weighted_causal_lm_ce`` loss function supports both shapes.
+By default, ``DataStream`` creates a 1D weight tensor ``[n_examples]`` for per-example attribution. By passing a 2D tensor ``[n_examples, max_length]`` as the ``weight_shape`` parameter, each token receives its own attribution score. The ``weighted_causal_lm_ce`` loss function supports both shapes.
 
 To use per-token attribution, set ``model.loss_function = weighted_causal_lm_ce`` so the model uses the weighted loss during training.
 

@@ -160,7 +160,7 @@ def setup_paths_and_config(
         subset.save_to_disk(data_str)
         print(f"Generated pile-{n_samples} in {data_str}")
 
-    config_path = os.path.join(test_path, "index_config.json")
+    config_path = os.path.join(test_path, "index_config.yaml")
     if os.path.exists(config_path):
         if not overwrite:
             # Load existing config and compare
@@ -186,12 +186,10 @@ def setup_paths_and_config(
             print(f"Using existing config from {config_path}")
         else:
             print(f"Overwriting existing config at {config_path}")
-            with open(config_path, "w") as f:
-                json.dump(asdict(cfg), f, indent=4)
+            cfg.save_yaml(config_path)
     else:
         # Save new config
-        with open(config_path, "w") as f:
-            json.dump(asdict(cfg), f, indent=4)
+        cfg.save_yaml(config_path)
 
     # Setup
     workers = world_size

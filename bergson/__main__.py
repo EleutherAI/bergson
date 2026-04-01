@@ -1,50 +1,42 @@
-import shutil
-from copy import deepcopy
+import logging
+import os
+import sys
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Optional, Union
+from typing import Union, get_args
 
-from simple_parsing import ArgumentParser, ConflictResolution
+from simple_parsing import ArgumentParser, ConflictResolution, Serializable
+
+from bergson.hessians.pipeline import hessian_pipeline
 
 from .build import build
 from .config import (
-    DistributedConfig,
     HessianConfig,
+    HessianPipelineConfig,
     IndexConfig,
+    PreprocessConfig,
     QueryConfig,
-    ReduceConfig,
     ScoreConfig,
     TrackstarConfig,
 )
-from .double_backward import DoubleBackwardConfig, double_backward
+from .diagnose import DiagnoseConfig, diagnose
 from .hessians.hessian_approximations import approximate_hessians
+from .magic import MagicConfig, run_magic
 from .query.query_index import query
-from .reduce import reduce
 from .score.score import score_dataset
+from .trackstar import trackstar
+from .utils.worker_utils import validate_run_path
 
-
-def validate_run_path(index_cfg: IndexConfig):
-    """Validate the run path."""
-    if index_cfg.distributed.rank != 0:
-        return
-
-    for path in [Path(index_cfg.run_path), Path(index_cfg.partial_run_path)]:
-        if not path.exists():
-            continue
-
-        if index_cfg.overwrite:
-            shutil.rmtree(path)
-        else:
-            raise FileExistsError(
-                f"Run path {path} already exists. Use --overwrite to overwrite it."
-            )
+# ignore httpx
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 @dataclass
-class Build:
+class Build(Serializable):
     """Build a gradient index."""
 
     index_cfg: IndexConfig
+
+    preprocess_cfg: PreprocessConfig
 
     def execute(self):
         """Build the gradient index."""
@@ -53,78 +45,35 @@ class Build:
 
         validate_run_path(self.index_cfg)
 
-        build(self.index_cfg)
+        build(self.index_cfg, self.preprocess_cfg)
 
 
 @dataclass
-class Preconditioners:
-    """Compute normalizers and preconditioners without gradient collection."""
+class Ekfac(Serializable):
+    """Run the full EKFAC influence pipeline end-to-end."""
 
     index_cfg: IndexConfig
 
-    def execute(self):
-        """Compute normalizers and preconditioners."""
-        self.index_cfg.skip_index = True
-        self.index_cfg.skip_preconditioners = False
-        validate_run_path(self.index_cfg)
-        build(self.index_cfg)
-
-
-@dataclass
-class Reduce:
-    """Reduce a gradient index."""
-
-    index_cfg: IndexConfig
-
-    reduce_cfg: ReduceConfig
-
-    def execute(self):
-        """Reduce a gradient index."""
-        if self.index_cfg.projection_dim != 0:
-            print(
-                f"Using a projection dimension of " f"{self.index_cfg.projection_dim}. "
-            )
-
-        validate_run_path(self.index_cfg)
-
-        reduce(self.index_cfg, self.reduce_cfg)
-
-
-@dataclass
-class Score:
-    """Score a dataset against an existing gradient index."""
+    hessian_cfg: HessianConfig
 
     score_cfg: ScoreConfig
 
-    index_cfg: IndexConfig
+    preprocess_cfg: PreprocessConfig
+
+    hessian_pipeline_cfg: HessianPipelineConfig
 
     def execute(self):
-        """Score a dataset against an existing gradient index."""
-        assert self.score_cfg.query_path
-
-        if self.index_cfg.projection_dim != 0:
-            print(
-                f"Using a projection dimension of " f"{self.index_cfg.projection_dim}. "
-            )
-
-        validate_run_path(self.index_cfg)
-
-        score_dataset(self.index_cfg, self.score_cfg)
+        hessian_pipeline(
+            self.index_cfg,
+            self.hessian_cfg,
+            self.score_cfg,
+            self.preprocess_cfg,
+            self.hessian_pipeline_cfg,
+        )
 
 
 @dataclass
-class Query:
-    """Query an existing gradient index."""
-
-    query_cfg: QueryConfig
-
-    def execute(self):
-        """Query an existing gradient index."""
-        query(self.query_cfg)
-
-
-@dataclass
-class Hessian:
+class Hessian(Serializable):
     """Approximate Hessian matrices using KFAC or EKFAC."""
 
     hessian_cfg: HessianConfig
@@ -137,75 +86,98 @@ class Hessian:
 
 
 @dataclass
-class Trackstar:
+class Magic(MagicConfig):
+    """Run MAGIC attribution."""
+
+    def execute(self):
+        """Run MAGIC attribution."""
+        run_magic(self)
+
+
+@dataclass
+class Preconditioners(IndexConfig):
+    """Compute normalizers and preconditioners without gradient collection."""
+
+    def execute(self):
+        """Compute normalizers and preconditioners."""
+        self.skip_index = True
+        self.skip_preconditioners = False
+        validate_run_path(self)
+        build(self, PreprocessConfig())
+
+
+@dataclass
+class Query(QueryConfig):
+    """Query an existing gradient index."""
+
+    def execute(self):
+        """Query an existing gradient index."""
+        query(self)
+
+
+@dataclass
+class Reduce(Serializable):
+    """Reduce a gradient index."""
+
+    index_cfg: IndexConfig
+
+    preprocess_cfg: PreprocessConfig
+
+    def execute(self):
+        """Reduce a gradient index."""
+        if self.index_cfg.projection_dim != 0:
+            print(f"Using a projection dimension of {self.index_cfg.projection_dim}. ")
+
+        validate_run_path(self.index_cfg)
+        build(self.index_cfg, self.preprocess_cfg)
+
+
+@dataclass
+class Score(Serializable):
+    """Score a dataset against an existing gradient index."""
+
+    score_cfg: ScoreConfig
+
+    index_cfg: IndexConfig
+
+    preprocess_cfg: PreprocessConfig
+
+    def execute(self):
+        """Score a dataset against an existing gradient index."""
+        assert self.score_cfg.query_path
+
+        if self.index_cfg.projection_dim != 0:
+            print(f"Using a projection dimension of {self.index_cfg.projection_dim}. ")
+
+        validate_run_path(self.index_cfg)
+        score_dataset(self.index_cfg, self.score_cfg, self.preprocess_cfg)
+
+
+@dataclass
+class Trackstar(Serializable):
     """Run preconditioners, build, and score as a single pipeline."""
 
     index_cfg: IndexConfig
 
     trackstar_cfg: TrackstarConfig
 
-    score_cfg: ScoreConfig
-
     def execute(self):
-        """Run the full trackstar pipeline: preconditioners -> build -> score."""
-        run_path = self.index_cfg.run_path
-        value_precond_path = f"{run_path}/value_preconditioner"
-        query_precond_path = f"{run_path}/query_preconditioner"
-        query_path = f"{run_path}/query"
-        scores_path = f"{run_path}/scores"
-
-        # Step 1: Compute normalizers and preconditioners on value dataset
-        print("Step 1/4: Computing normalizers and preconditioners on value dataset...")
-        value_precond_cfg = deepcopy(self.index_cfg)
-        value_precond_cfg.run_path = value_precond_path
-        value_precond_cfg.skip_index = True
-        value_precond_cfg.skip_preconditioners = False
-        validate_run_path(value_precond_cfg)
-        build(value_precond_cfg)
-
-        # Step 2: Compute normalizers and preconditioners on query dataset
-        print("Step 2/4: Computing normalizers and preconditioners on query dataset...")
-        query_precond_cfg = deepcopy(self.index_cfg)
-        query_precond_cfg.run_path = query_precond_path
-        query_precond_cfg.data = self.trackstar_cfg.query
-        query_precond_cfg.skip_index = True
-        query_precond_cfg.skip_preconditioners = False
-        validate_run_path(query_precond_cfg)
-        build(query_precond_cfg)
-
-        # Step 3: Build per-item query gradient index
-        print("Step 3/4: Building query gradient index...")
-        query_cfg = deepcopy(self.index_cfg)
-        query_cfg.run_path = query_path
-        query_cfg.data = self.trackstar_cfg.query
-        query_cfg.processor_path = query_precond_path
-        query_cfg.skip_preconditioners = True
-        validate_run_path(query_cfg)
-        build(query_cfg)
-
-        # Step 4: Score value dataset against query using both preconditioners
-        print("Step 4/4: Scoring value dataset...")
-        score_index_cfg = deepcopy(self.index_cfg)
-        score_index_cfg.run_path = scores_path
-        score_index_cfg.processor_path = value_precond_path
-        score_index_cfg.skip_preconditioners = True
-        self.score_cfg.query_path = query_path
-        self.score_cfg.query_preconditioner_path = query_precond_path
-        self.score_cfg.index_preconditioner_path = value_precond_path
-        validate_run_path(score_index_cfg)
-        score_dataset(score_index_cfg, self.score_cfg)
+        trackstar(self.index_cfg, self.trackstar_cfg)
 
 
 @dataclass
-class Magic:
-    """Run MAGIC attribution."""
+class Test_Model_Configuration:
+    """Test gradient consistency across padding and batch composition.
 
-    run_cfg: DoubleBackwardConfig
-    dist_cfg: DistributedConfig
+    Tests whether a model produces consistent gradients regardless of how
+    documents are batched together. If inconsistencies are found, recommends
+    using --force_math_sdp on build/score/trackstar commands."""
+
+    diagnose_cfg: DiagnoseConfig
 
     def execute(self):
-        """Run MAGIC attribution."""
-        double_backward(self.run_cfg, self.dist_cfg)
+        """Run the diagnostic."""
+        diagnose(self.diagnose_cfg)
 
 
 @dataclass
@@ -213,7 +185,16 @@ class Main:
     """Routes to the subcommands."""
 
     command: Union[
-        Build, Query, Preconditioners, Reduce, Score, Hessian, Trackstar, Magic
+        Build,
+        Ekfac,
+        Hessian,
+        Magic,
+        Preconditioners,
+        Query,
+        Reduce,
+        Score,
+        Trackstar,
+        Test_Model_Configuration,
     ]
 
     def execute(self):
@@ -221,11 +202,31 @@ class Main:
         self.command.execute()
 
 
-def main(args: Optional[list[str]] = None):
+def main():
     """Parse CLI arguments and dispatch to the selected subcommand."""
-    parser = ArgumentParser(conflict_resolution=ConflictResolution.EXPLICIT)
-    parser.add_arguments(Main, dest="prog")
-    prog: Main = parser.parse_args(args=args).prog
+    # Check to see if the user is passing in a yaml or json config file directly
+    args = sys.argv[1:]
+    if len(args) == 2 and os.path.isfile(args[-1]):
+        cmd_str, config_path = args
+
+        args = get_args(Main.__dataclass_fields__["command"].type)
+        names = {cls.__name__.lower(): cls for cls in args}
+        try:
+            cmd_cls = names[cmd_str.lower()]
+        except KeyError:
+            print(f"Invalid command '{cmd_str}'. Valid commands are: {list(names)}")
+            sys.exit(1)
+
+        try:
+            prog = cmd_cls.load(config_path)
+        except RuntimeError as e:
+            print(f"Failed to load config file {config_path}: {e}")
+            sys.exit(1)
+    else:
+        parser = ArgumentParser(conflict_resolution=ConflictResolution.EXPLICIT)
+        parser.add_arguments(Main, dest="prog")
+        prog: Main = parser.parse_args().prog
+
     prog.execute()
 
 

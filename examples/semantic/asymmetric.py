@@ -11,6 +11,7 @@ import ml_dtypes  # noqa: F401  # registers bfloat16 dtype with numpy
 import numpy as np
 from datasets import Dataset, DatasetDict, concatenate_datasets, load_from_disk
 
+from bergson.config import IndexConfig
 from examples.semantic.data import (
     HF_ANALYSIS_MODEL,
     load_experiment_data,
@@ -34,6 +35,158 @@ def _load_gradients_as_float(grads: np.memmap, name: str) -> np.ndarray:
     return g
 
 
+def _load_hf_dataset(path: Path | str) -> Dataset:
+    """Load a HuggingFace dataset, unwrapping DatasetDict if needed."""
+    ds = load_from_disk(str(path))
+    if isinstance(ds, DatasetDict):
+        ds = ds["train"]
+    return ds
+
+
+def _run_bergson_build(
+    output_path: Path | str,
+    model: str,
+    dataset_path: Path | str,
+    prompt_column: str = "fact",
+    completion_column: str = "reworded",
+    projection_dim: int = 16,
+    skip_preconditioners: bool = True,
+    label: str = "eval",
+) -> None:
+    """Run bergson build subprocess with standard arguments.
+
+    Args:
+        output_path: Where to write the gradient index.
+        model: Model name/path for gradient collection.
+        dataset_path: Path to the HuggingFace dataset.
+        prompt_column: Column name for prompts.
+        completion_column: Column name for completions.
+        projection_dim: Random projection dimensionality.
+        skip_preconditioners: Whether to skip preconditioner computation.
+        label: Description for error messages (e.g. "eval", "majority eval").
+    """
+    import subprocess
+
+    cmd = [
+        "bergson",
+        "build",
+        str(output_path),
+        "--model",
+        model,
+        "--dataset",
+        str(dataset_path),
+        "--drop_columns",
+        "False",
+        "--prompt_column",
+        prompt_column,
+        "--completion_column",
+        completion_column,
+        "--fsdp",
+        "--projection_dim",
+        str(projection_dim),
+        "--token_batch_size",
+        "6000",
+    ]
+    if skip_preconditioners:
+        cmd.append("--skip_preconditioners")
+
+    print("Running:", " ".join(cmd))
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print("STDOUT:", result.stdout)
+        print("STDERR:", result.stderr)
+        raise RuntimeError(f"bergson build for {label} failed")
+    print(result.stdout)
+
+
+def _compute_metrics_from_scores(
+    scores: np.ndarray,
+    train_ds: Dataset,
+    eval_ds: Dataset,
+    minority_style: str,
+) -> "AsymmetricMetrics":
+    """Compute AsymmetricMetrics from a score matrix.
+
+    Args:
+        scores: Score matrix of shape (n_eval, n_train).
+        train_ds: Training dataset with style/identifier/field columns.
+        eval_ds: Eval dataset with identifier/field columns.
+        minority_style: Name of the minority style for leakage computation.
+
+    Returns:
+        AsymmetricMetrics dataclass.
+    """
+    train_styles = train_ds["style"]  # type: ignore[index]
+    train_identifiers = train_ds["identifier"]  # type: ignore[index]
+    train_fields = train_ds["field"]  # type: ignore[index]
+    eval_identifiers = eval_ds["identifier"]  # type: ignore[index]
+    eval_fields = eval_ds["field"]  # type: ignore[index]
+
+    n_eval = len(eval_ds)
+    top_indices = np.argsort(-scores, axis=1)[:, :10]
+
+    semantic_top1 = 0
+    semantic_top5 = 0
+    semantic_top10 = 0
+    style_leak_top1 = 0
+    style_leak_top5 = 0.0
+    style_leak_top10 = 0.0
+    subject_top1 = 0
+    field_top1 = 0
+
+    for i in range(n_eval):
+        query_identifier = eval_identifiers[i]
+        query_field = eval_fields[i]
+        top_k_idx = top_indices[i]
+
+        # Check semantic matching (same identifier AND field)
+        for k, idx in enumerate(top_k_idx):
+            if (
+                train_identifiers[idx] == query_identifier
+                and train_fields[idx] == query_field
+            ):
+                if k == 0:
+                    semantic_top1 += 1
+                if k < 5:
+                    semantic_top5 += 1
+                    break
+                if k < 10:
+                    semantic_top10 += 1
+                    break
+
+        # Check style leakage
+        if train_styles[top_k_idx[0]] == minority_style:
+            style_leak_top1 += 1
+
+        top5_minority = sum(
+            1 for idx in top_k_idx[:5] if train_styles[idx] == minority_style
+        )
+        style_leak_top5 += top5_minority / 5
+
+        top10_minority = sum(
+            1 for idx in top_k_idx[:10] if train_styles[idx] == minority_style
+        )
+        style_leak_top10 += top10_minority / 10
+
+        # Check attribute matching for top-1
+        top1_idx = top_k_idx[0]
+        if train_identifiers[top1_idx] == query_identifier:
+            subject_top1 += 1
+        if train_fields[top1_idx] == query_field:
+            field_top1 += 1
+
+    return AsymmetricMetrics(
+        top1_semantic_accuracy=semantic_top1 / n_eval,
+        top5_semantic_recall=semantic_top5 / n_eval,
+        top10_semantic_recall=semantic_top10 / n_eval,
+        top1_style_leakage=style_leak_top1 / n_eval,
+        top5_style_leakage=style_leak_top5 / n_eval,
+        top10_style_leakage=style_leak_top10 / n_eval,
+        top1_subject_accuracy=subject_top1 / n_eval,
+        top1_field_accuracy=field_top1 / n_eval,
+    )
+
+
 @dataclass
 class AsymmetricConfig:
     """Configuration for asymmetric style experiment."""
@@ -48,6 +201,11 @@ class AsymmetricConfig:
     # Template split for train/test segregation (only used for local generation)
     # Train uses templates < cutoff, eval majority uses templates >= cutoff
     train_template_cutoff: int = 5
+    # Path to style-specific indices (pirate/shakespeare) for PCA and summed loss
+    style_index_path: str = "runs/precond_comparison"
+    # PCA k values to sweep. First value is used for the initial PCA computation;
+    # all values are swept in the semantic eval section.
+    pca_k_values: tuple[int, ...] = (10, 100, 500, 1000)
 
 
 def create_asymmetric_dataset(
@@ -81,18 +239,12 @@ def create_asymmetric_dataset(
     # Return cached if exists
     if train_path.exists() and eval_path.exists():
         print(f"Loading cached datasets from {output_dir}")
-        train_cached = load_from_disk(str(train_path))
-        eval_cached = load_from_disk(str(eval_path))
-        if isinstance(train_cached, DatasetDict):
-            train_cached = train_cached["train"]
-        if isinstance(eval_cached, DatasetDict):
-            eval_cached = eval_cached["train"]
+        train_cached = _load_hf_dataset(train_path)
+        eval_cached = _load_hf_dataset(eval_path)
         return train_cached, eval_cached
 
     # Load original facts to get metadata columns
-    original = load_from_disk("data/facts_dataset.hf")
-    if isinstance(original, DatasetDict):
-        original = original["train"]
+    original = _load_hf_dataset("data/facts_dataset.hf")
     fact_to_meta = {row["fact"]: row for row in original}  # type: ignore[index]
 
     # Load style-specific datasets (Qwen only for consistency)
@@ -104,7 +256,7 @@ def create_asymmetric_dataset(
     }
     for name in style_datasets:
         if isinstance(style_datasets[name], DatasetDict):
-            style_datasets[name] = style_datasets[name]["train"]  # type: ignore[index]
+            style_datasets[name] = style_datasets[name]["train"]
 
         # Add back metadata columns from original
         ds = style_datasets[name]
@@ -222,7 +374,6 @@ def create_asymmetric_index(
     Returns:
         Path to the created index.
     """
-    import subprocess
 
     if analysis_model is None:
         analysis_model = HF_ANALYSIS_MODEL
@@ -250,34 +401,13 @@ def create_asymmetric_index(
         print(f"Index already exists at {index_path}, skipping...")
         return index_path
 
-    cmd = [
-        "bergson",
-        "build",
-        str(index_path),
-        "--model",
-        analysis_model,
-        "--dataset",
-        str(data_path / "train.hf"),
-        "--drop_columns",
-        "False",
-        "--prompt_column",
-        "fact",
-        "--completion_column",
-        "reworded",
-        "--fsdp",
-        "--projection_dim",
-        "16",
-        "--token_batch_size",
-        "6000",
-    ]
-
-    print("Running:", " ".join(cmd))
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        print("STDOUT:", result.stdout)
-        print("STDERR:", result.stderr)
-        raise RuntimeError("bergson build failed")
-    print(result.stdout)
+    _run_bergson_build(
+        index_path,
+        model=analysis_model,
+        dataset_path=data_path / "train.hf",
+        skip_preconditioners=False,
+        label="index",
+    )
 
     return index_path
 
@@ -317,14 +447,13 @@ def score_asymmetric_eval(
         Score matrix of shape (n_eval, n_train).
     """
     import json
-    import subprocess
 
     import torch
     from tqdm import tqdm
 
     from bergson.data import load_gradients
     from bergson.gradients import GradientProcessor
-    from bergson.utils.math import compute_damped_inverse
+    from bergson.utils.math import damped_psd_power
 
     base_path = Path(base_path)
     index_path = base_path / "index"
@@ -359,13 +488,8 @@ def score_asymmetric_eval(
     scores_path.mkdir(parents=True, exist_ok=True)
 
     # Load train and eval datasets
-    train_ds = load_from_disk(str(data_path / "train.hf"))
-    eval_ds = load_from_disk(str(data_path / "eval.hf"))
-
-    if isinstance(train_ds, DatasetDict):
-        train_ds = train_ds["train"]
-    if isinstance(eval_ds, DatasetDict):
-        eval_ds = eval_ds["train"]
+    train_ds = _load_hf_dataset(data_path / "train.hf")
+    eval_ds = _load_hf_dataset(data_path / "eval.hf")
 
     n_train = len(train_ds)
     n_eval = len(eval_ds)
@@ -403,8 +527,8 @@ def score_asymmetric_eval(
             regularizer = None
             if reg_proc is not None and name in reg_proc.preconditioners:
                 regularizer = reg_proc.preconditioners[name].to(device=device)
-            h_inv[name] = compute_damped_inverse(
-                H, damping_factor=damping_factor, regularizer=regularizer
+            h_inv[name] = damped_psd_power(
+                H, power=-1, damping_factor=damping_factor, regularizer=regularizer
             )
 
     # Concatenate train gradients
@@ -433,37 +557,17 @@ def score_asymmetric_eval(
         )
 
     if not eval_grads_path.exists():
-        with open(index_path / "index_config.json") as f:
-            index_cfg = json.load(f)
+        index_cfg = IndexConfig.load_yaml(index_path / "index_config.yaml")
 
-        cmd = [
-            "bergson",
-            "build",
-            str(eval_grads_path),
-            "--model",
-            index_cfg["model"],
-            "--dataset",
-            str(data_path / "eval.hf"),
-            "--drop_columns",
-            "False",
-            "--prompt_column",
-            eval_prompt_column,
-            "--completion_column",
-            eval_completion_column,
-            "--fsdp",
-            "--projection_dim",
-            str(index_cfg.get("projection_dim", 16)),
-            "--token_batch_size",
-            "6000",
-            "--skip_preconditioners",
-        ]
-        print("Running:", " ".join(cmd))
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            print("STDOUT:", result.stdout)
-            print("STDERR:", result.stderr)
-            raise RuntimeError("bergson build for eval failed")
-        print(result.stdout)
+        _run_bergson_build(
+            eval_grads_path,
+            model=index_cfg.model,
+            dataset_path=data_path / "eval.hf",
+            prompt_column=eval_prompt_column,
+            completion_column=eval_completion_column,
+            projection_dim=index_cfg.projection_dim or 16,
+            label="eval",
+        )
 
     # Load eval gradients
     eval_grads = load_gradients(eval_grads_path, structured=True)
@@ -543,13 +647,8 @@ def compute_asymmetric_metrics(
     data_path = base_path / "data"
 
     # Load datasets
-    train_ds = load_from_disk(str(data_path / "train.hf"))
-    eval_ds = load_from_disk(str(data_path / "eval.hf"))
-
-    if isinstance(train_ds, DatasetDict):
-        train_ds = train_ds["train"]
-    if isinstance(eval_ds, DatasetDict):
-        eval_ds = eval_ds["train"]
+    train_ds = _load_hf_dataset(data_path / "train.hf")
+    eval_ds = _load_hf_dataset(data_path / "eval.hf")
 
     # Load scores
     scores = score_asymmetric_eval(
@@ -562,82 +661,8 @@ def compute_asymmetric_metrics(
         eval_completion_column=eval_completion_column,
     )
 
-    n_eval = len(eval_ds)
-
-    # Extract metadata
-    train_styles = train_ds["style"]  # type: ignore[index]
-    train_identifiers = train_ds["identifier"]  # type: ignore[index]
-    train_fields = train_ds["field"]  # type: ignore[index]
-
-    eval_identifiers = eval_ds["identifier"]  # type: ignore[index]
-    eval_fields = eval_ds["field"]  # type: ignore[index]
-
-    # Get top-k indices for each query
-    top_k = 10
-    top_indices = np.argsort(-scores, axis=1)[:, :top_k]
-
-    # Compute metrics
-    semantic_top1 = 0
-    semantic_top5 = 0
-    semantic_top10 = 0
-    style_leak_top1 = 0
-    style_leak_top5 = 0
-    style_leak_top10 = 0
-    subject_top1 = 0
-    field_top1 = 0
-
-    for i in range(n_eval):
-        query_identifier = eval_identifiers[i]
-        query_field = eval_fields[i]
-
-        top_k_idx = top_indices[i]
-
-        # Check semantic matching (same identifier AND field = same underlying fact)
-        for k, idx in enumerate(top_k_idx):
-            if (
-                train_identifiers[idx] == query_identifier
-                and train_fields[idx] == query_field
-            ):
-                if k == 0:
-                    semantic_top1 += 1
-                if k < 5:
-                    semantic_top5 += 1
-                    break
-                if k < 10:
-                    semantic_top10 += 1
-                    break
-
-        # Check style leakage
-        top1_style = train_styles[top_k_idx[0]]
-        if top1_style == config.minority_style:
-            style_leak_top1 += 1
-
-        top5_minority = sum(
-            1 for idx in top_k_idx[:5] if train_styles[idx] == config.minority_style
-        )
-        style_leak_top5 += top5_minority / 5
-
-        top10_minority = sum(
-            1 for idx in top_k_idx[:10] if train_styles[idx] == config.minority_style
-        )
-        style_leak_top10 += top10_minority / 10
-
-        # Check attribute matching for top-1
-        top1_idx = top_k_idx[0]
-        if train_identifiers[top1_idx] == query_identifier:
-            subject_top1 += 1
-        if train_fields[top1_idx] == query_field:
-            field_top1 += 1
-
-    return AsymmetricMetrics(
-        top1_semantic_accuracy=semantic_top1 / n_eval,
-        top5_semantic_recall=semantic_top5 / n_eval,
-        top10_semantic_recall=semantic_top10 / n_eval,
-        top1_style_leakage=style_leak_top1 / n_eval,
-        top5_style_leakage=style_leak_top5 / n_eval,
-        top10_style_leakage=style_leak_top10 / n_eval,
-        top1_subject_accuracy=subject_top1 / n_eval,
-        top1_field_accuracy=field_top1 / n_eval,
+    return _compute_metrics_from_scores(
+        scores, train_ds, eval_ds, config.minority_style
     )
 
 
@@ -698,9 +723,7 @@ def compute_style_preconditioner(
     print("Computing R_between preconditioner from style means...")
 
     # Load training data and gradients
-    train_ds = load_from_disk(str(data_path / "train.hf"))
-    if isinstance(train_ds, DatasetDict):
-        train_ds = train_ds["train"]
+    train_ds = _load_hf_dataset(data_path / "train.hf")
 
     train_styles = train_ds["style"]  # type: ignore[index]
     train_grads = load_gradients(index_path, structured=True)
@@ -794,14 +817,13 @@ def score_asymmetric_eval_with_pca_projection(
         Score matrix of shape (n_eval, n_train).
     """
     import json
-    import subprocess
 
     import torch
     from tqdm import tqdm
 
     from bergson.data import load_gradients
     from bergson.gradients import GradientProcessor
-    from bergson.utils.math import compute_damped_inverse
+    from bergson.utils.math import damped_psd_power
 
     from .preconditioners import project_orthogonal_to_style_subspace
 
@@ -834,13 +856,8 @@ def score_asymmetric_eval_with_pca_projection(
     scores_path.mkdir(parents=True, exist_ok=True)
 
     # Load train and eval datasets
-    train_ds = load_from_disk(str(data_path / "train.hf"))
-    eval_ds = load_from_disk(str(data_path / "eval.hf"))
-
-    if isinstance(train_ds, DatasetDict):
-        train_ds = train_ds["train"]
-    if isinstance(eval_ds, DatasetDict):
-        eval_ds = eval_ds["train"]
+    train_ds = _load_hf_dataset(data_path / "train.hf")
+    eval_ds = _load_hf_dataset(data_path / "eval.hf")
 
     n_train = len(train_ds)
     n_eval = len(eval_ds)
@@ -866,7 +883,7 @@ def score_asymmetric_eval_with_pca_projection(
         device = torch.device("cuda:0")
         for name in tqdm(module_names, desc="Computing H^(-1)"):
             H = proc.preconditioners[name].to(device=device)
-            h_inv[name] = compute_damped_inverse(H, damping_factor=damping_factor)
+            h_inv[name] = damped_psd_power(H, power=-1, damping_factor=damping_factor)
 
     # Concatenate train gradients
     print("Preparing train gradients...")
@@ -891,37 +908,17 @@ def score_asymmetric_eval_with_pca_projection(
         )
 
     if not eval_grads_path.exists():
-        with open(index_path / "index_config.json") as f:
-            index_cfg = json.load(f)
+        index_cfg = IndexConfig.load_yaml(index_path / "index_config.yaml")
 
-        cmd = [
-            "bergson",
-            "build",
-            str(eval_grads_path),
-            "--model",
-            index_cfg["model"],
-            "--dataset",
-            str(data_path / "eval.hf"),
-            "--drop_columns",
-            "False",
-            "--prompt_column",
-            eval_prompt_column,
-            "--completion_column",
-            eval_completion_column,
-            "--fsdp",
-            "--projection_dim",
-            str(index_cfg.get("projection_dim", 16)),
-            "--token_batch_size",
-            "6000",
-            "--skip_preconditioners",
-        ]
-        print("Running:", " ".join(cmd))
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            print("STDOUT:", result.stdout)
-            print("STDERR:", result.stderr)
-            raise RuntimeError("bergson build for eval failed")
-        print(result.stdout)
+        _run_bergson_build(
+            eval_grads_path,
+            model=index_cfg.model,
+            dataset_path=data_path / "eval.hf",
+            prompt_column=eval_prompt_column,
+            completion_column=eval_completion_column,
+            projection_dim=index_cfg.projection_dim or 16,
+            label="eval",
+        )
 
     # Load eval gradients and apply PCA projection
     eval_grads = load_gradients(eval_grads_path, structured=True)
@@ -999,13 +996,8 @@ def compute_asymmetric_metrics_with_pca(
     data_path = base_path / "data"
 
     # Load datasets
-    train_ds = load_from_disk(str(data_path / "train.hf"))
-    eval_ds = load_from_disk(str(data_path / "eval.hf"))
-
-    if isinstance(train_ds, DatasetDict):
-        train_ds = train_ds["train"]
-    if isinstance(eval_ds, DatasetDict):
-        eval_ds = eval_ds["train"]
+    train_ds = _load_hf_dataset(data_path / "train.hf")
+    eval_ds = _load_hf_dataset(data_path / "eval.hf")
 
     # Load scores (using PCA projection)
     scores = score_asymmetric_eval_with_pca_projection(
@@ -1019,82 +1011,8 @@ def compute_asymmetric_metrics_with_pca(
         eval_completion_column=eval_completion_column,
     )
 
-    n_eval = len(eval_ds)
-
-    # Extract metadata
-    train_styles = train_ds["style"]  # type: ignore[index]
-    train_identifiers = train_ds["identifier"]  # type: ignore[index]
-    train_fields = train_ds["field"]  # type: ignore[index]
-
-    eval_identifiers = eval_ds["identifier"]  # type: ignore[index]
-    eval_fields = eval_ds["field"]  # type: ignore[index]
-
-    # Get top-k indices for each query
-    top_k_results = 10
-    top_indices = np.argsort(-scores, axis=1)[:, :top_k_results]
-
-    # Compute metrics (same logic as compute_asymmetric_metrics)
-    semantic_top1 = 0
-    semantic_top5 = 0
-    semantic_top10 = 0
-    style_leak_top1 = 0
-    style_leak_top5 = 0
-    style_leak_top10 = 0
-    subject_top1 = 0
-    field_top1 = 0
-
-    for i in range(n_eval):
-        query_identifier = eval_identifiers[i]
-        query_field = eval_fields[i]
-
-        top_k_idx = top_indices[i]
-
-        # Check semantic matching (same identifier AND field = same underlying fact)
-        for k, idx in enumerate(top_k_idx):
-            if (
-                train_identifiers[idx] == query_identifier
-                and train_fields[idx] == query_field
-            ):
-                if k == 0:
-                    semantic_top1 += 1
-                if k < 5:
-                    semantic_top5 += 1
-                    break
-                if k < 10:
-                    semantic_top10 += 1
-                    break
-
-        # Check style leakage
-        top1_style = train_styles[top_k_idx[0]]
-        if top1_style == config.minority_style:
-            style_leak_top1 += 1
-
-        top5_minority = sum(
-            1 for idx in top_k_idx[:5] if train_styles[idx] == config.minority_style
-        )
-        style_leak_top5 += top5_minority / 5
-
-        top10_minority = sum(
-            1 for idx in top_k_idx[:10] if train_styles[idx] == config.minority_style
-        )
-        style_leak_top10 += top10_minority / 10
-
-        # Check attribute matching for top-1
-        top1_idx = top_k_idx[0]
-        if train_identifiers[top1_idx] == query_identifier:
-            subject_top1 += 1
-        if train_fields[top1_idx] == query_field:
-            field_top1 += 1
-
-    return AsymmetricMetrics(
-        top1_semantic_accuracy=semantic_top1 / n_eval,
-        top5_semantic_recall=semantic_top5 / n_eval,
-        top10_semantic_recall=semantic_top10 / n_eval,
-        top1_style_leakage=style_leak_top1 / n_eval,
-        top5_style_leakage=style_leak_top5 / n_eval,
-        top10_style_leakage=style_leak_top10 / n_eval,
-        top1_subject_accuracy=subject_top1 / n_eval,
-        top1_field_accuracy=field_top1 / n_eval,
+    return _compute_metrics_from_scores(
+        scores, train_ds, eval_ds, config.minority_style
     )
 
 
@@ -1131,12 +1049,8 @@ def create_majority_style_eval(
         print(f"Loading cached majority style eval from {majority_eval_path}")
 
         # Check for train/test leakage by comparing reworded texts
-        train_ds = load_from_disk(str(data_path / "train.hf"))
-        majority_eval_ds = load_from_disk(str(majority_eval_path))
-        if isinstance(train_ds, DatasetDict):
-            train_ds = train_ds["train"]
-        if isinstance(majority_eval_ds, DatasetDict):
-            majority_eval_ds = majority_eval_ds["train"]
+        train_ds = _load_hf_dataset(data_path / "train.hf")
+        majority_eval_ds = _load_hf_dataset(majority_eval_path)
 
         train_reworded = set(train_ds["reworded"])  # type: ignore[index]
         eval_reworded = set(majority_eval_ds["reworded"])  # type: ignore[index]
@@ -1165,22 +1079,16 @@ def create_majority_style_eval(
         return majority_eval_path, True  # Return existing HF version with leakage flag
 
     # Load the minority style eval to get the semantic facts (identifier, field pairs)
-    eval_ds = load_from_disk(str(data_path / "eval.hf"))
-    if isinstance(eval_ds, DatasetDict):
-        eval_ds = eval_ds["train"]
+    eval_ds = _load_hf_dataset(data_path / "eval.hf")
 
     # Get semantic facts from eval (identifier, field pairs)
     eval_semantic_facts = {(row["identifier"], row["field"]) for row in eval_ds}  # type: ignore[index]
 
     # Load dominant style dataset
-    dominant_ds = load_from_disk(str(local_styled_path))
-    if isinstance(dominant_ds, DatasetDict):
-        dominant_ds = dominant_ds["train"]
+    dominant_ds = _load_hf_dataset(local_styled_path)
 
     # Add back metadata columns from original
-    original = load_from_disk("data/facts_dataset.hf")
-    if isinstance(original, DatasetDict):
-        original = original["train"]
+    original = _load_hf_dataset("data/facts_dataset.hf")
     fact_to_meta = {row["fact"]: row for row in original}  # type: ignore[index]
 
     for col in original.column_names:
@@ -1235,14 +1143,13 @@ def score_majority_style_eval(
         Score matrix of shape (n_eval, n_train).
     """
     import json
-    import subprocess
 
     import torch
     from tqdm import tqdm
 
     from bergson.data import load_gradients
     from bergson.gradients import GradientProcessor
-    from bergson.utils.math import compute_damped_inverse
+    from bergson.utils.math import damped_psd_power
 
     base_path = Path(base_path)
     index_path = base_path / "index"
@@ -1272,13 +1179,8 @@ def score_majority_style_eval(
     scores_path.mkdir(parents=True, exist_ok=True)
 
     # Load train and eval datasets
-    train_ds = load_from_disk(str(data_path / "train.hf"))
-    eval_ds = load_from_disk(str(data_path / "eval_majority_style.hf"))
-
-    if isinstance(train_ds, DatasetDict):
-        train_ds = train_ds["train"]
-    if isinstance(eval_ds, DatasetDict):
-        eval_ds = eval_ds["train"]
+    train_ds = _load_hf_dataset(data_path / "train.hf")
+    eval_ds = _load_hf_dataset(data_path / "eval_majority_style.hf")
 
     n_train = len(train_ds)
     n_eval = len(eval_ds)
@@ -1303,7 +1205,7 @@ def score_majority_style_eval(
         device = torch.device("cuda:0")
         for name in tqdm(module_names, desc="Computing H^(-1)"):
             H = proc.preconditioners[name].to(device=device)
-            h_inv[name] = compute_damped_inverse(H)
+            h_inv[name] = damped_psd_power(H, power=-1)
 
     # Concatenate train gradients
     print("Preparing train gradients...")
@@ -1322,37 +1224,15 @@ def score_majority_style_eval(
     print("Computing majority style eval gradients...")
     majority_eval_grads_path = base_path / "eval_grads_majority"
     if not majority_eval_grads_path.exists():
-        with open(index_path / "index_config.json") as f:
-            index_cfg = json.load(f)
+        index_cfg = IndexConfig.load_yaml(index_path / "index_config.yaml")
 
-        cmd = [
-            "bergson",
-            "build",
-            str(majority_eval_grads_path),
-            "--model",
-            index_cfg["model"],
-            "--dataset",
-            str(data_path / "eval_majority_style.hf"),
-            "--drop_columns",
-            "False",
-            "--prompt_column",
-            "fact",
-            "--completion_column",
-            "reworded",
-            "--fsdp",
-            "--projection_dim",
-            str(index_cfg.get("projection_dim", 16)),
-            "--token_batch_size",
-            "6000",
-            "--skip_preconditioners",
-        ]
-        print("Running:", " ".join(cmd))
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            print("STDOUT:", result.stdout)
-            print("STDERR:", result.stderr)
-            raise RuntimeError("bergson build for majority eval failed")
-        print(result.stdout)
+        _run_bergson_build(
+            majority_eval_grads_path,
+            model=index_cfg.model,
+            dataset_path=data_path / "eval_majority_style.hf",
+            projection_dim=index_cfg.projection_dim or 16,
+            label="majority eval",
+        )
 
     # Load eval gradients
     eval_grads = load_gradients(majority_eval_grads_path, structured=True)
@@ -1402,95 +1282,14 @@ def compute_majority_style_metrics(
     _, _ = create_majority_style_eval(config, base_path)
 
     # Load datasets
-    train_ds = load_from_disk(str(data_path / "train.hf"))
-    eval_ds = load_from_disk(str(data_path / "eval_majority_style.hf"))
-
-    if isinstance(train_ds, DatasetDict):
-        train_ds = train_ds["train"]
-    if isinstance(eval_ds, DatasetDict):
-        eval_ds = eval_ds["train"]
+    train_ds = _load_hf_dataset(data_path / "train.hf")
+    eval_ds = _load_hf_dataset(data_path / "eval_majority_style.hf")
 
     # Load scores
     scores = score_majority_style_eval(config, base_path, preconditioner_name)
 
-    n_eval = len(eval_ds)
-
-    # Extract metadata
-    train_styles = train_ds["style"]  # type: ignore[index]
-    train_identifiers = train_ds["identifier"]  # type: ignore[index]
-    train_fields = train_ds["field"]  # type: ignore[index]
-
-    eval_identifiers = eval_ds["identifier"]  # type: ignore[index]
-    eval_fields = eval_ds["field"]  # type: ignore[index]
-
-    # Get top-k indices for each query
-    top_k = 10
-    top_indices = np.argsort(-scores, axis=1)[:, :top_k]
-
-    # Compute metrics (same logic as compute_asymmetric_metrics)
-    semantic_top1 = 0
-    semantic_top5 = 0
-    semantic_top10 = 0
-    style_leak_top1 = 0
-    style_leak_top5 = 0
-    style_leak_top10 = 0
-    subject_top1 = 0
-    field_top1 = 0
-
-    for i in range(n_eval):
-        query_identifier = eval_identifiers[i]
-        query_field = eval_fields[i]
-
-        top_k_idx = top_indices[i]
-
-        # Check semantic matching (same identifier AND field = same underlying fact)
-        for k, idx in enumerate(top_k_idx):
-            if (
-                train_identifiers[idx] == query_identifier
-                and train_fields[idx] == query_field
-            ):
-                if k == 0:
-                    semantic_top1 += 1
-                if k < 5:
-                    semantic_top5 += 1
-                    break
-                if k < 10:
-                    semantic_top10 += 1
-                    break
-
-        # Check style leakage - for majority style,
-        # "leakage" means NOT matching dominant
-        # We flip the interpretation: matching minority style would be leakage
-        top1_style = train_styles[top_k_idx[0]]
-        if top1_style == config.minority_style:
-            style_leak_top1 += 1
-
-        top5_minority = sum(
-            1 for idx in top_k_idx[:5] if train_styles[idx] == config.minority_style
-        )
-        style_leak_top5 += top5_minority / 5
-
-        top10_minority = sum(
-            1 for idx in top_k_idx[:10] if train_styles[idx] == config.minority_style
-        )
-        style_leak_top10 += top10_minority / 10
-
-        # Check attribute matching for top-1
-        top1_idx = top_k_idx[0]
-        if train_identifiers[top1_idx] == query_identifier:
-            subject_top1 += 1
-        if train_fields[top1_idx] == query_field:
-            field_top1 += 1
-
-    return AsymmetricMetrics(
-        top1_semantic_accuracy=semantic_top1 / n_eval,
-        top5_semantic_recall=semantic_top5 / n_eval,
-        top10_semantic_recall=semantic_top10 / n_eval,
-        top1_style_leakage=style_leak_top1 / n_eval,
-        top5_style_leakage=style_leak_top5 / n_eval,
-        top10_style_leakage=style_leak_top10 / n_eval,
-        top1_subject_accuracy=subject_top1 / n_eval,
-        top1_field_accuracy=field_top1 / n_eval,
+    return _compute_metrics_from_scores(
+        scores, train_ds, eval_ds, config.minority_style
     )
 
 
@@ -1514,14 +1313,13 @@ def score_summed_eval(
         Score matrix of shape (n_eval, n_train).
     """
     import json
-    import subprocess
 
     import torch
     from tqdm import tqdm
 
     from bergson.data import load_gradients
     from bergson.gradients import GradientProcessor
-    from bergson.utils.math import compute_damped_inverse
+    from bergson.utils.math import damped_psd_power
 
     base_path = Path(base_path)
     index_path = base_path / "index"
@@ -1543,21 +1341,15 @@ def score_summed_eval(
     scores_path.mkdir(parents=True, exist_ok=True)
 
     # Load train dataset
-    train_ds = load_from_disk(str(data_path / "train.hf"))
-    if isinstance(train_ds, DatasetDict):
-        train_ds = train_ds["train"]
+    train_ds = _load_hf_dataset(data_path / "train.hf")
     n_train = len(train_ds)
 
     # Load eval datasets (need both minority and majority style versions)
-    eval_minority_ds = load_from_disk(str(data_path / "eval.hf"))
-    if isinstance(eval_minority_ds, DatasetDict):
-        eval_minority_ds = eval_minority_ds["train"]
+    eval_minority_ds = _load_hf_dataset(data_path / "eval.hf")
 
     # Create majority style eval if needed
     _, _ = create_majority_style_eval(config, base_path)
-    eval_majority_ds = load_from_disk(str(data_path / "eval_majority_style.hf"))
-    if isinstance(eval_majority_ds, DatasetDict):
-        eval_majority_ds = eval_majority_ds["train"]
+    eval_majority_ds = _load_hf_dataset(data_path / "eval_majority_style.hf")
 
     n_eval = len(eval_minority_ds)
     print(
@@ -1599,7 +1391,7 @@ def score_summed_eval(
         device = torch.device("cuda:0")
         for name in tqdm(module_names, desc="Computing H^(-1)"):
             H = proc.preconditioners[name].to(device=device)
-            h_inv[name] = compute_damped_inverse(H)
+            h_inv[name] = damped_psd_power(H, power=-1)
 
     # Concatenate train gradients
     print("Preparing train gradients...")
@@ -1618,72 +1410,29 @@ def score_summed_eval(
     eval_minority_grads_path = base_path / "eval_grads"
     eval_majority_grads_path = base_path / "eval_grads_majority"
 
-    with open(index_path / "index_config.json") as f:
-        index_cfg = json.load(f)
+    index_cfg = IndexConfig.load_yaml(index_path / "index_config.yaml")
 
     # Build minority eval grads if needed
     if not eval_minority_grads_path.exists():
         print("Computing minority style eval gradients...")
-        cmd = [
-            "bergson",
-            "build",
-            str(eval_minority_grads_path),
-            "--model",
-            index_cfg["model"],
-            "--dataset",
-            str(data_path / "eval.hf"),
-            "--drop_columns",
-            "False",
-            "--prompt_column",
-            "fact",
-            "--completion_column",
-            "reworded",
-            "--fsdp",
-            "--projection_dim",
-            str(index_cfg.get("projection_dim", 16)),
-            "--token_batch_size",
-            "6000",
-            "--skip_preconditioners",
-        ]
-        print("Running:", " ".join(cmd))
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            print("STDOUT:", result.stdout)
-            print("STDERR:", result.stderr)
-            raise RuntimeError("bergson build for minority eval failed")
-        print(result.stdout)
+        _run_bergson_build(
+            eval_minority_grads_path,
+            model=index_cfg.model,
+            dataset_path=data_path / "eval.hf",
+            projection_dim=index_cfg.projection_dim or 16,
+            label="minority eval",
+        )
 
     # Build majority eval grads if needed
     if not eval_majority_grads_path.exists():
         print("Computing majority style eval gradients...")
-        cmd = [
-            "bergson",
-            "build",
-            str(eval_majority_grads_path),
-            "--model",
-            index_cfg["model"],
-            "--dataset",
-            str(data_path / "eval_majority_style.hf"),
-            "--drop_columns",
-            "False",
-            "--prompt_column",
-            "fact",
-            "--completion_column",
-            "reworded",
-            "--fsdp",
-            "--projection_dim",
-            str(index_cfg.get("projection_dim", 16)),
-            "--token_batch_size",
-            "6000",
-            "--skip_preconditioners",
-        ]
-        print("Running:", " ".join(cmd))
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            print("STDOUT:", result.stdout)
-            print("STDERR:", result.stderr)
-            raise RuntimeError("bergson build for majority eval failed")
-        print(result.stdout)
+        _run_bergson_build(
+            eval_majority_grads_path,
+            model=index_cfg.model,
+            dataset_path=data_path / "eval_majority_style.hf",
+            projection_dim=index_cfg.projection_dim or 16,
+            label="majority eval",
+        )
 
     # Load both eval gradient sets
     print("Loading eval gradients (minority + majority)...")
@@ -1749,93 +1498,14 @@ def compute_summed_eval_metrics(
     data_path = base_path / "data"
 
     # Load datasets
-    train_ds = load_from_disk(str(data_path / "train.hf"))
-    eval_ds = load_from_disk(str(data_path / "eval.hf"))
-
-    if isinstance(train_ds, DatasetDict):
-        train_ds = train_ds["train"]
-    if isinstance(eval_ds, DatasetDict):
-        eval_ds = eval_ds["train"]
+    train_ds = _load_hf_dataset(data_path / "train.hf")
+    eval_ds = _load_hf_dataset(data_path / "eval.hf")
 
     # Load scores (computed with summed gradients)
     scores = score_summed_eval(config, base_path, preconditioner_name)
 
-    n_eval = len(eval_ds)
-
-    # Extract metadata
-    train_styles = train_ds["style"]  # type: ignore[index]
-    train_identifiers = train_ds["identifier"]  # type: ignore[index]
-    train_fields = train_ds["field"]  # type: ignore[index]
-
-    eval_identifiers = eval_ds["identifier"]  # type: ignore[index]
-    eval_fields = eval_ds["field"]  # type: ignore[index]
-
-    # Get top-k indices for each query
-    top_k = 10
-    top_indices = np.argsort(-scores, axis=1)[:, :top_k]
-
-    # Compute metrics
-    semantic_top1 = 0
-    semantic_top5 = 0
-    semantic_top10 = 0
-    style_leak_top1 = 0
-    style_leak_top5 = 0
-    style_leak_top10 = 0
-    subject_top1 = 0
-    field_top1 = 0
-
-    for i in range(n_eval):
-        query_identifier = eval_identifiers[i]
-        query_field = eval_fields[i]
-
-        top_k_idx = top_indices[i]
-
-        # Check semantic matching (same identifier AND field = same underlying fact)
-        for k, idx in enumerate(top_k_idx):
-            if (
-                train_identifiers[idx] == query_identifier
-                and train_fields[idx] == query_field
-            ):
-                if k == 0:
-                    semantic_top1 += 1
-                if k < 5:
-                    semantic_top5 += 1
-                    break
-                if k < 10:
-                    semantic_top10 += 1
-                    break
-
-        # Check style leakage (still measured against minority style)
-        top1_style = train_styles[top_k_idx[0]]
-        if top1_style == config.minority_style:
-            style_leak_top1 += 1
-
-        top5_minority = sum(
-            1 for idx in top_k_idx[:5] if train_styles[idx] == config.minority_style
-        )
-        style_leak_top5 += top5_minority / 5
-
-        top10_minority = sum(
-            1 for idx in top_k_idx[:10] if train_styles[idx] == config.minority_style
-        )
-        style_leak_top10 += top10_minority / 10
-
-        # Check attribute matching for top-1
-        top1_idx = top_k_idx[0]
-        if train_identifiers[top1_idx] == query_identifier:
-            subject_top1 += 1
-        if train_fields[top1_idx] == query_field:
-            field_top1 += 1
-
-    return AsymmetricMetrics(
-        top1_semantic_accuracy=semantic_top1 / n_eval,
-        top5_semantic_recall=semantic_top5 / n_eval,
-        top10_semantic_recall=semantic_top10 / n_eval,
-        top1_style_leakage=style_leak_top1 / n_eval,
-        top5_style_leakage=style_leak_top5 / n_eval,
-        top10_style_leakage=style_leak_top10 / n_eval,
-        top1_subject_accuracy=subject_top1 / n_eval,
-        top1_field_accuracy=field_top1 / n_eval,
+    return _compute_metrics_from_scores(
+        scores, train_ds, eval_ds, config.minority_style
     )
 
 
@@ -1874,11 +1544,11 @@ def sweep_pca_k(
         ]  # None = no precond, "index" = train second moment
 
     # Check that style indices exist
-    pirate_idx = Path("runs/precond_comparison/pirate")
-    shakespeare_idx = Path("runs/precond_comparison/shakespeare")
-    if not (pirate_idx.exists() and shakespeare_idx.exists()):
+    minority_idx = Path(config.style_index_path) / config.minority_style
+    dominant_idx = Path(config.style_index_path) / config.dominant_style
+    if not (minority_idx.exists() and dominant_idx.exists()):
         raise FileNotFoundError(
-            f"Style-specific indices not found at {pirate_idx} and {shakespeare_idx}. "
+            f"Style-specific indices not found at {minority_idx} and {dominant_idx}. "
             "Run build_style_indices() first."
         )
 
@@ -1892,7 +1562,7 @@ def sweep_pca_k(
     for k in k_values:
         print(f"\n--- Computing style subspace for k={k} ---")
         style_subspace = compute_pca_style_subspace(
-            pirate_idx, shakespeare_idx, base_path / "pca_subspace", top_k=k
+            minority_idx, dominant_idx, base_path / "pca_subspace", top_k=k
         )
 
         for precond_name in preconditioners:
@@ -1933,7 +1603,6 @@ def run_asymmetric_experiment(
     base_path: Path | str = "runs/asymmetric_style",
     analysis_model: str | None = None,
     include_pca: bool = True,
-    pca_top_k: int = 10,
     include_summed_loss: bool = True,
     include_second_moments: bool = True,
     include_majority_control: bool = True,
@@ -1948,11 +1617,12 @@ def run_asymmetric_experiment(
     Args:
         config: Experiment configuration (uses defaults if None). Set config.hf_dataset
             to load data from HuggingFace instead of generating locally.
+            PCA k values and style index path are configured via
+            config.pca_k_values and config.style_index_path.
         base_path: Base path for experiment outputs.
         analysis_model: Model to use for gradient collection.
             Defaults to HF_ANALYSIS_MODEL.
         include_pca: Whether to include PCA projection strategy.
-        pca_top_k: Number of principal components for PCA.
         include_summed_loss: Whether to include summed loss
             preconditioner strategy.
         include_second_moments: Whether to include train/eval/mixed
@@ -1997,6 +1667,12 @@ def run_asymmetric_experiment(
     print("-" * 60)
     create_asymmetric_index(config, base_path, analysis_model)
 
+    # Load eval facts to exclude from PCA computation (prevent data leakage)
+    data_path = base_path / "data"
+    eval_ds = _load_hf_dataset(data_path / "eval.hf")
+    eval_facts_to_exclude: set[str] = set(eval_ds["fact"])  # type: ignore[arg-type]
+    print(f"Loaded {len(eval_facts_to_exclude)} eval facts to exclude from PCA")
+
     # Step 2: Compute R_between preconditioner
     print("\n" + "-" * 60)
     print("STEP 2: Computing style suppression preconditioner (R_between)")
@@ -2009,37 +1685,41 @@ def run_asymmetric_experiment(
         print("STEP 2b: Computing summed loss preconditioner")
         print("-" * 60)
         # We need the style-specific indices for this
-        # Use the runs/precond_comparison indices if they exist
-        pirate_idx = Path("runs/precond_comparison/pirate")
-        shakespeare_idx = Path("runs/precond_comparison/shakespeare")
-        if pirate_idx.exists() and shakespeare_idx.exists():
+        minority_idx = Path(config.style_index_path) / config.minority_style
+        dominant_idx = Path(config.style_index_path) / config.dominant_style
+        if minority_idx.exists() and dominant_idx.exists():
             summed_loss_path = base_path / "summed_loss"
             compute_summed_loss_preconditioner(
-                pirate_idx, shakespeare_idx, summed_loss_path
+                minority_idx, dominant_idx, summed_loss_path
             )
         else:
             print(
                 "  Style-specific indices not found, "
                 "skipping summed loss preconditioner"
             )
-            print(f"  (Expected: {pirate_idx} and {shakespeare_idx})")
+            print(f"  (Expected: {minority_idx} and {dominant_idx})")
             include_summed_loss = False
 
     # Step 2c: Compute PCA style subspace if requested
+    pca_top_k = config.pca_k_values[0]
     style_subspace = None
     if include_pca:
         print("\n" + "-" * 60)
         print(f"STEP 2c: Computing PCA style subspace (top_k={pca_top_k})")
         print("-" * 60)
-        pirate_idx = Path("runs/precond_comparison/pirate")
-        shakespeare_idx = Path("runs/precond_comparison/shakespeare")
-        if pirate_idx.exists() and shakespeare_idx.exists():
+        minority_idx = Path(config.style_index_path) / config.minority_style
+        dominant_idx = Path(config.style_index_path) / config.dominant_style
+        if minority_idx.exists() and dominant_idx.exists():
             style_subspace = compute_pca_style_subspace(
-                pirate_idx, shakespeare_idx, base_path / "pca_subspace", top_k=pca_top_k
+                minority_idx,
+                dominant_idx,
+                base_path / "pca_subspace",
+                top_k=pca_top_k,
+                exclude_facts=eval_facts_to_exclude,
             )
         else:
             print("  Style-specific indices not found, skipping PCA projection")
-            print(f"  (Expected: {pirate_idx} and {shakespeare_idx})")
+            print(f"  (Expected: {minority_idx} and {dominant_idx})")
             include_pca = False
 
     # Step 2d: Compute second moment preconditioners if requested
@@ -2147,58 +1827,79 @@ def run_asymmetric_experiment(
         print("SEMANTIC-ONLY EVAL (gradients only from answer tokens)")
         print("-" * 60)
 
-        # Standard influence function approach: semantic mask + H_train preconditioner
-        # This is the "correct" way to compute influence functions
-        print("\n--- Strategy: semantic_index (standard IF with H_train) ---")
-        metrics = compute_asymmetric_metrics(
-            config,
-            base_path,
-            "index",  # H_train - the standard IF preconditioner
-            damping_factor=damping_factor,
-            eval_prompt_column="question",
-            eval_completion_column="answer",
-        )
-        print_metrics(metrics, "semantic_index")
-        all_metrics["semantic_index"] = metrics
+        semantic_strategies: list[tuple[str | None, str]] = [
+            (None, "semantic_no_precond"),
+            ("index", "semantic_index"),
+            ("r_between", "semantic_r_between"),
+        ]
+        if include_summed_loss:
+            semantic_strategies.append(("summed_loss", "semantic_summed_loss"))
+        if include_second_moments:
+            semantic_strategies.append(
+                ("eval_second_moment", "semantic_eval_second_moment")
+            )
+            semantic_strategies.append(
+                ("train_eval_mixed", "semantic_train_eval_mixed")
+            )
 
-        print("\n--- Strategy: semantic_no_precond ---")
-        metrics = compute_asymmetric_metrics(
-            config,
-            base_path,
-            None,
-            damping_factor=damping_factor,
-            eval_prompt_column="question",
-            eval_completion_column="answer",
-        )
-        print_metrics(metrics, "semantic_no_precond")
-        all_metrics["semantic_no_precond"] = metrics
+        for precond_name, display_name in semantic_strategies:
+            print(f"\n--- Strategy: {display_name} ---")
+            metrics = compute_asymmetric_metrics(
+                config,
+                base_path,
+                precond_name,
+                damping_factor=damping_factor,
+                eval_prompt_column="question",
+                eval_completion_column="answer",
+            )
+            print_metrics(metrics, display_name)
+            all_metrics[display_name] = metrics
 
-        # Also try with r_between preconditioner
-        print("\n--- Strategy: semantic_r_between ---")
-        metrics = compute_asymmetric_metrics(
-            config,
-            base_path,
-            "r_between",
-            damping_factor=damping_factor,
-            eval_prompt_column="question",
-            eval_completion_column="answer",
-        )
-        print_metrics(metrics, "semantic_r_between")
-        all_metrics["semantic_r_between"] = metrics
+        # Semantic + PCA projection sweep over config.pca_k_values
+        if include_pca:
+            minority_idx = Path(config.style_index_path) / config.minority_style
+            dominant_idx = Path(config.style_index_path) / config.dominant_style
+            if minority_idx.exists() and dominant_idx.exists():
+                for k in config.pca_k_values:
+                    style_subspace_k = compute_pca_style_subspace(
+                        minority_idx,
+                        dominant_idx,
+                        base_path / "pca_subspace",
+                        top_k=k,
+                        exclude_facts=eval_facts_to_exclude,
+                    )
+
+                    pca_strategies: list[tuple[str | None, str]] = [
+                        (None, f"semantic_pca_projection_k{k}"),
+                        ("index", f"semantic_pca_k{k}_index"),
+                    ]
+                    for precond_name, display_name in pca_strategies:
+                        print(f"\n--- Strategy: {display_name} ---")
+                        metrics = compute_asymmetric_metrics_with_pca(
+                            config,
+                            base_path,
+                            style_subspace_k,
+                            top_k=k,
+                            preconditioner_name=precond_name,
+                            damping_factor=damping_factor,
+                            eval_prompt_column="question",
+                            eval_completion_column="answer",
+                        )
+                        print_metrics(metrics, display_name)
+                        all_metrics[display_name] = metrics
 
     # Print summary comparison
     print("\n" + "=" * 70)
     print("SUMMARY COMPARISON")
     print("=" * 70)
 
-    print(f"\n{'Strategy':<25} {'Top-1 Semantic':<15} {'Top-1 Style Leak':<17}")
-    print("-" * 60)
+    print(f"\n{'Strategy':<35} {'Top-1 Semantic':<15} {'Top-1 Style Leak':<17}")
+    print("-" * 70)
 
     for name, m in all_metrics.items():
-        print(
-            f"{name:<25} {m.top1_semantic_accuracy:<15.2%} "
-            f"{m.top1_style_leakage:<17.2%}"
-        )
+        sem = m.top1_semantic_accuracy
+        leak = m.top1_style_leakage
+        print(f"{name:<35} {sem:<15.2%} {leak:<17.2%}")
 
     print("\n" + "=" * 70)
     print("INTERPRETATION")
@@ -2271,7 +1972,7 @@ def score_with_inner_product(
 
     from bergson.data import load_gradients
     from bergson.gradients import GradientProcessor
-    from bergson.utils.math import compute_damped_inverse
+    from bergson.utils.math import damped_psd_power
 
     base_path = Path(base_path)
     index_path = base_path / "index"
@@ -2309,7 +2010,7 @@ def score_with_inner_product(
         device = torch.device("cuda:0")
         for name in tqdm(module_names, desc="Computing H^(-1)"):
             H = proc.preconditioners[name].to(device=device)
-            h_inv[name] = compute_damped_inverse(H)
+            h_inv[name] = damped_psd_power(H, power=-1)
 
     # Concatenate train gradients - NO NORMALIZATION
     print("Preparing train gradients (no normalization)...")
@@ -2332,12 +2033,8 @@ def score_with_inner_product(
         )
 
         # Load eval datasets for alignment
-        eval_minority_ds = load_from_disk(str(data_path / "eval.hf"))
-        eval_majority_ds = load_from_disk(str(data_path / "eval_majority_style.hf"))
-        if isinstance(eval_minority_ds, DatasetDict):
-            eval_minority_ds = eval_minority_ds["train"]
-        if isinstance(eval_majority_ds, DatasetDict):
-            eval_majority_ds = eval_majority_ds["train"]
+        eval_minority_ds = _load_hf_dataset(data_path / "eval.hf")
+        eval_majority_ds = _load_hf_dataset(data_path / "eval_majority_style.hf")
 
         # Use semantic fact alignment (identifier, field) since templates may differ
         minority_semantic_facts = [
@@ -2430,12 +2127,8 @@ def run_inner_product_comparison(
     print()
 
     # Load datasets for metrics computation
-    train_ds = load_from_disk(str(data_path / "train.hf"))
-    eval_ds = load_from_disk(str(data_path / "eval.hf"))
-    if isinstance(train_ds, DatasetDict):
-        train_ds = train_ds["train"]
-    if isinstance(eval_ds, DatasetDict):
-        eval_ds = eval_ds["train"]
+    train_ds = _load_hf_dataset(data_path / "train.hf")
+    eval_ds = _load_hf_dataset(data_path / "eval.hf")
 
     n_eval = len(eval_ds)
     train_styles = train_ds["style"]  # type: ignore[index]
@@ -2554,16 +2247,12 @@ def create_original_style_eval(
     print("Creating original style eval set...")
 
     # Load the minority style eval to get the facts we need
-    eval_ds = load_from_disk(str(data_path / "eval.hf"))
-    if isinstance(eval_ds, DatasetDict):
-        eval_ds = eval_ds["train"]
+    eval_ds = _load_hf_dataset(data_path / "eval.hf")
 
     eval_facts = list(eval_ds["fact"])  # type: ignore[index]
 
     # Load original facts dataset to get metadata
-    original = load_from_disk("data/facts_dataset.hf")
-    if isinstance(original, DatasetDict):
-        original = original["train"]
+    original = _load_hf_dataset("data/facts_dataset.hf")
     fact_to_row = {row["fact"]: row for row in original}  # type: ignore[index]
 
     # Build original style eval dataset (fact = reworded = original text)
@@ -2612,21 +2301,15 @@ def create_pirate_style_eval(
     print("Creating pirate style eval set...")
 
     # Load the minority style eval to get the facts we need
-    eval_ds = load_from_disk(str(data_path / "eval.hf"))
-    if isinstance(eval_ds, DatasetDict):
-        eval_ds = eval_ds["train"]
+    eval_ds = _load_hf_dataset(data_path / "eval.hf")
 
     eval_facts = set(eval_ds["fact"])  # type: ignore[index]
 
     # Load pirate dataset
-    pirate_ds = load_from_disk("data/facts_dataset_pirate-Qwen3-8B-Base.hf")
-    if isinstance(pirate_ds, DatasetDict):
-        pirate_ds = pirate_ds["train"]
+    pirate_ds = _load_hf_dataset("data/facts_dataset_pirate-Qwen3-8B-Base.hf")
 
     # Add back metadata columns from original
-    original = load_from_disk("data/facts_dataset.hf")
-    if isinstance(original, DatasetDict):
-        original = original["train"]
+    original = _load_hf_dataset("data/facts_dataset.hf")
     fact_to_meta = {row["fact"]: row for row in original}  # type: ignore[index]
 
     for col in original.column_names:
@@ -2675,14 +2358,13 @@ def score_summed_rewrites(
         Score matrix of shape (n_eval, n_train).
     """
     import json
-    import subprocess
 
     import torch
     from tqdm import tqdm
 
     from bergson.data import load_gradients
     from bergson.gradients import GradientProcessor
-    from bergson.utils.math import compute_damped_inverse
+    from bergson.utils.math import damped_psd_power
 
     base_path = Path(base_path)
     index_path = base_path / "index"
@@ -2704,9 +2386,7 @@ def score_summed_rewrites(
     scores_path.mkdir(parents=True, exist_ok=True)
 
     # Load train dataset
-    train_ds = load_from_disk(str(data_path / "train.hf"))
-    if isinstance(train_ds, DatasetDict):
-        train_ds = train_ds["train"]
+    train_ds = _load_hf_dataset(data_path / "train.hf")
     n_train = len(train_ds)
 
     # Create shakespeare and pirate eval datasets if needed
@@ -2714,13 +2394,9 @@ def score_summed_rewrites(
     create_pirate_style_eval(config, base_path)
 
     # Load eval datasets
-    shakespeare_eval_ds = load_from_disk(str(data_path / "eval.hf"))
-    if isinstance(shakespeare_eval_ds, DatasetDict):
-        shakespeare_eval_ds = shakespeare_eval_ds["train"]
+    shakespeare_eval_ds = _load_hf_dataset(data_path / "eval.hf")
 
-    pirate_eval_ds = load_from_disk(str(data_path / "eval_pirate_style.hf"))
-    if isinstance(pirate_eval_ds, DatasetDict):
-        pirate_eval_ds = pirate_eval_ds["train"]
+    pirate_eval_ds = _load_hf_dataset(data_path / "eval_pirate_style.hf")
 
     n_eval = len(shakespeare_eval_ds)
     print(
@@ -2753,7 +2429,7 @@ def score_summed_rewrites(
         device = torch.device("cuda:0")
         for name in tqdm(module_names, desc="Computing H^(-1)"):
             H = proc.preconditioners[name].to(device=device)
-            h_inv[name] = compute_damped_inverse(H)
+            h_inv[name] = damped_psd_power(H, power=-1)
 
     # Concatenate train gradients
     print("Preparing train gradients...")
@@ -2772,72 +2448,29 @@ def score_summed_rewrites(
     shakespeare_grads_path = base_path / "eval_grads"  # minority = shakespeare
     pirate_grads_path = base_path / "eval_grads_pirate"
 
-    with open(index_path / "index_config.json") as f:
-        index_cfg = json.load(f)
+    index_cfg = IndexConfig.load_yaml(index_path / "index_config.yaml")
 
     # Build shakespeare eval grads if needed
     if not shakespeare_grads_path.exists():
         print("Computing shakespeare style eval gradients...")
-        cmd = [
-            "bergson",
-            "build",
-            str(shakespeare_grads_path),
-            "--model",
-            index_cfg["model"],
-            "--dataset",
-            str(data_path / "eval.hf"),
-            "--drop_columns",
-            "False",
-            "--prompt_column",
-            "fact",
-            "--completion_column",
-            "reworded",
-            "--fsdp",
-            "--projection_dim",
-            str(index_cfg.get("projection_dim", 16)),
-            "--token_batch_size",
-            "6000",
-            "--skip_preconditioners",
-        ]
-        print("Running:", " ".join(cmd))
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            print("STDOUT:", result.stdout)
-            print("STDERR:", result.stderr)
-            raise RuntimeError("bergson build for shakespeare eval failed")
-        print(result.stdout)
+        _run_bergson_build(
+            shakespeare_grads_path,
+            model=index_cfg.model,
+            dataset_path=data_path / "eval.hf",
+            projection_dim=index_cfg.projection_dim or 16,
+            label="shakespeare eval",
+        )
 
     # Build pirate eval grads if needed
     if not pirate_grads_path.exists():
         print("Computing pirate style eval gradients...")
-        cmd = [
-            "bergson",
-            "build",
-            str(pirate_grads_path),
-            "--model",
-            index_cfg["model"],
-            "--dataset",
-            str(data_path / "eval_pirate_style.hf"),
-            "--drop_columns",
-            "False",
-            "--prompt_column",
-            "fact",
-            "--completion_column",
-            "reworded",
-            "--fsdp",
-            "--projection_dim",
-            str(index_cfg.get("projection_dim", 16)),
-            "--token_batch_size",
-            "6000",
-            "--skip_preconditioners",
-        ]
-        print("Running:", " ".join(cmd))
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            print("STDOUT:", result.stdout)
-            print("STDERR:", result.stderr)
-            raise RuntimeError("bergson build for pirate eval failed")
-        print(result.stdout)
+        _run_bergson_build(
+            pirate_grads_path,
+            model=index_cfg.model,
+            dataset_path=data_path / "eval_pirate_style.hf",
+            projection_dim=index_cfg.projection_dim or 16,
+            label="pirate eval",
+        )
 
     # Load both eval gradient sets
     print("Loading eval gradients (shakespeare + pirate)...")
@@ -2899,14 +2532,13 @@ def score_original_style_eval(
         Score matrix of shape (n_eval, n_train).
     """
     import json
-    import subprocess
 
     import torch
     from tqdm import tqdm
 
     from bergson.data import load_gradients
     from bergson.gradients import GradientProcessor
-    from bergson.utils.math import compute_damped_inverse
+    from bergson.utils.math import damped_psd_power
 
     base_path = Path(base_path)
     index_path = base_path / "index"
@@ -2931,14 +2563,10 @@ def score_original_style_eval(
     create_original_style_eval(config, base_path)
 
     # Load datasets
-    train_ds = load_from_disk(str(data_path / "train.hf"))
-    if isinstance(train_ds, DatasetDict):
-        train_ds = train_ds["train"]
+    train_ds = _load_hf_dataset(data_path / "train.hf")
     n_train = len(train_ds)
 
-    original_eval_ds = load_from_disk(str(data_path / "eval_original_style.hf"))
-    if isinstance(original_eval_ds, DatasetDict):
-        original_eval_ds = original_eval_ds["train"]
+    original_eval_ds = _load_hf_dataset(data_path / "eval_original_style.hf")
     n_eval = len(original_eval_ds)
 
     print(
@@ -2961,7 +2589,7 @@ def score_original_style_eval(
         device = torch.device("cuda:0")
         for name in tqdm(module_names, desc="Computing H^(-1)"):
             H = proc.preconditioners[name].to(device=device)
-            h_inv[name] = compute_damped_inverse(H)
+            h_inv[name] = damped_psd_power(H, power=-1)
 
     # Concatenate train gradients
     print("Preparing train gradients...")
@@ -2979,39 +2607,17 @@ def score_original_style_eval(
     # Build original style eval grads if needed
     original_grads_path = base_path / "eval_grads_original"
 
-    with open(index_path / "index_config.json") as f:
-        index_cfg = json.load(f)
+    index_cfg = IndexConfig.load_yaml(index_path / "index_config.yaml")
 
     if not original_grads_path.exists():
         print("Computing original style eval gradients...")
-        cmd = [
-            "bergson",
-            "build",
-            str(original_grads_path),
-            "--model",
-            index_cfg["model"],
-            "--dataset",
-            str(data_path / "eval_original_style.hf"),
-            "--drop_columns",
-            "False",
-            "--prompt_column",
-            "fact",
-            "--completion_column",
-            "reworded",
-            "--fsdp",
-            "--projection_dim",
-            str(index_cfg.get("projection_dim", 16)),
-            "--token_batch_size",
-            "6000",
-            "--skip_preconditioners",
-        ]
-        print("Running:", " ".join(cmd))
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            print("STDOUT:", result.stdout)
-            print("STDERR:", result.stderr)
-            raise RuntimeError("bergson build for original style eval failed")
-        print(result.stdout)
+        _run_bergson_build(
+            original_grads_path,
+            model=index_cfg.model,
+            dataset_path=data_path / "eval_original_style.hf",
+            projection_dim=index_cfg.projection_dim or 16,
+            label="original style eval",
+        )
 
     # Load original eval gradients
     print("Loading original style eval gradients...")
@@ -3067,14 +2673,10 @@ def compute_rewrite_ablation_metrics(
     data_path = base_path / "data"
 
     # Load train dataset for ground truth mapping
-    train_ds = load_from_disk(str(data_path / "train.hf"))
-    if isinstance(train_ds, DatasetDict):
-        train_ds = train_ds["train"]
+    train_ds = _load_hf_dataset(data_path / "train.hf")
 
     # Load eval dataset (use minority style for fact mapping)
-    eval_ds = load_from_disk(str(data_path / "eval.hf"))
-    if isinstance(eval_ds, DatasetDict):
-        eval_ds = eval_ds["train"]
+    eval_ds = _load_hf_dataset(data_path / "eval.hf")
 
     # Get scores based on strategy
     if strategy == "original":
@@ -3092,82 +2694,8 @@ def compute_rewrite_ablation_metrics(
     else:
         raise ValueError(f"Unknown strategy: {strategy}")
 
-    n_eval = len(eval_ds)
-
-    # Extract metadata
-    train_styles = train_ds["style"]  # type: ignore[index]
-    train_identifiers = train_ds["identifier"]  # type: ignore[index]
-    train_fields = train_ds["field"]  # type: ignore[index]
-
-    eval_identifiers = eval_ds["identifier"]  # type: ignore[index]
-    eval_fields = eval_ds["field"]  # type: ignore[index]
-
-    # Get top-k indices for each query
-    top_k = 10
-    top_indices = np.argsort(-scores, axis=1)[:, :top_k]
-
-    # Compute metrics
-    semantic_top1 = 0
-    semantic_top5 = 0
-    semantic_top10 = 0
-    style_leak_top1 = 0
-    style_leak_top5 = 0
-    style_leak_top10 = 0
-    subject_top1 = 0
-    field_top1 = 0
-
-    for i in range(n_eval):
-        query_identifier = eval_identifiers[i]
-        query_field = eval_fields[i]
-
-        top_k_idx = top_indices[i]
-
-        # Check semantic matching (same identifier AND field = same underlying fact)
-        for k, idx in enumerate(top_k_idx):
-            if (
-                train_identifiers[idx] == query_identifier
-                and train_fields[idx] == query_field
-            ):
-                if k == 0:
-                    semantic_top1 += 1
-                if k < 5:
-                    semantic_top5 += 1
-                    break
-                if k < 10:
-                    semantic_top10 += 1
-                    break
-
-        # Check style leakage
-        top1_style = train_styles[top_k_idx[0]]
-        if top1_style == config.minority_style:
-            style_leak_top1 += 1
-
-        top5_minority = sum(
-            1 for idx in top_k_idx[:5] if train_styles[idx] == config.minority_style
-        )
-        style_leak_top5 += top5_minority / 5
-
-        top10_minority = sum(
-            1 for idx in top_k_idx[:10] if train_styles[idx] == config.minority_style
-        )
-        style_leak_top10 += top10_minority / 10
-
-        # Check attribute matching for top-1
-        top1_idx = top_k_idx[0]
-        if train_identifiers[top1_idx] == query_identifier:
-            subject_top1 += 1
-        if train_fields[top1_idx] == query_field:
-            field_top1 += 1
-
-    return AsymmetricMetrics(
-        top1_semantic_accuracy=semantic_top1 / n_eval,
-        top5_semantic_recall=semantic_top5 / n_eval,
-        top10_semantic_recall=semantic_top10 / n_eval,
-        top1_style_leakage=style_leak_top1 / n_eval,
-        top5_style_leakage=style_leak_top5 / n_eval,
-        top10_style_leakage=style_leak_top10 / n_eval,
-        top1_subject_accuracy=subject_top1 / n_eval,
-        top1_field_accuracy=field_top1 / n_eval,
+    return _compute_metrics_from_scores(
+        scores, train_ds, eval_ds, config.minority_style
     )
 
 
@@ -3182,14 +2710,13 @@ def _score_single_style_eval(
     Helper function for scoring with pirate-only or other single styles.
     """
     import json
-    import subprocess
 
     import torch
     from tqdm import tqdm
 
     from bergson.data import load_gradients
     from bergson.gradients import GradientProcessor
-    from bergson.utils.math import compute_damped_inverse
+    from bergson.utils.math import damped_psd_power
 
     base_path = Path(base_path)
     index_path = base_path / "index"
@@ -3218,14 +2745,10 @@ def _score_single_style_eval(
     scores_path.mkdir(parents=True, exist_ok=True)
 
     # Load datasets
-    train_ds = load_from_disk(str(data_path / "train.hf"))
-    if isinstance(train_ds, DatasetDict):
-        train_ds = train_ds["train"]
+    train_ds = _load_hf_dataset(data_path / "train.hf")
     n_train = len(train_ds)
 
-    eval_ds = load_from_disk(str(eval_path))
-    if isinstance(eval_ds, DatasetDict):
-        eval_ds = eval_ds["train"]
+    eval_ds = _load_hf_dataset(eval_path)
     n_eval = len(eval_ds)
 
     print(
@@ -3246,7 +2769,7 @@ def _score_single_style_eval(
         device = torch.device("cuda:0")
         for name in tqdm(module_names, desc="Computing H^(-1)"):
             H = proc.preconditioners[name].to(device=device)
-            h_inv[name] = compute_damped_inverse(H)
+            h_inv[name] = damped_psd_power(H, power=-1)
 
     # Prepare train gradients
     train_grad_list = []
@@ -3259,38 +2782,17 @@ def _score_single_style_eval(
     train_grad_tensor = train_grad_tensor.cuda()
 
     # Build eval grads if needed
-    with open(index_path / "index_config.json") as f:
-        index_cfg = json.load(f)
+    index_cfg = IndexConfig.load_yaml(index_path / "index_config.yaml")
 
     if not grads_path.exists():
         print(f"Computing {style} style eval gradients...")
-        cmd = [
-            "bergson",
-            "build",
-            str(grads_path),
-            "--model",
-            index_cfg["model"],
-            "--dataset",
-            str(eval_path),
-            "--drop_columns",
-            "False",
-            "--prompt_column",
-            "fact",
-            "--completion_column",
-            "reworded",
-            "--fsdp",
-            "--projection_dim",
-            str(index_cfg.get("projection_dim", 16)),
-            "--token_batch_size",
-            "6000",
-            "--skip_preconditioners",
-        ]
-        print("Running:", " ".join(cmd))
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            print("STDOUT:", result.stdout)
-            print("STDERR:", result.stderr)
-            raise RuntimeError(f"bergson build for {style} eval failed")
+        _run_bergson_build(
+            grads_path,
+            model=index_cfg.model,
+            dataset_path=eval_path,
+            projection_dim=index_cfg.projection_dim or 16,
+            label=f"{style} eval",
+        )
 
     # Load eval gradients
     eval_grads = load_gradients(grads_path, structured=True)

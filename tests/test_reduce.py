@@ -1,4 +1,3 @@
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -8,17 +7,14 @@ import torch
 from bergson import (
     CollectorComputer,
     DataConfig,
+    GradientProcessor,
     IndexConfig,
     InMemoryCollector,
-    ReduceConfig,
+    PreprocessConfig,
+    collect_gradients,
 )
-from bergson.data import allocate_batches, load_gradient_dataset
-from bergson.reduce import reduce
-from bergson.utils.worker_utils import (
-    create_processor,
-    setup_data_pipeline,
-    setup_model_and_peft,
-)
+from bergson.build import build
+from bergson.data import load_gradient_dataset
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
@@ -37,7 +33,7 @@ def test_reduce_cli(tmp_path: Path):
             "--split",
             "train[:100]",
             "--truncation",
-            "--method",
+            "--aggregation",
             "mean",
             "--unit_normalize",
             "--skip_preconditioners",
@@ -72,9 +68,8 @@ def test_programmatic_reduce(tmp_path: Path):
         skip_preconditioners=True,
         token_batch_size=1024,
     )
-    reduce_cfg = ReduceConfig()
 
-    reduce(index_cfg, reduce_cfg)
+    build(index_cfg, PreprocessConfig(aggregation="mean"))
 
     # Assert 1-row reduction exists at the tmp_path
     ds = load_gradient_dataset(Path(index_cfg.run_path), structured=False)
@@ -82,43 +77,69 @@ def test_programmatic_reduce(tmp_path: Path):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-def test_in_memory_reduce(tmp_path: Path):
-    index_cfg = IndexConfig(
+def test_reduce_with_preconditioning(tmp_path: Path, model, dataset):
+    # Step 1: build an index WITH preconditioners
+    build_cfg = IndexConfig(run_path=str(tmp_path / "build"), token_batch_size=1024)
+
+    collect_gradients(
+        model=model,
+        data=dataset,
+        processor=GradientProcessor(),
+        cfg=build_cfg,
+    )
+
+    # Step 2: reduce with preconditioning pointing at the built index
+    preprocess_cfg = PreprocessConfig(
+        aggregation="mean", preconditioner_path=str(build_cfg.partial_run_path)
+    )
+    reduce_index_cfg = IndexConfig(
+        run_path=str(tmp_path / "reduce_precond"),
+        token_batch_size=1024,
+        skip_preconditioners=True,
+    )
+
+    collect_gradients(
+        model=model,
+        data=dataset,
+        processor=GradientProcessor(),
+        cfg=reduce_index_cfg,
+        preprocess_cfg=preprocess_cfg,
+    )
+
+    ds_out = load_gradient_dataset(reduce_index_cfg.partial_run_path, structured=False)
+    assert len(ds_out) == 1
+    grads = torch.tensor(ds_out["gradients"][:])
+    assert not torch.isnan(grads).any()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_in_memory_reduce(tmp_path: Path, model, dataset):
+    model.cuda()
+    cfg = IndexConfig(
         run_path=str(tmp_path / "reduction"),
-        data=DataConfig(truncation=True, split="train[:100]"),
-        model="EleutherAI/pythia-14m",
         skip_preconditioners=True,
         token_batch_size=1024,
     )
-    reduce_cfg = ReduceConfig()
+    cfg.partial_run_path.mkdir(parents=True, exist_ok=True)
 
-    ds = setup_data_pipeline(index_cfg)
-    model, target_modules = setup_model_and_peft(index_cfg)
-    processor = create_processor(model, ds, index_cfg, target_modules)
-    batches = allocate_batches(ds["length"][:], index_cfg.token_batch_size)
+    preprocess_cfg = PreprocessConfig(
+        aggregation="mean",
+    )
 
     collector = InMemoryCollector(
-        model=model.base_model,  # type: ignore
-        cfg=index_cfg,
-        processor=processor,
-        target_modules=target_modules,
-        data=ds,
-        scorer=None,
-        reduce_cfg=reduce_cfg,
+        model=model.base_model,
+        cfg=cfg,
+        processor=GradientProcessor(),
+        data=dataset,
+        preprocess_cfg=preprocess_cfg,
         attention_cfgs={},
     )
 
-    computer = CollectorComputer(
-        model=model,  # type: ignore
-        data=ds,
+    CollectorComputer(
+        model=model,
+        data=dataset,
         collector=collector,
-        batches=batches,
-        cfg=index_cfg,
-    )
-    computer.run_with_collector_hooks(desc="New worker - Collecting gradients")
+        cfg=cfg,
+    ).run_with_collector_hooks(desc="In-memory reduce")
 
-    shutil.move(index_cfg.partial_run_path, index_cfg.run_path)
-
-    results = collector.gradients
-
-    assert all(len(results[name]) == 1 for name in results.keys())
+    assert all(len(collector.gradients[name]) == 1 for name in collector.gradients)

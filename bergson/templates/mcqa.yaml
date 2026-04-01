@@ -1,0 +1,7 @@
+# Standard multiple-choice question-answering format.
+# Compatible with datasets like cais/mmlu and cais/wmdp.
+#
+# Columns expected: question, choices (list), answer (int index)
+doc_to_text: "{{question.strip()}}\nA. {{choices[0]}}\nB. {{choices[1]}}\nC. {{choices[2]}}\nD. {{choices[3]}}\nAnswer:"
+doc_to_target: answer
+doc_to_choice: ["A", "B", "C", "D"]

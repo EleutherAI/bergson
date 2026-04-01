@@ -70,8 +70,8 @@ def pytest_addoption(parser) -> None:
         "--token_batch_size",
         action="store",
         type=int,
-        default=2048,
-        help="Token batch size for EKFAC computation (default: 2048)",
+        default=512,
+        help="Token batch size for EKFAC computation (default: 512)",
     )
     parser.addoption(
         "--n_samples",

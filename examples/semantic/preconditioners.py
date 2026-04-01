@@ -10,6 +10,7 @@ from tqdm import tqdm
 
 from bergson.data import load_gradients
 from bergson.gradients import GradientProcessor
+from bergson.utils.utils import numpy_to_tensor
 
 from .data import create_qwen_only_dataset
 
@@ -233,8 +234,8 @@ def compute_between_preconditioner_means(
     print(f"  Computing per-module R_between for {len(module_names)} modules...")
     for name in tqdm(module_names):
         # Get gradients for this module (numpy structured array access)
-        pirate_mod = torch.from_numpy(pirate_grads[name].copy()).float()
-        shakespeare_mod = torch.from_numpy(shakespeare_grads[name].copy()).float()
+        pirate_mod = numpy_to_tensor(pirate_grads[name]).float()
+        shakespeare_mod = numpy_to_tensor(shakespeare_grads[name]).float()
 
         # Compute means
         mu_pirate = pirate_mod.mean(dim=0)
@@ -393,8 +394,8 @@ def compute_summed_loss_preconditioner(
     print(f"  Computing per-module preconditioners for {len(module_names)} modules...")
 
     for name in tqdm(module_names):
-        pirate_mod = torch.from_numpy(pirate_grads[name].copy()).float()
-        shakespeare_mod = torch.from_numpy(shakespeare_grads[name].copy()).float()
+        pirate_mod = numpy_to_tensor(pirate_grads[name]).float()
+        shakespeare_mod = numpy_to_tensor(shakespeare_grads[name]).float()
 
         # Extract aligned pairs using fancy indexing (batched)
         g_pirate_aligned = pirate_mod[pirate_indices]  # [n_pairs, d]
@@ -426,6 +427,7 @@ def compute_pca_style_subspace(
     shakespeare_index_path: Path | str,
     output_path: Path | str,
     top_k: int = 10,
+    exclude_facts: set[str] | None = None,
 ) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
     """Compute the style subspace from pairwise gradient differences using PCA.
 
@@ -439,6 +441,8 @@ def compute_pca_style_subspace(
         shakespeare_index_path: Path to shakespeare gradient index.
         output_path: Path to save the style subspace.
         top_k: Number of top principal components to keep.
+        exclude_facts: Optional set of fact strings to exclude from PCA computation.
+            Use this to prevent data leakage when eval facts overlap with PCA data.
 
     Returns:
         Dictionary mapping module names to (eigenvectors, eigenvalues) tuples.
@@ -447,7 +451,9 @@ def compute_pca_style_subspace(
     from datasets import load_from_disk
 
     output_path = Path(output_path)
-    cache_file = output_path / f"style_subspace_k{top_k}.pth"
+    # Use different cache file when excluding facts to avoid mixing leaked/non-leaked
+    cache_suffix = "_noleak" if exclude_facts else ""
+    cache_file = output_path / f"style_subspace_k{top_k}{cache_suffix}.pth"
 
     if cache_file.exists():
         print(f"Loading cached style subspace from {cache_file}")
@@ -481,9 +487,16 @@ def compute_pca_style_subspace(
     shakespeare_fact_to_idx = {f: i for i, f in enumerate(shakespeare_facts)}
 
     # Find common facts and build aligned index arrays
-    common_facts = list(
-        set(pirate_fact_to_idx.keys()) & set(shakespeare_fact_to_idx.keys())
-    )
+    common_facts = set(pirate_fact_to_idx.keys()) & set(shakespeare_fact_to_idx.keys())
+
+    # Exclude eval facts to prevent data leakage
+    if exclude_facts:
+        n_before = len(common_facts)
+        common_facts = common_facts - exclude_facts
+        n_excluded = n_before - len(common_facts)
+        print(f"  Excluded {n_excluded} facts to prevent data leakage")
+
+    common_facts = list(common_facts)
     pirate_indices = [pirate_fact_to_idx[f] for f in common_facts]
     shakespeare_indices = [shakespeare_fact_to_idx[f] for f in common_facts]
     print(f"  Found {len(common_facts)} contrastive pairs")
@@ -493,11 +506,13 @@ def compute_pca_style_subspace(
     module_names = list(pirate_proc.preconditioners.keys())
 
     style_subspace = {}
+    variance_pcts: list[float] = []
+    n_capped = 0
     print(f"  Computing PCA for {len(module_names)} modules...")
 
     for name in tqdm(module_names):
-        pirate_mod = torch.from_numpy(pirate_grads[name].copy()).float()
-        shakespeare_mod = torch.from_numpy(shakespeare_grads[name].copy()).float()
+        pirate_mod = numpy_to_tensor(pirate_grads[name]).float()
+        shakespeare_mod = numpy_to_tensor(shakespeare_grads[name]).float()
 
         # Extract aligned pairs using fancy indexing (batched)
         g_pirate_aligned = pirate_mod[pirate_indices]  # [n_pairs, d]
@@ -517,7 +532,8 @@ def compute_pca_style_subspace(
         eigvals, eigvecs = torch.linalg.eigh(cov)
 
         # Get top-k (largest eigenvalues are at the end)
-        k = min(top_k, eigvals.shape[0])
+        d = eigvals.shape[0]
+        k = min(top_k, d)
         top_eigvals = eigvals[-k:].flip(0)  # Descending order
         top_eigvecs = eigvecs[:, -k:].flip(
             1
@@ -525,10 +541,163 @@ def compute_pca_style_subspace(
 
         style_subspace[name] = (top_eigvecs, top_eigvals)
 
+        # Track variance explained for reporting
+        total_var = eigvals.sum().item()
+        explained_var = top_eigvals.sum().item()
+        pct = explained_var / total_var * 100 if total_var > 0 else 0.0
+        variance_pcts.append(pct)
+        if k >= d:
+            n_capped += 1
+
+    # Print variance explained summary
+    if variance_pcts:
+        mean_var = sum(variance_pcts) / len(variance_pcts)
+        sorted_pcts = sorted(variance_pcts)
+        mid = len(sorted_pcts) // 2
+        median_var = (
+            sorted_pcts[mid]
+            if len(sorted_pcts) % 2 == 1
+            else (sorted_pcts[mid - 1] + sorted_pcts[mid]) / 2
+        )
+        print(f"\n  PCA variance explained (k={top_k}):")
+        print(f"    Mean across modules:   {mean_var:.1f}%")
+        print(f"    Median across modules: {median_var:.1f}%")
+        print(f"    Modules where k >= dim (capped): {n_capped}/{len(variance_pcts)}")
+
     output_path.mkdir(parents=True, exist_ok=True)
     torch.save(style_subspace, cache_file)
     print(f"Saved style subspace to {cache_file}")
     return style_subspace
+
+
+def report_pca_variance(
+    pirate_index_path: Path | str,
+    shakespeare_index_path: Path | str,
+    output_path: Path | str,
+    k_values: list[int],
+    exclude_facts: set[str] | None = None,
+) -> dict[int, dict[str, float]]:
+    """Compute all eigenvalues once and report variance explained for each k.
+
+    This avoids recomputing PCA for each k value. Computes the full
+    eigendecomposition once per module and reports what fraction of variance
+    each k captures.
+
+    Args:
+        pirate_index_path: Path to pirate gradient index.
+        shakespeare_index_path: Path to shakespeare gradient index.
+        output_path: Path for cache/output (unused for caching here).
+        k_values: List of k values to report variance for.
+        exclude_facts: Optional set of fact strings to exclude.
+
+    Returns:
+        Dictionary mapping k -> {"mean_pct": float, "median_pct": float,
+        "n_capped": int, "n_modules": int}.
+    """
+    from datasets import load_from_disk
+
+    pirate_path = Path(pirate_index_path)
+    shakespeare_path = Path(shakespeare_index_path)
+
+    print("Computing PCA variance analysis...")
+    print("  Loading pirate gradients...")
+    pirate_grads = load_gradients(pirate_path, structured=True)
+    print("  Loading shakespeare gradients...")
+    shakespeare_grads = load_gradients(shakespeare_path, structured=True)
+
+    pirate_ds = load_from_disk("data/facts_dataset_pirate-Qwen3-8B-Base.hf")
+    shakespeare_ds = load_from_disk("data/facts_dataset_shakespeare-Qwen3-8B-Base.hf")
+
+    if hasattr(pirate_ds, "keys"):
+        pirate_ds = pirate_ds["train"]
+    if hasattr(shakespeare_ds, "keys"):
+        shakespeare_ds = shakespeare_ds["train"]
+
+    pirate_facts = pirate_ds["fact"]  # type: ignore[index]
+    shakespeare_facts = shakespeare_ds["fact"]  # type: ignore[index]
+
+    pirate_fact_to_idx = {f: i for i, f in enumerate(pirate_facts)}
+    shakespeare_fact_to_idx = {f: i for i, f in enumerate(shakespeare_facts)}
+
+    common_facts = set(pirate_fact_to_idx.keys()) & set(shakespeare_fact_to_idx.keys())
+    if exclude_facts:
+        n_before = len(common_facts)
+        common_facts = common_facts - exclude_facts
+        print(
+            f"  Excluded {n_before - len(common_facts)} facts to prevent data leakage"
+        )
+
+    common_facts_list = list(common_facts)
+    pirate_indices = [pirate_fact_to_idx[f] for f in common_facts_list]
+    shakespeare_indices = [shakespeare_fact_to_idx[f] for f in common_facts_list]
+    print(f"  Found {len(common_facts_list)} contrastive pairs")
+
+    pirate_proc = GradientProcessor.load(pirate_path)
+    module_names = list(pirate_proc.preconditioners.keys())
+
+    # For each k, track per-module variance explained percentages
+    results: dict[int, dict[str, float]] = {}
+    per_k_pcts: dict[int, list[float]] = {k: [] for k in k_values}
+    per_k_capped: dict[int, int] = {k: 0 for k in k_values}
+
+    print(f"  Computing eigendecomposition for {len(module_names)} modules...")
+    for name in tqdm(module_names):
+        pirate_mod = numpy_to_tensor(pirate_grads[name]).float()
+        shakespeare_mod = numpy_to_tensor(shakespeare_grads[name]).float()
+
+        g_pirate_aligned = pirate_mod[pirate_indices]
+        g_shakespeare_aligned = shakespeare_mod[shakespeare_indices]
+        diff_matrix = g_pirate_aligned - g_shakespeare_aligned
+        diff_centered = diff_matrix - diff_matrix.mean(dim=0, keepdim=True)
+
+        n = diff_centered.shape[0]
+        cov = diff_centered.T @ diff_centered / n
+        eigvals, _ = torch.linalg.eigh(cov)
+
+        total_var = eigvals.sum().item()
+        d = eigvals.shape[0]
+
+        for k in k_values:
+            k_actual = min(k, d)
+            top_k_var = eigvals[-k_actual:].sum().item()
+            pct = top_k_var / total_var * 100 if total_var > 0 else 0.0
+            per_k_pcts[k].append(pct)
+            if k >= d:
+                per_k_capped[k] += 1
+
+    # Summarize
+    print(f"\n{'='*60}")
+    print("PCA VARIANCE EXPLAINED ANALYSIS")
+    print(f"{'='*60}")
+    print(f"  Modules: {len(module_names)}, Per-module dimension: {d}")
+    print(f"  Contrastive pairs: {len(common_facts_list)}")
+
+    print(f"\n  {'k':<8} {'Mean %':<12} {'Median %':<12} {'Capped':<15}")
+    print(f"  {'-'*47}")
+
+    for k in k_values:
+        pcts = per_k_pcts[k]
+        mean_pct = sum(pcts) / len(pcts)
+        sorted_pcts = sorted(pcts)
+        mid = len(sorted_pcts) // 2
+        median_pct = (
+            sorted_pcts[mid]
+            if len(sorted_pcts) % 2 == 1
+            else (sorted_pcts[mid - 1] + sorted_pcts[mid]) / 2
+        )
+        capped = per_k_capped[k]
+        print(
+            f"  {k:<8} {mean_pct:<12.1f} {median_pct:<12.1f} "
+            f"{capped}/{len(module_names)}"
+        )
+        results[k] = {
+            "mean_pct": mean_pct,
+            "median_pct": median_pct,
+            "n_capped": capped,
+            "n_modules": len(module_names),
+        }
+
+    return results
 
 
 def project_orthogonal_to_style_subspace(

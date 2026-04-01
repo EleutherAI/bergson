@@ -1,14 +1,15 @@
 import os
+from abc import ABC
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 import torch
-from simple_parsing import field
+from simple_parsing import Serializable, field
 
 
 @dataclass
-class DataConfig:
+class DataConfig(Serializable):
     dataset: str = "NeelNanda/pile-10k"
     """Dataset identifier to build the index from."""
 
@@ -38,33 +39,38 @@ class DataConfig:
     truncation: bool = False
     """Whether to truncate long documents to fit the token budget."""
 
+    format_template: str = ""
+    """Path to a YAML containing a Jinja2 template specifying how to
+    format dataset rows into text. The YAML must contain `doc_to_text`
+    and optionally `doc_to_target` and `doc_to_choice`. MCQA YAML
+    available at `bergson/templates/mcqa.yaml`."""
+
     data_args: str = ""
     """Arguments to pass to the dataset constructor in the format
     arg1=val1,arg2=val2."""
 
+    chunk_length: int = 0
+    """When positive, concatenate and chunk the documents into fixed-length token
+    sequences of this length. Incompatible with truncation and format_template."""
+
+    def __post_init__(self):
+        if self.chunk_length > 0:
+            if self.truncation:
+                raise ValueError("chunk_length and truncation cannot both be True")
+            if self.format_template:
+                raise ValueError(
+                    "chunk_length and format_template cannot both be specified"
+                )
+
 
 @dataclass
-class AttentionConfig:
-    """Config for splitting an attention module into head matrices."""
-
-    num_heads: int = 0
-    """Number of attention heads."""
-
-    head_size: int = 0
-    """Size of each attention head."""
-
-    head_dim: int = 0
-    """Axis index for `num_heads` in the weight matrix."""
-
-
-@dataclass
-class DistributedConfig:
-    """Configuration for multi-node preconditioner computation."""
+class DistributedConfig(Serializable):
+    """Configuration for multi-node computation."""
 
     nnode: int = 1
-    """The number of nodes to use for preconditioner computation."""
+    """The number of nodes to use for computation."""
 
-    nproc_per_node: int = field(default_factory=lambda: torch.cuda.device_count())
+    nproc_per_node: int = field(default_factory=torch.cuda.device_count)
     """The number of processes per node."""
 
     node_rank: int | None = None
@@ -108,26 +114,140 @@ class DistributedConfig:
 
 
 @dataclass
-class IndexConfig:
-    """Config for building the index and running the model/dataset pipeline."""
+class ModelConfig(ABC):
+    """Base config for model loading."""
 
     run_path: str = field(positional=True)
-    """Name of the run. Used to create a directory for run artifacts."""
-
-    data: DataConfig = field(default_factory=DataConfig)
-    """Specification of the data on which to build the index."""
+    """Directory to save results."""
 
     model: str = "EleutherAI/pythia-160m"
     """Name of the model to load."""
 
+    precision: Literal["auto", "bf16", "fp16", "fp32", "int4", "int8"] = "fp32"
+    """Precision (dtype) to use for the model parameters."""
+
+    revision: str | None = None
+    """Revision of the model."""
+
+    distributed: DistributedConfig = field(default_factory=DistributedConfig)
+    """Configuration for multi-node distributed computation."""
+
+    fsdp: bool = False
+    """Whether to use PyTorch Fully Sharded Data Parallel (FSDP)"""
+
+
+@dataclass
+class LRScheduleConfig(Serializable):
+    """Learning rate schedule configuration."""
+
+    lr: float = 1e-5
+    """The peak learning rate."""
+
+    lr_scheduler_type: Literal[
+        "linear",
+        "cosine",
+        "cosine_with_restarts",
+        "polynomial",
+        "constant",
+        "constant_with_warmup",
+    ] = "linear"
+    """The learning rate scheduler type."""
+
+    lr_start: float = 0.0
+    """Initial learning rate at the beginning of warmup."""
+
+    lr_end: float = 0.0
+    """Final learning rate after decay (only available for polynomial)."""
+
+    warmup_steps: float = 0
+    """Number of warmup steps before applying base lr.
+    A value >= 1 is an exact step count; a value in [0, 1)
+    is interpreted as a fraction of total training steps."""
+
+    num_cycles: float = 0.5
+    """Number of cosine cycles (used by cosine and cosine_with_restarts).
+    Default 0.5 gives a single half-cosine decay."""
+
+    power: float = 1.0
+    """Exponent for polynomial decay."""
+
+
+@dataclass
+class TrainingConfig(ModelConfig, Serializable):
+    """Configuration for the MAGIC trainer."""
+
+    lr_schedule: LRScheduleConfig = field(default_factory=LRScheduleConfig)
+    """Learning rate schedule configuration."""
+
+    batch_size: int = 16
+    """Batch size for both training and query streams.
+    Adjust based on GPU memory."""
+
+    num_epochs: int = 1
+    """Number of full passes over the training data."""
+
+    adam_beta1: float = 0.95
+    """Beta1 for AdamW optimizer."""
+
+    adam_beta2: float = 0.975
+    """Beta2 for AdamW optimizer."""
+
+    eps_root: float = 1e-8
+    """Epsilon root for AdamW optimizer."""
+
+    grad_checkpointing: bool = False
+    """Whether to use gradient checkpointing during the forward pass."""
+
+
+@dataclass
+class AttributionConfig(ModelConfig, ABC):
+    """Base config for attribution methods."""
+
+    data: DataConfig = field(default_factory=DataConfig)
+    """Specification of the data on which to build the index."""
+
     tokenizer: str = ""
     """Name of the tokenizer to use. If not set the model tokenizer is used."""
 
-    fsdp: bool = False
-    """Whether to use Fully Sharded Data Parallel (FSDP) for collecting gradients."""
+    drop_columns: bool = True
+    """Only save the new dataset columns. If false, the original dataset
+    columns will be saved as well."""
 
-    precision: Literal["auto", "bf16", "fp16", "fp32", "int4", "int8"] = "auto"
-    """Precision (dtype) to use for the model parameters."""
+    max_tokens: int | None = None
+    """Max tokens to process. If None, all tokens processed. Dataset only.
+    This experimental feature may be removed in the future."""
+
+    overwrite: bool = False
+    """Whether to overwrite any existing index in the run path."""
+
+    use_tf32_matmuls: bool = False
+    """Set matmul precision to 'high'."""
+
+    debug: bool = False
+    """Whether to enable debug mode with additional logging."""
+
+    def __post_init__(self):
+        if self.use_tf32_matmuls:
+            torch.set_float32_matmul_precision("high")
+
+
+@dataclass
+class AttentionConfig:
+    """Config for splitting an attention module into head matrices."""
+
+    num_heads: int = 0
+    """Number of attention heads."""
+
+    head_size: int = 0
+    """Size of each attention head."""
+
+    head_dim: int = 0
+    """Axis index for `num_heads` in the weight matrix."""
+
+
+@dataclass
+class IndexConfig(AttributionConfig, Serializable):
+    """Config for building the index and running the model/dataset pipeline."""
 
     projection_dim: int = 16
     """Dimension of the random projection for the index, or 0 to disable it."""
@@ -151,21 +271,19 @@ class IndexConfig:
     processor_path: str = ""
     """Path to a precomputed processor."""
 
-    normalizer: Literal["adafactor", "adam", "none"] = "none"
-    """Type of normalizer to use for the gradients."""
+    normalizer: Literal["none"] = "none"  # "adafactor", "adam",
+    """Type of normalizer to use for the gradients. We are disabling
+    optimizers due to lack of empirical validation - contact Eleuther
+    if you'd like to use them."""
 
     skip_preconditioners: bool = False
-    """Whether to skip computing preconditioners for the gradients."""
+    """Whether to skip estimating preconditioner statistics"""
 
     skip_index: bool = False
     """Whether to skip building the gradient index."""
 
     stats_sample_size: int | None = 10_000
-    """Number of examples to use for estimating processor statistics."""
-
-    drop_columns: bool = True
-    """Only save the new dataset columns. If false, the original dataset
-    columns will be saved as well."""
+    """Number of examples to use for estimating normalizer statistics."""
 
     loss_fn: Literal["ce", "kl"] = "ce"
     """Loss function to use."""
@@ -176,13 +294,10 @@ class IndexConfig:
     label_smoothing: float = 0.0
     """Label smoothing coefficient for cross-entropy loss. When > 0, prevents
     near-zero gradients for high-confidence predictions that can cause numerical
-    instability. Recommended value: 0.005-0.01."""
+    instability."""
 
     stream_shard_size: int = 400_000
     """Shard size for streaming the dataset into Dataset objects."""
-
-    revision: str | None = None
-    """Revision of the model."""
 
     split_attention_modules: list[str] = field(default_factory=list)
     """Modules to split into head matrices."""
@@ -195,46 +310,33 @@ class IndexConfig:
     """Whether to enable profiling during gradient collection.
     If true, by default the first 4 steps will be profiled."""
 
-    debug: bool = False
-    """Whether to enable debug mode with additional logging."""
-
     filter_modules: str | None = None
     """If provided, a glob pattern to filter out modules from gradient collection.
     For example, "transformer.h.*.mlp.*" will exclude all MLP layers in a
     standard transformer architecture."""
 
-    overwrite: bool = False
-    """Whether to overwrite any existing index in the run path."""
-
-    distributed: DistributedConfig = field(default_factory=DistributedConfig)
-    """Configuration for multi-node distributed preconditioner computation."""
-
-    max_tokens: int | None = None
-    """Max tokens to process. If None, all tokens processed. Dataset only.
-    This experimental feature may be removed in the future."""
+    force_math_sdp: bool = False
+    """Disable flash and memory-efficient SDPA backends, forcing the
+    math-only kernel. Some models produce inconsistent gradients across
+    different padding lengths when using optimized attention backends.
+    Run `bergson test_model_configuration` to check whether your model
+    needs this."""
 
     attribute_tokens: bool = False
     """Whether to compute per-token gradients instead of per-example.
     Incompatible with reduce mode."""
+
+    modules: list[str] = field(default_factory=list)
+    """Modules to use for the query. If empty, all modules will be used."""
 
     @property
     def partial_run_path(self) -> Path:
         """Temporary path to use while writing build artifacts."""
         return Path(self.run_path + ".part")
 
-    def __post_init__(self):
-        if isinstance(self.data, dict):
-            self.data = DataConfig(**self.data)
-
-        if isinstance(self.attention, dict):
-            self.attention = AttentionConfig(**self.attention)
-
-        if isinstance(self.distributed, dict):
-            self.distributed = DistributedConfig(**self.distributed)
-
 
 @dataclass
-class QueryConfig:
+class QueryConfig(Serializable):
     """Config for querying an existing gradient index."""
 
     index: str = ""
@@ -256,71 +358,61 @@ class QueryConfig:
     faiss: bool = False
     """Whether to use FAISS for the query."""
 
-    reverse: bool = False
-    """Whether to return results in reverse order
-    (lowest influences instead of highest)."""
+    top_k: int = 5
+    """Number of top (and bottom) results to return per query."""
 
     record: str = ""
     """Path to a CSV file for recording query results. Each query appends
-    its top results as rows with columns: query, result, result_index, score."""
+    its top and bottom results as rows with columns:
+    query, direction, result, result_index, score."""
 
 
 @dataclass
-class ScoreConfig:
+class PreprocessConfig(Serializable):
+    """Config for gradient preprocessing, shared across build, reduce, and score."""
+
+    unit_normalize: bool = False
+    """Whether to unit normalize the gradients."""
+
+    preconditioner_path: str | None = None
+    """Path to a precomputed preconditioner."""
+
+    aggregation: Literal["mean", "sum", "none"] = "none"
+    """Method for aggregating the gradients. In score, only query
+    gradients will be aggregated."""
+
+    normalize_aggregated_grad: bool = False
+    """Whether to unit normalize the aggregated gradient. This has
+    no effect on future relative score rankings but does affect score
+    magnitudes."""
+
+
+@dataclass
+class ScoreConfig(Serializable):
     """Config for querying an index on the fly."""
 
     query_path: str = ""
     """Path to the existing query index."""
 
-    score: Literal["mean", "nearest", "individual"] = "mean"
+    score: Literal["nearest", "individual"] = "individual"
     """Method for scoring the gradients with the query.
-        `mean`: compute each gradient's similarity to the mean
-            query gradient.
         `nearest`: compute each gradient's similarity to the most
             similar query gradient (the maximum score).
         `individual`: compute a separate score for each query gradient."""
 
-    query_preconditioner_path: str | None = None
-    """Path to a precomputed preconditioner to be applied to
-    the query dataset gradients."""
+    batch_size: int = 1024
+    """Batch size for processing the query dataset."""
 
-    index_preconditioner_path: str | None = None
-    """Path to a precomputed preconditioner to be applied to
-    the query dataset gradients. This does not affect the
-    ability to compute a new preconditioner during the query."""
-
-    mixing_coefficient: float = 0.99
-    """Coefficient to weight the application of the query preconditioner
-    and the pre-computed index preconditioner. 0.0 means only use the
-    index preconditioner and 1.0 means only use the query preconditioner."""
+    precision: Literal["auto", "bf16", "fp16", "fp32"] = "fp32"
+    """Precision (dtype) to convert the query and index gradients to before
+    computing the scores. If "auto", the model's gradient dtype is used."""
 
     modules: list[str] = field(default_factory=list)
     """Modules to use for the query. If empty, all modules will be used."""
 
-    unit_normalize: bool = False
-    """Whether to unit normalize the gradients before computing the scores."""
-
-    batch_size: int = 1024
-    """Batch size for processing the query dataset."""
-
-    precision: Literal["auto", "bf16", "fp16", "fp32"] = "auto"
-    """Precision (dtype) to convert the query and index gradients to before
-    computing the scores. If "auto", the model's gradient dtype is used."""
-
 
 @dataclass
-class ReduceConfig:
-    """Config for reducing the gradients."""
-
-    method: Literal["mean", "sum"] = "mean"
-    """Method for reducing the gradients."""
-
-    unit_normalize: bool = False
-    """Whether to unit normalize the gradients before reducing them."""
-
-
-@dataclass
-class HessianConfig:
+class HessianConfig(Serializable):
     """Config for reducing the gradients."""
 
     method: Literal["kfac", "tkfac", "shampoo"] = "kfac"
@@ -374,8 +466,40 @@ class FaissConfig:
 
 
 @dataclass
+class HessianPipelineConfig:
+    """Config for the Hessian-preconditioned influence pipeline."""
+
+    query: DataConfig = field(default_factory=DataConfig)
+    """Query dataset specification."""
+
+    lambda_damp_factor: float = 0.1
+    """Damping factor for EKFAC eigenvalue correction."""
+
+    resume: bool = False
+    """Skip pipeline steps whose output directory already exists."""
+
+
+@dataclass
 class TrackstarConfig:
     """Config for the trackstar pipeline query dataset."""
 
     query: DataConfig = field(default_factory=DataConfig)
     """Query dataset specification."""
+
+    preprocess_cfg: PreprocessConfig = field(default_factory=PreprocessConfig)
+
+    score_cfg: ScoreConfig = field(default_factory=ScoreConfig)
+
+    target_downweight_components: int = 1000
+    """Number of gradient components to downweight via automatic lambda
+    selection (§A.1.3 of Chang et al., 2024). The mixing coefficient is
+    computed so that the sorted singular-value curves of the query and
+    index preconditioners intersect at this component. Typical value is
+    ~1000 out of ~65K total components."""
+
+    num_stats_sample_preconditioner: bool = True
+    """Whether to use num_stats_sample items or the full dataset to
+    compute preconditioners."""
+
+    resume: bool = False
+    """Skip pipeline steps whose output directory already exists."""

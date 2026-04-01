@@ -85,7 +85,7 @@ def test_advantages_computed_with_drop_columns(tmp_path):
         ),
     )
 
-    ds = setup_data_pipeline(cfg)
+    ds, _ = setup_data_pipeline(cfg)
 
     # The reward column should have been dropped.
     assert "reward" not in ds.column_names
