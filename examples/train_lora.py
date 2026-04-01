@@ -292,7 +292,7 @@ def main():
         push_to_private=args.push_to_private,
     )  # type: ignore
 
-    dataset = setup_data_pipeline(
+    dataset, _ = setup_data_pipeline(
         IndexConfig(
             run_path=f"runs/{args.finetuned_model_path}",
             model=args.model_name,

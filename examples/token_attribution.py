@@ -62,7 +62,7 @@ def main():
     Path(index_cfg.partial_run_path).mkdir(parents=True, exist_ok=True)
 
     # Prepare training data
-    train_ds = setup_data_pipeline(index_cfg)
+    train_ds, _ = setup_data_pipeline(index_cfg)
     assert isinstance(train_ds, Dataset)
     train_batches = allocate_batches(
         train_ds["length"][:],
@@ -85,7 +85,7 @@ def main():
         skip_preconditioners=True,
     )
     Path(query_cfg.partial_run_path).mkdir(parents=True, exist_ok=True)
-    query_ds = setup_data_pipeline(query_cfg)
+    query_ds, _ = setup_data_pipeline(query_cfg)
     assert isinstance(query_ds, Dataset)
     query_batches = allocate_batches(
         query_ds["length"][:],

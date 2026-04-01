@@ -49,7 +49,7 @@ def run_pipeline(tmp_path, model_name, token_batch_size, doc_tokens, truncation)
         skip_preconditioners=True,
         data=DataConfig(dataset=documents_file, truncation=truncation),
     )
-    ds = setup_data_pipeline(cfg)
+    ds, _ = setup_data_pipeline(cfg)
     batches = allocate_batches(ds["length"][:], token_batch_size)
     model = AutoModelForCausalLM.from_pretrained(model_name)
     collect_gradients(

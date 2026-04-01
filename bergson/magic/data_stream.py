@@ -54,7 +54,9 @@ class DataStream:
             labels=batch.get("labels"),
             device=self.device,
         )
-        if "doc_ids" in batch:
+        # If the weights are 1D, we assume they correspond to documents and look for
+        # "doc_ids" in the batch to index them. If they're 2D, they correspond to tokens
+        if self.weights.ndim == 1 and "doc_ids" in batch:
             indices = torch.tensor(batch["doc_ids"], device=self.device)
 
         return {
