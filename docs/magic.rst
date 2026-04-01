@@ -3,7 +3,7 @@ MAGIC Attribution
 
 `MAGIC <https://arxiv.org/abs/2504.16430>`_ (Model-Agnostic Generation-time Influence via Checkpointing) attributes evaluation loss to individual training examples by backpropagating through the entire training process. Unlike influence functions which use a local approximation, MAGIC computes exact counterfactual attribution by differentiating through checkpointed training steps.
 
-We provide a `Trainer` class that takes differentiable training steps and handles all three phases of MAGIC attribution. We support FSDP training using the `bergson.magic_patch` runtime patch, which makes PyTorch's DTensor redistribution twice-differentiable (`pytorch/pytorch#160509 <https://github.com/pytorch/pytorch/pull/160509>`_). The patch is applied in memory, so no torch source files are modified.
+We provide a `Trainer` class that takes differentiable training steps and handles all three phases of MAGIC attribution. We support FSDP training using the `bergson.magic.dtensor_patch` runtime patch, which makes PyTorch's DTensor redistribution twice-differentiable (`pytorch/pytorch#160509 <https://github.com/pytorch/pytorch/pull/160509>`_). The patch is applied in memory, so no torch source files are modified.
 
 How it works
 ------------
@@ -63,7 +63,7 @@ Core components
 
 .. code-block:: python
 
-   from bergson.magic_patch import apply_dtensor_patch
+   from bergson.magic.dtensor_patch import apply_dtensor_patch
    apply_dtensor_patch()
 
    # Your MAGIC worker call here
