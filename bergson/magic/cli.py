@@ -225,6 +225,37 @@ def prepare_trainer(
     return trainer, fwd_state, model
 
 
+def pad_dataset_to_batch_size(
+    dataset: Dataset,
+    batch_size: int,
+    num_docs: int,
+    label: str,
+    global_rank: int,
+) -> tuple[Dataset, int, int]:
+    """Pad dataset to be divisible by batch_size by repeating the last example.
+
+    Returns (padded_dataset, num_docs, pad_count). num_docs is updated only when
+    the dataset has no "doc_ids" column (i.e. each row is its own document).
+    pad_count is 0 if no padding was needed.
+    """
+    remainder = len(dataset) % batch_size
+    if not remainder:
+        return dataset, num_docs, 0
+
+    pad_count = batch_size - remainder
+    total = len(dataset)
+    pad_indices = list(range(total)) + [total - 1] * pad_count
+    dataset = dataset.select(pad_indices)
+    if "doc_ids" not in dataset.column_names:
+        num_docs = len(dataset)
+    if global_rank == 0:
+        print(
+            f"{label}: padded {pad_count}/{total} examples "
+            f"(weight=0) to fill last batch"
+        )
+    return dataset, num_docs, pad_count
+
+
 def worker(
     global_rank: int,
     rank: int,
@@ -255,20 +286,9 @@ def worker(
     assert run_cfg.batch_size % world_size == 0
 
     # Pad train dataset to be divisible by batch_size (weight=0 for padding)
-    remainder = len(train_dataset) % run_cfg.batch_size
-    pad_count = 0
-    if remainder:
-        pad_count = run_cfg.batch_size - remainder
-        total = len(train_dataset)
-        pad_indices = list(range(total)) + [total - 1] * pad_count
-        train_dataset = train_dataset.select(pad_indices)
-        if "doc_ids" not in train_dataset.column_names:
-            num_train_docs = len(train_dataset)
-        if global_rank == 0:
-            print(
-                f"Train: padded {pad_count}/{total} examples "
-                f"(weight=0) to fill last batch"
-            )
+    train_dataset, num_train_docs, pad_count = pad_dataset_to_batch_size(
+        train_dataset, run_cfg.batch_size, num_train_docs, "Train", global_rank
+    )
 
     stream = DataStream(
         train_dataset,
@@ -277,10 +297,8 @@ def worker(
         input_key=run_cfg.data.prompt_column,
         num_docs=num_train_docs,
     )
-
     if pad_count:
-        with torch.no_grad():
-            stream.weights.data[-pad_count:] = 0.0
+        stream.weights.data[-pad_count:] = 0.0
 
     log_fn = None
     if run_cfg.wandb_project and global_rank == 0:
@@ -317,16 +335,10 @@ def worker(
     if save_fut is not None:
         save_fut.result()  # ensure state0 is saved before validation loads it
 
-    # Drop items that are nondivisible by batch_size to prevent deadlock
-    query_remainder = len(query_dataset) % run_cfg.batch_size
-    if query_remainder:
-        query_total = len(query_dataset)
-        query_dataset = query_dataset.select(range(query_total - query_remainder))
-        if global_rank == 0:
-            print(
-                f"Query: dropped {query_remainder}/{query_total} examples "
-                f"({query_remainder / query_total * 100:.1f}%) to even batches"
-            )
+    # Pad query dataset to be divisible by batch_size (weight=0 for padding)
+    query_dataset, num_query_docs, query_pad_count = pad_dataset_to_batch_size(
+        query_dataset, run_cfg.batch_size, num_query_docs, "Query", global_rank
+    )
     if len(query_dataset) < run_cfg.batch_size:
         raise ValueError(
             f"Query dataset has {len(query_dataset)} examples, fewer than "
@@ -342,6 +354,9 @@ def worker(
         input_key=run_cfg.query.prompt_column,
         num_docs=num_query_docs,
     )
+    if query_pad_count:
+        query_stream.weights.data[-query_pad_count:] = 0.0
+
     query_grads, baseline = compute_query_gradients(
         fwd_state, model, query_stream, run_cfg.query_method
     )
