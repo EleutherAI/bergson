@@ -11,6 +11,7 @@ from typing import Literal
 import torch
 import torch.distributed as dist
 import torch.distributed.checkpoint as dcp
+import torch.distributed.tensor  # noqa: F401 — register DTensor for torch.load
 import torchopt
 from torch import nn
 from torchopt.pytree import tree_flatten_with_path, tree_iter, tree_map
@@ -352,6 +353,53 @@ class Trainer:
 
         return state
 
+    def save_backward_state(self, bwd_state, path, expected_idx, last_idx):
+        tmp_path = path + ".tmp"
+        torch.save(
+            {
+                "expected_idx": expected_idx,
+                "last_idx": last_idx,
+                "param_grads": bwd_state.param_grads,
+                "opt_grads": bwd_state.opt_grads,
+                "weight_grads": bwd_state.weight_grads,
+            },
+            tmp_path,
+        )
+        os.replace(tmp_path, path)
+
+    def load_backward_state(self, path, ckpt_list, device, main: bool):
+        saved = torch.load(path, map_location=device, weights_only=True)
+        bwd_state = BackwardState(
+            saved["param_grads"],
+            saved["opt_grads"],
+            saved["weight_grads"],
+        )
+        expected_idx = saved["expected_idx"]
+        last_idx = saved["last_idx"]
+
+        # Filter to valid checkpoints we still need to process
+        valid_ckpts = []
+        for idx, path in ckpt_list:
+            if idx > expected_idx:
+                continue
+            metadata = os.path.join(path, ".metadata")
+            if os.path.exists(metadata):
+                valid_ckpts.append((idx, path))
+            elif os.path.isdir(path) and main:
+                rmtree(path)
+        ckpt_list = valid_ckpts
+
+        if not ckpt_list and expected_idx >= 0:
+            raise RuntimeError(
+                f"Cannot resume backward: no valid checkpoints found "
+                f"for step {expected_idx}"
+            )
+
+        if main:
+            print(f"Resuming backward pass from step {expected_idx}")
+
+        return bwd_state, ckpt_list, expected_idx, last_idx
+
     def backward(
         self,
         ckpt_dir: str,
@@ -362,15 +410,27 @@ class Trainer:
         cleanup: bool = True,
         debug: bool = False,
         inplace: bool = False,
+        resume: bool = False,
+        save_every: int = 0,
     ) -> BackwardState:
         ckpt_list = sorted_checkpoints(ckpt_dir)
-        expected_idx, _ = ckpt_list[-1]
-        last_idx = expected_idx
 
         main = not dist.is_initialized() or dist.get_rank() == 0
+        rank = dist.get_rank() if dist.is_initialized() else 0
+        bwd_ckpt_path = os.path.join(ckpt_dir, f"backward_rank{rank}.pt")
+
+        if resume and os.path.exists(bwd_ckpt_path):
+            bwd_state, ckpt_list, expected_idx, last_idx = self.load_backward_state(
+                bwd_ckpt_path, ckpt_list, data.device, main
+            )
+        else:
+            expected_idx, _ = ckpt_list[-1]
+            last_idx = expected_idx
+
         main_pbar = RtlTqdm(
             desc="Backward",
-            total=expected_idx + 1,
+            total=last_idx + 1,
+            initial=last_idx - expected_idx,
             disable=not main,
             position=0,
             # Get rid of jitters in the ETA due to rematerialization
@@ -489,8 +549,19 @@ class Trainer:
             weight_grads = result[-1] + w_grads
             bwd_state = BackwardState(param_grads, result[:-1], weight_grads)
 
+            # Save backward state for resume
+            steps_done = last_idx - expected_idx
+            if save_every > 0 and steps_done % save_every == 0:
+                self.save_backward_state(
+                    bwd_state, bwd_ckpt_path, expected_idx, last_idx
+                )
+
         for fut in save_futures:
             fut.result()
+
+        # Clean up backward state file on successful completion
+        if os.path.exists(bwd_ckpt_path):
+            os.remove(bwd_ckpt_path)
 
         main_pbar.close()
         return bwd_state
