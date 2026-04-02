@@ -9,7 +9,14 @@ from datasets import (
     Dataset,
     IterableDataset,
 )
-from peft import PeftConfig, PeftModel, get_peft_model_state_dict
+from peft import (
+    PeftConfig,
+    PeftModel,
+    PeftType,
+    get_peft_model,
+    get_peft_model_state_dict,
+)
+from peft.mapping import PEFT_TYPE_TO_CONFIG_MAPPING
 from torch.distributed.fsdp import fully_shard
 from transformers import (
     AutoConfig,
@@ -28,6 +35,7 @@ from bergson.data import (
 from bergson.format import apply_format
 from bergson.gradients import GradientProcessor, Normalizer
 from bergson.utils import assert_type, get_layer_list, weighted_causal_lm_ce
+from bergson.utils.utils import simple_parse_kwargs_string
 
 BIG_NUM = np.iinfo(np.int64).max
 
@@ -107,6 +115,24 @@ def apply_force_math_sdp(cfg: ModelConfig) -> None:
     print("force_math_sdp: disabled flash and memory-efficient SDPA backends")
 
 
+def extract_peft_target_modules(model: PreTrainedModel) -> set[str]:
+    """Extract adapter module names from a PeftModel."""
+    target_modules: set[str] = set()
+    peft_state_dict = get_peft_model_state_dict(model=model)
+    for adapter in model.peft_config.keys():
+        for name in list(peft_state_dict.keys()):
+            prefix = name.removesuffix(".weight")
+            processed_name = f"{prefix}.{adapter}".removeprefix("base_model.")
+            try:
+                model.get_submodule(processed_name)
+                target_modules.add(processed_name)
+            except AttributeError:
+                print(
+                    f"Adapter parameter '{processed_name}'" " not found in the model."
+                )
+    return target_modules
+
+
 def setup_model_and_peft(
     cfg: ModelConfig,
     device_map_auto: bool = False,
@@ -115,6 +141,7 @@ def setup_model_and_peft(
 ) -> tuple[PreTrainedModel | PeftModel, set | None]:
     """Handle model loading, quantization, FSDP, and PEFT detection"""
     apply_force_math_sdp(cfg)
+
     local_rank = cfg.distributed.local_rank
 
     match cfg.precision:
@@ -150,57 +177,55 @@ def setup_model_and_peft(
             bnb_4bit_use_double_quant=True,
         )
 
-    # Try to detect PEFT model
+    # Determine base model path and whether we're loading a pretrained adapter
     try:
-        peft_config = PeftConfig.from_pretrained(cfg.model)
+        pretrained_peft_config = PeftConfig.from_pretrained(cfg.model)
     except ValueError:
-        peft_config = None
+        pretrained_peft_config = None
 
-    if peft_config is None:
-        # Load regular model
-        model = AutoModelForCausalLM.from_pretrained(
-            cfg.model,
-            device_map=device_map,
-            quantization_config=quantization_config,
-            dtype=dtype,
-            revision=cfg.revision,
-            **model_kwargs,
-        )
-        model.loss_function = weighted_causal_lm_ce
-        target_modules = None
-    else:
-        # Load PEFT model
-        base_model = AutoModelForCausalLM.from_pretrained(
-            peft_config.base_model_name_or_path,  # type: ignore
-            device_map=device_map,
-            quantization_config=quantization_config,
-            dtype=dtype,
-            revision=cfg.revision,
-            **model_kwargs,
-        )
-        base_model.loss_function = weighted_causal_lm_ce
+    assert not (cfg.peft_init_kwargs and pretrained_peft_config), (
+        f"peft_init_args is set but '{cfg.model}' is already a"
+        " PEFT adapter."
+    )
 
+    base_model_path = (
+        pretrained_peft_config.base_model_name_or_path  # type: ignore
+        if pretrained_peft_config
+        else cfg.model
+    )
+    assert base_model_path is not None
+
+    model_kwargs.update(
+        simple_parse_kwargs_string(cfg.model_kwargs)
+    )
+
+    model = AutoModelForCausalLM.from_pretrained(
+        base_model_path,
+        device_map=device_map,
+        quantization_config=quantization_config,
+        dtype=dtype,
+        revision=cfg.revision,
+        **model_kwargs,
+    )
+    model.loss_function = weighted_causal_lm_ce
+    target_modules = None
+
+    if cfg.peft_init_kwargs:
+        # Initialize a fresh PEFT adapter
+        peft_kwargs = simple_parse_kwargs_string(cfg.peft_init_kwargs)
+        peft_type = PeftType(peft_kwargs.pop("peft_type", "LORA"))
+        peft_config_cls = PEFT_TYPE_TO_CONFIG_MAPPING[peft_type]
+        model = get_peft_model(model, peft_config_cls(**peft_kwargs))
+        target_modules = extract_peft_target_modules(model) # type: ignore
+    elif pretrained_peft_config:
+        # Load pretrained PEFT adapter
         model = PeftModel.from_pretrained(
-            base_model,
+            model,
             cfg.model,
             device_map=device_map,
             autocast_adapter_dtype=False,
         )
-
-        # Extract target modules
-        target_modules = set()
-        peft_state_dict = get_peft_model_state_dict(model=model)
-        for adapter in model.peft_config.keys():
-            for name in list(peft_state_dict.keys()):
-                prefix = name.removesuffix(".weight")
-                processed_name = f"{prefix}.{adapter}".removeprefix("base_model.")
-                try:
-                    model.get_submodule(processed_name)
-                    target_modules.add(processed_name)
-                except AttributeError:
-                    print(
-                        f"Adapter parameter '{processed_name}' not found in the model."
-                    )
+        target_modules = extract_peft_target_modules(model) # type: ignore
 
     # Configure gradients
     model.requires_grad_(False)
@@ -317,7 +342,7 @@ def setup_data_pipeline(
     data_cfg = data_cfg or cfg.data
 
     ds = load_data_string(
-        data_cfg.dataset, data_cfg.split, data_cfg.subset, data_cfg.data_args
+        data_cfg.dataset, data_cfg.split, data_cfg.subset, data_cfg.data_kwargs
     )
     tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer or cfg.model)
     max_model_length = max_tokens_for_model(tokenizer, cfg.model, cfg.revision)

@@ -46,7 +46,7 @@ class DataConfig(Serializable):
     and optionally `doc_to_target` and `doc_to_choice`. MCQA YAML
     available at `bergson/templates/mcqa.yaml`."""
 
-    data_args: str = ""
+    data_kwargs: str = ""
     """Arguments to pass to the dataset constructor in the format
     arg1=val1,arg2=val2."""
 
@@ -135,6 +135,14 @@ class ModelConfig(ABC):
 
     fsdp: bool = False
     """Whether to use PyTorch Fully Sharded Data Parallel (FSDP)"""
+
+    peft_init_kwargs: str = ""
+    """peft.LoraConfig arguments for initializing a PEFT adapter on the
+    base model in the format 'arg1=val1,arg2=val2'.
+    Use | to separate list values, e.g. target_modules=q_proj|k_proj|v_proj."""
+
+    model_kwargs: str = ""
+    """HF Model kwargs for in the format 'arg1=val1,arg2=val2'."""
 
 
 @dataclass

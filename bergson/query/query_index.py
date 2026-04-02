@@ -82,7 +82,7 @@ def query(
         index_cfg.data.dataset,
         index_cfg.data.split,
         index_cfg.data.subset,
-        index_cfg.data.data_args,
+        index_cfg.data.data_kwargs,
     )
 
     faiss_cfg = FaissConfig() if query_cfg.faiss else None

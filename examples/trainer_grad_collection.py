@@ -120,7 +120,7 @@ def main(args: IndexConfig):
     dataset = load_data_string(
         args.data.dataset,
         args.data.split,
-        data_args=args.data.data_args,
+        data_kwargs=args.data.data_kwargs,
     )
     dataset = dataset.map(
         tokenize,

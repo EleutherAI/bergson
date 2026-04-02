@@ -59,6 +59,8 @@ def handle_arg_string(arg: str):
         return True
     elif arg.lower() == "false":
         return False
+    elif "|" in arg:
+        return [handle_arg_string(v) for v in arg.split("|")]
     elif arg.isnumeric():
         return int(arg)
     try:
@@ -67,7 +69,7 @@ def handle_arg_string(arg: str):
         return arg
 
 
-def simple_parse_args_string(args_string: str) -> dict[str, Any]:
+def simple_parse_kwargs_string(args_string: str) -> dict[str, Any]:
     """
     Parses something like
         args1=val1,arg2=val2

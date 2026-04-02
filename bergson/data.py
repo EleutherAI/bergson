@@ -26,7 +26,7 @@ from transformers import PreTrainedTokenizerFast, logging
 from .config import DataConfig
 from .utils.utils import (
     assert_type,
-    simple_parse_args_string,
+    simple_parse_kwargs_string,
 )
 
 
@@ -425,7 +425,7 @@ def load_data_string(
     data_str: str,
     split: str = "train",
     subset: str | None = None,
-    data_args: str = "",
+    data_kwargs: str = "",
 ) -> Dataset:
     """Load a dataset from a string identifier or path."""
     if data_str.endswith(".csv"):
@@ -438,7 +438,7 @@ def load_data_string(
             ds = ds[split]
     else:
         try:
-            kwargs = simple_parse_args_string(data_args)
+            kwargs = simple_parse_kwargs_string(data_kwargs)
             ds = load_dataset(data_str, subset, split=split, **kwargs)
 
             if isinstance(ds, DatasetDict) or isinstance(ds, IterableDatasetDict):
