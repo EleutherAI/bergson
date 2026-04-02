@@ -62,6 +62,7 @@ Experiments
    :maxdepth: 2
 
    experiments
+   magic
 
 API Reference
 --------------

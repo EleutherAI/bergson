@@ -144,67 +144,6 @@ def _get_factor_run_path(
 # ---------------------------------------------------------------------------
 
 
-def _run_bergson_normalizer(
-    run_cfg: RunConfig,
-    spec,
-    train_tokens: int,
-    run_path: Path,
-    ds,
-) -> tuple[float, float]:
-    """Run bergson normalizer factor computation and return (seconds, peak_mb)."""
-    from bergson.collector.collector import CollectorComputer
-    from bergson.config import DataConfig, IndexConfig
-    from bergson.data import allocate_batches
-    from bergson.normalizer.fit_normalizers import NormalizerCollector
-    from bergson.utils.worker_utils import setup_model_and_peft
-
-    index_cfg = IndexConfig(
-        run_path=str(run_path),
-        model=spec.hf_id,
-        data=DataConfig(
-            dataset=run_cfg.dataset,
-            split="train",
-            prompt_column="text",
-        ),
-        token_batch_size=run_cfg.token_batch_size,
-        max_tokens=train_tokens,
-        precision="bf16",
-        normalizer=run_cfg.normalizer,
-        skip_preconditioners=True,
-        skip_index=True,
-    )
-    Path(index_cfg.run_path).mkdir(parents=True, exist_ok=True)
-    index_cfg.partial_run_path.mkdir(parents=True, exist_ok=True)
-
-    model, _ = setup_model_and_peft(index_cfg, device_map_auto=True)
-    batches = allocate_batches(ds["length"][:], run_cfg.token_batch_size)
-
-    collector = NormalizerCollector(
-        model=model.base_model,  # type: ignore
-        data=ds,
-        cfg=index_cfg,
-        filter_modules=index_cfg.filter_modules,
-    )
-    computer = CollectorComputer(
-        model=model,
-        data=ds,
-        collector=collector,
-        batches=batches,
-        cfg=index_cfg,
-    )
-
-    device = _model_device(model)
-    print(f"Running normalizer ({run_cfg.normalizer}) over {len(batches)} batches...")
-    torch.cuda.reset_peak_memory_stats(device)
-    torch.cuda.synchronize(device)
-    start = time.perf_counter()
-    computer.run_with_collector_hooks(desc="normalizer")
-    torch.cuda.synchronize(device)
-    elapsed = time.perf_counter() - start
-    peak_mb = torch.cuda.max_memory_allocated(device) / (1024**2)
-    return elapsed, peak_mb
-
-
 def _run_bergson_preconditioner(
     run_cfg: RunConfig,
     spec,
@@ -320,7 +259,7 @@ def _run_bergson_kfac(
         target_modules=target_modules,
         path=str(index_cfg.partial_run_path),
         filter_modules=index_cfg.filter_modules,
-        dtype=model.dtype,
+        dtype=model.dtype,  # type: ignore[attr-defined]
     )
     computer = CollectorComputer(
         model=model,
@@ -654,11 +593,7 @@ class Run:
         try:
             result: tuple[float, float] | None = None
             if run_cfg.method == "bergson":
-                if run_cfg.factor_type == "normalizer":
-                    result = _run_bergson_normalizer(
-                        run_cfg, spec, train_tokens, run_path, ds
-                    )
-                elif run_cfg.factor_type == "preconditioner":
+                if run_cfg.factor_type == "preconditioner":
                     result = _run_bergson_preconditioner(
                         run_cfg, spec, train_tokens, run_path, ds
                     )

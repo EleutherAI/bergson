@@ -34,7 +34,7 @@ class FiniteDiff:
             ## Normalize the gradient if needed
             mod_name = name.removesuffix(".weight")
             if (n := self.normalizers.get(mod_name)) is not None:
-                n.normalize_(g)
+                n.normalize_weight(g)
                 num_normalized += 1
 
             # Compute the finite difference in-place *in the grad buffer*

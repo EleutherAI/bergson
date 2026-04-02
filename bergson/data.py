@@ -2,6 +2,8 @@ import json
 import math
 import os
 import random
+import re
+from multiprocessing import cpu_count
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -13,13 +15,13 @@ import torch.distributed as dist
 from datasets import (
     Dataset,
     DatasetDict,
-    IterableDataset,
     IterableDatasetDict,
     concatenate_datasets,
     load_dataset,
 )
 from numpy.lib.recfunctions import structured_to_unstructured
 from numpy.typing import DTypeLike
+from transformers import PreTrainedTokenizerFast, logging
 
 from .config import DataConfig
 from .utils.utils import (
@@ -244,10 +246,27 @@ def _allocate_batches_world(
     """
     if ranks is None:
         ranks = list(range(world_size))
-    if len(doc_lengths) < world_size:
-        raise RuntimeError("Not enough documents to distribute across workers.")
-
-    docs_sorted = sorted(enumerate(doc_lengths), key=lambda x: x[1], reverse=True)
+    # Skip documents shorter than 2 tokens: they cannot produce a valid
+    # next-token label so they contribute no gradient.  Keeping them would
+    # also be problematic for length-0 documents which create [N, 0] tensors
+    # that hang the model forward pass.  These documents are simply omitted
+    # from batches; their gradient index entries stay at the pre-initialized
+    # zero value.
+    docs_sorted = sorted(
+        ((i, l) for i, l in enumerate(doc_lengths) if l >= 2),
+        key=lambda x: x[1],
+        reverse=True,
+    )
+    n_skipped = len(doc_lengths) - len(docs_sorted)
+    if n_skipped > 0 and (not dist.is_initialized() or dist.get_rank() == 0):
+        print(
+            f"Skipping {n_skipped} documents with fewer than 2 tokens "
+            f"(no valid next-token labels)."
+        )
+    if len(docs_sorted) < world_size:
+        raise RuntimeError(
+            "Not enough documents (with 2+ tokens) to distribute across workers."
+        )
     if docs_sorted[0][1] > N:  # a single document would overflow any batch
         raise RuntimeError(
             f"At least one document is too long for the token batch size {N}."
@@ -407,7 +426,7 @@ def load_data_string(
     split: str = "train",
     subset: str | None = None,
     data_args: str = "",
-) -> Dataset | IterableDataset:
+) -> Dataset:
     """Load a dataset from a string identifier or path."""
     if data_str.endswith(".csv"):
         ds = Dataset.from_csv(data_str)
@@ -542,6 +561,25 @@ def load_scores(
     return Scores(mmap, info)
 
 
+def sorted_checkpoints(folder: str) -> list[tuple[int, str]]:
+    """
+    Return a list of (step, filepath) sorted by step
+    for files named like: step_<index>.ckpt
+    """
+    pattern = re.compile(r"step_(\d+)\.ckpt$")
+
+    checkpoints = []
+    for name in os.listdir(folder):
+        path = os.path.join(folder, name)
+
+        match = pattern.match(name)
+        if match:
+            step = int(match.group(1))
+            checkpoints.append((step, path))
+
+    return sorted(checkpoints, key=lambda x: x[0])
+
+
 def pad_and_tensor(
     sequences: list[list[int]],
     labels: list[list[int]] | None = None,
@@ -561,6 +599,11 @@ def pad_and_tensor(
 
     # find max length
     max_len = max(len(seq) for seq in sequences)
+    if dist.is_initialized():
+        max_len_tensor = torch.tensor(max_len, device=device)
+        dist.all_reduce(max_len_tensor, op=dist.ReduceOp.MAX)
+        max_len = int(max_len_tensor)
+
     # pad each sequence
     padded = [seq + [padding_value] * (max_len - len(seq)) for seq in sequences]
     labels = [label + [-100] * (max_len - len(label)) for label in labels]
@@ -568,6 +611,7 @@ def pad_and_tensor(
     # convert to tensor
     padded_tokens = torch.tensor(padded, dtype=dtype, device=device)
     padded_labels = torch.tensor(labels, dtype=dtype, device=device)
+
     # Compute valid_masks: position i is valid if labels[i+1] != -100
     N, S = padded_tokens.shape
     valid_masks = torch.zeros(N, S, dtype=torch.bool, device=device)
@@ -610,8 +654,10 @@ def tokenize(
         return tokenizer(batch[args.prompt_column], **kwargs)
 
     # Make sure we only compute loss on the assistant's responses
+    # Chat templates already include special tokens (BOS/EOS) in the rendered
+    # string, so we must disable add_special_tokens to avoid duplicates.
     strings = tokenizer.apply_chat_template(convos, tokenize=False)
-    encodings = tokenizer(strings, **kwargs)
+    encodings = tokenizer(strings, add_special_tokens=False, **kwargs)
     labels_list: list[list[int]] = []
 
     for i, convo in enumerate(convos):
@@ -649,6 +695,119 @@ def tokenize(
         labels_list.append(labels)
 
     return dict(**encodings, labels=labels_list)
+
+
+def tokenize_and_chunk(
+    dataset: Dataset,
+    tokenizer: PreTrainedTokenizerFast,
+    chunk_size: int,
+    text_column: str = "text",
+    *,
+    num_proc: int = cpu_count() // 2,
+) -> Dataset:
+    """
+    Tokenizes a text dataset and chunks tokens into uniform-length sequences.
+
+    Uses a streaming generator to carry remainder tokens across document
+    boundaries — no tokens are ever dropped, no padding is used, and memory
+    usage stays flat regardless of dataset size.
+
+    Args:
+        dataset:     HuggingFace Dataset with a text column.
+        tokenizer:   A HuggingFace tokenizer (must have eos_token_id set).
+        chunk_size:  Number of tokens per output chunk.
+        text_column: Name of the column containing raw text.
+        num_proc:    Number of processes for the tokenization .map() pass.
+
+    Returns:
+        A Dataset where every row has a single 'input_ids' list of length chunk_size.
+    """
+    eos_id = tokenizer.eos_token_id
+    if eos_id is None:
+        raise ValueError("Tokenizer does not have an eos_token_id set.")
+
+    # Suppress long sequence errors
+    original_verbosity = logging.get_verbosity()
+    logging.set_verbosity_error()
+
+    # ── Step 1: tokenize each document in parallel ───────────────────────────
+    def tokenize_batch(batch):
+        return tokenizer(
+            batch[text_column],
+            add_special_tokens=False,
+            truncation=False,
+            padding=False,
+        )
+
+    tokenized = dataset.map(
+        tokenize_batch,
+        batched=True,
+        desc="Tokenizing",
+        num_proc=num_proc,
+        remove_columns=dataset.column_names,
+    )
+
+    # ── Step 2: concatenate the token stream and slice into fixed-size chunks ──
+    def chunk_batch(batch, indices: list[int]):
+        # Flatten all token lists in this batch into one stream
+        doc_stream = []
+        token_stream = []
+        for doc_idx, ids in zip(indices, batch["input_ids"]):
+            # Mark these tokens as belonging to the current document
+            doc_stream.extend([doc_idx] * (len(ids) + 1))  # +1 for EOS token
+
+            token_stream.extend(ids)
+            token_stream.append(eos_id)  # ensure document boundary tokens
+
+        # Slice into complete chunks; keep the remainder for the next batch
+        # NOTE: .map() does NOT carry state between batches, so any tokens that
+        # don't fill a complete chunk at the end of a batch are dropped.
+        # To avoid this, set batch_size large enough (or process as a single batch)
+        # so that tail loss is negligible, OR use the single-process approach below.
+        n_chunks = len(token_stream) // chunk_size
+        doc_chunks = [
+            doc_stream[i * chunk_size : (i + 1) * chunk_size] for i in range(n_chunks)
+        ]
+        token_chunks = [
+            token_stream[i * chunk_size : (i + 1) * chunk_size] for i in range(n_chunks)
+        ]
+        return {"input_ids": token_chunks, "doc_ids": doc_chunks}
+
+    # Cap parallelism so each worker gets enough documents to fill many chunks,
+    # since tail tokens that don't fill a chunk are dropped per-worker.
+    min_docs_per_worker = chunk_size * 4
+    num_proc = min(num_proc, max(len(tokenized) // min_docs_per_worker, 1))
+    bs = min(10_000, len(tokenized) // num_proc)
+    chunked = tokenized.map(
+        chunk_batch,
+        batched=True,
+        batch_size=bs,
+        num_proc=num_proc,
+        desc="Chunking",
+        remove_columns=tokenized.column_names,
+        with_indices=True,
+    )
+    # Make sure HuggingFace didn't change the dataset type!
+    assert isinstance(chunked, type(dataset))
+
+    # Warn if chunking dropped a significant number of documents
+    n_docs = len(dataset)
+    if n_docs > 0 and "doc_ids" in chunked.column_names:
+        represented = set()
+        for doc_ids in chunked["doc_ids"]:
+            represented.update(doc_ids)
+        n_dropped = n_docs - len(represented)
+        if n_dropped > 0:
+            pct = n_dropped / n_docs * 100
+            print(
+                f"Warning: chunking dropped {n_dropped}/{n_docs} documents "
+                f"({pct:.1f}%) that didn't fill a {chunk_size}-token chunk "
+                f"when using a document batch size of {bs}."
+            )
+
+    # Restore original logging level
+    logging.set_verbosity(original_verbosity)
+    return chunked
 
 
 def unflatten(x: torch.Tensor, shapes: dict[str, Sequence[int]], dim: int = -1):

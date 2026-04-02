@@ -166,7 +166,7 @@ class FaissIndex:
     def __init__(self, path: Path, device: str, mmap_index: bool):
         faiss = _require_faiss()
 
-        config_path = Path(path) / "config.json"
+        config_path = Path(path) / "config.yaml"
 
         if not config_path.exists():
             raise FileNotFoundError(
@@ -316,7 +316,7 @@ class FaissIndex:
             del grads
 
         # Write the configuration to disk
-        with open(faiss_path / "config.json", "w") as f:
+        with open(faiss_path / "config.yaml", "w") as f:
             json.dump(
                 {
                     "faiss_cfg": faiss_cfg.__dict__,

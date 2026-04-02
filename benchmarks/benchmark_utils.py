@@ -87,7 +87,7 @@ def prepare_benchmark_ds_path():
             ),
             auto_batch_size=True,
         )
-        ds = setup_data_pipeline(index_cfg)
+        ds, _ = setup_data_pipeline(index_cfg)
         ds.save_to_disk(benchmark_ds_path)
 
         # Count number of tokens in the dataset

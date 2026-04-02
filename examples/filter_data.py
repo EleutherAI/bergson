@@ -314,8 +314,8 @@ def sft_full(args: FilterConfig, output_dir: str) -> str:
     """
     # Check for actual model files, not just directory existence
     output_path = Path(output_dir)
-    has_model = (output_path / "config.json").exists() or (
-        output_path / "adapter_config.json"
+    has_model = (output_path / "config.yaml").exists() or (
+        output_path / "adapter_config.yaml"
     ).exists()
     if has_model:
         print(f"SFT checkpoint already exists at {output_dir}, skipping.")

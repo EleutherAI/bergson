@@ -1,7 +1,6 @@
 import shutil
 import warnings
 from pathlib import Path
-from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -20,11 +19,17 @@ from transformers import (
     PreTrainedModel,
 )
 
-from bergson.config import DataConfig, IndexConfig
-from bergson.data import allocate_batches, load_data_string, tokenize
+from bergson.config import AttributionConfig, DataConfig, IndexConfig, ModelConfig
+from bergson.data import (
+    load_data_string,
+    tokenize,
+    tokenize_and_chunk,
+)
+from bergson.format import apply_format
 from bergson.gradients import GradientProcessor, Normalizer
-from bergson.normalizer.fit_normalizers import fit_normalizers
-from bergson.utils.utils import assert_type, get_layer_list
+from bergson.utils import assert_type, get_layer_list, weighted_causal_lm_ce
+
+BIG_NUM = np.iinfo(np.int64).max
 
 
 def validate_run_path(index_cfg: IndexConfig):
@@ -44,53 +49,17 @@ def validate_run_path(index_cfg: IndexConfig):
             )
 
 
-def create_normalizers(
-    model: PreTrainedModel,
-    ds: Dataset | IterableDataset,
-    cfg: IndexConfig,
-    target_modules: set[str] | None = None,
-) -> dict[str, Normalizer]:
-    """Create normalizers for the model"""
-    if cfg.normalizer != "none":
-        # Evenly sample `stats_sample_size` examples to compute statistics
-        if isinstance(ds, Dataset):
-            if cfg.stats_sample_size is not None and cfg.stats_sample_size < len(ds):
-                stats_ds = ds.shuffle(seed=0).select(range(cfg.stats_sample_size))
-            else:
-                stats_ds = ds
-        else:
-            if cfg.stats_sample_size is None:
-                stats_iterable_ds = ds
-            else:
-                stats_iterable_ds = ds.shuffle(seed=0).take(cfg.stats_sample_size)
-
-            stats_ds = assert_type(
-                Dataset, Dataset.from_generator(lambda: iter(stats_iterable_ds))
-            )
-
-        return fit_normalizers(
-            model,
-            stats_ds,
-            cfg,
-            batches=allocate_batches(stats_ds["length"][:], cfg.token_batch_size),
-            target_modules=target_modules,
-        )
-
-    return {}
-
-
 def create_processor(
-    model: PreTrainedModel,
-    ds: Dataset | IterableDataset,
+    model: PreTrainedModel | PeftModel,
     cfg: IndexConfig,
     target_modules: set[str] | None = None,
 ) -> GradientProcessor:
-    """Handle processor creation and normalizer fitting"""
+    """Handle processor creation and normalizer loading."""
     local_rank = cfg.distributed.local_rank
     rank = cfg.distributed.rank
 
     processor_path = Path(cfg.processor_path)
-    if (processor_path / "processor_config.json").exists():
+    if (processor_path / "processor_config.yaml").exists():
         if local_rank == 0:
             print(f"Loading processor from '{cfg.processor_path}'")
 
@@ -100,7 +69,16 @@ def create_processor(
             skip_preconditioners=cfg.skip_preconditioners,
         )
     else:
-        normalizers = create_normalizers(model, ds, cfg, target_modules)
+        normalizers: dict[str, Normalizer] = {}
+        if cfg.optimizer_state_path:
+            from bergson.utils.load_from_optimizer import load_from_optimizer
+
+            normalizers = load_from_optimizer(
+                model,
+                cfg.optimizer_state_path,
+                include_bias=cfg.include_bias,
+                target_modules=target_modules,
+            )
 
         processor = GradientProcessor(
             normalizers,
@@ -115,11 +93,28 @@ def create_processor(
     return processor
 
 
+def apply_force_math_sdp(cfg: ModelConfig) -> None:
+    """Disable flash and memory-efficient SDPA backends when requested.
+
+    Forces the math-only SDPA kernel, which produces consistent gradients
+    across different padding lengths and batch compositions.
+    """
+    if not getattr(cfg, "force_math_sdp", False):
+        return
+
+    torch.backends.cuda.enable_flash_sdp(False)
+    torch.backends.cuda.enable_mem_efficient_sdp(False)
+    print("force_math_sdp: disabled flash and memory-efficient SDPA backends")
+
+
 def setup_model_and_peft(
-    cfg: IndexConfig,
+    cfg: ModelConfig,
     device_map_auto: bool = False,
-) -> tuple[PreTrainedModel, set | None]:
+    apply_fsdp: bool = True,
+    **model_kwargs,
+) -> tuple[PreTrainedModel | PeftModel, set | None]:
     """Handle model loading, quantization, FSDP, and PEFT detection"""
+    apply_force_math_sdp(cfg)
     local_rank = cfg.distributed.local_rank
 
     match cfg.precision:
@@ -167,20 +162,23 @@ def setup_model_and_peft(
             cfg.model,
             device_map=device_map,
             quantization_config=quantization_config,
-            torch_dtype=dtype,
+            dtype=dtype,
             revision=cfg.revision,
+            **model_kwargs,
         )
+        model.loss_function = weighted_causal_lm_ce
         target_modules = None
-
     else:
         # Load PEFT model
         base_model = AutoModelForCausalLM.from_pretrained(
             peft_config.base_model_name_or_path,  # type: ignore
             device_map=device_map,
             quantization_config=quantization_config,
-            torch_dtype=dtype,
+            dtype=dtype,
             revision=cfg.revision,
+            **model_kwargs,
         )
+        base_model.loss_function = weighted_causal_lm_ce
 
         model = PeftModel.from_pretrained(
             base_model,
@@ -209,12 +207,10 @@ def setup_model_and_peft(
     model.get_input_embeddings().requires_grad_(True)  # type: ignore
 
     # Apply FSDP if needed
-    if cfg.fsdp:
+    if cfg.fsdp and apply_fsdp:
         for layer in get_layer_list(model):  # type: ignore
             fully_shard(layer)
         fully_shard(model)
-
-    model = cast(PreTrainedModel, model)
 
     return model, target_modules  # type: ignore
 
@@ -231,9 +227,7 @@ def estimate_advantage(ds: Dataset, cfg: DataConfig):
     return advantages.tolist()
 
 
-def filter_by_max_tokens(
-    ds: Dataset | IterableDataset, cfg: IndexConfig
-) -> Dataset | IterableDataset:
+def filter_by_max_tokens(ds: Dataset, cfg: AttributionConfig) -> Dataset:
     """Filter the dataset by the max tokens limit. This is an experimental
     benchmarking feature that may be removed in the future.
 
@@ -296,86 +290,117 @@ def filter_by_max_tokens(
     return ds
 
 
-def setup_data_pipeline(cfg: IndexConfig) -> Dataset | IterableDataset:
-    """Handle data loading and preprocessing"""
-    ds = load_data_string(
-        cfg.data.dataset, cfg.data.split, cfg.data.subset, cfg.data.data_args
-    )
-
-    tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer or cfg.model)
-
-    default_model_max_len = getattr(tokenizer, "model_max_length", None)
-    if (
-        default_model_max_len is not None
-        and cfg.token_batch_size > default_model_max_len
-    ):
-        raise ValueError(
-            f"Token batch size {cfg.token_batch_size} exceeds model_max_length "
-            f"({default_model_max_len}). "
-            f"Use --token_batch_size {default_model_max_len} or smaller."
-        )
-
+def max_tokens_for_model(tokenizer, model_str: str, revision: str | None) -> int:
+    # You might think model_max_length should always be the same as
+    # max_position_embeddings, but some models (e.g. Pythia!) have a smaller
+    # max_position_embeddings than model_max_length, so we need to check both.
     # Resolve the base model for config loading (PEFT adapters don't have
-    # a full config.json, so we need the base model path).
-    config_model: str = cfg.model
+    # a full config.yaml, so we need the base model path).
     try:
-        peft_cfg = PeftConfig.from_pretrained(cfg.model)
+        peft_cfg = PeftConfig.from_pretrained(model_str)
         if peft_cfg.base_model_name_or_path:
-            config_model = peft_cfg.base_model_name_or_path
+            model_str = peft_cfg.base_model_name_or_path
     except ValueError:
         pass
 
-    max_pos_emb = getattr(
-        AutoConfig.from_pretrained(config_model, revision=cfg.revision),
-        "max_position_embeddings",
-        None,
-    )
-    if max_pos_emb is not None:
-        max_length = min(max_pos_emb, cfg.token_batch_size)
-    else:
-        max_length = cfg.token_batch_size
+    model_cfg = AutoConfig.from_pretrained(model_str, revision=revision)
+    model_max_length = getattr(tokenizer, "model_max_length", BIG_NUM)
+    max_pos_emb = getattr(model_cfg, "max_position_embeddings", BIG_NUM)
+    return min(model_max_length, max_pos_emb)
 
-    remove_columns = ds.column_names if cfg.drop_columns else None
+
+def setup_data_pipeline(
+    cfg: AttributionConfig,
+    data_cfg: DataConfig | None = None,
+) -> tuple[Dataset, int]:
+    """Handle data loading and preprocessing"""
+    data_cfg = data_cfg or cfg.data
+
+    ds = load_data_string(
+        data_cfg.dataset, data_cfg.split, data_cfg.subset, data_cfg.data_args
+    )
+    tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer or cfg.model)
+    max_model_length = max_tokens_for_model(tokenizer, cfg.model, cfg.revision)
+
+    if data_cfg.chunk_length > 0:
+        # Sanity check
+        if data_cfg.chunk_length > max_model_length:
+            raise ValueError(
+                f"chunk_length {data_cfg.chunk_length} exceeds model's maximum context"
+                f" length {max_model_length}"
+            )
+
+        tokenized = tokenize_and_chunk(
+            ds,
+            tokenizer,
+            chunk_size=data_cfg.chunk_length,
+        )
+        return tokenized, len(ds)
+
+    max_token_bz = getattr(cfg, "token_batch_size", BIG_NUM)
+    if BIG_NUM > max_token_bz > max_model_length:
+        raise ValueError(
+            f"Token batch size {max_token_bz} exceeds model max length "
+            f"({max_model_length}). "
+            f"Use --token_batch_size {max_model_length} or smaller."
+        )
+
+    max_length = min(max_model_length, max_token_bz)
+    remove_columns = set(ds.column_names) if cfg.drop_columns else set()
+    tokenize_cfg = data_cfg
+
+    if data_cfg.format_template:
+        ds = apply_format(ds, data_cfg.format_template)
+        tokenize_cfg = DataConfig(
+            prompt_column="prompt" if "completion" in ds.column_names else "text",
+            completion_column="completion" if "completion" in ds.column_names else "",
+            truncation=data_cfg.truncation,
+        )
 
     if not ds.column_names or "input_ids" not in ds.column_names:
         ds = ds.map(
             tokenize,
             batched=True,
-            fn_kwargs=dict(args=cfg.data, tokenizer=tokenizer, max_length=max_length),
+            fn_kwargs=dict(
+                args=tokenize_cfg,
+                tokenizer=tokenizer,
+                max_length=max_length,
+            ),
         )
 
-    if not cfg.data.truncation and isinstance(ds, Dataset):
+    # Suggest to the user that they turn on truncation
+    if not data_cfg.truncation:
         max_doc_len = max(ds["length"])
-        if max_pos_emb is not None and max_doc_len > max_pos_emb:
+        if max_model_length is not None and max_doc_len > max_model_length:
             warnings.warn(
-                f"Dataset contains a document longer than max_position_embeddings "
-                f"({max_doc_len} > {max_pos_emb}). "
+                f"Dataset contains a document longer than the model can handle "
+                f"({max_doc_len} > {max_model_length}). "
                 f"Consider using --truncation."
             )
-        elif max_doc_len > cfg.token_batch_size:
+        elif max_doc_len > max_token_bz:
             warnings.warn(
                 f"Dataset contains a document longer than token_batch_size "
-                f"({max_doc_len} > {cfg.token_batch_size}). "
+                f"({max_doc_len} > {max_token_bz}). "
                 f"Consider increasing --token_batch_size or using --truncation."
             )
 
-    if cfg.data.reward_column:
+    if data_cfg.reward_column:
         assert isinstance(ds, Dataset), "Dataset required for advantage estimation"
 
-        rewards = np.array(ds[cfg.data.reward_column], dtype=np.float64)
+        rewards = np.array(ds[data_cfg.reward_column], dtype=np.float64)
         nan_mask = np.isnan(rewards)
         if nan_mask.any():
-            if cfg.data.skip_nan_rewards:
+            if data_cfg.skip_nan_rewards:
                 print(f"Warning: Filtering out {nan_mask.sum()} rows with NaN rewards")
                 ds = ds.filter(lambda _, idx: not nan_mask[idx], with_indices=True)
             else:
                 raise ValueError(
-                    f"Reward column '{cfg.data.reward_column}' contains NaN values"
+                    f"Reward column '{data_cfg.reward_column}' contains NaN values"
                 )
 
         ds = ds.add_column(
             "advantage",
-            estimate_advantage(ds, cfg.data),
+            estimate_advantage(ds, data_cfg),
             new_fingerprint="advantage",  # type: ignore
         )
 
@@ -384,10 +409,10 @@ def setup_data_pipeline(cfg: IndexConfig) -> Dataset | IterableDataset:
         ds = filter_by_max_tokens(ds, cfg)
 
     # Remove extraneous columns
-    if remove_columns is not None:
-        keep = {"length", "input_ids", "labels"}
-        columns_to_remove = [col for col in remove_columns if col not in keep]
-        if columns_to_remove:
-            ds = ds.remove_columns(columns_to_remove)
+    keep = {"length", "input_ids", "labels"}
+    remove_columns -= keep
+    remove_columns &= set(ds.column_names)
+    if remove_columns:
+        ds = ds.remove_columns(list(remove_columns))
 
-    return ds
+    return ds, len(ds)

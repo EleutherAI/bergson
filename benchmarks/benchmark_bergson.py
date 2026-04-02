@@ -30,7 +30,6 @@ from bergson.gradients import GradientProcessor
 from bergson.score.score_writer import InMemorySequenceScoreWriter
 from bergson.score.scorer import Scorer
 from bergson.utils.auto_batch_size import determine_batch_size
-from bergson.utils.utils import assert_type
 from bergson.utils.worker_utils import (
     setup_data_pipeline,
     setup_model_and_peft,
@@ -273,7 +272,7 @@ class Run:
             print(f"Using auto-tuned batch size:" f" {optimal_token_batch_size}")
         index_cfg.token_batch_size = optimal_token_batch_size
 
-        ds = assert_type(Dataset, setup_data_pipeline(index_cfg))
+        ds, _ = setup_data_pipeline(index_cfg)
         batches = allocate_batches(
             ds["length"][:], optimal_token_batch_size  # type: ignore
         )

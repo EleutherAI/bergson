@@ -1,6 +1,27 @@
 # CHANGELOG
 
 
+## v0.9.0 (2026-03-18)
+
+### Bug Fixes
+
+- Release
+  ([`dec3df9`](https://github.com/EleutherAI/bergson/commit/dec3df98a0707f0058bf193c27ef4f4e50fab6ac))
+
+### Features
+
+- Add flag to enable TF32
+  ([`35ab164`](https://github.com/EleutherAI/bergson/commit/35ab16400afda484ccff717b7a4b48ae6f06811d))
+
+
+## v0.8.1 (2026-03-18)
+
+### Bug Fixes
+
+- Release bergson without pinned transformers
+  ([`ef9dc9a`](https://github.com/EleutherAI/bergson/commit/ef9dc9a6bd4604162fcd9c1ba5bcca18f3936455))
+
+
 ## v0.8.0 (2026-03-08)
 
 ### Features

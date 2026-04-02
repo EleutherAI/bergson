@@ -1,0 +1,29 @@
+run_path: runs/gpt2_wikitext
+model: gpt2
+overwrite: true
+
+data:
+  dataset: Salesforce/wikitext
+  subset: wikitext-2-raw-v1
+  split: "train[:512]"
+  chunk_length: 128
+
+query:
+  dataset: Salesforce/wikitext
+  subset: wikitext-2-raw-v1
+  split: "train[:512]"
+  chunk_length: 128
+
+distributed:
+  nproc_per_node: 1
+
+batch_size: 16
+num_epochs: 1
+lr_schedule:
+  lr_scheduler_type: polynomial
+  lr: 0.0008
+  lr_start: 1e-6
+  lr_end: 0.00008
+  warmup_steps: 0.25
+
+wandb_project: magic

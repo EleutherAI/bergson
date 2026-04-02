@@ -1,5 +1,5 @@
 # Bergson
-This library enables you to trace the memory of deep neural nets with gradient-based data attribution techniques. We currently focus on TrackStar, as described in [Scalable Influence and Fact Tracing for Large Language Model Pretraining](https://arxiv.org/abs/2410.17413v3) by Chang et al. (2024), and also include support for several alternative influence functions. We plan to add support for [Magic](https://arxiv.org/abs/2504.16430) soon.
+This library enables you to trace the memory of deep neural nets with gradient-based data attribution techniques. We currently focus on TrackStar, as described in [Scalable Influence and Fact Tracing for Large Language Model Pretraining](https://arxiv.org/abs/2410.17413v3) by Chang et al. (2024), [Magic](https://arxiv.org/abs/2504.16430), and also include support for several alternative influence functions.
 
 We view attribution as a counterfactual question: **_If we "unlearned" this training sample, how would the model's behavior change?_** This formulation ties attribution to some notion of what it means to "unlearn" a training sample. Here we focus on a very simple notion of unlearning: taking a gradient _ascent_ step on the loss with respect to the training sample.
 
@@ -16,6 +16,9 @@ We view attribution as a counterfactual question: **_If we "unlearned" this trai
 - Structured gradient views and per-attention head gradient collection. Bergson enables mechanistic interpretability via easy access to per‑module or per-attention head gradients.
 
 # Announcements
+
+**March 2026**
+- Support MAGIC
 
 **February 2026**
 - Support per-token gradients
@@ -34,14 +37,20 @@ pip install bergson
 
 To construct an index of randomly projected gradients:
 
-```
+```bash
 bergson build runs/index --model EleutherAI/pythia-14m --dataset NeelNanda/pile-10k --truncation --token_batch_size 4096
 ```
 
 To collect Trackstar attribution scores:
 
-```
+```bash
 bergson trackstar runs/trackstar --model EleutherAI/pythia-14m --query.dataset NeelNanda/pile-10k --data.dataset NeelNanda/pile-10k --data.truncation --token_batch_size 4096 --query.truncation --query.split "train[:20]"
+```
+
+To use MAGIC on a GPT-2 WikiText fine-tune:
+
+```bash
+bergson magic examples/magic/gpt2_wikitext_tiny.yaml
 ```
 
 # Usage
@@ -68,7 +77,7 @@ At the lowest level of abstraction, the `GradientCollector` context manager allo
 You can score a large dataset against a previously built query index without saving its gradients to disk:
 
 ```bash
-bergson score <output_path> --model <model_name> --dataset <dataset_name> --query_path <existing_index_path> --score mean
+bergson score <output_path> --model <model_name> --dataset <dataset_name> --query_path <existing_index_path> --score individual --aggregation mean
 ```
 
 We provide a utility to reduce a dataset into its mean or sum query gradient, for use as a query index:
@@ -163,6 +172,50 @@ Where a reward signal is available we compute gradients using a weighted advanta
 bergson build <output_path> --model <model_name> --dataset <dataset_name> --reward_column <reward_column_name>
 ```
 
+## Numerical Stability
+
+Some models produce inconsistent per-example gradients when batched together. This is caused by nondeterminism in optimized SDPA attention backends (flash, memory-efficient) — the diagnostic tests both padding-induced and equal-length batch divergence to pinpoint the source.
+
+Use the built-in diagnostic to check your model:
+
+```bash
+bergson test_model_configuration --model <model_name>
+```
+
+This automatically tests escalating configurations and reports exactly which flags (if any) you need:
+
+```bash
+# If force_math_sdp alone is sufficient:
+bergson build <output_path> --model <model_name> --force_math_sdp
+# If fp32 with TF32 matmuls is sufficient (cheaper than full fp32):
+bergson build <output_path> --model <model_name> --precision fp32 --use_tf32_matmuls --force_math_sdp
+# If full fp32 precision is required:
+bergson build <output_path> --model <model_name> --precision fp32 --force_math_sdp
+```
+
+### Performance impact
+
+Benchmarked on A100-80GB with 500 documents from pile-10k:
+
+| Model | Settings | Build time | vs bf16 baseline |
+|-------|----------|------------|------------------|
+| Pythia-160M | bf16 | 31.2s | — |
+| Pythia-160M | bf16 + `--force_math_sdp` | 31.0s | -0.7% |
+| Pythia-160M | fp32 + `--use_tf32_matmuls` | 26.6s | -14.7% |
+| Pythia-160M | fp32 + `--use_tf32_matmuls` + `--force_math_sdp` | 27.5s | -11.9% |
+| Pythia-160M | fp32 | 35.4s | +13.3% |
+| Pythia-160M | fp32 + `--force_math_sdp` | 40.6s | +29.9% |
+| OLMo-2-1B | bf16 | 45.5s | — |
+| OLMo-2-1B | bf16 + `--force_math_sdp` | 53.9s | +18.4% |
+| OLMo-2-1B | fp32 + `--use_tf32_matmuls` | 51.3s | +12.7% |
+| OLMo-2-1B | fp32 + `--use_tf32_matmuls` + `--force_math_sdp` | 54.0s | +18.8% |
+| OLMo-2-1B | fp32 | 131.8s | +189.8% |
+| OLMo-2-1B | fp32 + `--force_math_sdp` | 141.2s | +210.5% |
+
+`--use_tf32_matmuls` with fp32 precision is significantly cheaper than full fp32 and may be sufficient for many models.
+
+Not all models are affected — run `bergson test_model_configuration` before enabling these flags to avoid unnecessary overhead.
+
 # Benchmarks
 
 ![CLI Benchmark](docs/benchmarks/cli_benchmark_NVIDIA_GH200_120GB.png)
@@ -186,12 +239,12 @@ If you found Bergson useful in your research, please cite us:
 
 ```bibtex
 @software{bergson,
-  author       = {EleutherAI},
+  author       = {Lucia Quirke and Nora Belrose and Louis Jaburi and William Li and David Johnston and Michael Mulet and Guillaume Martres and Goncalo Paulo and Stella Biderman},
   title        = {Bergson: Mapping out the "memory" of neural nets with data attribution},
   year         = {2026},
   publisher    = {Zenodo},
-  doi          = {10.5281/zenodo.XXXXXXX},
-  url          = {https://doi.org/10.5281/zenodo.XXXXXXX}
+  doi          = {10.5281/zenodo.18906967},
+  url          = {https://doi.org/10.5281/zenodo.18906967}
 }
 ```
 

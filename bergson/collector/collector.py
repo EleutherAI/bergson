@@ -14,6 +14,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from datasets import Dataset
 from jaxtyping import Float
+from peft import PeftModel
 from torch import Tensor
 from torch.profiler import (
     ProfilerActivity,
@@ -29,11 +30,14 @@ from transformers import PreTrainedModel
 from bergson.config import AttentionConfig, HessianConfig, IndexConfig
 from bergson.data import pad_and_tensor
 from bergson.gradients import (
+    AdafactorNormalizer,
+    AdamNormalizer,
     GradientProcessor,
     LayerAdapter,
 )
 from bergson.utils.logger import get_logger
 from bergson.utils.peft import set_peft_enabled
+from bergson.utils.utils import assert_type
 
 
 @dataclass
@@ -79,6 +83,17 @@ class HookCollectorBase(ContextDecorator, ABC):
     Optional configuration specifying how to split up the attention module gradients
     into per-head gradients. See also bergson.config.AttentionConfig.
     """
+
+    attribute_tokens: bool = False
+    """When True, compute per-position gradients instead of per-example, filtered
+    to valid positions using ``_current_valid_mask``."""
+
+    lo: float = float("-inf")
+    """Lower clamp bound for gradients. May be narrowed in subclass ``setup()``."""
+
+    hi: float = float("inf")
+    """Upper clamp bound for gradients. May be narrowed in subclass ``setup()``."""
+
     logger = get_logger("HookCollectorBase", level="INFO")
 
     def __post_init__(
@@ -132,7 +147,8 @@ class HookCollectorBase(ContextDecorator, ABC):
             (e.g., "*.lm_head").
 
         Returns:
-            Dictionary mapping module names to (device, weight_shape, has_bias) tuples.
+            Dictionary mapping module names to
+                (device, weight_shape, collect_bias) tuples.
         """
         target_info = {}
         for name, layer in model.named_modules():
@@ -142,15 +158,17 @@ class HookCollectorBase(ContextDecorator, ABC):
             if target_modules is not None and name not in target_modules:
                 continue
 
-            if filter_modules and fnmatchcase(name, filter_modules):
+            if filter_modules and any(
+                fnmatchcase(name, pat.strip()) for pat in filter_modules.split(",")
+            ):
                 continue
 
-            has_bias = getattr(layer, "bias", None) is not None and include_bias
+            collect_bias = getattr(layer, "bias", None) is not None and include_bias
 
             target_info[name] = (
                 layer.weight.device,
                 layer.weight.shape,
-                has_bias,
+                collect_bias,
             )
         return target_info
 
@@ -208,7 +226,7 @@ class HookCollectorBase(ContextDecorator, ABC):
         )
 
         shapes = {}
-        for name, (_, target_shape, has_bias) in self.target_info.items():
+        for name, (_, target_shape, collect_bias) in self.target_info.items():
             if name in self.attention_cfgs:
                 attention_cfg = self.attention_cfgs[name]
                 if proj_shape:
@@ -222,7 +240,7 @@ class HookCollectorBase(ContextDecorator, ABC):
                     attention_shape[attention_cfg.head_dim - 2] = (
                         attention_cfg.head_size
                     )
-                    if has_bias:
+                    if collect_bias:
                         attention_shape[-1] += 1
                     head_shape = torch.Size(attention_shape)
 
@@ -237,7 +255,7 @@ class HookCollectorBase(ContextDecorator, ABC):
                     shapes[name] = proj_shape
                 else:
                     grad_shape = list(target_shape)
-                    if has_bias:
+                    if collect_bias:
                         grad_shape[-1] += 1
                     shapes[name] = torch.Size(grad_shape)
 
@@ -294,7 +312,7 @@ class HookCollectorBase(ContextDecorator, ABC):
 
             # Store module name for use in hook callbacks
             layer._name = name  # type: ignore[attr-defined]
-            layer._has_bias = self.target_info[name][2]  # type: ignore[attr-defined]
+            layer._collect_bias = self.target_info[name][2]  # type: ignore[attr-defined]
 
             # Register hooks
             fwd_hook = layer.register_forward_hook(self._process_input)
@@ -328,7 +346,6 @@ class HookCollectorBase(ContextDecorator, ABC):
 
     def __exit__(self, exc_type, exc, tb):
         """Clean up hooks and allow subclass cleanup."""
-
         # Clean up temporary attributes
         for layer in self.model.modules():
             if hasattr(layer, "_inputs"):
@@ -371,18 +388,177 @@ class HookCollectorBase(ContextDecorator, ABC):
         """
         pass
 
-    @abstractmethod
     def forward_hook(self, module: nn.Module, a: Float[Tensor, "N S I"]) -> None:
         """
-        Process activations during the forward pass.
-
-        Args:
-            module: The module whose forward pass triggered this hook. The module name
-                is available via module._name.
-            a: Input activations of shape [N, S, I] where N=batch size, S=sequence
-                length, I=input dimension.
+        Cache activations for gradient computation with normalizer preprocessing
+        and compress via random projection if configured.
+        Stores result in module._inputs for use in backward_hook.
         """
-        pass
+        p = self.processor.projection_dim
+        name = assert_type(str, module._name)
+        i = getattr(module, LayerAdapter.in_attr(module))
+        normalizer = self.processor.normalizers.get(name)
+
+        if isinstance(normalizer, AdamNormalizer):
+            module._inputs = a
+            return
+        if isinstance(normalizer, AdafactorNormalizer):
+            a_factor = normalizer.col.add(1e-30)
+            a_factor = a_factor.rsqrt()
+            a = a * a_factor.type_as(a)  # [N, S, I] * [I] → [N, S, I]
+
+        # Defer a-projection when bias is included — backward needs full a to
+        # compute the outer product before concatenating the bias column.
+        if p is not None and not module._collect_bias:
+            a_projection = self.projection(name, p, i, "right", a.device, a.dtype).T
+            a = a @ a_projection  # [N, S, I(+1)] @ [I(+1), p] → [N, S, p]
+
+        module._inputs = a
+
+    def double_sided_projection(
+        self, name: str, P: Tensor, g: Tensor, p: int, o: int, i: int
+    ):
+        g_projection = self.projection(name, p, o, "left", g.device, g.dtype)
+        a_projection = self.projection(name, p, i, "right", g.device, g.dtype).T
+        return g_projection @ P @ a_projection
+
+    def _compute_gradient(self, module: nn.Module, g: Float[Tensor, "N S O"]) -> Tensor:
+        """Compute the per-sample (or per-token) gradient from cached activations
+        and the output gradient.
+
+        Handles normalizer preprocessing, bias appending, random projection,
+        and ``attribute_tokens`` per-position paths.  Returns the flattened,
+        clamped gradient tensor ``P``.
+        """
+        a = module._inputs  # [N, S, I/q]
+        assert isinstance(a, torch.Tensor), "Activation cache missing for module"
+        name = assert_type(str, module._name)
+        p = self.processor.projection_dim
+        i = getattr(module, LayerAdapter.in_attr(module))
+        o = getattr(module, LayerAdapter.out_attr(module))
+        normalizer = self.processor.normalizers.get(name)
+
+        if isinstance(normalizer, AdamNormalizer):
+            if self.processor.include_bias:
+                # Clone g before normalize_bias since it mutates in-place (div_)
+                if self.attribute_tokens:
+                    bias_grad = normalizer.normalize_bias(g)  # [N, S, O]
+                else:
+                    bias_grad = normalizer.normalize_bias(g).sum(dim=1)  # [N, O]
+            else:
+                bias_grad = None
+
+            if self.attribute_tokens:
+                # Per-position outer product: [N,S,O,1]*[N,S,1,I] → [N,S,O,I]
+                P = g.unsqueeze(-1) * a.unsqueeze(-2)
+
+                P = normalizer.normalize_weight(P)  # broadcasts [O,I] over [N,S,O,I]
+                if bias_grad is not None:
+                    P = torch.cat([P, bias_grad.unsqueeze(-1)], dim=-1)
+                    i += 1
+
+                if p is not None:
+                    P = self.double_sided_projection(name, P, g, p, o, i)
+
+                P = P.flatten(2)  # [N, S, grad_dim]
+                P = P[self._current_valid_mask]  # [total_valid, grad_dim]
+            else:
+                P = g.mT @ a  # [N,O,S] @ [N,S,I] → [N,O,I]
+
+                P = normalizer.normalize_weight(P)  # broadcasts [O,I] over [N,O,I]
+                if bias_grad is not None:
+                    P = torch.cat([P, bias_grad.unsqueeze(2)], dim=2)  # [N,O,I+1]
+                    i += 1
+
+                if p is not None:
+                    P = self.double_sided_projection(name, P, g, p, o, i)
+
+        elif isinstance(normalizer, AdafactorNormalizer):
+            if self.processor.include_bias:
+                if self.attribute_tokens:
+                    bias_grad = normalizer.normalize_bias(g)  # [N, S, O]
+                else:
+                    bias_grad = normalizer.normalize_bias(g).sum(dim=1)  # [N, O]
+            else:
+                bias_grad = None
+
+            # Apply row normalization to g (for weights)
+            g_factor = normalizer.row.add(1e-30)
+            g_factor = g_factor.mean().sqrt() * g_factor.rsqrt()
+            g = g * g_factor.type_as(g)  # [N, S, O] * [O] → [N, S, O]
+
+            if self.attribute_tokens:
+                if bias_grad is not None:
+                    # a was not projected in forward
+                    # [N, S, O, 1] * [N, S, 1, I] → [N, S, O, I]
+                    P = g.unsqueeze(-1) * a.unsqueeze(-2)
+                    # [N, S, O, I+1]
+                    P = torch.cat([P, bias_grad.unsqueeze(-1)], dim=-1)
+                    i += 1
+                    if p is not None:
+                        P = self.double_sided_projection(name, P, g, p, o, i)
+                else:
+                    # a was already projected in forward; project g individually
+                    if p is not None:
+                        g_projection = self.projection(
+                            name, p, o, "left", g.device, g.dtype
+                        )
+                        g = g @ g_projection.T
+                    # [N, S, O/p, 1] * [N, S, 1, I/q] → [N, S, O/p, I/q]
+                    P = g.unsqueeze(-1) * a.unsqueeze(-2)
+                P = P.flatten(2)  # [N, S, grad_dim]
+                P = P[self._current_valid_mask]  # [total_valid, grad_dim]
+            else:
+                if bias_grad is not None:
+                    P = g.mT @ a  # [N, O, I]
+                    P = torch.cat([P, bias_grad.unsqueeze(2)], dim=2)  # [N, O, I+1]
+                    i += 1
+                    if p is not None:
+                        P = self.double_sided_projection(name, P, g, p, o, i)
+                else:
+                    # a was already projected in forward; project g individually
+                    if p is not None:
+                        g_projection = self.projection(
+                            name, p, o, "left", g.device, g.dtype
+                        )
+                        g = g @ g_projection.T  # [N, S, p]
+
+                    P = g.mT @ a  # [N, O/p, S] @ [N, S, I/q] → [N, O/p, I/q]
+        else:
+            # No normalizer
+            if module._collect_bias:
+                if self.attribute_tokens:
+                    bias_grad = g  # [N, S, O]
+                else:
+                    bias_grad = g.sum(dim=1)  # [N, O]
+            else:
+                bias_grad = None
+
+            # a is projected in forward unless deferred by bias collection
+            if p is not None and not module._collect_bias:
+                g_projection = self.projection(name, p, o, "left", g.device, g.dtype)
+                g = g @ g_projection.T  # [N, S, p]
+
+            if self.attribute_tokens:
+                # [N, S, O/p, 1] * [N, S, 1, I/q] → [N, S, O/p, I/q]
+                P = g.unsqueeze(-1) * a.unsqueeze(-2)
+                if bias_grad is not None:
+                    P = torch.cat([P, bias_grad.unsqueeze(-1)], dim=-1)
+                    i += 1
+                if p is not None and module._collect_bias:
+                    P = self.double_sided_projection(name, P, g, p, o, i)
+                P = P.flatten(2)  # [N, S, grad_dim]
+                P = P[self._current_valid_mask]  # [total_valid, grad_dim]
+            else:
+                P = g.mT @ a  # [N, O/p, I/p]
+                if bias_grad is not None:
+                    P = torch.cat([P, bias_grad.unsqueeze(2)], dim=2)  # [N, O, I+1]
+                    i += 1
+                if p is not None and module._collect_bias:
+                    P = self.double_sided_projection(name, P, g, p, o, i)
+
+        P = P.flatten(1).clamp_(self.lo, self.hi)
+        return P
 
     @abstractmethod
     def backward_hook(self, module: nn.Module, g: Float[Tensor, "N S O"]) -> None:
@@ -421,7 +597,7 @@ class CollectorComputer:
 
     def __init__(
         self,
-        model: PreTrainedModel,
+        model: PreTrainedModel | PeftModel,
         data: Dataset,
         *,
         collector: HookCollectorBase,
@@ -442,7 +618,7 @@ class CollectorComputer:
         """
         # Model
         self.model = model
-        self.device = model.device
+        self.device = torch.device(model.device)  # type: ignore[attr-defined]
 
         # Data
         self.data = data
@@ -466,7 +642,11 @@ class CollectorComputer:
         self.rank = dist.get_rank() if dist.is_initialized() else 0
         self.world_size = dist.get_world_size() if dist.is_initialized() else 1
 
-        self.logger.info("Computing with collector for target modules.")
+        self.logger.info(
+            "Tracking %d modules: %s",
+            len(collector.target_info),
+            list(collector.target_info.keys()),
+        )
 
     def _setup_profiler(self):
         """Set up profiler if profiling is enabled."""
@@ -506,7 +686,7 @@ class CollectorComputer:
         Args:
             desc: Optional description string for the tqdm progress bar.
         """
-        total_processed = torch.tensor(0, device=self.model.device)
+        total_processed = torch.tensor(0, device=self.device)
         prof = self._setup_profiler()
         step = 0
         with prof:
@@ -517,10 +697,11 @@ class CollectorComputer:
                 batch = self.data[indices]
 
                 # Compute padded tensors and valid_mask before entering context
+                # TODO check if valid_mask has bug
                 x, y, valid_mask = pad_and_tensor(
                     batch["input_ids"],
                     labels=batch.get("labels"),
-                    device=self.model.device,
+                    device=self.device,
                 )
                 total_processed += valid_mask.sum()
 

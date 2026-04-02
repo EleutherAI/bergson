@@ -58,7 +58,7 @@ def mix_preconditioners(
     every module's raw H matrix, then persists a new
     :class:`~bergson.gradients.GradientProcessor` at *output_path*.
 
-    A ``mix_config.json`` file is also written alongside for provenance.
+    A ``mix_config.yaml`` file is also written alongside for provenance.
 
     Parameters
     ----------
@@ -116,7 +116,7 @@ def mix_preconditioners(
         "mixing_coefficient": mixing_coefficient,
         "target_downweight_components": target_downweight_components,
     }
-    with (output_path / "mix_config.json").open("w") as f:
+    with (output_path / "mix_config.yaml").open("w") as f:
         json.dump(mix_config, f, indent=2)
 
     return output_path
@@ -198,9 +198,13 @@ def precondition_grad(
     if not h_inv:
         return grad
 
+    final_device = next(iter(grad.values())).device
+
     return {
-        name: grad[name].to(device=h_inv[name].device, dtype=h_inv[name].dtype)
-        @ h_inv[name]
+        name: (
+            grad[name].to(device=h_inv[name].device, dtype=h_inv[name].dtype)
+            @ h_inv[name]
+        ).to(final_device)
         for name in grad.keys()
     }
 

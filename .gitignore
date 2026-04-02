@@ -26,6 +26,10 @@ share/python-wheels/
 *.egg
 MANIFEST
 
+
+ablations/
+archive/
+
 # PyInstaller
 #  Usually these files are written by a python script from a template
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
@@ -194,3 +198,4 @@ zeki_requirements.txt
 *package-lock.json
 *package.json
 david_wips/
+test_files/

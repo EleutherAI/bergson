@@ -1,7 +1,6 @@
 import json
 import os
 import shutil
-from dataclasses import asdict
 from datetime import timedelta
 from pathlib import Path
 
@@ -63,11 +62,9 @@ def get_query_grads(
         target_modules = metadata["dtype"]["names"]
         grad_sizes = metadata["grad_sizes"]
 
-    preprocess_path = Path(query_path / "preprocess_config.json")
+    preprocess_path = Path(query_path / "preprocess_config.yaml")
     if preprocess_path.exists():
-        with open(preprocess_path, "r") as f:
-            preprocess_data = json.load(f)
-            preprocess_cfg = PreprocessConfig(**preprocess_data)
+        preprocess_cfg = PreprocessConfig.load(preprocess_path)
     else:
         preprocess_cfg = PreprocessConfig()
 
@@ -266,7 +263,7 @@ def score_worker(
         )
 
     model, target_modules = setup_model_and_peft(index_cfg)
-    processor = create_processor(model, ds, index_cfg, target_modules)
+    processor = create_processor(model, index_cfg, target_modules)
 
     attention_cfgs = {
         module: index_cfg.attention for module in index_cfg.split_attention_modules
@@ -362,12 +359,11 @@ def score_dataset(
         Preprocessing configuration for gradient normalization/preconditioning.
     """
     index_cfg.partial_run_path.mkdir(parents=True, exist_ok=True)
-    with (index_cfg.partial_run_path / "index_config.json").open("w") as f:
-        json.dump(asdict(index_cfg), f, indent=2)
-    with (index_cfg.partial_run_path / "score_config.json").open("w") as f:
-        json.dump(asdict(score_cfg), f, indent=2)
 
-    ds = setup_data_pipeline(index_cfg)
+    index_cfg.save_yaml(index_cfg.partial_run_path / "index_config.yaml")
+    score_cfg.save_yaml(index_cfg.partial_run_path / "score_config.yaml")
+
+    ds, _ = setup_data_pipeline(index_cfg)
 
     launch_distributed_run(
         "score",

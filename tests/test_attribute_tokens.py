@@ -1,6 +1,7 @@
 import json
 import math
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -13,12 +14,11 @@ from bergson import (
     InMemoryCollector,
     TokenGradients,
     collect_gradients,
-    fit_normalizers,
     load_token_gradients,
 )
-from bergson.builders import TokenBuilder
+from bergson.builder import Builder
 from bergson.collector.gradient_collectors import GradientCollector
-from bergson.config import IndexConfig
+from bergson.config import IndexConfig, PreprocessConfig
 from bergson.data import compute_num_token_grads, create_token_index
 from bergson.score.score_writer import MemmapTokenScoreWriter
 from bergson.score.scorer import Scorer
@@ -124,13 +124,13 @@ def test_token_gradients_wrapper(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# TokenBuilder
+# Token Builder
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_token_builder_write(tmp_path: Path):
-    """TokenBuilder correctly writes non-contiguous batches."""
+    """Token builder correctly writes non-contiguous batches."""
     ds = Dataset.from_dict(
         {
             "input_ids": [[1, 2, 3], [4, 5, 6, 7], [8, 9]],
@@ -140,8 +140,19 @@ def test_token_builder_write(tmp_path: Path):
 
     # [2, 3, 1]
     grad_sizes = {"m": 2}
+    cfg = PreprocessConfig(aggregation="none")
 
-    builder = TokenBuilder(ds, grad_sizes, torch.float32, path=tmp_path)
+    with patch("bergson.builder.dist") as mock_dist:
+        mock_dist.is_initialized.return_value = False
+        mock_dist.get_rank.return_value = 0
+        builder = Builder(
+            ds,
+            grad_sizes,
+            torch.float32,
+            cfg,
+            attribute_tokens=True,
+            path=tmp_path,
+        )
 
     # Write examples 0 and 2 (non-contiguous!)
     mod_grads = {
@@ -219,18 +230,6 @@ def test_token_score_writer(tmp_path: Path):
 # ---------------------------------------------------------------------------
 # Config validation
 # ---------------------------------------------------------------------------
-
-
-def test_attribute_tokens_adam_allowed():
-    """Adam normalizer is now compatible with attribute_tokens."""
-    cfg = IndexConfig(run_path="test", attribute_tokens=True, normalizer="adam")
-    assert cfg.attribute_tokens is True
-    assert cfg.normalizer == "adam"
-
-
-def test_attribute_tokens_adafactor_allowed():
-    cfg = IndexConfig(run_path="test", attribute_tokens=True, normalizer="adafactor")
-    assert cfg.attribute_tokens is True
 
 
 # ---------------------------------------------------------------------------
@@ -412,7 +411,6 @@ def test_token_build_adam_e2e(tmp_path: Path, model, dataset):
         skip_preconditioners=True,
         token_batch_size=1024,
         attribute_tokens=True,
-        normalizer="adam",
     )
 
     target_modules = {
@@ -421,13 +419,15 @@ def test_token_build_adam_e2e(tmp_path: Path, model, dataset):
         if isinstance(module, torch.nn.Linear)
     }
 
-    normalizers = fit_normalizers(
-        model,
-        dataset,
-        cfg=cfg,
-        batches=[[idx] for idx in range(len(dataset))],
-        target_modules=target_modules,
-    )
+    # Create AdamNormalizer instances with dummy second moments
+    from bergson.gradients import AdamNormalizer
+
+    normalizers = {}
+    for name, module in model.base_model.named_modules():
+        if isinstance(module, torch.nn.Linear) and name in target_modules:
+            normalizers[name] = AdamNormalizer(
+                weight_avg_sq=torch.ones_like(module.weight),
+            )
     processor = GradientProcessor(
         projection_dim=16,
         normalizers=normalizers,
@@ -463,7 +463,13 @@ def test_token_build_adam_e2e(tmp_path: Path, model, dataset):
 
 
 def _collect_in_memory(
-    model, dataset, processor, target_modules, attribute_tokens, run_path
+    model,
+    dataset,
+    processor,
+    target_modules,
+    attribute_tokens,
+    run_path,
+    include_bias=False,
 ):
     """Run InMemoryCollector and return the collector for inspection."""
     cfg = IndexConfig(
@@ -473,6 +479,7 @@ def _collect_in_memory(
         attribute_tokens=attribute_tokens,
         loss_reduction="sum",
         skip_index=True,
+        include_bias=include_bias,
     )
     cfg.partial_run_path.mkdir(parents=True, exist_ok=True)
     collector = InMemoryCollector(
@@ -495,15 +502,28 @@ def _collect_in_memory(
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 @pytest.mark.parametrize("normalizer", ["none", "adam", "adafactor"])
-def test_token_sum_equals_sequence(tmp_path, model, dataset, normalizer):
+@pytest.mark.parametrize("include_bias", [False, True])
+@pytest.mark.parametrize("projection_dim", [None, 8])
+def test_token_sum_equals_sequence(
+    tmp_path, model, dataset, normalizer, include_bias, projection_dim
+):
     """Sum of per-token grads must equal the per-example sequence grad.
 
     With loss_reduction='sum' the sequence path computes g.mT @ a which
-    is exactly sum_s g_s (x) a_s. Since normalize_() is element-wise, it
-    commutes with the sum, so both paths must agree for all normalizers.
+    is exactly sum_s g_s (x) a_s. Since normalize_weight() and
+    normalize_bias() are element-wise, they commute with the sum, so
+    both paths must agree for all normalizers.
     """
     model = model.float()
     dataset = dataset.repeat(10)
+
+    # tiny-Phi3 has no bias on Linear layers; add zero bias when testing bias
+    if include_bias:
+        for m in model.base_model.modules():
+            if isinstance(m, torch.nn.Linear) and m.bias is None:
+                m.bias = torch.nn.Parameter(
+                    torch.zeros(m.out_features, device=m.weight.device)
+                )
 
     target_modules = {
         name
@@ -511,24 +531,39 @@ def test_token_sum_equals_sequence(tmp_path, model, dataset, normalizer):
         if isinstance(module, torch.nn.Linear)
     }
 
-    # Fit normalizers if needed
+    # Create normalizers if needed
+    from bergson.gradients import AdafactorNormalizer, AdamNormalizer
+
     if normalizer == "none":
         normalizers = {}
     else:
-        fit_cfg = IndexConfig(
-            run_path=str(tmp_path / "fit"),
-            skip_preconditioners=True,
-            normalizer=normalizer,
-        )
-        normalizers = fit_normalizers(
-            model,
-            dataset,
-            cfg=fit_cfg,
-            batches=[[idx] for idx in range(len(dataset))],
-            target_modules=target_modules,
-        )
+        normalizers = {}
+        for name, module in model.base_model.named_modules():
+            if isinstance(module, torch.nn.Linear) and name in target_modules:
+                bias_sq = (
+                    torch.ones(module.out_features, device=module.weight.device)
+                    if include_bias
+                    else None
+                )
+                if normalizer == "adam":
+                    normalizers[name] = AdamNormalizer(
+                        weight_avg_sq=torch.ones_like(module.weight),
+                        bias_avg_sq=bias_sq,
+                    )
+                else:
+                    normalizers[name] = AdafactorNormalizer(
+                        row=torch.ones(
+                            module.out_features, device=module.weight.device
+                        ),
+                        col=torch.ones(module.in_features, device=module.weight.device),
+                        bias_avg_sq=bias_sq,
+                    )
 
-    processor = GradientProcessor(normalizers=normalizers)
+    processor = GradientProcessor(
+        normalizers=normalizers,
+        include_bias=include_bias,
+        projection_dim=projection_dim,
+    )
 
     # --- Sequence grads (attribute_tokens=False) ---
     seq_collector = _collect_in_memory(
@@ -538,6 +573,7 @@ def test_token_sum_equals_sequence(tmp_path, model, dataset, normalizer):
         target_modules,
         attribute_tokens=False,
         run_path=str(tmp_path / "seq"),
+        include_bias=include_bias,
     )
     # seq_collector.gradients: {module_name: [N, grad_dim]}
 
@@ -549,6 +585,7 @@ def test_token_sum_equals_sequence(tmp_path, model, dataset, normalizer):
         target_modules,
         attribute_tokens=True,
         run_path=str(tmp_path / "tok"),
+        include_bias=include_bias,
     )
     # tok_collector.builder.grad_buffer: [total_tokens, total_grad_dim]
 
