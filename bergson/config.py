@@ -364,7 +364,7 @@ class IndexConfig(AttributionConfig, Serializable):
     loss_fn: Literal["ce", "kl"] = "ce"
     """Loss function to use."""
 
-    loss_reduction: Literal["mean", "sum"] = "mean"
+    loss_reduction: Literal["mean", "sum"] = "sum"
     """Reduction method for the loss function."""
 
     label_smoothing: float = 0.0
