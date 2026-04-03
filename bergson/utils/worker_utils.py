@@ -115,11 +115,11 @@ def apply_force_math_sdp(cfg: ModelConfig) -> None:
     print("force_math_sdp: disabled flash and memory-efficient SDPA backends")
 
 
-def extract_peft_target_modules(model: PreTrainedModel) -> set[str]:
+def extract_peft_target_modules(model) -> set[str]:
     """Extract adapter module names from a PeftModel."""
     target_modules: set[str] = set()
     peft_state_dict = get_peft_model_state_dict(model=model)
-    for adapter in model.peft_config.keys():
+    for adapter in model.peft_config.keys(): # type: ignore
         for name in list(peft_state_dict.keys()):
             prefix = name.removesuffix(".weight")
             processed_name = f"{prefix}.{adapter}".removeprefix("base_model.")
@@ -184,8 +184,7 @@ def setup_model_and_peft(
         pretrained_peft_config = None
 
     assert not (cfg.peft_init_kwargs and pretrained_peft_config), (
-        f"peft_init_args is set but '{cfg.model}' is already a"
-        " PEFT adapter."
+        f"peft_init_args is set but '{cfg.model}' is already a" " PEFT adapter."
     )
 
     base_model_path = (
@@ -195,9 +194,7 @@ def setup_model_and_peft(
     )
     assert base_model_path is not None
 
-    model_kwargs.update(
-        simple_parse_kwargs_string(cfg.model_kwargs)
-    )
+    model_kwargs.update(simple_parse_kwargs_string(cfg.model_kwargs))
 
     model = AutoModelForCausalLM.from_pretrained(
         base_model_path,
@@ -216,7 +213,7 @@ def setup_model_and_peft(
         peft_type = PeftType(peft_kwargs.pop("peft_type", "LORA"))
         peft_config_cls = PEFT_TYPE_TO_CONFIG_MAPPING[peft_type]
         model = get_peft_model(model, peft_config_cls(**peft_kwargs))
-        target_modules = extract_peft_target_modules(model) # type: ignore
+        target_modules = extract_peft_target_modules(model)
     elif pretrained_peft_config:
         # Load pretrained PEFT adapter
         model = PeftModel.from_pretrained(
@@ -225,7 +222,7 @@ def setup_model_and_peft(
             device_map=device_map,
             autocast_adapter_dtype=False,
         )
-        target_modules = extract_peft_target_modules(model) # type: ignore
+        target_modules = extract_peft_target_modules(model)  # type: ignore
 
     # Configure gradients
     model.requires_grad_(False)
