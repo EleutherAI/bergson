@@ -119,7 +119,7 @@ def extract_peft_target_modules(model) -> set[str]:
     """Extract adapter module names from a PeftModel."""
     target_modules: set[str] = set()
     peft_state_dict = get_peft_model_state_dict(model=model)
-    for adapter in model.peft_config.keys(): # type: ignore
+    for adapter in model.peft_config.keys():  # type: ignore
         for name in list(peft_state_dict.keys()):
             prefix = name.removesuffix(".weight")
             processed_name = f"{prefix}.{adapter}".removeprefix("base_model.")
