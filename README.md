@@ -9,12 +9,12 @@ Per-token and per-sequence attribution is available everywhere. Bergson uses [FS
 
 ### Attribute through Training
 
-Bergson provides a functional MAGIC Trainer with distributed support that enables near-optimal data attribution, by backpropagating through the training process to 
+Bergson provides a functional MAGIC Trainer with distributed support that enables near-optimal data attribution, by backpropagating through the training process to
 compute the gradient of a loss with respect to an implicit weighting placed on each training item. See `bergson magic`.
 
 Building a train‑time raw gradient store is also available through a HF Trainer callback, at a ~17% performance overhead.
 
-### Attribute Post-Hoc 
+### Attribute Post-Hoc
 
 Bergson provides a gradient store for efficient serial queries. Collection-time gradient compression makes the store space-efficient, and a FAISS integration enables fast KNN search over large stores. See `bergson build` and `bergson query` (`Attributor` in the programmatic interface).
 
