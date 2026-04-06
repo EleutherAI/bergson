@@ -55,34 +55,51 @@ def setup_reproducibility():
 
 
 def handle_arg_string(arg: str):
-    if arg.lower() == "true":
-        return True
-    elif arg.lower() == "false":
-        return False
-    elif "|" in arg:
+    # Handle lists
+    if "|" in arg:
         return [handle_arg_string(v) for v in arg.split("|")]
-    elif arg.isnumeric():
+
+    # Handle integers
+    try:
         return int(arg)
+    except ValueError:
+        pass
+
+    # Handle floats
     try:
         return float(arg)
     except ValueError:
-        return arg
+        pass
+
+    # Handle booleans
+    match arg.lower():
+        case "true":
+            return True
+        case "false":
+            return False
+        case other:
+            return other
 
 
-def simple_parse_kwargs_string(args_string: str) -> dict[str, Any]:
-    """
-    Parses something like
-        args1=val1,arg2=val2
-    into a dictionary.
-    """
-    args_string = args_string.strip()
-    if not args_string:
-        return {}
-    arg_list = [arg for arg in args_string.split(",") if arg]
-    args_dict = {
-        kv[0]: handle_arg_string("=".join(kv[1:]))
-        for kv in [arg.split("=") for arg in arg_list]
-    }
+def simple_parse_kwargs_string(args_string: str) -> dict:
+    """Parses something like `args1=val1,arg2=val2` into a dictionary."""
+    args_dict = {}
+
+    for elem in args_string.split(","):
+        lvalue, sep, rvalue = elem.partition("=")
+
+        # Ignore whitespace
+        lvalue = lvalue.strip()
+        rvalue = rvalue.strip()
+
+        if not (lvalue and sep and rvalue):
+            raise ValueError(f"Invalid argument: '{elem}'. Expected format key=value.")
+
+        if not lvalue.isidentifier():
+            raise ValueError(f"Invalid key: '{lvalue}'. Must be a valid identifier.")
+
+        args_dict[lvalue] = handle_arg_string(rvalue)
+
     return args_dict
 
 
