@@ -92,7 +92,7 @@ def simple_parse_kwargs_string(args_string: str) -> dict:
         lvalue = lvalue.strip()
         rvalue = rvalue.strip()
 
-        if not (lvalue and sep and rvalue):
+        if not (lvalue and sep):
             raise ValueError(f"Invalid argument: '{elem}'. Expected format key=value.")
 
         if not lvalue.isidentifier():
