@@ -77,8 +77,8 @@ def handle_arg_string(arg: str):
             return True
         case "false":
             return False
-        case other:
-            return other
+        case _:
+            return arg
 
 
 def simple_parse_kwargs_string(args_string: str) -> dict:
