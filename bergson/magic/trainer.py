@@ -20,8 +20,9 @@ from torchopt.typing import GradientTransformation, OptState
 from tqdm.auto import tqdm
 
 from ..data import sorted_checkpoints
-from ..distributed import grad_tree, shallow_copy
+from ..distributed import grad_tree
 from .data_stream import DataStream
+from .fsdp import shallow_copy
 from .rtl_tqdm import RtlTqdm
 from .swap import swap_parameters
 

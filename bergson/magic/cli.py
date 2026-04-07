@@ -18,7 +18,7 @@ from torchopt.pytree import tree_iter
 from tqdm import tqdm
 
 from ..config import AttributionConfig, DataConfig, TrainingConfig
-from ..distributed import grad_tree, launch_distributed_run, simple_fsdp
+from ..distributed import grad_tree, launch_distributed_run
 from ..utils.logging import wandb_log_fn
 from ..utils.worker_utils import (
     setup_data_pipeline,
@@ -26,6 +26,7 @@ from ..utils.worker_utils import (
 )
 from .data_stream import DataStream
 from .dtensor_patch import apply_dtensor_patch
+from .fsdp import simple_fsdp
 from .optim import muon
 from .trainer import BackwardState, Trainer, TrainerState
 
