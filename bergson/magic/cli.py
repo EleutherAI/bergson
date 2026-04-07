@@ -26,7 +26,7 @@ from ..utils.worker_utils import (
 )
 from .data_stream import DataStream
 from .dtensor_patch import apply_dtensor_patch
-from .muon import muon
+from .optim import muon
 from .trainer import BackwardState, Trainer, TrainerState
 
 

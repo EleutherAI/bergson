@@ -5,7 +5,7 @@ if TYPE_CHECKING:
     from .cli import run_magic as run_magic
     from .data_stream import DataStream as DataStream
     from .dtensor_patch import apply_dtensor_patch as apply_dtensor_patch
-    from .muon import muon as muon
+    from .optim import muon as muon
     from .trainer import (
         BackwardState as BackwardState,
     )
@@ -21,7 +21,7 @@ _module_map = {
     "run_magic": ".cli",
     "DataStream": ".data_stream",
     "apply_dtensor_patch": ".dtensor_patch",
-    "muon": ".muon",
+    "muon": ".optim",
     "BackwardState": ".trainer",
     "Trainer": ".trainer",
     "TrainerState": ".trainer",
@@ -34,4 +34,5 @@ def __getattr__(name: str):
 
         module = importlib.import_module(_module_map[name], package=__name__)
         return getattr(module, name)
+
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
