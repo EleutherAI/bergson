@@ -345,6 +345,7 @@ class Trainer:
         cls,
         model: nn.Module,
         optimizer: GradientTransformation,
+        normalizer=None,
     ) -> tuple["Trainer", TrainerState]:
         """Convenience method for initializing the trainer and state."""
         # Create new tensor objects for the parameters and buffers to ensure that they
@@ -360,13 +361,20 @@ class Trainer:
         buffers = shallow_copy(dict(model.named_buffers(remove_duplicate=False)))
         opt_state = optimizer.init(params)
 
+        # Warm up power iteration vectors on the actual weights, then normalize
+        # so training starts on the modular norm constraint surface
+        if normalizer is not None:
+            normalizer.warmup(params)
+            normalizer.normalize(params, trace=False)
+
         state = TrainerState(params, opt_state, buffers)
-        return cls(model, optimizer), state
+        return cls(model, optimizer, normalizer), state
 
     def __init__(
         self,
         model: nn.Module,
         optimizer: GradientTransformation,
+        normalizer=None,
     ):
         # Move only trainable parameters to the meta device, leaving frozen params
         # on device so they don't need to be managed by TrainerState.
@@ -379,6 +387,7 @@ class Trainer:
 
         self.model = model
         self.optimizer = optimizer
+        self.normalizer = normalizer
 
     def step(
         self,
@@ -498,6 +507,10 @@ class Trainer:
             grads, state.opt_state, inplace=inplace, params=state.params
         )
         new_params = torchopt.apply_updates(state.params, updates, inplace=inplace)
+
+        if self.normalizer is not None:
+            new_params = self.normalizer.normalize(new_params, trace=trace)
+
         return TrainerState(
             new_params,
             new_state,
@@ -1043,6 +1056,12 @@ def prepare_trainer(cfg: TrainingConfig, rank: int, schedule: Callable):
     )
     model.to(get_device(rank))  # type: ignore[reportArgumentType]
 
+    normalizer = None
+    if getattr(cfg, "use_modula", False):
+        from .modula_norm import ModulaNormalizer
+
+        normalizer = ModulaNormalizer(model.config, device=get_device(rank))
+
     # setup_model_and_peft leaves the model in from_pretrained's eval mode.
     if cfg.train_mode:
         model.train()
@@ -1095,5 +1114,5 @@ def prepare_trainer(cfg: TrainingConfig, rank: int, schedule: Callable):
         case other:
             raise ValueError(f"Unsupported optimizer: {other}")
 
-    trainer, fwd_state = Trainer.initialize(model, opt)
+    trainer, fwd_state = Trainer.initialize(model, opt, normalizer=normalizer)
     return trainer, fwd_state, model
