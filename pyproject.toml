@@ -36,6 +36,7 @@ dependencies = [
     "transformers>=5.0",
     "bitsandbytes",
     "huggingface-hub>=1.13.0",
+    "modula",
 ]
 version = "0.26.0"
 [project.optional-dependencies]
