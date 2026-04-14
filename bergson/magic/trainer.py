@@ -6,7 +6,6 @@ from concurrent.futures import Future
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from shutil import rmtree
-from typing import Literal
 
 import torch
 import torch.distributed as dist
@@ -21,6 +20,7 @@ from tqdm.auto import tqdm
 
 from ..data import sorted_checkpoints
 from ..distributed import grad_tree
+from .config import MagicSaveMode
 from .data_stream import DataStream
 from .fsdp import shallow_copy
 from .rtl_tqdm import RtlTqdm
@@ -340,7 +340,7 @@ class Trainer:
         debug: bool = False,
         inplace: bool = False,
         save_dir: str | None = None,
-        save_mode: Literal["all", "sqrt"] = "sqrt",
+        save_mode: MagicSaveMode = "sqrt",
         trace: bool = False,
         log_fn: Callable[[int, float], None] | None = None,
         resume: bool = False,
@@ -350,23 +350,24 @@ class Trainer:
         if save_dir is not None:
             os.makedirs(save_dir, exist_ok=True)
 
+        # Always save the first state
+        next_save = 0
+        n = len(data)
+
         start = 0
         if resume and save_dir is not None:
             state = self.resume(state, save_dir)
             start = state.batch_index
 
-        chunk_size = math.isqrt(len(data)) if save_mode == "sqrt" else 1
-        last_start = len(data) - chunk_size
-
         pending_save: SaveFuture | None = None
 
         main = not dist.is_initialized() or dist.get_rank() == 0
-        pbar = tqdm(range(start, len(data)), desc="Training", disable=not main)
+        pbar = tqdm(range(start, n), desc="Training", disable=not main)
 
         for i in pbar:
             # Save checkpoint BEFORE each step. Step 0 is the initial state prior to
             # any updates, step 1 is the state after the first update, etc.
-            if save_dir and (i % chunk_size == 0 or i >= last_start):
+            if save_dir and i == next_save:
                 # Wait for the previous save before starting a new one to avoid
                 # multiple concurrent DCP saves with separate Gloo groups, which can
                 # deadlock when background threads call distributed operations.
@@ -375,6 +376,26 @@ class Trainer:
 
                 p = os.path.join(save_dir, f"step_{i}.ckpt")
                 pending_save = state.save(p, debug_pbar=pbar if debug else None)
+
+                match save_mode:
+                    case "all":
+                        # Save next step
+                        next_save += 1
+                    case "sqrt":
+                        chunk_size = math.isqrt(n)
+
+                        # If we're in the last chunk, save every step
+                        if i >= n - chunk_size:
+                            next_save += 1
+
+                        # Otherwise, save sqrt(n) steps from now
+                        else:
+                            next_save += chunk_size
+                    case "log":
+                        # Cut the remaining steps in half to get to the next save point
+                        next_save = max(1, (n - next_save) // 2) + next_save
+                    case other:
+                        raise ValueError(f"Unsupported save mode: {other}")
 
             x = data[i]
             state = self.step(state, x, inplace=inplace, trace=trace, fsdp=fsdp)
@@ -447,6 +468,7 @@ class Trainer:
         fsdp: bool = False,
         resume: bool = False,
         save_every: int = 0,
+        save_mode: MagicSaveMode = "sqrt",
     ) -> BackwardState:
         ckpt_list = sorted_checkpoints(ckpt_dir)
 
@@ -494,10 +516,6 @@ class Trainer:
             # (loaded tensors may retain requires_grad from the previous traced step)
             fwd_state.detach_()
 
-            # Detach after loading so that replay steps can use in-place ops
-            # (loaded tensors may retain requires_grad from the previous traced step)
-            fwd_state.detach_()
-
             # Only delete this checkpoint if it's the one we expected to load. If it's
             # not, we need to keep it around, and step forward through training
             if idx == expected_idx:
@@ -508,6 +526,11 @@ class Trainer:
                     rmtree(path) if os.path.isdir(path) else os.remove(path)
 
             # Step forward in training if needed
+            next_save = (
+                (expected_idx - idx) // 2 + idx
+                if save_mode == "log"
+                else min(expected_idx, idx + 1)
+            )
             while idx < expected_idx:
                 if sub_pbar is None:
                     sub_pbar = tqdm(
@@ -530,12 +553,19 @@ class Trainer:
                 sub_pbar.update()
 
                 # Save checkpoints for states we will need later
-                if idx < expected_idx:
+                if idx == next_save and idx < expected_idx:
                     path = os.path.join(ckpt_dir, f"step_{idx}.ckpt")
                     ckpt_list.append((idx, path))
 
                     save_futures.append(
                         fwd_state.save(path, debug_pbar=main_pbar if debug else None)
+                    )
+
+                    # Advance next_save according to the save mode
+                    next_save = (
+                        (expected_idx - idx) // 2 + idx
+                        if save_mode == "log"
+                        else min(expected_idx, idx + 1)
                     )
 
             if sub_pbar is not None:

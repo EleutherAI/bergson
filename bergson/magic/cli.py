@@ -3,75 +3,34 @@ import os
 import random
 import shutil
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Callable
 
 import torch
 import torch.distributed as dist
 import torchopt
 from datasets import Dataset
 from scipy.stats import describe, pearsonr, spearmanr
-from simple_parsing import ArgumentParser, field
+from simple_parsing import ArgumentParser
 from torch.distributed.nn.functional import all_reduce as differentiable_all_reduce
 from torch.distributed.tensor import init_device_mesh
 from torchopt.pytree import tree_iter
 from tqdm import tqdm
 
-from ..config import AttributionConfig, DataConfig, TrainingConfig
+from ..config import TrainingConfig
 from ..distributed import grad_tree, launch_distributed_run
 from ..utils.logging import wandb_log_fn
 from ..utils.worker_utils import (
     setup_data_pipeline,
     setup_model_and_peft,
 )
+from .config import MagicConfig
 from .data_stream import DataStream
 from .dtensor_patch import apply_dtensor_patch
 from .fsdp import simple_fsdp
 from .optim import muon
 from .trainer import BackwardState, Trainer, TrainerState
-
-
-@dataclass
-class MagicConfig(AttributionConfig, TrainingConfig):
-    """Special config for MAGIC attribution."""
-
-    query: DataConfig = field(
-        default_factory=lambda: DataConfig(split="train"),
-    )
-    """Query/eval dataset for computing attribution target gradients.
-    If not specified, defaults to the training dataset."""
-
-    query_method: Literal["mean", "sum"] = "mean"
-    """Method for reducing query gradients across batches."""
-
-    save_mode: Literal["all", "sqrt"] = "sqrt"
-    """Checkpoint saving mode. 'all' saves every checkpoint, 'sqrt' saves every
-    sqrt(N) steps, and rematerializes checkpoints when needed."""
-
-    subset_jitter_std: float = 0.0
-    """Standard deviation of Gaussian noise added to scores for subset selection."""
-
-    num_subsets: int = 100
-    """Number of leave-k-out subsets for Spearman correlation."""
-
-    seed: int = 42
-    """Random seed for subset permutation."""
-
-    wandb_project: str = ""
-    """Weights & Biases project name. If set, logs training loss to W&B."""
-
-    resume: bool = False
-    """Resume a previously interrupted run from the last checkpoint."""
-
-    backward_save_every: int = 0
-    """How often (in steps) to save backward state for resume."""
-
-    per_token: bool = False
-    """Whether to compute attribution scores per token (instead of per sequence)."""
-
-    def __post_init__(self):
-        assert not self.fsdp, "PyTorch FSDP is not currently supported for MAGIC."
 
 
 def compute_query_gradients(
@@ -377,6 +336,7 @@ def worker(
         fsdp=run_cfg.fsdp,
         resume=run_cfg.resume,
         save_every=run_cfg.backward_save_every,
+        save_mode=run_cfg.save_mode,
     )
     if world_size > 1:
         dist.all_reduce(bwd_state.weight_grads, op=dist.ReduceOp.SUM)
