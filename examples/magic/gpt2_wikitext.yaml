@@ -5,7 +5,7 @@ overwrite: true
 data:
   dataset: Salesforce/wikitext
   subset: wikitext-2-raw-v1
-  split: "train[:4608]"
+  split: "train[:50_000]"
   chunk_length: 512
 
 query:
@@ -17,7 +17,7 @@ query:
 distributed:
   nproc_per_node: 8
 
-batch_size: 240
+batch_size: 160
 num_epochs: 4
 lr_schedule:
   lr_scheduler_type: polynomial
