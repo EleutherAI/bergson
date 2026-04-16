@@ -23,9 +23,15 @@ class MagicConfig(AttributionConfig, TrainingConfig):
     save_mode: MagicSaveMode = "sqrt"
     """Checkpoint saving mode.
 
-    'all' saves every checkpoint.
-    'log' saves at a log-spaced interval.
-    'sqrt' saves at a linearly-spaced interval, every sqrt(N) steps.
+    - 'all' saves every checkpoint. This method uses O(N) space and O(N) time.
+    - 'log' saves at a log-spaced interval, more frequently near the end of a training
+      segment. Training is recursively divided into segments. This method uses O(log N)
+      space and O(N log N) time.
+    - 'sqrt' saves at a linearly-spaced interval, every sqrt(N) steps. This method uses
+      O(sqrt N) space and O(N) time.
+
+    The original MAGIC paper used 'log', but 'sqrt' is often a better choice when disk
+    space is not a concern.
     """
 
     subset_jitter_std: float = 0.0
