@@ -56,7 +56,9 @@ class ShardedMul:
         )
 
         if not self.dist:
-            result_nsb = torch.einsum("n s c, c b-> n s b", vector_nsa, matrix_cb)
+            result_nsb = torch.einsum(
+                "n s c, c b-> n s b", vector_nsa.to(matrix_cb.dtype), matrix_cb
+            )
 
         else:
             result_nsb = self._sharded_matmul(vector_nsa, matrix_cb)
@@ -69,7 +71,9 @@ class ShardedMul:
         matrix_cb: Float[Tensor, "c b"],
     ) -> Float[Tensor, "n s b"]:
         if not self.dist:
-            result_nsb = torch.einsum("n s c, b c -> n s b", vector_nsa, matrix_cb)
+            result_nsb = torch.einsum(
+                "n s c, b c -> n s b", vector_nsa.to(matrix_cb.dtype), matrix_cb
+            )
         else:
             result_nsb = self._sharded_transpose_matmul(vector_nsa, matrix_cb)
         return result_nsb
@@ -110,7 +114,7 @@ class ShardedMul:
         result_nsb = torch.zeros(
             (n, s, b),
             device=vector_nsa.device,
-            dtype=vector_nsa.dtype,
+            dtype=matrix_cb.dtype,
         )
 
         for rank_index in range(self.world_size):
@@ -121,7 +125,9 @@ class ShardedMul:
 
             dist.broadcast(shard_cb, src=rank_index)
             result_nsb += torch.einsum(
-                "n s c, c b-> n s b", vector_shards_wnsc[rank_index], shard_cb
+                "n s c, c b-> n s b",
+                vector_shards_wnsc[rank_index].to(shard_cb.dtype),
+                shard_cb,
             )  # [B, c]
             if self.rank != rank_index:
                 del shard_cb
@@ -181,7 +187,7 @@ class ShardedMul:
         x, y = (matrix_noi.shape[1], matrix_bc.shape[0] * self.world_size)
 
         result_nxy = torch.zeros(
-            matrix_noi.shape[0], x, y, device=matrix_noi.device, dtype=matrix_noi.dtype
+            matrix_noi.shape[0], x, y, device=matrix_noi.device, dtype=matrix_bc.dtype
         )
 
         for rank_index in range(self.world_size):
@@ -196,7 +202,9 @@ class ShardedMul:
             end_row = (rank_index + 1) * shard_size
 
             result_nxy[:, :, start_row:end_row].copy_(
-                torch.einsum("n o i, c i -> n o c", matrix_noi, shard_bc)
+                torch.einsum(
+                    "n o i, c i -> n o c", matrix_noi.to(shard_bc.dtype), shard_bc
+                )
             )
 
             if self.rank != rank_index:

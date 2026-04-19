@@ -61,8 +61,8 @@ class TraceCovarianceCollector(HookCollectorBase):
         mask = self._current_valid_mask
 
         # g: [N, S, O], mask: [N, S] -> select valid positions
-        g_bo = g[mask]  # [num_valid, O]
-        a_bi = module._inputs
+        g_bo = g[mask].to(self.dtype)  # [num_valid, O]
+        a_bi = module._inputs.to(self.dtype)
         assert isinstance(a_bi, Tensor)
 
         # Compute local covariances

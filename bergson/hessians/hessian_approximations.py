@@ -199,11 +199,7 @@ def collect_hessians(
     If ev_correction is True, uses LambdaCollector to compute eigenvalue corrections.
     """
 
-    hessian_dtype = (
-        model.dtype
-        if hessian_cfg.hessian_dtype == "auto"
-        else convert_precision_to_torch(hessian_cfg.hessian_dtype)
-    )
+    hessian_dtype = convert_precision_to_torch(hessian_cfg.hessian_dtype)
 
     collector_args = {
         "model": model.base_model,  # type: ignore

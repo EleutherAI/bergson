@@ -48,7 +48,7 @@ class CovarianceCollector(HookCollectorBase):
         assert mask is not None, "Valid mask not set for forward hook."
 
         # a: [N, S, I], valid_masks: [N, S] -> select valid positions
-        a_bi = a[mask]  # [num_valid, I]
+        a_bi = a[mask].to(self.dtype)  # [num_valid, I]
 
         # Compute local covariance
         local_update_ii = a_bi.mT @ a_bi
@@ -72,7 +72,7 @@ class CovarianceCollector(HookCollectorBase):
         mask = self._current_valid_mask
 
         # g: [N, S, O], mask: [N, S] -> select valid positions
-        g_bo = g[mask]  # [num_valid, O]
+        g_bo = g[mask].to(self.dtype)  # [num_valid, O]
 
         # Compute local covariance
         local_update_oo = g_bo.mT @ g_bo

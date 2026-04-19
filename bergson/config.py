@@ -505,7 +505,7 @@ class HessianConfig(Serializable):
     ev_correction: bool = False
     """Whether to additionally compute eigenvalue correction."""
 
-    hessian_dtype: Literal["auto", "bf16", "fp16", "fp32"] = "auto"
+    hessian_dtype: Literal["bf16", "fp16", "fp32"] = "fp32"
     """Precision (dtype) to use for the Hessian approximation."""
 
     use_dataset_labels: bool = False
