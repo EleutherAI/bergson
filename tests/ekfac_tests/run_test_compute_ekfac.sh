@@ -12,5 +12,4 @@ pytest -s -v \
     --overwrite \
     test_compute_ekfac.py \
     test_covariance.py \
-    test_eigenvectors.py \
-    test_eigenvalue_correction.py
+    test_ekfac_recomposition.py

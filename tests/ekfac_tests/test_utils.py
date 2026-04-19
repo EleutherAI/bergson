@@ -3,7 +3,6 @@
 from pathlib import Path
 
 import torch
-import torch.nn.functional as F
 from safetensors.torch import load_file
 from torch import Tensor
 
@@ -46,32 +45,6 @@ def load_sharded_covariances(sharded_dir: str | Path) -> dict[str, torch.Tensor]
     return result
 
 
-def compute_eigenvector_cosine_similarity(
-    gt: dict[str, torch.Tensor],
-    run: dict[str, torch.Tensor],
-) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    """Compute column-wise cosine similarity between eigenvector matrices.
-
-    Eigenvectors are only defined up to sign, so we check |cosine_similarity| ≈ 1.
-
-    Args:
-        gt: Ground truth eigenvector dictionary (each value is a matrix).
-        run: Run eigenvector dictionary.
-
-    Returns:
-        Tuple of (all_abs_cosine_sims, signs) where:
-        - all_abs_cosine_sims: flattened tensor of |cos_sim| for all columns
-        - signs[k]: sign of cosine similarity per column (for λ correction alignment)
-    """
-    all_cos_sims = []
-    signs = {}
-    for k in sorted(gt.keys()):
-        cos_sim = F.cosine_similarity(gt[k], run[k], dim=0)
-        all_cos_sims.append(cos_sim.abs())
-        signs[k] = torch.sign(cos_sim)
-    return torch.cat(all_cos_sims), signs
-
-
 def format_per_layer_errors(
     gt: dict[str, torch.Tensor],
     run: dict[str, torch.Tensor],
@@ -81,23 +54,6 @@ def format_per_layer_errors(
     for k in sorted(gt.keys()):
         rel_err = (gt[k] - run[k]).norm() / gt[k].norm()
         lines.append(f"  {k}: rel_error={rel_err:.2e}")
-    return "\n".join(lines)
-
-
-def format_per_layer_cosine_similarity(
-    gt: dict[str, torch.Tensor],
-    run: dict[str, torch.Tensor],
-) -> str:
-    """Format per-layer |cosine_similarity| stats for eigenvector debugging."""
-    lines = []
-    for k in sorted(gt.keys()):
-        abs_cos_sim = F.cosine_similarity(gt[k], run[k], dim=0).abs()
-        lines.append(
-            f"  {k}: min={abs_cos_sim.min():.6f}, "
-            f"avg={abs_cos_sim.mean():.6f}, "
-            f"med={abs_cos_sim.median():.6f}, "
-            f"max={abs_cos_sim.max():.6f}"
-        )
     return "\n".join(lines)
 
 

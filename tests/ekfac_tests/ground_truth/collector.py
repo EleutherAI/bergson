@@ -28,9 +28,9 @@ class GroundTruthCovarianceCollector(HookCollectorBase):
 
         # a: [N, S, I], valid_masks: [N, S] -> select valid positions
         if mask is not None:
-            a = a[mask]  # [num_valid, I]
+            a = a[mask].float()  # [num_valid, I]
         else:
-            a = a.reshape(-1, a.shape[-1])  # [N*S, I]
+            a = a.reshape(-1, a.shape[-1]).float()  # [N*S, I]
 
         update = a.mT @ a
 
@@ -45,9 +45,9 @@ class GroundTruthCovarianceCollector(HookCollectorBase):
 
         # g: [N, S, O], valid_masks: [N, S] -> select valid positions
         if mask is not None:
-            g = g[mask]  # [num_valid, O]
+            g = g[mask].float()  # [num_valid, O]
         else:
-            g = g.reshape(-1, g.shape[-1])  # [N*S, O]
+            g = g.reshape(-1, g.shape[-1]).float()  # [N*S, O]
 
         update = g.mT @ g
 
@@ -79,11 +79,15 @@ class GroundTruthNonAmortizedLambdaCollector(HookCollectorBase):
 
     def backward_hook(self, module: nn.Module, g: Tensor) -> None:
         name = assert_type(str, module._name)
-        eigenvector_a = self.eigenvectors_activations[name].to(device=self.device)
-        eigenvector_g = self.eigenvectors_gradients[name].to(device=self.device)
+        eigenvector_a = self.eigenvectors_activations[name].to(
+            device=self.device, dtype=torch.float32
+        )
+        eigenvector_g = self.eigenvectors_gradients[name].to(
+            device=self.device, dtype=torch.float32
+        )
 
-        activation = self.activation_cache[name]  # [N, S, I]
-        gradient = g  # [N, S, O]
+        activation = self.activation_cache[name].float()  # [N, S, I]
+        gradient = g.float()  # [N, S, O]
 
         gradient = torch.einsum("N S O, N S I -> N S O I", gradient, activation)
 
@@ -123,13 +127,17 @@ class GroundTruthAmortizedLambdaCollector(HookCollectorBase):
 
     def backward_hook(self, module: nn.Module, g: Tensor) -> None:
         name = assert_type(str, module._name)
-        eigenvector_a = self.eigenvectors_activations[name].to(device=self.device)
-        eigenvector_g = self.eigenvectors_gradients[name].to(device=self.device)
+        eigenvector_a = self.eigenvectors_activations[name].to(
+            device=self.device, dtype=torch.float32
+        )
+        eigenvector_g = self.eigenvectors_gradients[name].to(
+            device=self.device, dtype=torch.float32
+        )
 
-        activation = self.activation_cache[name]  # [N, S, I]
+        activation = self.activation_cache[name].float()  # [N, S, I]
 
         transformed_a = torch.einsum("N S I, I J -> N S J", activation, eigenvector_a)
-        transformed_g = torch.einsum("O P, N S O -> N S P", eigenvector_g, g)
+        transformed_g = torch.einsum("O P, N S O -> N S P", eigenvector_g, g.float())
 
         correction = (
             (torch.einsum("N S O, N S I -> N O I", transformed_g, transformed_a) ** 2)
