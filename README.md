@@ -5,7 +5,7 @@ Data attribution methods estimate the effect on a behavior of interest of removi
 
 ## Core features
 
-Per-token and per-sequence attribution is available everywhere. Both on-disk gradient stores and on-the-fly queries are supported. Almost every feature is available through both the CLI and a programmatic interface, which use a shared set of configuration dataclasses. To understand every available configuration option, [check out the documentation](https://bergson.readthedocs.io/en/latest/api.html#bergson.IndexConfig). Bergson uses FSDP2 or SimpleFSDP, BitsAndBytes, and low-level performance optimizations to support large models, datasets, and clusters. 
+Per-token and per-sequence attribution is available everywhere. Both on-disk gradient stores and on-the-fly queries are supported. Almost every feature is available through both the CLI and a programmatic interface, which use a shared set of configuration dataclasses. To understand every available configuration option, [check out the documentation](https://bergson.readthedocs.io/en/latest/api.html#bergson.IndexConfig). Bergson uses FSDP2 or SimpleFSDP, BitsAndBytes, and low-level performance optimizations to support large models, datasets, and clusters.
 
 Bergson integrates with HuggingFace Transformers and Datasets, and also supports on-disk datasets in a variety of formats.
 
