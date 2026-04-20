@@ -164,8 +164,7 @@ def setup_paths_and_config(
     if os.path.exists(config_path):
         if not overwrite:
             # Load existing config and compare
-            with open(config_path, "r") as f:
-                existing_cfg_dict = json.load(f)
+            existing_cfg_dict = asdict(IndexConfig.load_yaml(config_path))
 
             new_cfg_dict = asdict(cfg)
 
