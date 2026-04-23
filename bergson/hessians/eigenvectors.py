@@ -251,6 +251,7 @@ def compute_eigendecomposition(
     keys_for_this_rank = all_assignments[rank]
 
     covariance_eigenvectors = {}
+    covariance_eigenvalues = {}
 
     for key in tqdm(
         keys_for_this_rank,
@@ -284,6 +285,11 @@ def compute_eigendecomposition(
         # TODO: Maybe possible to avoid CPU transfer here?
         eigenvectors = eigenvectors.to(original_dtype).to(device="cpu").contiguous()
         covariance_eigenvectors[key] = eigenvectors
+        # Keep eigenvalues in float64 on CPU — 1D, cheap, and KfacPreconditioner
+        # wants precision for the (Λ_G ⊗ Λ_A) outer product.
+        covariance_eigenvalues[key] = (
+            eigenvalues.to(device="cpu").contiguous()
+        )
 
     # Merge eigenvectors across ranks and re-shard for output
     covariance_eigenvectors = _merge_and_shard_eigenvectors(
@@ -299,12 +305,20 @@ def compute_eigendecomposition(
     dirname = os.path.dirname(covariance_path)
     basename = os.path.basename(covariance_path)
     output_path = os.path.join(dirname, "eigen_" + basename)
+    eigenvalues_output_path = os.path.join(dirname, "eigenvalues_" + basename)
 
     os.makedirs(output_path, exist_ok=True)
+    os.makedirs(eigenvalues_output_path, exist_ok=True)
 
     save_file(
         covariance_eigenvectors,
         os.path.join(output_path, f"shard_{rank}.safetensors"),
+    )
+    # Each rank writes only its own keys' eigenvalues; the loader side
+    # concatenates across shards by key, which is a no-op for 1-shard keys.
+    save_file(
+        covariance_eigenvalues,
+        os.path.join(eigenvalues_output_path, f"shard_{rank}.safetensors"),
     )
 
     gc.collect()
