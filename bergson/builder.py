@@ -7,11 +7,8 @@ from datasets import Dataset
 
 from .config import PreprocessConfig
 from .data import compute_num_token_grads, create_index, create_token_index
-from .process_grads import (
-    get_trackstar_preconditioner,
-    normalize_flat_grad,
-    precondition_grad,
-)
+from .preconditioners import Preconditioner, load_preconditioner
+from .process_grads import normalize_flat_grad
 from .utils.utils import convert_dtype_to_np, tensor_to_numpy
 
 _EPS_SQ = torch.finfo(torch.float32).eps ** 2
@@ -20,11 +17,11 @@ _EPS_SQ = torch.finfo(torch.float32).eps ** 2
 def _preprocess(
     mod_grads: dict[str, torch.Tensor],
     grad_sizes,
-    h_inv,
+    preconditioner: Preconditioner,
     do_normalize: bool,
 ) -> torch.Tensor:
     """Precondition, concatenate, and optionally unit-normalize gradients."""
-    mod_grads = precondition_grad(mod_grads, h_inv)
+    mod_grads = preconditioner.apply(mod_grads)
     grads = torch.cat([mod_grads[m] for m in grad_sizes.keys()], dim=-1)
 
     if do_normalize:
@@ -77,10 +74,10 @@ class Builder:
 
         # ── Device & precomputed preconditioner ──────────────────────────────────────
         device = torch.device("cuda", torch.cuda.current_device())
-        self.h_inv = get_trackstar_preconditioner(
+        self.preconditioner = load_preconditioner(
             preprocess_cfg.preconditioner_path,
-            power=-0.5 if preprocess_cfg.unit_normalize else -1,
             device=device,
+            power=-0.5 if preprocess_cfg.unit_normalize else -1,
         )
 
         # ── Aggregation buffer (sequence-level only) ─────────────────────
@@ -147,7 +144,7 @@ class Builder:
         grads = _preprocess(
             mod_grads,
             self.grad_sizes,
-            self.h_inv,
+            self.preconditioner,
             self.preprocess_cfg.unit_normalize,
         )
 

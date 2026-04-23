@@ -17,10 +17,11 @@ from bergson.data import (
     load_gradients,
 )
 from bergson.distributed import launch_distributed_run
-from bergson.process_grads import (
-    get_trackstar_preconditioner,
-    normalize_and_aggregate_grads,
+from bergson.preconditioners import (
+    AutocorrelationPreconditioner,
+    load_preconditioner,
 )
+from bergson.process_grads import normalize_and_aggregate_grads
 from bergson.score.score_writer import (
     MemmapSequenceScoreWriter,
     MemmapTokenScoreWriter,
@@ -140,13 +141,23 @@ def create_scorer(
     """
     query_grads, query_preprocess_cfg = get_query_grads(score_cfg)
 
-    # Load preconditioner: H^(-1/2) for split, H^(-1) for one-sided
-    preconditioners = get_trackstar_preconditioner(
+    # Load preconditioner: H^(-1/2) for split, H^(-1) for one-sided.
+    # Only autocorrelation is supported at score time (§3.7 of the
+    # compressed-EKFAC plan): EKFAC/KFAC indices are scored via plain
+    # dot-product in the compressed-ekfac notebook, not through here.
+    preconditioner = load_preconditioner(
         preprocess_cfg.preconditioner_path,
         device=device,
         power=-0.5 if preprocess_cfg.unit_normalize else -1,
         return_dtype=dtype,
     )
+    if not isinstance(preconditioner, AutocorrelationPreconditioner):
+        raise NotImplementedError(
+            "create_scorer only supports autocorrelation preconditioners. "
+            "Score compressed EKFAC/KFAC indices via the compressed-ekfac "
+            "notebook's dot-product path."
+        )
+    preconditioners = preconditioner.h_inv
 
     # Maybe precondition query grads if it hasn't already been applied, e.g.
     # during reduce.
