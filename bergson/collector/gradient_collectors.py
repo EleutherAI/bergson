@@ -78,6 +78,21 @@ class GradientCollector(HookCollectorBase):
 
         if self.save_index:
             grad_sizes = {name: math.prod(s) for name, s in self.shapes().items()}
+            # When a factored (EKFAC/KFAC) preconditioner is in play, the
+            # collector emits unprojected [N, O*I] grads (projection has been
+            # suppressed on the processor by `bergson.build.build_worker`) and
+            # the builder projects after preconditioning — see §15 of
+            # COMPRESSED_EKFAC_PLAN.md. Detect the factored path from the
+            # preconditioner_path directly so tests that set projection_dim
+            # on cfg but pass an unprojected processor aren't swept up.
+            from bergson.build import _is_factored_preconditioner
+
+            post_projection_dim = (
+                self.cfg.projection_dim
+                if _is_factored_preconditioner(self.preprocess_cfg)
+                and self.cfg.projection_dim
+                else None
+            )
             self.builder = Builder(
                 self.data,
                 grad_sizes,
@@ -85,6 +100,8 @@ class GradientCollector(HookCollectorBase):
                 self.preprocess_cfg,
                 attribute_tokens=self.cfg.attribute_tokens,
                 path=self.cfg.partial_run_path,
+                post_projection_dim=post_projection_dim,
+                projection_type=self.cfg.projection_type,
             )
         else:
             self.builder = None

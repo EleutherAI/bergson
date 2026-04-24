@@ -1,6 +1,7 @@
 import os
 import shutil
 from datetime import timedelta
+from pathlib import Path
 
 import torch
 import torch.distributed as dist
@@ -11,6 +12,7 @@ from bergson.collection import collect_gradients
 from bergson.config import IndexConfig, PreprocessConfig
 from bergson.data import allocate_batches
 from bergson.distributed import launch_distributed_run
+from bergson.preconditioners import _detect_variant
 from bergson.utils.auto_batch_size import maybe_auto_batch_size
 from bergson.utils.utils import assert_type, setup_reproducibility
 from bergson.utils.worker_utils import (
@@ -18,6 +20,19 @@ from bergson.utils.worker_utils import (
     setup_data_pipeline,
     setup_model_and_peft,
 )
+
+
+def _is_factored_preconditioner(preprocess_cfg: PreprocessConfig) -> bool:
+    """True when ``preconditioner_path`` points at an EKFAC/KFAC artifact.
+
+    The builder needs to know this to keep the collector from projecting
+    (factored Q_A/Q_S operate in unprojected parameter space; projection
+    must happen after preconditioning per plan §3.2 "precondition-then-
+    project")."""
+    path = preprocess_cfg.preconditioner_path
+    if not path:
+        return False
+    return _detect_variant(Path(path)) in {"ekfac", "kfac"}
 
 
 def build_worker(
@@ -66,6 +81,18 @@ def build_worker(
 
     model, target_modules = setup_model_and_peft(index_cfg)
     processor = create_processor(model, index_cfg, target_modules)
+
+    # Factored (EKFAC/KFAC) preconditioners operate on unprojected
+    # [N, O, I] grads. Tell the collector not to project; the builder
+    # handles projection after preconditioning.
+    if _is_factored_preconditioner(preprocess_cfg):
+        if index_cfg.include_bias:
+            raise NotImplementedError(
+                "include_bias=True with an EKFAC/KFAC preconditioner is not "
+                "yet supported. The factored Q_A matrix does not cover the "
+                "extra bias column; see §15.5 of COMPRESSED_EKFAC_PLAN.md."
+            )
+        processor.projection_dim = None
 
     maybe_auto_batch_size(index_cfg, model, ds, processor, target_modules, rank)
 

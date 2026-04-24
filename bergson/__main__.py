@@ -5,6 +5,7 @@ from typing import Union, get_args
 
 from simple_parsing import ArgumentParser, ConflictResolution, Serializable
 
+from bergson.hessians.compressed_ekfac import compressed_ekfac_pipeline
 from bergson.hessians.pipeline import hessian_pipeline
 
 from .build import build
@@ -42,6 +43,34 @@ class Build(Serializable):
         validate_run_path(self.index_cfg)
 
         build(self.index_cfg, self.preprocess_cfg)
+
+
+@dataclass
+class Compressed_Ekfac(Serializable):
+    """Build a compressed EKFAC index for two-stage retrieval.
+
+    Fits EKFAC factors on the training set (with eigenvalue correction),
+    then builds a random-projected gradient index with the EKFAC
+    preconditioner baked in at build time. The resulting index at
+    ``<run_path>/index/`` is scored via plain dot product (see §3 of
+    COMPRESSED_EKFAC_PLAN.md for the design)."""
+
+    index_cfg: IndexConfig
+
+    hessian_cfg: HessianConfig
+
+    preprocess_cfg: PreprocessConfig
+
+    resume: bool = False
+    """Skip pipeline steps whose output directory already exists."""
+
+    def execute(self):
+        compressed_ekfac_pipeline(
+            self.index_cfg,
+            self.hessian_cfg,
+            self.preprocess_cfg,
+            resume=self.resume,
+        )
 
 
 @dataclass
@@ -182,6 +211,7 @@ class Main:
 
     command: Union[
         Build,
+        Compressed_Ekfac,
         Ekfac,
         Hessian,
         Magic,

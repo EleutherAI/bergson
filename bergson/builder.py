@@ -1,13 +1,19 @@
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import torch
 import torch.distributed as dist
 from datasets import Dataset
 
+from .collector.collector import create_projection_matrix
 from .config import PreprocessConfig
 from .data import compute_num_token_grads, create_index, create_token_index
-from .preconditioners import Preconditioner, load_preconditioner
+from .preconditioners import (
+    Preconditioner,
+    _FactoredPreconditioner,
+    load_preconditioner,
+)
 from .process_grads import normalize_flat_grad
 from .utils.utils import convert_dtype_to_np, tensor_to_numpy
 
@@ -19,9 +25,34 @@ def _preprocess(
     grad_sizes,
     preconditioner: Preconditioner,
     do_normalize: bool,
+    post_projection: dict[str, tuple[torch.Tensor, torch.Tensor]] | None = None,
 ) -> torch.Tensor:
-    """Precondition, concatenate, and optionally unit-normalize gradients."""
+    """Precondition, optionally project, concatenate, and optionally
+    unit-normalize gradients.
+
+    ``post_projection`` is only used for the factored-preconditioner path:
+    the preconditioner takes unprojected ``[N, O*I]`` inputs and emits
+    unprojected outputs; we then apply a per-module double-sided random
+    projection to compress each module's gradient to ``[N, p*p]`` before
+    concatenation. For the autocorrelation path this stays ``None`` and
+    the pipeline is unchanged (projection already happened in the
+    collector)."""
     mod_grads = preconditioner.apply(mod_grads)
+
+    if post_projection is not None:
+        projected: dict[str, torch.Tensor] = {}
+        for name, g in mod_grads.items():
+            L, R = post_projection[name]  # L: [p, O], R: [p, I]
+            O_dim = L.shape[1]
+            I_dim = R.shape[1]
+            g_shape = g.shape
+            g = g.to(device=L.device, dtype=L.dtype).view(g_shape[0], O_dim, I_dim)
+            # G' = L @ G @ R.T, shape [N, p, p] → flatten to [N, p*p]
+            g = torch.einsum("p o, n o i -> n p i", L, g)
+            g = torch.einsum("q i, n p i -> n p q", R, g)
+            projected[name] = g.reshape(g_shape[0], -1)
+        mod_grads = projected
+
     grads = torch.cat([mod_grads[m] for m in grad_sizes.keys()], dim=-1)
 
     if do_normalize:
@@ -43,7 +74,9 @@ class Builder:
     data : Dataset
         The dataset being indexed.
     grad_sizes : dict[str, int]
-        Per-module gradient dimensions.
+        Per-module gradient dimensions **as they arrive from the collector**
+        (i.e. unprojected ``O*I`` when ``post_projection_dim`` is set,
+        projected ``p*p`` otherwise).
     dtype : torch.dtype
         Torch dtype for the gradients.
     preprocess_cfg : PreprocessConfig
@@ -53,6 +86,16 @@ class Builder:
     path : Path | None
         When given, write to a memory-mapped file on disk.
         When ``None``, store in a plain numpy array.
+    post_projection_dim : int | None
+        When set (only supported with a factored preconditioner on
+        ``preconditioner_path``), the builder applies a per-module
+        double-sided random projection to ``[p, p]`` per module after
+        preconditioning. Matches the collector's ``double_sided_projection``
+        machinery so the on-disk layout is identical to the
+        autocorrelation path's projected layout.
+    projection_type : {"normal", "rademacher"}
+        Projection-matrix distribution (ignored when
+        ``post_projection_dim`` is ``None``).
     """
 
     grad_buffer: np.ndarray
@@ -66,11 +109,11 @@ class Builder:
         *,
         attribute_tokens: bool = False,
         path: Path | None = None,
+        post_projection_dim: int | None = None,
+        projection_type: Literal["normal", "rademacher"] = "rademacher",
     ):
-        self.grad_sizes = grad_sizes
         self.num_items = len(data)
         self.preprocess_cfg = preprocess_cfg
-        total_grad_dim = sum(grad_sizes.values())
 
         # ── Device & precomputed preconditioner ──────────────────────────────────────
         device = torch.device("cuda", torch.cuda.current_device())
@@ -79,6 +122,46 @@ class Builder:
             device=device,
             power=-0.5 if preprocess_cfg.unit_normalize else -1,
         )
+
+        # ── Post-preconditioning projection (factored variants only) ───────
+        self._post_projection: (
+            dict[str, tuple[torch.Tensor, torch.Tensor]] | None
+        ) = None
+        if post_projection_dim is not None:
+            if not isinstance(self.preconditioner, _FactoredPreconditioner):
+                raise ValueError(
+                    "post_projection_dim is only supported with a factored "
+                    "preconditioner (EKFAC or KFAC)."
+                )
+            self._post_projection = {}
+            for name, (O_dim, I_dim) in self.preconditioner._shapes.items():
+                L = create_projection_matrix(
+                    f"{name}/left",
+                    post_projection_dim,
+                    O_dim,
+                    dtype=torch.float32,
+                    device=device,
+                    projection_type=projection_type,
+                )
+                R = create_projection_matrix(
+                    f"{name}/right",
+                    post_projection_dim,
+                    I_dim,
+                    dtype=torch.float32,
+                    device=device,
+                    projection_type=projection_type,
+                )
+                self._post_projection[name] = (L, R)
+
+            # The on-disk layout uses the projected size, not the
+            # unprojected ``grad_sizes`` we received from the collector.
+            grad_sizes = {
+                name: post_projection_dim * post_projection_dim
+                for name in grad_sizes
+            }
+
+        self.grad_sizes = grad_sizes
+        total_grad_dim = sum(grad_sizes.values())
 
         # ── Aggregation buffer (sequence-level only) ─────────────────────
         if preprocess_cfg.aggregation != "none":
@@ -146,6 +229,7 @@ class Builder:
             self.grad_sizes,
             self.preconditioner,
             self.preprocess_cfg.unit_normalize,
+            post_projection=self._post_projection,
         )
 
         if self.preprocess_cfg.aggregation != "none":
