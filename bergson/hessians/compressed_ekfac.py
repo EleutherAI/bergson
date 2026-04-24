@@ -41,6 +41,21 @@ def compressed_ekfac_pipeline(
     ``index_cfg.projection_dim`` must be > 0 (a "compressed" index with no
     projection defeats the purpose).
 
+    **Pick ``projection_dim`` with care.** The builder applies a double-sided
+    random projection ``L · G · R^T`` after EKFAC preconditioning (§15 of
+    ``COMPRESSED_EKFAC_PLAN.md``). This is Kronecker-structured Johnson-
+    Lindenstrauss: preserving per-module inner products requires roughly
+    ``p ≳ sqrt(max_m(O_m · I_m))``. For pythia-14m that's ~128 (and p=64
+    already achieves mean recall@10 ≈ 60 % vs a ground-truth reference in
+    ``scripts/validate_compressed_ekfac.py``); p=16 runs but silently
+    retrieves noise. See §18 of the plan for the empirical evidence.
+
+    Also prefer ``preprocess_cfg.unit_normalize=True`` so the preconditioner
+    applies ``H^{-1/2}`` on both sides, giving ``<q, H^{-1} t>`` rankings
+    that match the standard influence-function formulation. The default
+    ``unit_normalize=False`` uses ``H^{-1}`` on both sides (``<q, H^{-2} t>``)
+    which is a different, over-preconditioned quantity.
+
     ``preprocess_cfg.preconditioner_path`` is ignored: the orchestrator
     points the build step at the freshly-written Hessian artifacts.
     """

@@ -512,13 +512,14 @@ Flagged here so they don't get lost:
 
 ---
 
-## 17. Test & commit state snapshot (as of writing)
+## 17. Test & commit state snapshot
 
 | Commit | Status | Tests | Regression delta |
 |---|---|---|---|
 | 1 — Preconditioner interface + factory | **landed** (`d8ab2e3`) | 162/162 pre-existing pass | **exact parity** with pre-refactor baseline (identical pass/fail set) |
 | 2 — EkfacPreconditioner + KfacPreconditioner + parity | **landed** (`30e66e4`) | 170/170 — 8 new tests added, no regressions | **+8 new tests**, same 13 pre-existing failures |
-| 3 — CLI + orchestrator + projection move | **in-flight** (branch state unchanged from 30e66e4) | Smoke test failing as expected (see §15) | TBD |
+| 3 — CLI + orchestrator + projection move | **landed** (`c69e826`) | 171/171 — 1 new e2e test added, no regressions | **+1 new test**, same 13 pre-existing failures |
+| 3.5 — End-to-end validation + projection_dim floor finding | **[in-flight]** | Validation script + bumped smoke test projection_dim | (additive; no regressions expected) |
 | 4 — Two-stage retrieval notebook | pending | pending | pending |
 
 Pre-existing failures (unchanged throughout, all unrelated to this work):
@@ -527,4 +528,107 @@ Pre-existing failures (unchanged throughout, all unrelated to this work):
 * `test_muon.py` (4) — `torch.optim.Muon` not in torch 2.6
 * `test_truncation.py` (7) — test/code drift on batch-size validation and warning text
 
-Branch is 2 commits ahead of `origin/feature/compressed-ekfac`, **not pushed**. Umbrella PR opens once all four commits land.
+Branch is 3 commits ahead of `origin/feature/compressed-ekfac`, **not pushed**. Umbrella PR opens once all four commits land.
+
+---
+
+## 18. End-to-end validation findings — the projection_dim floor **[critical for paper]**
+
+After commit 3 landed with shape-correct output, I ran a rigorous end-to-end retrieval validation (new script `scripts/validate_compressed_ekfac.py`) to answer "does the compressed index actually rank training examples consistently with a ground-truth reference?" — a question none of the commit-1/2/3 tests were designed to answer. The answer turned up a real empirical constraint that affects paper defaults.
+
+### 18.1 Validation design
+
+The script builds **four** indices from the same EKFAC factors fit on `pile-10k[:N_train]`:
+
+| Index | `projection_dim` | Data | Role |
+|---|---|---|---|
+| `train_compressed` | 64 | `train[:N_train]` | candidate: what the paper claims works |
+| `train_reference` | **0** (no projection) | `train[:N_train]` | ground truth: unprojected `vec(H^{-1/2} G)` per module |
+| `query_compressed` | 64 | `train[N_train:N_train+N_query]` | held-out queries, same projection as train |
+| `query_reference` | **0** | `train[N_train:N_train+N_query]` | held-out queries, ground truth |
+
+Key observation: `projection_dim=0` + factored preconditioner + `skip_preconditioners=True` is a "free" configuration on commit-3's code path — the collector emits `[N, O·I]`, the Builder applies EKFAC via `preconditioner.apply`, skips post-projection, writes the full preconditioned tensor. So the ground-truth artifact costs nothing new to produce.
+
+Metrics, per query (N_TRAIN=200 ⇒ random recalls are ≈ K/200):
+
+* **recall@K** of compressed top-K vs reference top-K (K=5, 10, 20)
+* **Spearman** rank correlation of the full 1×N_train score vectors
+* **Qualitative top-3** neighbors side-by-side
+
+Pass bar: mean recall@10 ≥ 40 % (8× random), mean Spearman ≥ 0.30.
+
+### 18.2 The failing first run exposed two real issues
+
+**Run 1** (defaults from commit 3's CLI smoke test: `projection_dim=16`, `unit_normalize=False`):
+
+```
+mean recall@5 = 20%   mean recall@10 = 20%   mean Spearman = 0.096   → FAIL
+```
+
+Per-module diagnostic (`scripts/diag_compressed_ekfac.py`):
+
+* Per-example projection is **bitwise correct**: `(L @ ref @ R.T).reshape(-1)` vs compressed vector has correlation `1.0000` across 5 example × 24 modules. The Builder's projection math is right.
+* Per-module **score-vector** Spearman is 0.01 to 0.25, mean 0.11. Even isolated to one module, compressed rankings disagree with reference.
+
+Since per-example projection is exact, the score-vector disagreement can only be JL noise dominating signal. Two roots:
+
+1. **Kronecker-structured JL, not vanilla JL.** `vec(L·G·R^T)` lives in `p²` dims but the projection matrix has Kronecker structure `R ⊗ L`, effective rank `p(O+I)` not `p²·O·I`. Preservation of per-module inner products requires roughly `p ≳ sqrt(O·I)/ε`. For pythia-14m modules (`O·I ∈ [16384, 65536]`), that means `p ≥ 128`-ish. At `p=16` we're a factor of 8 below the floor.
+2. **One-sided preconditioning** (`unit_normalize=False` ⇒ `power=-1` on both sides). Dot product becomes `<G_q, H^{-2} G_t>`, not the standard influence `<G_q, H^{-1} G_t>`. Both sides over-preconditioned symmetrically, but the score is no longer the Grosse IF quantity.
+
+**Run 2** (`projection_dim=64`, `unit_normalize=True` ⇒ `power=-0.5`, split preconditioning):
+
+```
+q   recall@5  recall@10  recall@20   spearman
+0     40.00%     40.00%     55.00%      0.659
+1     40.00%     20.00%     35.00%      0.480
+2     40.00%     70.00%     75.00%      0.793
+3     80.00%    100.00%     90.00%      0.853
+4     80.00%     70.00%     70.00%      0.786
+mean     56.00%     60.00%     65.00%      0.714  → PASS
+```
+
+Compressed agrees with reference. Pipeline functions end-to-end.
+
+### 18.3 Why autocorrelation gets away with `p=16`
+
+Same `projection_dim=16` default in bergson's autocorrelation path doesn't hit this floor — because autocorrelation projects **inside the collector via `double_sided_projection` before the outer product**. The resulting preconditioner `h_inv` is computed on the projected gradient covariance, so it lives in `[p², p²]` space matching the already-projected `mod_grads`. There's no Kronecker-structure penalty because the projection is absorbed into the preconditioner's coordinate system.
+
+Compressed EKFAC is fundamentally different: Q_A and Q_S are tied to the *unprojected* parameter space (they're factors of the Hessian there), so the projection must happen in unprojected space and the Kronecker-structure penalty applies.
+
+### 18.4 Recommendations
+
+1. **Bump the commit-3 `test_compressed_ekfac_e2e` smoke test from `projection_dim=16` to `projection_dim=64`.** The old value ran cleanly and produced shape-correct output, but would have silently retrieved garbage if anyone had tried to score against it. The new default hits the JL floor for pythia-14m's module sizes.
+2. **Document the `projection_dim` floor in `compressed_ekfac_pipeline`'s docstring** with a "roughly ≥ `sqrt(max(O·I))`" rule of thumb. Don't enforce it programmatically — users with larger p budgets or different architectures may want to tune it.
+3. **Use `unit_normalize=True` (split preconditioning) as the commit-4 notebook default.** `unit_normalize=False` does unit normalization of the full flat vector too, which changes rankings — that's a separate wrinkle flagged as a minor noise source below.
+4. **Ship `scripts/validate_compressed_ekfac.py` and `scripts/diag_compressed_ekfac.py`.** They're real tools, not throwaway diagnostics, and will be useful for validating future model/dataset combinations or debugging projection-math regressions.
+
+### 18.5 Scaling to pythia-160m
+
+Followed up Run 2 with pythia-160m / pile-10k[:200] at two projection dims on separate GPUs:
+
+| Setting | recall@5 | recall@10 | recall@20 | Spearman | Verdict |
+|---|---|---|---|---|---|
+| pythia-14m, p=16, one-sided | 20 % | 20 % | 26 % | 0.096 | FAIL |
+| pythia-14m, p=64, split | 56 % | **60 %** | 65 % | **0.714** | PASS |
+| pythia-160m, p=64, split | 12 % | 20 % | 24 % | 0.256 | FAIL |
+| pythia-160m, p=128, split | 44 % | **44 %** | 37 % | **0.389** | PASS |
+
+Reading: the JL floor scales with `sqrt(max_m(O_m·I_m))` as predicted. Pythia-14m's largest module has `O·I ≈ 65 k`, `sqrt ≈ 255` → p=64 sits at ~25 % of the floor, works. Pythia-160m's largest is `O·I ≈ 2.4 M`, `sqrt ≈ 1550` → p=64 is only ~4 % of the floor (fails), p=128 is ~8 % (barely passes).
+
+Projecting to pythia-1.4b (paper's stretch target): max `O·I ≈ 16 M`, `sqrt ≈ 4000`. Even `p=128` would be ~3 % — expect marginal or failing recall. **Paper-target defaults for compressed EKFAC:**
+
+* pythia-14m: `p ≥ 64` (p=64 passes comfortably)
+* pythia-160m (MVP): `p ≥ 128` (passes; p=64 fails)
+* pythia-1.4b (stretch): probably `p ≥ 256`, but untested — flag as an open question and empirically tune if the stretch is attempted.
+
+Commit 3's smoke-test default bumps to `p=64` (adequate for pythia-14m). The notebook in commit 4 will use `p=128` at pythia-160m per this table.
+
+### 18.6 Open questions for Lucia
+
+1. **Pythia-1.4b stretch target.** Above table suggests `p ≥ 256` is needed. That's a 64× larger index than p=64 and will correspondingly increase disk footprint at pile-100k stretch scale. Acceptable? Alternative: settle for lower recall at 1.4b and document it, or use a different projection scheme (e.g. single-sided JL on `vec(G)` with p_total ≈ 65 k ≪ `O·I` would be more compact but breaks the `[p, p]` convention; or TRAK-style).
+2. **`unit_normalize=True` couples split preconditioning with unit-norming the concat vector.** The unit-norm step isn't needed for split preconditioning to be well-defined, but it's what bergson's Builder does. Should we decouple them (e.g. new `PreprocessConfig.precondition_power: Literal[-0.5, -1]`)? Low priority but flagged.
+3. **Pile-10k qualitative neighbors are weak.** Even the reference top-3 for "Tulsi Gabbard 2020 candidate" doesn't return politically-relevant training texts — just random topically-unrelated items with high gradient dot products. This is a property of pile-10k (random web text, no obvious near-duplicates) rather than our pipeline, but worth mentioning since the notebook's qualitative section will look underwhelming. The quantitative recall/Spearman is what matters.
+
+### 18.7 Why this wasn't caught sooner
+
+Commit 3's `test_compressed_ekfac_e2e` only checks that (a) the CLI exits 0, (b) the on-disk layout has the right per-module shape, (c) `skip_preconditioners=True` really is honored. It does **not** check whether any particular query produces sensible rankings — and I didn't notice that gap until after commit 3 landed. Lesson for future commits: "runs without crashing with the right shape" is a weak acceptance bar; include at least a correlation/recall check against a trusted reference when the deliverable is a retrieval artifact.

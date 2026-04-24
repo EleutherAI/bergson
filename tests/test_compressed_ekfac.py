@@ -34,8 +34,14 @@ def test_compressed_ekfac_e2e(tmp_path: Path):
             "--split",
             "train[:100]",
             "--truncation",
+            # projection_dim=64 hits the Kronecker-JL floor for pythia-14m's
+            # module sizes (max O*I ≈ 65k, sqrt ≈ 256 ⇒ p ≥ ~128 would be
+            # ideal, p=64 is the smallest that gave PASS in
+            # `scripts/validate_compressed_ekfac.py`). A smaller p would still
+            # smoke-cleanly but would silently retrieve noise — see §18 of
+            # COMPRESSED_EKFAC_PLAN.md.
             "--projection_dim",
-            "16",
+            "64",
             "--token_batch_size",
             "1024",
             "--precision",
@@ -71,13 +77,13 @@ def test_compressed_ekfac_e2e(tmp_path: Path):
     module_names = index.dtype.names
     assert module_names, "Compressed index has no modules"
 
-    # Each module's gradient row should have length == projection_dim**2 = 256,
+    # Each module's gradient row should have length == projection_dim**2,
     # since the builder applies a double-sided [p, p] random projection after
     # baking EKFAC in, and flattens to [p*p].
     for name in module_names:
         per_row_len = index[name].shape[-1]
-        assert per_row_len == 16 * 16, (
-            f"Module {name!r}: expected projection_dim**2=256, got {per_row_len}"
+        assert per_row_len == 64 * 64, (
+            f"Module {name!r}: expected projection_dim**2=4096, got {per_row_len}"
         )
 
     # The GradientProcessor dump saved by build should exist. Because
