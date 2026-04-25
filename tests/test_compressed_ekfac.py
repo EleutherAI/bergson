@@ -3,17 +3,26 @@
 Mirrors :func:`tests.test_build.test_build_e2e` — runs the CLI end-to-end
 on pythia-14m / pile-10k[:100] and asserts the on-disk layout is what
 downstream code (and the two-stage retrieval notebook) expects.
+
+Also covers the gap-fill cases from §19 of COMPRESSED_EKFAC_PLAN.md:
+* ``test_compressed_ekfac_resume`` — second invocation with ``resume=True``
+  skips already-built steps (§19.5).
+* ``test_load_preconditioner_rejects_non_kfac_method`` — defensive gate
+  on tkfac/shampoo factor layouts (§19.3).
 """
 
+import json
 import subprocess
 from pathlib import Path
 
 import pytest
 import torch
+from safetensors.torch import save_file
 
 from bergson import GradientProcessor
+from bergson.config import HessianConfig, IndexConfig, PreprocessConfig
 from bergson.data import load_gradients
-from bergson.preconditioners import _detect_variant
+from bergson.preconditioners import _detect_variant, load_preconditioner
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
@@ -95,3 +104,103 @@ def test_compressed_ekfac_e2e(tmp_path: Path):
         "compressed_ekfac should not fit an autocorrelation preconditioner "
         "at build time; EKFAC is baked in via preconditioner_path."
     )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_compressed_ekfac_resume(tmp_path: Path):
+    """Second invocation with ``resume=True`` skips both pipeline steps.
+
+    Closes §19.5 of COMPRESSED_EKFAC_PLAN.md."""
+    from bergson.config import DataConfig
+    from bergson.hessians.compressed_ekfac import compressed_ekfac_pipeline
+
+    run_path = tmp_path / "ce_resume"
+    index_cfg = IndexConfig(
+        run_path=str(run_path),
+        model="EleutherAI/pythia-14m",
+        precision="bf16",
+        projection_dim=64,
+        token_batch_size=1024,
+        skip_preconditioners=True,
+        data=DataConfig(
+            dataset="NeelNanda/pile-10k", split="train[:50]", truncation=True,
+        ),
+        debug=True,  # determinism — second run must produce identical artifacts
+    )
+    index_cfg.distributed.nproc_per_node = 1
+    hessian_cfg = HessianConfig(method="kfac", ev_correction=True)
+    preprocess_cfg = PreprocessConfig(unit_normalize=True)
+
+    # First run: produces hessian + index dirs.
+    out = compressed_ekfac_pipeline(index_cfg, hessian_cfg, preprocess_cfg)
+    assert out == run_path / "index"
+    assert (run_path / "hessian" / "kfac").is_dir()
+    assert (run_path / "index").is_dir()
+    first_hessian_mtime = (run_path / "hessian" / "kfac").stat().st_mtime
+    first_index_mtime = (run_path / "index").stat().st_mtime
+
+    # Second run with resume=True: must NOT touch existing dirs.
+    compressed_ekfac_pipeline(index_cfg, hessian_cfg, preprocess_cfg, resume=True)
+    assert (run_path / "hessian" / "kfac").stat().st_mtime == first_hessian_mtime
+    assert (run_path / "index").stat().st_mtime == first_index_mtime
+
+
+def test_load_preconditioner_rejects_non_kfac_method(tmp_path: Path):
+    """Factored-preconditioner directories with method!=kfac raise.
+
+    Closes §19.3: tkfac/shampoo write the same on-disk layout as kfac, so
+    detection alone can't distinguish them. Only kfac has been validated
+    end-to-end against a reference. ``load_preconditioner`` reads
+    ``hessian_config.yaml`` and refuses to load until each method is
+    individually validated."""
+    # Synthesize a minimal "tkfac" EKFAC artifact: two eigenvector dirs +
+    # one eigenvalue-correction dir + a hessian_config.yaml claiming tkfac.
+    fake_tensor = {"layers.0.dummy": torch.eye(4)}
+    for sub in (
+        "eigen_activation_sharded",
+        "eigen_gradient_sharded",
+        "eigenvalue_correction_sharded",
+    ):
+        (tmp_path / sub).mkdir(parents=True)
+        save_file(fake_tensor, str(tmp_path / sub / "shard_0.safetensors"))
+    (tmp_path / "hessian_config.yaml").write_text(
+        json.dumps({"method": "tkfac", "ev_correction": True})
+    )
+
+    with pytest.raises(NotImplementedError, match="tkfac"):
+        load_preconditioner(tmp_path, device=torch.device("cpu"), power=-1.0)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_compressed_ekfac_rejects_include_bias(tmp_path: Path):
+    """``include_bias=True`` + factored preconditioner raises in build_worker.
+
+    Closes §19.4. The factored Q_A is sized [I, I] but with bias the
+    gradient has an extra column [I+1]; safest default is to refuse rather
+    than silently produce wrong output."""
+    from bergson.config import DataConfig
+    from bergson.hessians.compressed_ekfac import compressed_ekfac_pipeline
+
+    run_path = tmp_path / "ce_bias"
+    index_cfg = IndexConfig(
+        run_path=str(run_path),
+        model="EleutherAI/pythia-14m",
+        precision="bf16",
+        projection_dim=64,
+        token_batch_size=1024,
+        skip_preconditioners=True,
+        include_bias=True,  # the trigger
+        data=DataConfig(
+            dataset="NeelNanda/pile-10k", split="train[:20]", truncation=True,
+        ),
+    )
+    index_cfg.distributed.nproc_per_node = 1
+    hessian_cfg = HessianConfig(method="kfac", ev_correction=True)
+    preprocess_cfg = PreprocessConfig(unit_normalize=True)
+
+    # The hessian-fit step (step 1) currently allows include_bias; the
+    # factored-preconditioner guard fires in step 2 (the build worker).
+    # Match against the marker text in the error so the test pins the
+    # specific guard, not just any error.
+    with pytest.raises(NotImplementedError, match="include_bias"):
+        compressed_ekfac_pipeline(index_cfg, hessian_cfg, preprocess_cfg)

@@ -27,10 +27,19 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 import torch
+import yaml
 from safetensors.torch import load_file
 from torch import Tensor
 
 from .process_grads import get_trackstar_preconditioner, precondition_grad
+
+# Only this hessian-method has been empirically validated end-to-end against
+# a reference (see §18 of COMPRESSED_EKFAC_PLAN.md). tkfac/shampoo write to
+# the same on-disk layout as kfac so the directory-presence detection in
+# ``_detect_variant`` will identify them as KFAC/EKFAC, but the rotate-scale-
+# rotate math in ``_FactoredPreconditioner.apply`` was derived for kfac and
+# may be wrong for those methods. Gate explicitly until validated.
+_VALIDATED_HESSIAN_METHODS: frozenset[str] = frozenset({"kfac"})
 
 
 @runtime_checkable
@@ -226,6 +235,37 @@ def _detect_variant(path: Path) -> str:
     return "autocorrelation"
 
 
+def _check_validated_hessian_method(path: Path) -> None:
+    """Raise if the on-disk artifact was produced by a non-validated method.
+
+    Reads ``hessian_config.yaml`` from the preconditioner directory.
+    Currently only ``method=kfac`` (with optional ``ev_correction``) has
+    been end-to-end validated against a reference. ``tkfac`` and ``shampoo``
+    write the same directory layout but their math may not match the
+    rotate-scale-rotate body in :class:`_FactoredPreconditioner`.
+    Defensively gate at load time rather than risk silent wrong results.
+    """
+    cfg_path = path / "hessian_config.yaml"
+    if not cfg_path.exists():
+        return  # No config file → can't tell, allow (older artifacts).
+    with cfg_path.open() as f:
+        cfg = yaml.safe_load(f) or {}
+    method = cfg.get("method") if isinstance(cfg, dict) else None
+    if method is None:
+        return
+    if method not in _VALIDATED_HESSIAN_METHODS:
+        raise NotImplementedError(
+            f"Loading a factored preconditioner with method={method!r} is "
+            "not yet validated. Only "
+            f"{sorted(_VALIDATED_HESSIAN_METHODS)!r} have been verified "
+            "end-to-end against a reference (see §19.3 of "
+            "COMPRESSED_EKFAC_PLAN.md). The on-disk layout is identical "
+            "across methods so detection alone can't distinguish them; "
+            "validate the math for this method or fall back to "
+            f"method='kfac' before using compressed_ekfac."
+        )
+
+
 def load_preconditioner(
     preconditioner_path: str | Path | None,
     device: torch.device,
@@ -253,12 +293,14 @@ def load_preconditioner(
     variant = _detect_variant(path)
 
     if variant == "ekfac":
+        _check_validated_hessian_method(path)
         return EkfacPreconditioner.from_disk(
             path, device=device, power=power,
             lambda_damp_factor=lambda_damp_factor,
         )
 
     if variant == "kfac":
+        _check_validated_hessian_method(path)
         return KfacPreconditioner.from_disk(
             path, device=device, power=power,
             lambda_damp_factor=lambda_damp_factor,

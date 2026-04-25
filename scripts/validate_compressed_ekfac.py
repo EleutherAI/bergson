@@ -64,6 +64,7 @@ DEFAULT_UNIT_NORMALIZE = True  # power=-0.5, i.e. split preconditioning so
                                 #  <q_{H^-0.5}, t_{H^-0.5}> = <q, H^-1, t>.
 DEFAULT_TOKEN_BATCH_SIZE = 1024
 DEFAULT_PRECISION = "bf16"
+DEFAULT_NPROC_PER_NODE = 1
 
 # Module-level globals set by `main` so helper functions don't have to thread
 # them through; cleaner for a one-file diagnostic script.
@@ -75,6 +76,7 @@ PROJECTION_DIM = DEFAULT_PROJECTION_DIM
 UNIT_NORMALIZE = DEFAULT_UNIT_NORMALIZE
 TOKEN_BATCH_SIZE = DEFAULT_TOKEN_BATCH_SIZE
 PRECISION = DEFAULT_PRECISION
+NPROC_PER_NODE = DEFAULT_NPROC_PER_NODE
 
 
 def make_index_cfg(
@@ -93,7 +95,7 @@ def make_index_cfg(
         debug=True,  # enables setup_reproducibility — essential for
                      # comparing two independent builds bitwise.
     )
-    cfg.distributed.nproc_per_node = 1
+    cfg.distributed.nproc_per_node = NPROC_PER_NODE
     return cfg
 
 
@@ -280,6 +282,10 @@ if __name__ == "__main__":
     )
     parser.add_argument("--token_batch_size", type=int, default=DEFAULT_TOKEN_BATCH_SIZE)
     parser.add_argument("--precision", default=DEFAULT_PRECISION)
+    parser.add_argument(
+        "--nproc_per_node", type=int, default=DEFAULT_NPROC_PER_NODE,
+        help="Number of GPUs per node (passed to bergson DistributedConfig).",
+    )
     args = parser.parse_args()
 
     MODEL = args.model
@@ -290,9 +296,11 @@ if __name__ == "__main__":
     UNIT_NORMALIZE = args.unit_normalize
     TOKEN_BATCH_SIZE = args.token_batch_size
     PRECISION = args.precision
+    NPROC_PER_NODE = args.nproc_per_node
 
     print(
         f"Config: model={MODEL}  n_train={N_TRAIN}  n_query={N_QUERY}  "
-        f"projection_dim={PROJECTION_DIM}  unit_normalize={UNIT_NORMALIZE}\n"
+        f"projection_dim={PROJECTION_DIM}  unit_normalize={UNIT_NORMALIZE}  "
+        f"nproc_per_node={NPROC_PER_NODE}  precision={PRECISION}\n"
     )
     sys.exit(main(Path(args.out_root)))
