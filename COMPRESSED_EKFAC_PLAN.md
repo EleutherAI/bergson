@@ -522,7 +522,7 @@ Flagged here so they don't get lost:
 | 3.5 — Validation + projection_dim floor finding | **landed** (`fd235dc`) | Validation script + bumped smoke test projection_dim | additive; same 13 pre-existing failures |
 | 3.6 — Known-gaps documentation (§19, §20) | **landed** (`ae5e3e3`) | doc-only | none |
 | Phase A — Defensive gates + trivial-gap tests | **landed** (`62f86b9`) | 174/174 — +3 new tests; tkfac/shampoo gated; include_bias + resume both covered | **+3 new tests**, same 13 pre-existing failures |
-| Phase B — Empirical validation (multi-GPU, fp32, large-scale 160m) | **landed** (this commit) | doc-only; validation results captured in §18 + §19 | none |
+| Phase B+C — Empirical validation + close §19/§20 | **landed** (`9358a17`) | doc-only; validation results captured in §18 + §19 | none |
 | 4 — Two-stage retrieval notebook | pending | pending | pending |
 
 Pre-existing failures (unchanged throughout, all unrelated to this work):
@@ -766,4 +766,4 @@ Phase A (defensive gates, trivial tests) and Phase B (empirical validation) have
 **Remaining work for the umbrella PR:**
 
 1. **Commit 4** — two-stage retrieval notebook on pythia-160m / pile-10k at `p=128`, `unit_normalize=True`, including the `embed_query` helper that §19.7 calls out. This is the only outstanding piece from the original Mac-side plan §4.
-2. **Optional polish before merge**: rerun the regression suite on the final HEAD to capture a clean snapshot (currently 174 passed / 13 same pre-existing failures at HEAD `62f86b9`).
+2. **Optional polish before merge**: rerun the regression suite on the final HEAD to capture a clean snapshot. The most recent regression I ran (HEAD `62f86b9`, before the doc-only Phase-B+C commit) was 174 passed / 13 same pre-existing failures / 4 skipped. The Phase-B+C commit (`9358a17`) is doc-only so the count is unchanged at HEAD.
