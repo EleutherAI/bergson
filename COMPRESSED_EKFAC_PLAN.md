@@ -632,3 +632,105 @@ Commit 3's smoke-test default bumps to `p=64` (adequate for pythia-14m). The not
 ### 18.7 Why this wasn't caught sooner
 
 Commit 3's `test_compressed_ekfac_e2e` only checks that (a) the CLI exits 0, (b) the on-disk layout has the right per-module shape, (c) `skip_preconditioners=True` really is honored. It does **not** check whether any particular query produces sensible rankings — and I didn't notice that gap until after commit 3 landed. Lesson for future commits: "runs without crashing with the right shape" is a weak acceptance bar; include at least a correlation/recall check against a trusted reference when the deliverable is a retrieval artifact.
+
+---
+
+## 19. Known gaps — what is NOT yet validated
+
+This section is the honest counterpart to §17. Everything below works in my hands or follows from the math, but I have **not** empirically verified it on the cluster. Each item is tagged with the rough cost to verify.
+
+### 19.1 Multi-GPU / distributed apply [medium cost]
+
+The plan §3.6 specifies full-load-per-rank for MVP. `_load_sharded_dict` does `torch.cat(parts, dim=0)` over `shard_*.safetensors`, which assumes each shard is a row-slice that concatenates back to the full matrix.
+
+* **Tested:** single-shard case (`world_size=1`, only `shard_0.safetensors`).
+* **Not tested:** `world_size > 1` actually loading multiple shards. With 8 ranks, eigenvectors are `[m/8, m]` per shard, eigenvalue corrections are `[O/8, I]` per shard. Concatenation along dim 0 *should* produce the right full matrix, but I never ran with `--nproc_per_node 8`.
+* **Cost to verify:** ~10 min (run validation with `--nproc_per_node 8`, confirm recall@K matches single-GPU result on the same dataset).
+* **Risk if broken:** the paper-target experiments at pythia-160m / pile-10k or 1.4b / pile-100k will fail or silently produce wrong factors at runtime.
+
+### 19.2 Token-attribution end-to-end [medium cost]
+
+Plan §3.5 says per-token works "from day one." Commit 2's `test_ekfac_preconditioner_per_token_shape` confirms the math handles `[T, O*I]` identically to `[N, O*I]`.
+
+* **Tested:** unit-level shape handling.
+* **Not tested:** a full `compressed_ekfac` run with `index_cfg.attribute_tokens=True` and a factored preconditioner. The Builder's `_scatter_flat_tokens` + `post_projection` + variable-length per-example token counts is untested as a chain.
+* **Cost to verify:** ~15 min (validation script with `--attribute_tokens` flag plumbed through; need a small CLI tweak).
+* **Risk if broken:** the per-token retrieval mode is unusable; falls back to per-sequence.
+
+### 19.3 `tkfac` and `shampoo` hessian methods [low cost]
+
+`HessianConfig.method` accepts `kfac`, `tkfac`, `shampoo`. All three call `compute_eigendecomposition` and write to the same `eigen_activation_sharded/` + `eigen_gradient_sharded/` layout, so `_detect_variant` will identify them as EKFAC/KFAC.
+
+* **Tested:** `method="kfac"` with `ev_correction=True` (the canonical EKFAC path).
+* **Not tested:** does `EkfacPreconditioner` do the right thing on tkfac or shampoo eigenvectors? The math may differ — tkfac multiplies covariances by per-example trace ratios, shampoo uses preconditioned 4th-order tensors. The rotate-scale-rotate body in `_FactoredPreconditioner.apply` was derived for kfac.
+* **Cost to verify:** ~30 min (validation runs with each method) or **just gate it explicitly** — raise a clear error in `load_preconditioner` if `method != "kfac"` until tkfac/shampoo are formally validated.
+* **Risk if broken:** silent wrong results for users who fit tkfac/shampoo Hessians. Worth gating defensively.
+
+### 19.4 `include_bias=True` error guard [trivial]
+
+Commit 3's `build_worker` raises `NotImplementedError` when `include_bias=True` + factored preconditioner. The error path is uncovered by tests.
+
+* **Cost to verify:** trivial (one test that asserts the raise).
+* **Risk if broken:** `include_bias=True` users hit a confusing error instead of the clear one I wrote.
+
+### 19.5 Resume mode [trivial]
+
+`compressed_ekfac_pipeline(resume=True)` skips steps whose output dirs already exist. Logic is straightforward but never run.
+
+* **Cost to verify:** ~2 min (run twice, confirm second run skips both steps).
+* **Risk if broken:** users with partial runs can't pick up where they left off; minor UX issue.
+
+### 19.6 Pythia-1.4b stretch [high cost]
+
+Predicted from §18.5 to need `p ≥ 256`. Never run.
+
+* **Memory budget unconfirmed.** Q_A for pythia-1.4b's MLP intermediate-down layer has shape `[8192, 8192]` ≈ 256MB in fp32. Across 24 layers × 4 modules × (Q_A + Q_S) = ~50GB on-device per rank. Could exceed 48GB A40 — need to check, possibly fall back to bf16 factors, possibly stream.
+* **Cost to verify:** several hours (full pipeline run on pile-100k, plus retrieval validation).
+* **Risk if broken:** stretch goal slips. MVP (160m) is unaffected.
+
+### 19.7 Python API for query-side embedding [bigger; commit-4 work]
+
+There's no `embed_query(model, query, ekfac_path) -> Tensor[p²]` helper. My validation builds a 5-row "query index" via the full orchestrator, which is heavyweight. The two-stage retrieval notebook needs a lighter-weight path:
+
+```python
+# Conceptual API the notebook will need:
+query_vec = embed_query(model, query_text, ekfac_path, projection_dim=128)
+scores = train_index @ query_vec  # [N_train]
+top_k = scores.argsort()[-K:]
+```
+
+This requires plumbing through the same EKFAC + projection that the build path uses, but for a single example without writing to disk. Commit 4 has to build it. **Not a gap so much as a known commit-4 deliverable, flagging here so it's not forgotten.**
+
+### 19.8 Numerical precision (bf16 vs fp32 on disk) [low cost]
+
+All validation used `--precision bf16`. The reference `EkfacApplicator` works in fp32 internally; my `_FactoredPreconditioner` casts to fp32 for the math. But the on-disk index is in `save_dtype` derived from the model's dtype, which for `bf16` precision is bf16. Retrieval might be more accurate at fp32; recall@K numbers in §18.5 may improve.
+
+* **Cost to verify:** ~5 min (validation rerun with `--precision fp32`).
+* **Risk if broken:** none for correctness; potentially higher recall numbers in fp32, which would be paper-positive.
+
+### 19.9 160m recall is marginal, not robust
+
+The pythia-160m / p=128 / pile-10k[:200] result (mean recall@10 = 44 %, Spearman = 0.39) **clears my self-imposed bar but only barely**. One of five queries has recall@10 = 10 %. The mean over five queries has high variance. Not a "gap" in the same sense as the others — the pipeline works — but a caveat: at the MVP scale, results are noisier than the 14m / p=64 numbers would suggest.
+
+Possible mitigations to test in commit 4:
+* Larger N_train (200 → 1000) — more training examples means stronger gradient retrieval signal per query
+* Larger N_query for stable means
+* p=256 instead of 128 (more memory, better preservation)
+
+### 19.10 Test coverage in `tests/ekfac_tests/` [confirmed green]
+
+This is **not** a gap, but worth documenting because it's load-bearing for confidence: the `tests/ekfac_tests/` subdirectory contains session-scoped fixtures that compute ground-truth EKFAC factors via independent code (`compute_ekfac_ground_truth.py`) and assert numerical properties (batch-size invariance, eigenvalue correction accuracy, FIM accuracy). Those tests have run and stayed green throughout commits 1–3 and the validation work. So the additive eigenvalue-saving change to `compute_eigendecomposition` (§12) is empirically backwards-compatible with the most thorough tests bergson has of EKFAC math.
+
+---
+
+## 20. Verification priorities before merge
+
+Ordered by likelihood-of-blocking-the-paper × cost-to-verify:
+
+1. **§19.1 multi-GPU validation** — blocking for any pile-100k stretch. ~10 min to run. **Should do before commit 4.**
+2. **§19.4 `include_bias=True` test** — trivial; just write the test. Should bundle with commit 4 cleanup.
+3. **§19.5 resume mode test** — also trivial; same.
+4. **§19.3 tkfac/shampoo gate** — defensive raise is cheap; do this rather than full validation.
+5. **§19.2 token-attribution e2e** — only matters if the notebook uses per-token mode. Decide commit-4 scope first.
+6. **§19.8 fp32 vs bf16** — paper-positive optionality, do if time allows.
+7. **§19.6 pythia-1.4b stretch** — only matters if the stretch is attempted; defer until commits 1–4 land.
