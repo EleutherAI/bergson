@@ -83,7 +83,16 @@ def make_index_cfg(
     run_path: Path,
     split: str,
     projection_dim: int,
+    nproc_per_node: int | None = None,
 ) -> IndexConfig:
+    """Build an IndexConfig.
+
+    ``nproc_per_node`` defaults to the script-wide ``NPROC_PER_NODE``. The
+    query-side builds force this to 1 because bergson's `_allocate_batches_world`
+    requires `total_batches % world_size == 0`, which fails for tiny
+    query splits at high world sizes — and there's no real-workflow benefit
+    to scattering a handful of held-out queries across many GPUs anyway.
+    """
     cfg = IndexConfig(
         run_path=str(run_path),
         model=MODEL,
@@ -95,7 +104,9 @@ def make_index_cfg(
         debug=True,  # enables setup_reproducibility — essential for
                      # comparing two independent builds bitwise.
     )
-    cfg.distributed.nproc_per_node = NPROC_PER_NODE
+    cfg.distributed.nproc_per_node = (
+        nproc_per_node if nproc_per_node is not None else NPROC_PER_NODE
+    )
     return cfg
 
 
@@ -168,18 +179,26 @@ def main(out_root: Path) -> int:
         "reference train",
     )
 
-    # ── 4+5: Query compressed + query reference ──────────────────────────
+    # ── 4+5: Query compressed + query reference (always single-GPU) ─────
+    # bergson requires `total_batches % world_size == 0`, which is brittle
+    # for tiny query splits at high world sizes. Force nproc_per_node=1 here.
     print("Step 4/5: Compressed query index...")
     run_build_if_missing(
         query_compressed,
-        make_index_cfg(query_compressed, query_split, projection_dim=PROJECTION_DIM),
+        make_index_cfg(
+            query_compressed, query_split,
+            projection_dim=PROJECTION_DIM, nproc_per_node=1,
+        ),
         PreprocessConfig(preconditioner_path=ekfac_path, unit_normalize=UNIT_NORMALIZE),
         "compressed query",
     )
     print("Step 5/5: Reference (unprojected EKFAC) query index...")
     run_build_if_missing(
         query_reference,
-        make_index_cfg(query_reference, query_split, projection_dim=0),
+        make_index_cfg(
+            query_reference, query_split,
+            projection_dim=0, nproc_per_node=1,
+        ),
         PreprocessConfig(preconditioner_path=ekfac_path, unit_normalize=UNIT_NORMALIZE),
         "reference query",
     )

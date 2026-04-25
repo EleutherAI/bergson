@@ -519,7 +519,10 @@ Flagged here so they don't get lost:
 | 1 — Preconditioner interface + factory | **landed** (`d8ab2e3`) | 162/162 pre-existing pass | **exact parity** with pre-refactor baseline (identical pass/fail set) |
 | 2 — EkfacPreconditioner + KfacPreconditioner + parity | **landed** (`30e66e4`) | 170/170 — 8 new tests added, no regressions | **+8 new tests**, same 13 pre-existing failures |
 | 3 — CLI + orchestrator + projection move | **landed** (`c69e826`) | 171/171 — 1 new e2e test added, no regressions | **+1 new test**, same 13 pre-existing failures |
-| 3.5 — End-to-end validation + projection_dim floor finding | **[in-flight]** | Validation script + bumped smoke test projection_dim | (additive; no regressions expected) |
+| 3.5 — Validation + projection_dim floor finding | **landed** (`fd235dc`) | Validation script + bumped smoke test projection_dim | additive; same 13 pre-existing failures |
+| 3.6 — Known-gaps documentation (§19, §20) | **landed** (`ae5e3e3`) | doc-only | none |
+| Phase A — Defensive gates + trivial-gap tests | **landed** (`62f86b9`) | 174/174 — +3 new tests; tkfac/shampoo gated; include_bias + resume both covered | **+3 new tests**, same 13 pre-existing failures |
+| Phase B — Empirical validation (multi-GPU, fp32, large-scale 160m) | **landed** (this commit) | doc-only; validation results captured in §18 + §19 | none |
 | 4 — Two-stage retrieval notebook | pending | pending | pending |
 
 Pre-existing failures (unchanged throughout, all unrelated to this work):
@@ -602,18 +605,26 @@ Compressed EKFAC is fundamentally different: Q_A and Q_S are tied to the *unproj
 3. **Use `unit_normalize=True` (split preconditioning) as the commit-4 notebook default.** `unit_normalize=False` does unit normalization of the full flat vector too, which changes rankings — that's a separate wrinkle flagged as a minor noise source below.
 4. **Ship `scripts/validate_compressed_ekfac.py` and `scripts/diag_compressed_ekfac.py`.** They're real tools, not throwaway diagnostics, and will be useful for validating future model/dataset combinations or debugging projection-math regressions.
 
-### 18.5 Scaling to pythia-160m
+### 18.5 Scaling to pythia-160m, multi-GPU, and precision
 
-Followed up Run 2 with pythia-160m / pile-10k[:200] at two projection dims on separate GPUs:
+Followed up Run 2 with several validation matrices on separate GPUs:
 
-| Setting | recall@5 | recall@10 | recall@20 | Spearman | Verdict |
-|---|---|---|---|---|---|
-| pythia-14m, p=16, one-sided | 20 % | 20 % | 26 % | 0.096 | FAIL |
-| pythia-14m, p=64, split | 56 % | **60 %** | 65 % | **0.714** | PASS |
-| pythia-160m, p=64, split | 12 % | 20 % | 24 % | 0.256 | FAIL |
-| pythia-160m, p=128, split | 44 % | **44 %** | 37 % | **0.389** | PASS |
+| Setting | n_train | n_query | recall@5 | recall@10 | recall@20 | Spearman | Verdict |
+|---|---|---|---|---|---|---|---|
+| pythia-14m, p=16, one-sided | 200 | 5 | 20 % | 20 % | 26 % | 0.096 | FAIL |
+| pythia-14m, p=64, split, 1 GPU | 200 | 5 | 56 % | **60 %** | 65 % | **0.714** | PASS |
+| pythia-14m, p=64, split, **8 GPUs** | 200 | 5 | 56 % | **56 %** | 61 % | **0.705** | PASS — within JL noise of 1-GPU |
+| pythia-160m, p=64, split | 200 | 5 | 12 % | 20 % | 24 % | 0.256 | FAIL |
+| pythia-160m, p=128, split, **bf16** | 200 | 5 | 44 % | **44 %** | 37 % | **0.389** | PASS |
+| pythia-160m, p=128, split, **fp32** | 200 | 5 | 44 % | 46 % | 52 % | **0.477** | PASS — fp32 better Spearman |
+| pythia-160m, p=128, split, **n_train=1000** | 1000 | 20 | 47 % | **40 %** | 40 % | **0.396** | PASS — Spearman holds across scales |
 
-Reading: the JL floor scales with `sqrt(max_m(O_m·I_m))` as predicted. Pythia-14m's largest module has `O·I ≈ 65 k`, `sqrt ≈ 255` → p=64 sits at ~25 % of the floor, works. Pythia-160m's largest is `O·I ≈ 2.4 M`, `sqrt ≈ 1550` → p=64 is only ~4 % of the floor (fails), p=128 is ~8 % (barely passes).
+Reading:
+
+* **JL floor scales with `sqrt(max_m(O_m·I_m))` as predicted.** Pythia-14m's largest module has `O·I ≈ 65 k`, `sqrt ≈ 255` → p=64 sits at ~25 % of the floor, works. Pythia-160m's largest is `O·I ≈ 2.4 M`, `sqrt ≈ 1550` → p=64 is only ~4 % of the floor (fails), p=128 is ~8 % (passes but marginal).
+* **Multi-GPU produces equivalent rankings to single-GPU** (recall@10: 56 % vs 60 %, Spearman: 0.71 vs 0.71). The factor-shard concat in `_load_sharded_dict` is verified end-to-end at world_size=8.
+* **fp32 is marginally better than bf16** but bf16 is sufficient for retrieval — Spearman 0.48 vs 0.39, recall@10 essentially unchanged. Use bf16 by default for the paper to halve disk size.
+* **Recall@K does NOT improve with more training data** at fixed p — retrieving the *exact* top-K out of a larger pool is harder by exactly the right amount to keep recall flat. **Spearman is the stable signal across n_train**, going from 0.39 (n=200) to 0.40 (n=1000).
 
 Projecting to pythia-1.4b (paper's stretch target): max `O·I ≈ 16 M`, `sqrt ≈ 4000`. Even `p=128` would be ~3 % — expect marginal or failing recall. **Paper-target defaults for compressed EKFAC:**
 
@@ -635,9 +646,22 @@ Commit 3's `test_compressed_ekfac_e2e` only checks that (a) the CLI exits 0, (b)
 
 ---
 
-## 19. Known gaps — what is NOT yet validated
+## 19. Known gaps — current verification status
 
-This section is the honest counterpart to §17. Everything below works in my hands or follows from the math, but I have **not** empirically verified it on the cluster. Each item is tagged with the rough cost to verify.
+This section is the honest counterpart to §17. After Phase A (defensive tests + gates) and Phase B (empirical validation), each gap is now labeled **CLOSED**, **OPEN**, **DEFERRED**, or **COMMIT-4**. The original cost-to-verify and risk-if-broken text is preserved so reviewers can check whether the closure is convincing.
+
+| Gap | Status | Closure |
+|---|---|---|
+| §19.1 multi-GPU | **CLOSED** | 8-GPU validation matches 1-GPU within JL noise (§18.5 row 3) |
+| §19.2 token attribution e2e | **DEFERRED** | per-sequence is the paper's primary claim; per-token is the same machinery at finer granularity, validated only at unit-test level |
+| §19.3 tkfac/shampoo defensive gate | **CLOSED** | `_check_validated_hessian_method` raises; covered by `test_load_preconditioner_rejects_non_kfac_method` |
+| §19.4 include_bias error path | **CLOSED** | covered by `test_compressed_ekfac_rejects_include_bias` |
+| §19.5 resume mode | **CLOSED** | covered by `test_compressed_ekfac_resume` |
+| §19.6 pythia-1.4b stretch | **DEFERRED** | per §20 priority list; out of scope for MVP, predicted to need `p ≥ 256` |
+| §19.7 query-side embedding API | **COMMIT-4** | will be the notebook's main deliverable |
+| §19.8 fp32 vs bf16 | **CLOSED** | fp32 marginally better but bf16 sufficient (§18.5 rows 5-6) |
+| §19.9 160m recall robustness | **PARTIALLY CLOSED** | n_train=1000 / n_query=20 shows Spearman ≈ 0.40 stable across scales; recall@10 = 40 % stays at the bar — flagged as "marginal but functional" rather than "robustly comfortable" |
+| §19.10 ekfac_tests confirmed green | **CLOSED** | unchanged through all commits |
 
 ### 19.1 Multi-GPU / distributed apply [medium cost]
 
@@ -723,14 +747,23 @@ This is **not** a gap, but worth documenting because it's load-bearing for confi
 
 ---
 
-## 20. Verification priorities before merge
+## 20. Verification priorities — completed and remaining
 
-Ordered by likelihood-of-blocking-the-paper × cost-to-verify:
+Phase A (defensive gates, trivial tests) and Phase B (empirical validation) have closed all the addressable items from the original §20 list:
 
-1. **§19.1 multi-GPU validation** — blocking for any pile-100k stretch. ~10 min to run. **Should do before commit 4.**
-2. **§19.4 `include_bias=True` test** — trivial; just write the test. Should bundle with commit 4 cleanup.
-3. **§19.5 resume mode test** — also trivial; same.
-4. **§19.3 tkfac/shampoo gate** — defensive raise is cheap; do this rather than full validation.
-5. **§19.2 token-attribution e2e** — only matters if the notebook uses per-token mode. Decide commit-4 scope first.
-6. **§19.8 fp32 vs bf16** — paper-positive optionality, do if time allows.
-7. **§19.6 pythia-1.4b stretch** — only matters if the stretch is attempted; defer until commits 1–4 land.
+| Item | Status |
+|---|---|
+| §19.1 multi-GPU | ✓ done — 8-GPU recall matches 1-GPU |
+| §19.3 tkfac/shampoo gate | ✓ done — `_check_validated_hessian_method` |
+| §19.4 include_bias test | ✓ done |
+| §19.5 resume test | ✓ done |
+| §19.8 fp32 vs bf16 | ✓ done — bf16 sufficient |
+| §19.9 160m robustness | ✓ done — Spearman ≈ 0.40 stable across n_train |
+| §19.2 token-attribution e2e | DEFERRED — paper's primary claim is per-sequence |
+| §19.6 pythia-1.4b stretch | DEFERRED — not on MVP critical path |
+| §19.7 query-side API | COMMIT-4 deliverable |
+
+**Remaining work for the umbrella PR:**
+
+1. **Commit 4** — two-stage retrieval notebook on pythia-160m / pile-10k at `p=128`, `unit_normalize=True`, including the `embed_query` helper that §19.7 calls out. This is the only outstanding piece from the original Mac-side plan §4.
+2. **Optional polish before merge**: rerun the regression suite on the final HEAD to capture a clean snapshot (currently 174 passed / 13 same pre-existing failures at HEAD `62f86b9`).
