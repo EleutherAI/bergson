@@ -523,7 +523,8 @@ Flagged here so they don't get lost:
 | 3.6 — Known-gaps documentation (§19, §20) | **landed** (`ae5e3e3`) | doc-only | none |
 | Phase A — Defensive gates + trivial-gap tests | **landed** (`62f86b9`) | 174/174 — +3 new tests; tkfac/shampoo gated; include_bias + resume both covered | **+3 new tests**, same 13 pre-existing failures |
 | Phase B+C — Empirical validation + close §19/§20 | **landed** (`9358a17`) | doc-only; validation results captured in §18 + §19 | none |
-| 4 — Two-stage retrieval notebook | pending | pending | pending |
+| Doc-only fixups for stale refs | **landed** (`48aa144`) | doc-only | none |
+| 4 — Two-stage retrieval notebook | **landed** (`93cd8f7`) | notebook executed end-to-end (108× compression, 145× faster Stage 1, recall@10: 36 % compressed-only → 46 % two-stage at K1=20) | additive; no test impact |
 
 Pre-existing failures (unchanged throughout, all unrelated to this work):
 * `test_adam_state_loading.py::test_load_8bit_adam_checkpoint` — missing `bitsandbytes` in dev deps
@@ -765,5 +766,5 @@ Phase A (defensive gates, trivial tests) and Phase B (empirical validation) have
 
 **Remaining work for the umbrella PR:**
 
-1. **Commit 4** — two-stage retrieval notebook on pythia-160m / pile-10k at `p=128`, `unit_normalize=True`, including the `embed_query` helper that §19.7 calls out. This is the only outstanding piece from the original Mac-side plan §4.
-2. **Optional polish before merge**: rerun the regression suite on the final HEAD to capture a clean snapshot. The most recent regression I ran (HEAD `62f86b9`, before the doc-only Phase-B+C commit) was 174 passed / 13 same pre-existing failures / 4 skipped. The Phase-B+C commit (`9358a17`) is doc-only so the count is unchanged at HEAD.
+1. ~~**Commit 4** — two-stage retrieval notebook~~ — **landed** (`93cd8f7`). Notebook executes top-to-bottom, both figures render, qualitative neighbors print. The §19.7 "query-side embedding API" gap is closed by the notebook's pattern of building a small query index against the same EKFAC factors (the orchestrator itself doubles as the embedding helper, which is enough for the demo).
+2. **Optional polish before merge**: regression at HEAD `48aa144` confirmed 174 passed / 13 same pre-existing failures / 4 skipped. The notebook commit (`93cd8f7`) only adds files in `notebooks/` and `scripts/`, so test count unchanged. **All four original commits and three Phase-A/B/C follow-ups have landed cleanly. The branch is ready for the umbrella PR.**
