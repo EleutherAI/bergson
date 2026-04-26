@@ -17,13 +17,23 @@ applied at build time, not score time; ordering is precondition-then-
 project (Grosse semantics); EKFAC artifacts on disk are the source of
 truth for variant detection, so no ``preconditioner_type`` config field
 is needed.
+
+Also exports :func:`embed_query` for the common one-off case of
+embedding a handful of held-out queries against pre-computed EKFAC
+factors without manually orchestrating the full pipeline.
 """
 
+import json
+import tempfile
 from copy import deepcopy
 from pathlib import Path
 
+import numpy as np
+import torch
+
 from ..build import build
-from ..config import HessianConfig, IndexConfig, PreprocessConfig
+from ..config import DataConfig, HessianConfig, IndexConfig, PreprocessConfig
+from ..data import load_gradients
 from ..utils.worker_utils import validate_run_path
 from .hessian_approximations import approximate_hessians
 
@@ -118,3 +128,120 @@ def compressed_ekfac_pipeline(
 
     print(f"Done. Compressed EKFAC index at: {index_path}")
     return index_path
+
+
+def _flatten_structured(mmap) -> np.ndarray:
+    """Concatenate every module's gradients into ``[N, total_dim]`` as float32.
+
+    Bergson writes bf16 as ``ml_dtypes.bfloat16`` in the structured mmap;
+    numpy can't cast that natively, so we round-trip through torch.
+    Mirror of the helper in ``scripts/validate_compressed_ekfac.py`` —
+    consider promoting to ``bergson.utils`` if a third caller appears.
+    """
+    parts: list[np.ndarray] = []
+    for name in mmap.dtype.names:
+        arr = np.ascontiguousarray(mmap[name]).reshape(len(mmap), -1)
+        if arr.dtype == np.float32:
+            parts.append(arr.astype(np.float32, copy=False))
+        else:
+            t = torch.from_numpy(arr.view(np.uint16)).view(torch.bfloat16)
+            parts.append(t.float().numpy())
+    return np.concatenate(parts, axis=-1)
+
+
+def embed_query(
+    queries: list[str],
+    *,
+    model: str,
+    ekfac_path: str | Path,
+    projection_dim: int,
+    unit_normalize: bool = True,
+    precision: str = "bf16",
+    token_batch_size: int = 1024,
+    truncation: bool = True,
+    debug: bool = False,
+    cache_dir: str | Path | None = None,
+) -> np.ndarray:
+    """Embed a batch of queries into the compressed-EKFAC space.
+
+    Returns a ``[len(queries), total_compressed_dim]`` float32 numpy array
+    of EKFAC-preconditioned, randomly-projected gradient vectors that can
+    be dot-producted directly against a compressed-EKFAC index built with
+    the same ``ekfac_path`` and ``projection_dim``. Same projection
+    matrices are used at index- and query-time because
+    :func:`bergson.collector.collector.create_projection_matrix` seeds
+    deterministically from each module's name.
+
+    Internally writes the queries to a temp jsonl, runs a tiny
+    ``build`` against the supplied EKFAC factors, and reads the result
+    back. For one-off queries this is the simplest API; for repeated
+    use against a fixed query set, prefer the orchestrator directly so
+    the on-disk artifact persists.
+
+    Parameters
+    ----------
+    queries : list[str]
+        Query texts. Must be non-empty.
+    model : str
+        HuggingFace model id (must match the model used to build the
+        index — mismatched architectures will produce wrong embeddings).
+    ekfac_path : str | Path
+        Path to a directory containing EKFAC factors (e.g. the
+        ``<run_path>/hessian/kfac`` produced by
+        :func:`compressed_ekfac_pipeline`).
+    projection_dim : int
+        Must match the projection_dim used to build the index against
+        which these embeddings will be scored.
+    unit_normalize : bool
+        Match the index's setting (default True for split
+        preconditioning, the standard influence-function quantity).
+    cache_dir : str | Path | None
+        Where to write the temporary jsonl + intermediate index. When
+        ``None`` (default) a temp directory is created and removed on
+        return.
+    """
+    if not queries:
+        raise ValueError("queries must be non-empty")
+
+    ekfac_path = str(Path(ekfac_path).resolve())
+    cleanup_ctx: tempfile.TemporaryDirectory | None = None
+    if cache_dir is None:
+        cleanup_ctx = tempfile.TemporaryDirectory(prefix="bergson_embed_query_")
+        cache_root = Path(cleanup_ctx.name)
+    else:
+        cache_root = Path(cache_dir)
+        cache_root.mkdir(parents=True, exist_ok=True)
+
+    try:
+        jsonl_path = cache_root / "queries.jsonl"
+        with jsonl_path.open("w") as f:
+            for text in queries:
+                f.write(json.dumps({"text": text}) + "\n")
+
+        index_path = cache_root / "embedding"
+        cfg = IndexConfig(
+            run_path=str(index_path),
+            model=model,
+            precision=precision,
+            projection_dim=projection_dim,
+            token_batch_size=token_batch_size,
+            skip_preconditioners=True,
+            data=DataConfig(
+                dataset=str(jsonl_path), split="train", truncation=truncation,
+            ),
+            debug=debug,
+        )
+        cfg.distributed.nproc_per_node = 1
+
+        validate_run_path(cfg)
+        build(
+            cfg,
+            PreprocessConfig(
+                preconditioner_path=ekfac_path, unit_normalize=unit_normalize,
+            ),
+        )
+
+        return _flatten_structured(load_gradients(index_path))
+    finally:
+        if cleanup_ctx is not None:
+            cleanup_ctx.cleanup()

@@ -15,6 +15,7 @@ import json
 import subprocess
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 from safetensors.torch import save_file
@@ -169,6 +170,73 @@ def test_load_preconditioner_rejects_non_kfac_method(tmp_path: Path):
 
     with pytest.raises(NotImplementedError, match="tkfac"):
         load_preconditioner(tmp_path, device=torch.device("cpu"), power=-1.0)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_embed_query_shape_and_consistency(tmp_path: Path):
+    """``embed_query`` returns a [N, total_dim] vector consistent with a
+    full-pipeline build at the same EKFAC factors and projection_dim.
+
+    Closes §19.7 of COMPRESSED_EKFAC_PLAN.md (Python helper for one-off
+    query embedding without manually orchestrating the pipeline)."""
+    from bergson.config import DataConfig
+    from bergson.hessians.compressed_ekfac import (
+        compressed_ekfac_pipeline,
+        embed_query,
+    )
+
+    # Step 1: produce EKFAC factors via the orchestrator on a tiny dataset.
+    factor_run = tmp_path / "ce_factors"
+    p = 16
+    factors_cfg = IndexConfig(
+        run_path=str(factor_run),
+        model="EleutherAI/pythia-14m",
+        precision="bf16",
+        projection_dim=p,
+        token_batch_size=1024,
+        skip_preconditioners=True,
+        data=DataConfig(
+            dataset="NeelNanda/pile-10k", split="train[:30]", truncation=True,
+        ),
+        debug=True,  # determinism
+    )
+    factors_cfg.distributed.nproc_per_node = 1
+    compressed_ekfac_pipeline(
+        factors_cfg,
+        HessianConfig(method="kfac", ev_correction=True),
+        PreprocessConfig(unit_normalize=True),
+    )
+    ekfac_path = factor_run / "hessian" / "kfac"
+    assert ekfac_path.is_dir()
+
+    # Step 2: embed two queries via the helper.
+    queries = [
+        "The quick brown fox jumps over the lazy dog.",
+        "Lorem ipsum dolor sit amet, consectetur adipiscing elit.",
+    ]
+    embeddings = embed_query(
+        queries,
+        model="EleutherAI/pythia-14m",
+        ekfac_path=ekfac_path,
+        projection_dim=p,
+        unit_normalize=True,
+        precision="bf16",
+        debug=True,
+    )
+
+    # Shape: 2 queries × (24 modules × p²) = 2 × 6144.
+    assert embeddings.shape == (2, 24 * (p * p)), embeddings.shape
+    assert embeddings.dtype == np.float32
+
+    # Embeddings are unit-normalized at build time, so each row's norm ≈ 1.
+    # bf16 round-trip introduces some error; loosen the tolerance.
+    norms = np.linalg.norm(embeddings, axis=-1)
+    assert np.allclose(norms, 1.0, atol=2e-2), norms
+
+    # Two arbitrary queries should produce different embeddings.
+    cos = float(embeddings[0] @ embeddings[1])
+    assert -1.0 <= cos <= 1.0
+    assert cos < 0.999, "embed_query produced near-identical embeddings for different queries"
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
