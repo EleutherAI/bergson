@@ -172,6 +172,60 @@ def test_load_preconditioner_rejects_non_kfac_method(tmp_path: Path):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_compressed_ekfac_token_attribution(tmp_path: Path):
+    """End-to-end ``compressed_ekfac`` with ``attribute_tokens=True``.
+
+    Closes §19.2 of COMPRESSED_EKFAC_PLAN.md: the per-token path was unit-
+    tested at ``EkfacPreconditioner.apply`` shape level (commit 2's
+    ``test_ekfac_preconditioner_per_token_shape``) but never run end-to-end
+    through the orchestrator + Builder's ``_scatter_flat_tokens`` path.
+    This test exercises that chain on a tiny pile-10k slice."""
+    import json as _json
+
+    from bergson.config import DataConfig
+    from bergson.data import load_token_gradients
+    from bergson.hessians.compressed_ekfac import compressed_ekfac_pipeline
+
+    run_path = tmp_path / "ce_tokens"
+    p = 16  # tiny — pile-10k[:30] generates only a handful of total tokens
+    index_cfg = IndexConfig(
+        run_path=str(run_path),
+        model="EleutherAI/pythia-14m",
+        precision="bf16",
+        projection_dim=p,
+        token_batch_size=1024,
+        skip_preconditioners=True,
+        attribute_tokens=True,  # the trigger
+        data=DataConfig(
+            dataset="NeelNanda/pile-10k", split="train[:30]", truncation=True,
+        ),
+    )
+    index_cfg.distributed.nproc_per_node = 1
+    hessian_cfg = HessianConfig(method="kfac", ev_correction=True)
+    preprocess_cfg = PreprocessConfig(unit_normalize=True)
+
+    out = compressed_ekfac_pipeline(index_cfg, hessian_cfg, preprocess_cfg)
+
+    # Layout sanity: info.json declares the per-token layout.
+    with (out / "info.json").open() as f:
+        info = _json.load(f)
+    assert info["attribute_tokens"] is True, info
+    assert info["total_tokens"] > 30, (
+        f"Per-token index should have more rows than the 30 input docs, "
+        f"got total_tokens={info['total_tokens']}"
+    )
+    assert info["total_grad_dim"] > 0
+
+    # Reload and verify shape: [total_tokens, n_modules * p²].
+    mmap, num_token_grads, offsets = load_token_gradients(out)
+    assert len(num_token_grads) == 30
+    assert int(offsets[-1]) == int(info["total_tokens"]) == mmap.shape[0]
+    # Each module contributes p² to the per-row dim; pythia-14m has 24
+    # tracked modules, so the row width should be 24 * p² = 24 * 256 = 6144.
+    assert mmap.shape[1] == 24 * (p * p), mmap.shape
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_compressed_ekfac_rejects_include_bias(tmp_path: Path):
     """``include_bias=True`` + factored preconditioner raises in build_worker.
 

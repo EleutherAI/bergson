@@ -654,7 +654,7 @@ This section is the honest counterpart to §17. After Phase A (defensive tests +
 | Gap | Status | Closure |
 |---|---|---|
 | §19.1 multi-GPU | **CLOSED** | 8-GPU validation matches 1-GPU within JL noise (§18.5 row 3) |
-| §19.2 token attribution e2e | **DEFERRED** | per-sequence is the paper's primary claim; per-token is the same machinery at finer granularity, validated only at unit-test level |
+| §19.2 token attribution e2e | **CLOSED** | covered by `test_compressed_ekfac_token_attribution`: builds with `attribute_tokens=True` + factored preconditioner end-to-end, verifies on-disk per-token layout (`info.json["attribute_tokens"]==True`, `total_tokens > N_examples`, row width = `n_modules × p²`) |
 | §19.3 tkfac/shampoo defensive gate | **CLOSED** | `_check_validated_hessian_method` raises; covered by `test_load_preconditioner_rejects_non_kfac_method` |
 | §19.4 include_bias error path | **CLOSED** | covered by `test_compressed_ekfac_rejects_include_bias` |
 | §19.5 resume mode | **CLOSED** | covered by `test_compressed_ekfac_resume` |
