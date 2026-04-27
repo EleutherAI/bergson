@@ -21,7 +21,7 @@ A `bergson compressed_ekfac` CLI subcommand that produces a per-example (or per-
 - True sharded per-batch apply (vs. full-load-per-rank) — full-load matches the existing autocorrelation memory envelope.
 - `create_scorer` EKFAC support (§2.7) — compressed-EKFAC scoring goes through a notebook dot-product path for now.
 - Bias + EKFAC support (§3.5).
-- `tkfac` / `shampoo` factored-preconditioner math validation — gated with a clear `NotImplementedError` for now; tracked as a separate issue (link in §10).
+- `tkfac` / `shampoo` factored-preconditioner math validation — gated with a clear `NotImplementedError` for now; tracked as [issue #244](https://github.com/EleutherAI/bergson/issues/244).
 
 ---
 
@@ -362,7 +362,7 @@ Pythia-1.4b also has a memory concern: Q_A for the MLP intermediate-down layer i
 * `create_scorer` EKFAC support — §2.7 + §9.3.
 * Bias + EKFAC proper support — §3.5 + §9.4.
 * Damping scheme review for KFAC (mean of `Λ_G ⊗ Λ_A` has a different scale than per-factor) — §9.1.
-* `tkfac` / `shampoo` factored-preconditioner math validation — gated with a clear `NotImplementedError` until each method's rotate-scale-rotate body is independently checked. Tracked as a separate issue (link in §10).
+* `tkfac` / `shampoo` factored-preconditioner math validation — gated with a clear `NotImplementedError` until each method's rotate-scale-rotate body is independently checked. Tracked as [issue #244](https://github.com/EleutherAI/bergson/issues/244).
 * Pythia-1.4b stretch — §7.1.
 
 ---
@@ -440,7 +440,7 @@ Even unprojected reference top-3 neighbors for a "Tulsi Gabbard 2020 candidate" 
 | `bb4dad6` | **Post-review polish #2.** Fail-fast on `include_bias` in `compressed_ekfac_pipeline` so step 1's Hessian fit doesn't burn before the guard fires; defensive backstop in `build_worker` retained. Test no longer needs CUDA; gains assertions that neither `hessian/` nor `index/` dirs exist after the raise |
 | `78800ff` | **Post-review polish #3.** `_load_sharded_dict` validates trailing-dim equality across shards per key, raises with file context if the on-disk shard split axis ever changes (+2 CPU tests) |
 | `03105a4` | **Post-pull fix.** Polish #1 had an over-broad gate (`processor.projection_dim is None`) that swept up 7 autocorrelation tests calling `collect_gradients` directly with `GradientProcessor()`. Switched the trigger to `is_factored_preconditioner(preprocess_cfg)` — gates on the on-disk preconditioner_path, the actual source of truth. All 7 regressions restored |
-| (rename) | Renamed `get_trackstar_preconditioner` → `get_autocorrelation_preconditioner` in `bergson/process_grads.py` to align the helper name with the `autocorrelation` Hessian-approximation type used everywhere else. Backwards-compatible alias retained for external users; internal callers + tests updated. tkfac/shampoo follow-up issue filed (link in tracker). |
+| `db99c9e` | Renamed `get_trackstar_preconditioner` → `get_autocorrelation_preconditioner` in `bergson/process_grads.py` to align the helper name with the `autocorrelation` Hessian-approximation type used everywhere else. Backwards-compatible alias retained for external users; internal callers + tests updated. tkfac/shampoo follow-up: [issue #244](https://github.com/EleutherAI/bergson/issues/244). |
 
 Pre-existing failures (unchanged throughout, all unrelated to this work):
 * `test_adam_state_loading.py::test_load_8bit_adam_checkpoint` — missing `bitsandbytes` in dev deps
