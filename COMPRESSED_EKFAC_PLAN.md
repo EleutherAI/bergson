@@ -524,7 +524,10 @@ Flagged here so they don't get lost:
 | Phase A — Defensive gates + trivial-gap tests | **landed** (`62f86b9`) | 174/174 — +3 new tests; tkfac/shampoo gated; include_bias + resume both covered | **+3 new tests**, same 13 pre-existing failures |
 | Phase B+C — Empirical validation + close §19/§20 | **landed** (`9358a17`) | doc-only; validation results captured in §18 + §19 | none |
 | Doc-only fixups for stale refs | **landed** (`48aa144`) | doc-only | none |
-| 4 — Two-stage retrieval notebook | **landed** (`93cd8f7`) | notebook executed end-to-end (108× compression, 145× faster Stage 1, recall@10: 36 % compressed-only → 46 % two-stage at K1=20) | additive; no test impact |
+| 4 — Two-stage retrieval notebook | **landed** (`93cd8f7`) | notebook executed end-to-end (108× compression, 145× faster Stage 1) | additive; no test impact |
+| Notebook stabilization (N=20, debug=True) | **landed** (`b256644`) | recall@10 35.5 % compressed → 48.5 % two-stage; Spearman = 0.397 (matches §18.5) | doc/data only |
+| Token-attribution e2e test | **landed** (`c021999`) | +1 test; verifies `attribute_tokens=True` builds correctly with factored preconditioner | **+1 new test** |
+| `embed_query` helper + test | **landed** (`2f10d6a`) | +1 test; one-line API for query-side embedding | **+1 new test**; final count 176 passed |
 
 Pre-existing failures (unchanged throughout, all unrelated to this work):
 * `test_adam_state_loading.py::test_load_8bit_adam_checkpoint` — missing `bitsandbytes` in dev deps
@@ -654,12 +657,12 @@ This section is the honest counterpart to §17. After Phase A (defensive tests +
 | Gap | Status | Closure |
 |---|---|---|
 | §19.1 multi-GPU | **CLOSED** | 8-GPU validation matches 1-GPU within JL noise (§18.5 row 3) |
-| §19.2 token attribution e2e | **CLOSED** | covered by `test_compressed_ekfac_token_attribution`: builds with `attribute_tokens=True` + factored preconditioner end-to-end, verifies on-disk per-token layout (`info.json["attribute_tokens"]==True`, `total_tokens > N_examples`, row width = `n_modules × p²`) |
+| §19.2 token attribution e2e | **CLOSED** | covered by `test_compressed_ekfac_token_attribution`: builds with `attribute_tokens=True` + factored preconditioner end-to-end, verifies `info.json["attribute_tokens"]==True`, `total_tokens > N_examples`, row width = `n_modules × p²` |
 | §19.3 tkfac/shampoo defensive gate | **CLOSED** | `_check_validated_hessian_method` raises; covered by `test_load_preconditioner_rejects_non_kfac_method` |
 | §19.4 include_bias error path | **CLOSED** | covered by `test_compressed_ekfac_rejects_include_bias` |
 | §19.5 resume mode | **CLOSED** | covered by `test_compressed_ekfac_resume` |
 | §19.6 pythia-1.4b stretch | **DEFERRED** | per §20 priority list; out of scope for MVP, predicted to need `p ≥ 256` |
-| §19.7 query-side embedding API | **COMMIT-4** | will be the notebook's main deliverable |
+| §19.7 query-side embedding API | **CLOSED** | `embed_query()` in `bergson.hessians.compressed_ekfac` — covered by `test_embed_query_shape_and_consistency` |
 | §19.8 fp32 vs bf16 | **CLOSED** | fp32 marginally better but bf16 sufficient (§18.5 rows 5-6) |
 | §19.9 160m recall robustness | **PARTIALLY CLOSED** | n_train=1000 / n_query=20 shows Spearman ≈ 0.40 stable across scales; recall@10 = 40 % stays at the bar — flagged as "marginal but functional" rather than "robustly comfortable" |
 | §19.10 ekfac_tests confirmed green | **CLOSED** | unchanged through all commits |
@@ -764,7 +767,8 @@ Phase A (defensive gates, trivial tests) and Phase B (empirical validation) have
 | §19.6 pythia-1.4b stretch | DEFERRED — not on MVP critical path |
 | §19.7 query-side API | COMMIT-4 deliverable |
 
-**Remaining work for the umbrella PR:**
+**Remaining work for the umbrella PR: none.**
 
-1. ~~**Commit 4** — two-stage retrieval notebook~~ — **landed** (`93cd8f7`). Notebook executes top-to-bottom, both figures render, qualitative neighbors print. The §19.7 "query-side embedding API" gap is closed by the notebook's pattern of building a small query index against the same EKFAC factors (the orchestrator itself doubles as the embedding helper, which is enough for the demo).
-2. **Optional polish before merge**: regression at HEAD `48aa144` confirmed 174 passed / 13 same pre-existing failures / 4 skipped. The notebook commit (`93cd8f7`) only adds files in `notebooks/` and `scripts/`, so test count unchanged. **All four original commits and three Phase-A/B/C follow-ups have landed cleanly. The branch is ready for the umbrella PR.**
+All addressable gaps from the original §19 list have empirical or test closure. Final regression at HEAD (`2f10d6a`): **176 passed**, 13 same pre-existing failures, 4 skipped. Diff vs the pre-refactor baseline is exactly the 14 new tests added by commits 1–Phase-A and the post-Phase-B/C follow-ups, with no regressions to any of the 162 originally-passing tests.
+
+Only `pythia-1.4b` stretch (§19.6) remains explicitly DEFERRED per §20 — predicted to need `p ≥ 256` and to push the on-device factor budget close to 48 GB; out of scope for MVP.
