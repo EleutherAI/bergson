@@ -55,15 +55,18 @@ Module placement: `bergson/preconditioners.py` (new top-level). Inside `bergson/
 
 ### 2.2 Auto-detect variant from directory contents
 
-`_detect_variant(path) -> {"autocorrelation", "kfac", "ekfac"}` inspects directory presence:
+**Direct answer to your question.** You asked whether to (a) read variant info from metadata inside `preconditioner_path`, or (b) route the variant explicitly through CLI / `PreprocessConfig`. We picked a third option that's effectively (a) but cheaper: **infer the variant from which sub-directories are present inside `preconditioner_path`** — no separate metadata file, no config plumbing, no API change. `load_preconditioner(path, ...)` is the only entry point; consumers still pass just `preconditioner_path`. The two alternatives we considered and rejected:
+
+* **Routing through `PreprocessConfig` (option b)** — adds plumbing through every caller of the dataclass and opens a config-vs-artifact mismatch surface (user points at an EKFAC dir but ticked `kfac` on the CLI). Listed in §2.1's alternatives table.
+* **A `meta.json` `variant` field inside the dir (a literal reading of option a)** — would create an invariant to keep in sync (metadata says EKFAC but `eigenvalue_correction_sharded/` was deleted → silent wrongness). Directory presence dodges this: if `eigenvalue_correction_sharded/` exists, EKFAC apply has the data it needs; if not, the variant is correctly identified as KFAC.
+
+The detection itself, in `_detect_variant(path) -> {"autocorrelation", "kfac", "ekfac"}`:
 
 | On disk | Variant |
 |---|---|
 | `eigen_activation_sharded/` + `eigen_gradient_sharded/` + `eigenvalue_correction_sharded/` | EKFAC |
 | `eigen_activation_sharded/` + `eigen_gradient_sharded/` (no correction dir) | KFAC |
 | Anything else (incl. `preconditioners.pth`, or `None`) | autocorrelation |
-
-**Why not a `meta.json` `variant` field?** Disk layout already uniquely determines the variant, and a metadata field would create an invariant to maintain (metadata says EKFAC but `eigenvalue_correction_sharded/` was deleted → silent wrongness). Directory-presence detection is self-validating.
 
 ### 2.3 Shared factored base class
 
