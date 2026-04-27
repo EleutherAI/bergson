@@ -77,6 +77,17 @@ def compressed_ekfac_pipeline(
             "mandatory."
         )
 
+    # Fail fast: ``build_worker`` raises the same error in step 2 once a
+    # factored preconditioner is detected, but by then step 1 has already
+    # burned the (slow) Hessian fit. Catch it up front so users get the
+    # error before any work runs.
+    if index_cfg.include_bias:
+        raise NotImplementedError(
+            "include_bias=True with compressed_ekfac is not yet supported. "
+            "The factored Q_A matrix does not cover the extra bias column; "
+            "see §15.5 of COMPRESSED_EKFAC_PLAN.md."
+        )
+
     run_path = Path(index_cfg.run_path)
     hessian_base_path = run_path / "hessian"
     # approximate_hessians appends "/{method}" to the run path, so the

@@ -293,13 +293,17 @@ def test_compressed_ekfac_token_attribution(tmp_path: Path):
     assert mmap.shape[1] == 24 * (p * p), mmap.shape
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_compressed_ekfac_rejects_include_bias(tmp_path: Path):
-    """``include_bias=True`` + factored preconditioner raises in build_worker.
+    """``include_bias=True`` raises before any pipeline step runs.
 
     Closes §19.4. The factored Q_A is sized [I, I] but with bias the
     gradient has an extra column [I+1]; safest default is to refuse rather
-    than silently produce wrong output."""
+    than silently produce wrong output. The guard now fires in
+    ``compressed_ekfac_pipeline`` itself rather than in step 2's
+    ``build_worker`` — the asserts on the run dir confirm step 1 (the slow
+    Hessian fit) didn't run before the raise. The defensive backstop in
+    ``build_worker`` still exists for non-orchestrator callers.
+    No CUDA needed because the guard fires before any GPU work."""
     from bergson.config import DataConfig
     from bergson.hessians.compressed_ekfac import compressed_ekfac_pipeline
 
@@ -320,9 +324,14 @@ def test_compressed_ekfac_rejects_include_bias(tmp_path: Path):
     hessian_cfg = HessianConfig(method="kfac", ev_correction=True)
     preprocess_cfg = PreprocessConfig(unit_normalize=True)
 
-    # The hessian-fit step (step 1) currently allows include_bias; the
-    # factored-preconditioner guard fires in step 2 (the build worker).
-    # Match against the marker text in the error so the test pins the
-    # specific guard, not just any error.
     with pytest.raises(NotImplementedError, match="include_bias"):
         compressed_ekfac_pipeline(index_cfg, hessian_cfg, preprocess_cfg)
+
+    # Pin the fail-early property: neither pipeline step should have left
+    # any artifact behind. If the guard ever regresses to fire from inside
+    # build_worker again, the hessian dir would exist here.
+    assert not (run_path / "hessian").exists(), (
+        "Step 1 ran before the include_bias guard fired — the guard must "
+        "live in compressed_ekfac_pipeline, not build_worker."
+    )
+    assert not (run_path / "index").exists()
