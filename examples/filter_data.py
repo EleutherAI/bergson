@@ -16,7 +16,10 @@ from trl import SFTConfig, SFTTrainer
 
 from bergson.config import DataConfig
 from bergson.data import load_gradient_dataset, load_scores, tokenize
-from bergson.process_grads import get_autocorrelation_preconditioner, precondition_flat_grads
+from bergson.process_grads import (
+    get_autocorrelation_preconditioner,
+    precondition_flat_grads,
+)
 from bergson.utils.utils import assert_type
 
 

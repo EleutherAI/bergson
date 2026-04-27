@@ -289,7 +289,9 @@ def test_compute_preconditioner_h_inv():
     """Test that get_autocorrelation_preconditioner returns empty dict for None path."""
 
     # No path → empty dict
-    result = get_autocorrelation_preconditioner(None, device=torch.device("cpu"), power=-1)
+    result = get_autocorrelation_preconditioner(
+        None, device=torch.device("cpu"), power=-1
+    )
     assert result == {}
 
 
