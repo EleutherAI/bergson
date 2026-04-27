@@ -528,6 +528,9 @@ Flagged here so they don't get lost:
 | Notebook stabilization (N=20, debug=True) | **landed** (`b256644`) | recall@10 35.5 % compressed → 48.5 % two-stage; Spearman = 0.397 (matches §18.5) | doc/data only |
 | Token-attribution e2e test | **landed** (`c021999`) | +1 test; verifies `attribute_tokens=True` builds correctly with factored preconditioner | **+1 new test** |
 | `embed_query` helper + test | **landed** (`2f10d6a`) | +1 test; one-line API for query-side embedding | **+1 new test**; final count 176 passed |
+| Post-review polish #1 — single decision point for projection placement | **landed** (`4a42e2e`) | +1 CPU test (`test_is_factored_preconditioner`) | refactor; collector now derives `post_projection_dim` from `processor.projection_dim is None` instead of re-detecting the factored variant — single source of truth at `build_worker` |
+| Post-review polish #2 — fail-fast on `include_bias` in orchestrator | **landed** (`bb4dad6`) | reuses existing test with tighter assertions (no longer CUDA-skipped); pins fail-early via `not (run_path/"hessian").exists()` | UX fix; `build_worker` keeps the defensive backstop |
+| Post-review polish #3 — shard trailing-dim validation | **landed** (`78800ff`) | +2 CPU tests (`test_load_sharded_dict_concatenates_dim0`, `test_load_sharded_dict_rejects_trailing_dim_mismatch`) | defensive; clearer error if the on-disk shard split axis ever changes |
 
 Pre-existing failures (unchanged throughout, all unrelated to this work):
 * `test_adam_state_loading.py::test_load_8bit_adam_checkpoint` — missing `bitsandbytes` in dev deps
@@ -535,7 +538,7 @@ Pre-existing failures (unchanged throughout, all unrelated to this work):
 * `test_muon.py` (4) — `torch.optim.Muon` not in torch 2.6
 * `test_truncation.py` (7) — test/code drift on batch-size validation and warning text
 
-Branch is 3 commits ahead of `origin/feature/compressed-ekfac`, **not pushed**. Umbrella PR opens once all four commits land.
+Branch is at `78800ff`, **pushed to `origin/feature/compressed-ekfac`**. The three post-review polish commits land on top of `2f10d6a` and were not exercised on the cluster yet — the new tests are CPU-only by design (no CUDA), so projected count is **179 passed**, but a final `pytest tests/ -v` on a GPU node is the authoritative bar before the umbrella PR opens.
 
 ---
 
@@ -767,8 +770,8 @@ Phase A (defensive gates, trivial tests) and Phase B (empirical validation) have
 | §19.6 pythia-1.4b stretch | DEFERRED — not on MVP critical path |
 | §19.7 query-side API | COMMIT-4 deliverable |
 
-**Remaining work for the umbrella PR: none.**
+**Remaining work for the umbrella PR: none from the original gap list.** Three post-review polish commits (`4a42e2e`, `bb4dad6`, `78800ff`) added on top — see §17 for what they do. They're all small, scoped, and additive; the +3 CPU-only tests (`test_is_factored_preconditioner`, `test_load_sharded_dict_concatenates_dim0`, `test_load_sharded_dict_rejects_trailing_dim_mismatch`) bring the projected count to **179 passed** but need a final cluster run before the umbrella PR.
 
-All addressable gaps from the original §19 list have empirical or test closure. Final regression at HEAD (`2f10d6a`): **176 passed**, 13 same pre-existing failures, 4 skipped. Diff vs the pre-refactor baseline is exactly the 14 new tests added by commits 1–Phase-A and the post-Phase-B/C follow-ups, with no regressions to any of the 162 originally-passing tests.
+All addressable gaps from the original §19 list have empirical or test closure. Last cluster-verified regression (`2f10d6a`): **176 passed**, 13 same pre-existing failures, 4 skipped. Diff vs the pre-refactor baseline is exactly the 14+3 new tests, with no regressions to any of the 162 originally-passing tests.
 
 Only `pythia-1.4b` stretch (§19.6) remains explicitly DEFERRED per §20 — predicted to need `p ≥ 256` and to push the on-device factor budget close to 48 GB; out of scope for MVP.
