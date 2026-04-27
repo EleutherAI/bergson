@@ -16,7 +16,7 @@ from trl import SFTConfig, SFTTrainer
 
 from bergson.config import DataConfig
 from bergson.data import load_gradient_dataset, load_scores, tokenize
-from bergson.process_grads import get_trackstar_preconditioner, precondition_flat_grads
+from bergson.process_grads import get_autocorrelation_preconditioner, precondition_flat_grads
 from bergson.utils.utils import assert_type
 
 
@@ -394,7 +394,7 @@ def _get_attribution_indices(
         preconditioner_path = (
             args.query_dataset if args.query_dataset else args.index_dataset
         )
-        h_inv = get_trackstar_preconditioner(
+        h_inv = get_autocorrelation_preconditioner(
             preconditioner_path, device=torch.device("cuda"), power=-1
         )
 

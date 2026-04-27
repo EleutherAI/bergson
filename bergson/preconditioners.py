@@ -32,7 +32,7 @@ from safetensors.torch import load_file
 from torch import Tensor
 
 from .config import PreprocessConfig
-from .process_grads import get_trackstar_preconditioner, precondition_grad
+from .process_grads import get_autocorrelation_preconditioner, precondition_grad
 
 # Only this hessian-method has been empirically validated end-to-end against
 # a reference (see §18 of COMPRESSED_EKFAC_PLAN.md). tkfac/shampoo write to
@@ -317,7 +317,7 @@ def load_preconditioner(
 ) -> Preconditioner:
     """Load the right :class:`Preconditioner` for the artifact on disk.
 
-    Parameters mirror :func:`bergson.process_grads.get_trackstar_preconditioner`
+    Parameters mirror :func:`bergson.process_grads.get_autocorrelation_preconditioner`
     for the autocorrelation path. Detection is by directory contents:
 
     * ``eigen_activation_sharded/`` + ``eigen_gradient_sharded/`` + ``eigenvalue_correction_sharded/`` → EKFAC
@@ -352,7 +352,7 @@ def load_preconditioner(
             lambda_damp_factor=lambda_damp_factor,
         )
 
-    h_inv = get_trackstar_preconditioner(
+    h_inv = get_autocorrelation_preconditioner(
         str(path),
         device=device,
         power=power,

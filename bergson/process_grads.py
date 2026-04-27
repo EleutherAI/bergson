@@ -122,13 +122,24 @@ def mix_preconditioners(
     return output_path
 
 
-def get_trackstar_preconditioner(
+def get_autocorrelation_preconditioner(
     preconditioner_path: str | None,
     device: torch.device,
     power: float = -0.5,
     return_dtype: torch.dtype | None = None,
 ) -> dict[str, torch.Tensor]:
-    """Compute preconditioner matrices from a saved processor file.
+    """Load an autocorrelation Hessian-approximation as ``H^power`` per module.
+
+    The autocorrelation Hessian approximation is the unfactored
+    ``Σ vec(g) vec(g)ᵀ`` per module that the existing TrackStar pipeline
+    fits and saves as a :class:`bergson.gradients.GradientProcessor` on
+    disk. This loader applies a damped matrix power to each per-module
+    matrix and returns them as a dict for use with
+    :func:`precondition_grad` / :func:`precondition_flat_grads`.
+
+    For factored Hessian approximations (KFAC / EKFAC) prefer
+    :func:`bergson.preconditioners.load_preconditioner`, which dispatches
+    on the on-disk artifact layout.
 
     Parameters
     ----------
@@ -159,6 +170,13 @@ def get_trackstar_preconditioner(
         name: damped_psd_power(H.to(device=device), power=power).to(final_dtype)
         for name, H in preconditioners.items()
     }
+
+
+# Backwards-compatible alias for the original "trackstar"-flavoured name.
+# Prefer ``get_autocorrelation_preconditioner`` in new code — see §2.1 of
+# COMPRESSED_EKFAC_PLAN.md for the naming rationale (autocorrelation is one
+# of three sibling Hessian-approximation types: autocorrelation / kfac / ekfac).
+get_trackstar_preconditioner = get_autocorrelation_preconditioner
 
 
 def precondition_flat_grads(

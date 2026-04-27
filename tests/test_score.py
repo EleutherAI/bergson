@@ -16,7 +16,7 @@ from bergson.collector.in_memory_collector import InMemoryCollector
 from bergson.config import IndexConfig, PreprocessConfig
 from bergson.data import create_index
 from bergson.gradients import GradientProcessor
-from bergson.process_grads import get_trackstar_preconditioner
+from bergson.process_grads import get_autocorrelation_preconditioner
 from bergson.score.score import _make_split_preconditioner
 from bergson.score.score_writer import (
     InMemorySequenceScoreWriter,
@@ -187,7 +187,7 @@ def test_precondition_ds(tmp_path: Path, model, dataset):
     target_modules = list(collector.shapes().keys())
 
     # Produce preconditioned query gradients
-    h_inv = get_trackstar_preconditioner(
+    h_inv = get_autocorrelation_preconditioner(
         str(tmp_path), device=preprocess_device, power=-1
     )
     preconditioned = {
@@ -286,10 +286,10 @@ def test_memmap_score_writer_float32(tmp_path: Path):
 
 
 def test_compute_preconditioner_h_inv():
-    """Test that get_trackstar_preconditioner returns empty dict for None path."""
+    """Test that get_autocorrelation_preconditioner returns empty dict for None path."""
 
     # No path → empty dict
-    result = get_trackstar_preconditioner(None, device=torch.device("cpu"), power=-1)
+    result = get_autocorrelation_preconditioner(None, device=torch.device("cpu"), power=-1)
     assert result == {}
 
 
@@ -304,7 +304,7 @@ def test_scorer_preconditioners(tmp_path: Path):
     precond_path = tmp_path / "preconditioner"
     proc.save(precond_path)
 
-    h_inv = get_trackstar_preconditioner(
+    h_inv = get_autocorrelation_preconditioner(
         str(precond_path), device=torch.device("cpu"), power=-1
     )
     preconditioned_query = {m: query_grads[m] @ h_inv[m] for m in modules}
@@ -355,7 +355,7 @@ def test_scorer_split_preconditioners(tmp_path: Path):
     proc.save(precond_path)
 
     # Load H^(-1/2) for split preconditioning
-    h_inv_sqrt = get_trackstar_preconditioner(
+    h_inv_sqrt = get_autocorrelation_preconditioner(
         str(precond_path), device=torch.device("cpu"), power=-0.5
     )
 
@@ -390,7 +390,7 @@ def test_scorer_split_preconditioners(tmp_path: Path):
     scores_norm = scorer_norm.score(index_grads)
 
     # Score with one-sided preconditioning (query only, no index_transform)
-    h_inv = get_trackstar_preconditioner(
+    h_inv = get_autocorrelation_preconditioner(
         str(precond_path), device=torch.device("cpu"), power=-1
     )
     one_sided_query = {m: query_grads[m] @ h_inv[m] for m in modules}
