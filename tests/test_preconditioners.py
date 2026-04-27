@@ -26,6 +26,7 @@ from bergson.preconditioners import (
     EkfacPreconditioner,
     KfacPreconditioner,
     _detect_variant,
+    _load_sharded_dict,
     is_factored_preconditioner,
     load_preconditioner,
 )
@@ -156,6 +157,37 @@ def test_is_factored_preconditioner(tmp_path):
     assert is_factored_preconditioner(
         PreprocessConfig(preconditioner_path=str(ekfac_dir))
     ) is True
+
+
+def test_load_sharded_dict_concatenates_dim0(tmp_path):
+    """Two shards split along dim 0 round-trip to the full matrix."""
+    full = torch.arange(24, dtype=torch.float32).reshape(8, 3)
+    save_file({"key": full[:5].contiguous()}, str(tmp_path / "shard_0.safetensors"))
+    save_file({"key": full[5:].contiguous()}, str(tmp_path / "shard_1.safetensors"))
+
+    out = _load_sharded_dict(tmp_path, device=torch.device("cpu"))
+    assert torch.equal(out["key"], full)
+
+
+def test_load_sharded_dict_rejects_trailing_dim_mismatch(tmp_path):
+    """Trailing-dim mismatch across shards raises with file context.
+
+    If ``_merge_and_shard_eigenvectors`` ever changed its split axis, two
+    shards could differ on dim 1+ but still concatenate along dim 0 —
+    silently producing a wrong-shape factor. The explicit check raises
+    instead of letting torch.cat (which only catches mismatches on
+    non-leading dims) eat the bug or pass it through."""
+    save_file(
+        {"key": torch.zeros(5, 3, dtype=torch.float32)},
+        str(tmp_path / "shard_0.safetensors"),
+    )
+    save_file(
+        {"key": torch.zeros(5, 4, dtype=torch.float32)},  # dim 1 differs
+        str(tmp_path / "shard_1.safetensors"),
+    )
+
+    with pytest.raises(ValueError, match=r"Shard shape mismatch.*key.*shard_"):
+        _load_sharded_dict(tmp_path, device=torch.device("cpu"))
 
 
 def test_load_preconditioner_none_is_autocorrelation():

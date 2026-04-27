@@ -78,18 +78,38 @@ def _load_sharded_dict(
     :func:`bergson.hessians.eigenvectors._merge_and_shard_eigenvectors` and
     :class:`bergson.hessians.eigenvectors.LambdaCollector`). Output per key
     is the full matrix on ``device`` in ``dtype``.
+
+    Trailing-dim consistency is checked explicitly per key: if the layout
+    in ``eigenvectors.py`` ever changed split axis, two shards for the
+    same key would still concatenate (silently producing a wrong-shape
+    factor) when only dim 0 differs. The check raises with file context
+    so the loader fails loudly instead.
     """
     shard_files = sorted(shard_dir.glob("shard_*.safetensors"))
     if not shard_files:
         raise FileNotFoundError(f"No shards found in {shard_dir}")
 
-    per_key_shards: dict[str, list[Tensor]] = {}
+    per_key_shards: dict[str, list[tuple[Path, Tensor]]] = {}
     for f in shard_files:
         shard = load_file(str(f), device=str(device))
         for k, v in shard.items():
-            per_key_shards.setdefault(k, []).append(v.to(dtype=dtype))
+            per_key_shards.setdefault(k, []).append((f, v.to(dtype=dtype)))
 
-    return {k: torch.cat(v, dim=0) for k, v in per_key_shards.items()}
+    out: dict[str, Tensor] = {}
+    for k, parts in per_key_shards.items():
+        ref_path, ref = parts[0]
+        ref_trail = tuple(ref.shape[1:])
+        for f, v in parts[1:]:
+            if tuple(v.shape[1:]) != ref_trail:
+                raise ValueError(
+                    f"Shard shape mismatch for key {k!r} between "
+                    f"{ref_path.name} (trailing dims {ref_trail}) and "
+                    f"{f.name} (trailing dims {tuple(v.shape[1:])}). "
+                    "_load_sharded_dict assumes dim-0 sharding; update "
+                    "the loader if the on-disk split axis changed."
+                )
+        out[k] = torch.cat([v for _, v in parts], dim=0)
+    return out
 
 
 class _FactoredPreconditioner:
