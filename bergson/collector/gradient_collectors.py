@@ -78,17 +78,20 @@ class GradientCollector(HookCollectorBase):
 
         if self.save_index:
             grad_sizes = {name: math.prod(s) for name, s in self.shapes().items()}
-            # If the user asked for a projected index (cfg.projection_dim > 0)
-            # but the processor isn't projecting in the collector
-            # (processor.projection_dim is None), the projection has to happen
-            # in the builder after preconditioning. ``build_worker`` is the
-            # single decision point that suppresses processor.projection_dim
-            # for factored (EKFAC/KFAC) preconditioners — see §15 of
-            # COMPRESSED_EKFAC_PLAN.md. The collector reads that state here.
+            # ``post_projection_dim`` triggers iff a factored (EKFAC/KFAC)
+            # preconditioner is on disk AND the user asked for projection.
+            # We gate on ``is_factored_preconditioner(preprocess_cfg)``
+            # rather than ``processor.projection_dim is None`` because the
+            # latter can legitimately be ``None`` for callers that build a
+            # ``GradientProcessor()`` manually (e.g. ``test_attributor.py``,
+            # ``test_reduce.py``) — for them, no factored preconditioner
+            # exists and projection should not happen in the builder.
+            from bergson.preconditioners import is_factored_preconditioner
+
             post_projection_dim = (
                 self.cfg.projection_dim
                 if self.cfg.projection_dim
-                and self.processor.projection_dim is None
+                and is_factored_preconditioner(self.preprocess_cfg)
                 else None
             )
             self.builder = Builder(
