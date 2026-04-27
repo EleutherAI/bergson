@@ -115,10 +115,7 @@ def compressed_ekfac_pipeline(
 
     # ── Step 2: Build compressed index with EKFAC baked in ─────────────
     if resume and index_path.exists():
-        print(
-            f"Step 2/2: Skipping index build — artifacts exist at "
-            f"{index_path}"
-        )
+        print(f"Step 2/2: Skipping index build — artifacts exist at " f"{index_path}")
     else:
         print(
             f"Step 2/2: Building compressed index at {index_path} "
@@ -238,7 +235,9 @@ def embed_query(
             token_batch_size=token_batch_size,
             skip_preconditioners=True,
             data=DataConfig(
-                dataset=str(jsonl_path), split="train", truncation=truncation,
+                dataset=str(jsonl_path),
+                split="train",
+                truncation=truncation,
             ),
             debug=debug,
         )
@@ -248,7 +247,8 @@ def embed_query(
         build(
             cfg,
             PreprocessConfig(
-                preconditioner_path=ekfac_path, unit_normalize=unit_normalize,
+                preconditioner_path=ekfac_path,
+                unit_normalize=unit_normalize,
             ),
         )
 

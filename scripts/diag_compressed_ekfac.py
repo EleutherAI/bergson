@@ -23,7 +23,7 @@ import torch
 
 from bergson.collector.collector import create_projection_matrix
 from bergson.data import load_gradients
-from bergson.preconditioners import load_preconditioner, _FactoredPreconditioner
+from bergson.preconditioners import _FactoredPreconditioner, load_preconditioner
 
 OUT = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("/tmp/validate_compressed_ekfac")
 P = 16  # PROJECTION_DIM from the validation script
@@ -87,8 +87,8 @@ def main() -> None:
     G = ref_vec.reshape(O, I)
     # Two orderings to test — what my builder claims to do and its transpose-
     # partner, to see if I got the column-major reshape right.
-    manual_v1 = (L @ G @ R.T).reshape(-1)             # vec([L G R^T])
-    manual_v2 = (L @ G @ R.T).T.reshape(-1)           # vec([L G R^T]^T) = vec([R G^T L^T])
+    manual_v1 = (L @ G @ R.T).reshape(-1)  # vec([L G R^T])
+    manual_v2 = (L @ G @ R.T).T.reshape(-1)  # vec([L G R^T]^T) = vec([R G^T L^T])
 
     def close(a, b, label):
         diff = np.abs(a - b).max()
@@ -126,7 +126,9 @@ def main() -> None:
     query_cmp = load_gradients(OUT / "query_compressed")
 
     print("\nPer-module score Spearman (query 0 vs N_TRAIN training examples):")
-    print(f"{'module':>45}  {'O*I':>7}  {'p^2/(OI)':>9}  {'ρ(A,B)':>9}  {'||Q_ref||':>9}  {'⟨Q,T⟩ std':>10}")
+    print(
+        f"{'module':>45}  {'O*I':>7}  {'p^2/(OI)':>9}  {'ρ(A,B)':>9}  {'||Q_ref||':>9}  {'⟨Q,T⟩ std':>10}"
+    )
     per_module_rhos = []
     for mname in ref_names:
         Om, Im = precond._shapes[mname]

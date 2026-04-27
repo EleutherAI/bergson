@@ -71,9 +71,9 @@ def test_compressed_ekfac_e2e(tmp_path: Path):
 
     # Step 1 artifacts: EKFAC factor shards for the kfac method.
     hessian_method_path = run_path / "hessian" / "kfac"
-    assert hessian_method_path.is_dir(), (
-        f"Missing Hessian artifacts at {hessian_method_path}"
-    )
+    assert (
+        hessian_method_path.is_dir()
+    ), f"Missing Hessian artifacts at {hessian_method_path}"
     # The new detection must see this as EKFAC (ev_correction was forced on).
     assert _detect_variant(hessian_method_path) == "ekfac"
 
@@ -92,9 +92,9 @@ def test_compressed_ekfac_e2e(tmp_path: Path):
     # baking EKFAC in, and flattens to [p*p].
     for name in module_names:
         per_row_len = index[name].shape[-1]
-        assert per_row_len == 64 * 64, (
-            f"Module {name!r}: expected projection_dim**2=4096, got {per_row_len}"
-        )
+        assert (
+            per_row_len == 64 * 64
+        ), f"Module {name!r}: expected projection_dim**2=4096, got {per_row_len}"
 
     # The GradientProcessor dump saved by build should exist. Because
     # skip_preconditioners=True was forced in the orchestrator, the
@@ -124,7 +124,9 @@ def test_compressed_ekfac_resume(tmp_path: Path):
         token_batch_size=1024,
         skip_preconditioners=True,
         data=DataConfig(
-            dataset="NeelNanda/pile-10k", split="train[:50]", truncation=True,
+            dataset="NeelNanda/pile-10k",
+            split="train[:50]",
+            truncation=True,
         ),
         debug=True,  # determinism — second run must produce identical artifacts
     )
@@ -196,7 +198,9 @@ def test_embed_query_shape_and_consistency(tmp_path: Path):
         token_batch_size=1024,
         skip_preconditioners=True,
         data=DataConfig(
-            dataset="NeelNanda/pile-10k", split="train[:30]", truncation=True,
+            dataset="NeelNanda/pile-10k",
+            split="train[:30]",
+            truncation=True,
         ),
         debug=True,  # determinism
     )
@@ -236,7 +240,9 @@ def test_embed_query_shape_and_consistency(tmp_path: Path):
     # Two arbitrary queries should produce different embeddings.
     cos = float(embeddings[0] @ embeddings[1])
     assert -1.0 <= cos <= 1.0
-    assert cos < 0.999, "embed_query produced near-identical embeddings for different queries"
+    assert (
+        cos < 0.999
+    ), "embed_query produced near-identical embeddings for different queries"
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
@@ -265,7 +271,9 @@ def test_compressed_ekfac_token_attribution(tmp_path: Path):
         skip_preconditioners=True,
         attribute_tokens=True,  # the trigger
         data=DataConfig(
-            dataset="NeelNanda/pile-10k", split="train[:30]", truncation=True,
+            dataset="NeelNanda/pile-10k",
+            split="train[:30]",
+            truncation=True,
         ),
     )
     index_cfg.distributed.nproc_per_node = 1
@@ -317,7 +325,9 @@ def test_compressed_ekfac_rejects_include_bias(tmp_path: Path):
         skip_preconditioners=True,
         include_bias=True,  # the trigger
         data=DataConfig(
-            dataset="NeelNanda/pile-10k", split="train[:20]", truncation=True,
+            dataset="NeelNanda/pile-10k",
+            split="train[:20]",
+            truncation=True,
         ),
     )
     index_cfg.distributed.nproc_per_node = 1

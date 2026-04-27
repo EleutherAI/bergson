@@ -124,9 +124,9 @@ class Builder:
         )
 
         # ── Post-preconditioning projection (factored variants only) ───────
-        self._post_projection: (
-            dict[str, tuple[torch.Tensor, torch.Tensor]] | None
-        ) = None
+        self._post_projection: dict[str, tuple[torch.Tensor, torch.Tensor]] | None = (
+            None
+        )
         if post_projection_dim is not None:
             if not isinstance(self.preconditioner, _FactoredPreconditioner):
                 raise ValueError(
@@ -156,8 +156,7 @@ class Builder:
             # The on-disk layout uses the projected size, not the
             # unprojected ``grad_sizes`` we received from the collector.
             grad_sizes = {
-                name: post_projection_dim * post_projection_dim
-                for name in grad_sizes
+                name: post_projection_dim * post_projection_dim for name in grad_sizes
             }
 
         self.grad_sizes = grad_sizes

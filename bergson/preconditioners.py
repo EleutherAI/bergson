@@ -148,12 +148,8 @@ class _FactoredPreconditioner:
         self.lam = lam
         self.power = power
         self.lambda_damp_factor = lambda_damp_factor
-        self._inv_lambda = {
-            name: self._damped_lambda_power(lam[name]) for name in lam
-        }
-        self._shapes = {
-            name: (lam[name].shape[0], lam[name].shape[1]) for name in lam
-        }
+        self._inv_lambda = {name: self._damped_lambda_power(lam[name]) for name in lam}
+        self._shapes = {name: (lam[name].shape[0], lam[name].shape[1]) for name in lam}
 
     def _damped_lambda_power(self, lam_oi: Tensor) -> Tensor:
         mean_lam = lam_oi.mean()
@@ -205,8 +201,13 @@ class EkfacPreconditioner(_FactoredPreconditioner):
         q_a = _load_sharded_dict(path / "eigen_activation_sharded", device)
         q_s = _load_sharded_dict(path / "eigen_gradient_sharded", device)
         lam = _load_sharded_dict(path / "eigenvalue_correction_sharded", device)
-        return cls(q_a=q_a, q_s=q_s, lam=lam, power=power,
-                   lambda_damp_factor=lambda_damp_factor)
+        return cls(
+            q_a=q_a,
+            q_s=q_s,
+            lam=lam,
+            power=power,
+            lambda_damp_factor=lambda_damp_factor,
+        )
 
 
 class KfacPreconditioner(_FactoredPreconditioner):
@@ -241,8 +242,13 @@ class KfacPreconditioner(_FactoredPreconditioner):
         lam_a = _load_sharded_dict(lam_a_dir, device)  # per module: [I]
         lam_s = _load_sharded_dict(lam_s_dir, device)  # per module: [O]
         lam = {name: torch.outer(lam_s[name], lam_a[name]) for name in lam_s}
-        return cls(q_a=q_a, q_s=q_s, lam=lam, power=power,
-                   lambda_damp_factor=lambda_damp_factor)
+        return cls(
+            q_a=q_a,
+            q_s=q_s,
+            lam=lam,
+            power=power,
+            lambda_damp_factor=lambda_damp_factor,
+        )
 
 
 def _detect_variant(path: Path) -> str:
@@ -331,14 +337,18 @@ def load_preconditioner(
     if variant == "ekfac":
         _check_validated_hessian_method(path)
         return EkfacPreconditioner.from_disk(
-            path, device=device, power=power,
+            path,
+            device=device,
+            power=power,
             lambda_damp_factor=lambda_damp_factor,
         )
 
     if variant == "kfac":
         _check_validated_hessian_method(path)
         return KfacPreconditioner.from_disk(
-            path, device=device, power=power,
+            path,
+            device=device,
+            power=power,
             lambda_damp_factor=lambda_damp_factor,
         )
 

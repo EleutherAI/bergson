@@ -18,9 +18,9 @@ import pytest
 import torch
 from safetensors.torch import save_file
 
+from bergson.config import PreprocessConfig
 from bergson.data import create_index, load_gradients
 from bergson.hessians.apply_hessian import EkfacApplicator, EkfacConfig
-from bergson.config import PreprocessConfig
 from bergson.preconditioners import (
     AutocorrelationPreconditioner,
     EkfacPreconditioner,
@@ -30,7 +30,6 @@ from bergson.preconditioners import (
     is_factored_preconditioner,
     load_preconditioner,
 )
-
 
 _MODULE_NAME = "layers.0.mlp.gate_proj"
 
@@ -71,7 +70,10 @@ def _write_gradient_index(
     n, d = grads.shape
     grad_sizes = {module_name: d}
     buf = create_index(
-        path, num_grads=n, grad_sizes=grad_sizes, dtype=np.float32,
+        path,
+        num_grads=n,
+        grad_sizes=grad_sizes,
+        dtype=np.float32,
     )
     buf[module_name][:] = grads.cpu().numpy()
     buf.flush()
@@ -134,17 +136,21 @@ def test_is_factored_preconditioner(tmp_path):
     autocorr_dir = tmp_path / "autocorr"
     autocorr_dir.mkdir()
     (autocorr_dir / "preconditioners.pth").touch()
-    assert is_factored_preconditioner(
-        PreprocessConfig(preconditioner_path=str(autocorr_dir))
-    ) is False
+    assert (
+        is_factored_preconditioner(
+            PreprocessConfig(preconditioner_path=str(autocorr_dir))
+        )
+        is False
+    )
 
     # KFAC layout (no eigenvalue_correction_sharded/) → factored.
     kfac_dir = tmp_path / "kfac"
     for name in ("eigen_activation_sharded", "eigen_gradient_sharded"):
         (kfac_dir / name).mkdir(parents=True)
-    assert is_factored_preconditioner(
-        PreprocessConfig(preconditioner_path=str(kfac_dir))
-    ) is True
+    assert (
+        is_factored_preconditioner(PreprocessConfig(preconditioner_path=str(kfac_dir)))
+        is True
+    )
 
     # EKFAC layout (with correction dir) → factored.
     ekfac_dir = tmp_path / "ekfac"
@@ -154,9 +160,10 @@ def test_is_factored_preconditioner(tmp_path):
         "eigenvalue_correction_sharded",
     ):
         (ekfac_dir / name).mkdir(parents=True)
-    assert is_factored_preconditioner(
-        PreprocessConfig(preconditioner_path=str(ekfac_dir))
-    ) is True
+    assert (
+        is_factored_preconditioner(PreprocessConfig(preconditioner_path=str(ekfac_dir)))
+        is True
+    )
 
 
 def test_load_sharded_dict_concatenates_dim0(tmp_path):
@@ -236,22 +243,25 @@ def test_ekfac_preconditioner_parity_vs_applicator(tmp_path: Path):
     )
     EkfacApplicator(ekfac_cfg).compute_ivhp_sharded()
     ref_buf = load_gradients(out_path)
-    ref = torch.from_numpy(
-        np.ascontiguousarray(ref_buf[_MODULE_NAME][:])
-    ).to(device=device, dtype=torch.float32)
+    ref = torch.from_numpy(np.ascontiguousarray(ref_buf[_MODULE_NAME][:])).to(
+        device=device, dtype=torch.float32
+    )
 
     # Candidate: EkfacPreconditioner.apply via load_preconditioner.
     precond = load_preconditioner(
-        hessian_path, device=device, power=-1.0, lambda_damp_factor=0.1,
+        hessian_path,
+        device=device,
+        power=-1.0,
+        lambda_damp_factor=0.1,
     )
     assert isinstance(precond, EkfacPreconditioner)
     candidate = precond.apply({_MODULE_NAME: grads.to(device)})[_MODULE_NAME]
 
     assert candidate.shape == ref.shape, f"{candidate.shape} vs {ref.shape}"
     max_abs = (candidate - ref).abs().max().item()
-    assert torch.allclose(candidate, ref, atol=1e-5), (
-        f"EKFAC parity mismatch: max abs diff {max_abs}"
-    )
+    assert torch.allclose(
+        candidate, ref, atol=1e-5
+    ), f"EKFAC parity mismatch: max abs diff {max_abs}"
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
@@ -270,7 +280,10 @@ def test_ekfac_preconditioner_per_token_shape(tmp_path: Path):
     _write_ekfac_factors(hessian_path, q_a, q_s, lam)
 
     precond = load_preconditioner(
-        hessian_path, device=device, power=-1.0, lambda_damp_factor=0.1,
+        hessian_path,
+        device=device,
+        power=-1.0,
+        lambda_damp_factor=0.1,
     )
     token_grads = torch.randn(T, O * I, dtype=torch.float32, device=device)
     out = precond.apply({_MODULE_NAME: token_grads})[_MODULE_NAME]
@@ -334,7 +347,10 @@ def test_kfac_preconditioner_matches_reference(tmp_path: Path):
     assert _detect_variant(hessian_path) == "kfac"
 
     precond = load_preconditioner(
-        hessian_path, device=device, power=-1.0, lambda_damp_factor=0.1,
+        hessian_path,
+        device=device,
+        power=-1.0,
+        lambda_damp_factor=0.1,
     )
     assert isinstance(precond, KfacPreconditioner)
 
@@ -349,9 +365,9 @@ def test_kfac_preconditioner_matches_reference(tmp_path: Path):
         damp=0.1,
     ).to(device)
     max_abs = (candidate - expected).abs().max().item()
-    assert torch.allclose(candidate, expected, atol=1e-5), (
-        f"KFAC parity mismatch: max abs diff {max_abs}"
-    )
+    assert torch.allclose(
+        candidate, expected, atol=1e-5
+    ), f"KFAC parity mismatch: max abs diff {max_abs}"
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
@@ -373,5 +389,7 @@ def test_kfac_preconditioner_missing_eigenvalues_errors(tmp_path: Path):
 
     with pytest.raises(FileNotFoundError, match="eigenvalue"):
         load_preconditioner(
-            hessian_path, device=torch.device("cuda", 0), power=-1.0,
+            hessian_path,
+            device=torch.device("cuda", 0),
+            power=-1.0,
         )

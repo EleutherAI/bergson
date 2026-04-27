@@ -287,9 +287,7 @@ def compute_eigendecomposition(
         covariance_eigenvectors[key] = eigenvectors
         # Keep eigenvalues in float64 on CPU — 1D, cheap, and KfacPreconditioner
         # wants precision for the (Λ_G ⊗ Λ_A) outer product.
-        covariance_eigenvalues[key] = (
-            eigenvalues.to(device="cpu").contiguous()
-        )
+        covariance_eigenvalues[key] = eigenvalues.to(device="cpu").contiguous()
 
     # Merge eigenvectors across ranks and re-shard for output
     covariance_eigenvectors = _merge_and_shard_eigenvectors(

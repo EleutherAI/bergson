@@ -390,7 +390,7 @@ CELLS: list[dict] = [
         "        ci = int(np.argsort(scores_compressed[q])[-(r + 1)])",
         "        ti = int(np.argsort(scores_two_stage[q])[-(r + 1)])",
         "        pi = int(np.argsort(scores_reference[q])[-(r + 1)])",
-        "        print(f'  {r + 1:>4} | [{ci:>3}] {ds[ci][\"text\"][:24]!r:<28} | [{ti:>3}] {ds[ti][\"text\"][:24]!r:<28} | [{pi:>3}] {ds[pi][\"text\"][:24]!r}')",
+        '        print(f\'  {r + 1:>4} | [{ci:>3}] {ds[ci]["text"][:24]!r:<28} | [{ti:>3}] {ds[ti]["text"][:24]!r:<28} | [{pi:>3}] {ds[pi]["text"][:24]!r}\')',
     ),
     # ── Wrap-up ────────────────────────────────────────────────────────
     md(

@@ -58,10 +58,10 @@ DEFAULT_DATASET = "NeelNanda/pile-10k"
 DEFAULT_N_TRAIN = 200
 DEFAULT_N_QUERY = 5
 DEFAULT_PROJECTION_DIM = 64  # p²=4096 per module; needed because Kronecker-structured
-                              # projection L·G·R^T requires p roughly proportional to
-                              # sqrt(O·I) to preserve inner products.
+# projection L·G·R^T requires p roughly proportional to
+# sqrt(O·I) to preserve inner products.
 DEFAULT_UNIT_NORMALIZE = True  # power=-0.5, i.e. split preconditioning so
-                                #  <q_{H^-0.5}, t_{H^-0.5}> = <q, H^-1, t>.
+#  <q_{H^-0.5}, t_{H^-0.5}> = <q, H^-1, t>.
 DEFAULT_TOKEN_BATCH_SIZE = 1024
 DEFAULT_PRECISION = "bf16"
 DEFAULT_NPROC_PER_NODE = 1
@@ -102,7 +102,7 @@ def make_index_cfg(
         skip_preconditioners=True,
         data=DataConfig(dataset=DATASET, split=split, truncation=True),
         debug=True,  # enables setup_reproducibility — essential for
-                     # comparing two independent builds bitwise.
+        # comparing two independent builds bitwise.
     )
     cfg.distributed.nproc_per_node = (
         nproc_per_node if nproc_per_node is not None else NPROC_PER_NODE
@@ -130,7 +130,9 @@ def flatten_structured(mmap) -> np.ndarray:
     return np.concatenate(parts, axis=-1)
 
 
-def run_build_if_missing(run_path: Path, cfg: IndexConfig, pre: PreprocessConfig, desc: str) -> None:
+def run_build_if_missing(
+    run_path: Path, cfg: IndexConfig, pre: PreprocessConfig, desc: str
+) -> None:
     if run_path.exists() and (run_path / "info.json").exists():
         print(f"  [skip] {desc}: artifacts exist at {run_path}")
         return
@@ -186,8 +188,10 @@ def main(out_root: Path) -> int:
     run_build_if_missing(
         query_compressed,
         make_index_cfg(
-            query_compressed, query_split,
-            projection_dim=PROJECTION_DIM, nproc_per_node=1,
+            query_compressed,
+            query_split,
+            projection_dim=PROJECTION_DIM,
+            nproc_per_node=1,
         ),
         PreprocessConfig(preconditioner_path=ekfac_path, unit_normalize=UNIT_NORMALIZE),
         "compressed query",
@@ -196,8 +200,10 @@ def main(out_root: Path) -> int:
     run_build_if_missing(
         query_reference,
         make_index_cfg(
-            query_reference, query_split,
-            projection_dim=0, nproc_per_node=1,
+            query_reference,
+            query_split,
+            projection_dim=0,
+            nproc_per_node=1,
         ),
         PreprocessConfig(preconditioner_path=ekfac_path, unit_normalize=UNIT_NORMALIZE),
         "reference query",
@@ -226,7 +232,9 @@ def main(out_root: Path) -> int:
         f"random@10={random_recall[10]:.0%}  "
         f"random@20={random_recall[20]:.0%}"
     )
-    print(f"\n{'q':>3} {'recall@5':>10} {'recall@10':>10} {'recall@20':>10} {'spearman':>10}")
+    print(
+        f"\n{'q':>3} {'recall@5':>10} {'recall@10':>10} {'recall@20':>10} {'spearman':>10}"
+    )
     mean_recalls = {k: 0.0 for k in (5, 10, 20)}
     mean_rho = 0.0
     for q in range(N_QUERY):
@@ -240,10 +248,10 @@ def main(out_root: Path) -> int:
             mean_recalls[k] += rec[k] / N_QUERY
         rho = spearmanr(a, b).statistic
         mean_rho += rho / N_QUERY
-        print(
-            f"{q:>3d} {rec[5]:>10.2%} {rec[10]:>10.2%} {rec[20]:>10.2%} {rho:>10.3f}"
-        )
-    print(f"{'mean':>3} {mean_recalls[5]:>10.2%} {mean_recalls[10]:>10.2%} {mean_recalls[20]:>10.2%} {mean_rho:>10.3f}")
+        print(f"{q:>3d} {rec[5]:>10.2%} {rec[10]:>10.2%} {rec[20]:>10.2%} {rho:>10.3f}")
+    print(
+        f"{'mean':>3} {mean_recalls[5]:>10.2%} {mean_recalls[10]:>10.2%} {mean_recalls[20]:>10.2%} {mean_rho:>10.3f}"
+    )
 
     # ── Qualitative ──────────────────────────────────────────────────────
     print("\nQualitative top-3 neighbors (first 3 queries):")
@@ -284,10 +292,13 @@ def main(out_root: Path) -> int:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "out_root", nargs="?", default="/tmp/validate_compressed_ekfac",
+        "out_root",
+        nargs="?",
+        default="/tmp/validate_compressed_ekfac",
         help="Where to materialize artifacts (default: %(default)s).",
     )
     parser.add_argument("--model", default=DEFAULT_MODEL)
@@ -296,13 +307,18 @@ if __name__ == "__main__":
     parser.add_argument("--n_query", type=int, default=DEFAULT_N_QUERY)
     parser.add_argument("--projection_dim", type=int, default=DEFAULT_PROJECTION_DIM)
     parser.add_argument(
-        "--unit_normalize", type=lambda s: s.lower() in ("1", "true", "yes"),
+        "--unit_normalize",
+        type=lambda s: s.lower() in ("1", "true", "yes"),
         default=DEFAULT_UNIT_NORMALIZE,
     )
-    parser.add_argument("--token_batch_size", type=int, default=DEFAULT_TOKEN_BATCH_SIZE)
+    parser.add_argument(
+        "--token_batch_size", type=int, default=DEFAULT_TOKEN_BATCH_SIZE
+    )
     parser.add_argument("--precision", default=DEFAULT_PRECISION)
     parser.add_argument(
-        "--nproc_per_node", type=int, default=DEFAULT_NPROC_PER_NODE,
+        "--nproc_per_node",
+        type=int,
+        default=DEFAULT_NPROC_PER_NODE,
         help="Number of GPUs per node (passed to bergson DistributedConfig).",
     )
     args = parser.parse_args()
