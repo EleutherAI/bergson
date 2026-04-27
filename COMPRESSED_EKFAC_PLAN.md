@@ -439,6 +439,7 @@ Even unprojected reference top-3 neighbors for a "Tulsi Gabbard 2020 candidate" 
 | `4a42e2e` | **Post-review polish #1.** Move `is_factored_preconditioner` to `bergson/preconditioners.py`; collector derives `post_projection_dim` from `processor.projection_dim is None` (single decision point at `build_worker`) (+1 CPU test) |
 | `bb4dad6` | **Post-review polish #2.** Fail-fast on `include_bias` in `compressed_ekfac_pipeline` so step 1's Hessian fit doesn't burn before the guard fires; defensive backstop in `build_worker` retained. Test no longer needs CUDA; gains assertions that neither `hessian/` nor `index/` dirs exist after the raise |
 | `78800ff` | **Post-review polish #3.** `_load_sharded_dict` validates trailing-dim equality across shards per key, raises with file context if the on-disk shard split axis ever changes (+2 CPU tests) |
+| `03105a4` | **Post-pull fix.** Polish #1 had an over-broad gate (`processor.projection_dim is None`) that swept up 7 autocorrelation tests calling `collect_gradients` directly with `GradientProcessor()`. Switched the trigger to `is_factored_preconditioner(preprocess_cfg)` — gates on the on-disk preconditioner_path, the actual source of truth. All 7 regressions restored |
 
 Pre-existing failures (unchanged throughout, all unrelated to this work):
 * `test_adam_state_loading.py::test_load_8bit_adam_checkpoint` — missing `bitsandbytes` in dev deps
@@ -446,4 +447,4 @@ Pre-existing failures (unchanged throughout, all unrelated to this work):
 * `test_muon.py` (4) — `torch.optim.Muon` not in torch 2.6
 * `test_truncation.py` (7) — test/code drift on batch-size validation and warning text
 
-Last cluster-verified count: 176 passed at `2f10d6a`. Three post-review-polish commits add CPU-only tests projecting **179 passed**; a final cluster `pytest tests/ -v` is the authoritative bar before the umbrella PR opens.
+**Verified at HEAD `03105a4`: 179 passed, 13 same pre-existing failures, 4 skipped.**
