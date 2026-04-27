@@ -31,6 +31,7 @@ import yaml
 from safetensors.torch import load_file
 from torch import Tensor
 
+from .config import PreprocessConfig
 from .process_grads import get_trackstar_preconditioner, precondition_grad
 
 # Only this hessian-method has been empirically validated end-to-end against
@@ -233,6 +234,21 @@ def _detect_variant(path: Path) -> str:
     if has_ea and has_eg:
         return "ekfac" if has_ev else "kfac"
     return "autocorrelation"
+
+
+def is_factored_preconditioner(preprocess_cfg: PreprocessConfig) -> bool:
+    """True when ``preconditioner_path`` points at an EKFAC/KFAC artifact.
+
+    Used by :func:`bergson.build.build_worker` to suppress in-collector
+    projection (factored Q_A/Q_S operate in unprojected parameter space;
+    projection must happen after preconditioning per plan §3.2 "precondition-
+    then-project"). The downstream collector/builder no longer needs to
+    re-derive this — it reads ``processor.projection_dim is None`` instead.
+    """
+    path = preprocess_cfg.preconditioner_path
+    if not path:
+        return False
+    return _detect_variant(Path(path)) in {"ekfac", "kfac"}
 
 
 def _check_validated_hessian_method(path: Path) -> None:

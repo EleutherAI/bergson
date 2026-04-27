@@ -1,7 +1,6 @@
 import os
 import shutil
 from datetime import timedelta
-from pathlib import Path
 
 import torch
 import torch.distributed as dist
@@ -12,7 +11,7 @@ from bergson.collection import collect_gradients
 from bergson.config import IndexConfig, PreprocessConfig
 from bergson.data import allocate_batches
 from bergson.distributed import launch_distributed_run
-from bergson.preconditioners import _detect_variant
+from bergson.preconditioners import is_factored_preconditioner
 from bergson.utils.auto_batch_size import maybe_auto_batch_size
 from bergson.utils.utils import assert_type, setup_reproducibility
 from bergson.utils.worker_utils import (
@@ -20,19 +19,6 @@ from bergson.utils.worker_utils import (
     setup_data_pipeline,
     setup_model_and_peft,
 )
-
-
-def _is_factored_preconditioner(preprocess_cfg: PreprocessConfig) -> bool:
-    """True when ``preconditioner_path`` points at an EKFAC/KFAC artifact.
-
-    The builder needs to know this to keep the collector from projecting
-    (factored Q_A/Q_S operate in unprojected parameter space; projection
-    must happen after preconditioning per plan §3.2 "precondition-then-
-    project")."""
-    path = preprocess_cfg.preconditioner_path
-    if not path:
-        return False
-    return _detect_variant(Path(path)) in {"ekfac", "kfac"}
 
 
 def build_worker(
@@ -84,8 +70,10 @@ def build_worker(
 
     # Factored (EKFAC/KFAC) preconditioners operate on unprojected
     # [N, O, I] grads. Tell the collector not to project; the builder
-    # handles projection after preconditioning.
-    if _is_factored_preconditioner(preprocess_cfg):
+    # post-projects after preconditioning. The collector reads
+    # ``processor.projection_dim is None`` to know it should hand off
+    # unprojected grads to the builder.
+    if is_factored_preconditioner(preprocess_cfg):
         if index_cfg.include_bias:
             raise NotImplementedError(
                 "include_bias=True with an EKFAC/KFAC preconditioner is not "

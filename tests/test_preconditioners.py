@@ -20,11 +20,13 @@ from safetensors.torch import save_file
 
 from bergson.data import create_index, load_gradients
 from bergson.hessians.apply_hessian import EkfacApplicator, EkfacConfig
+from bergson.config import PreprocessConfig
 from bergson.preconditioners import (
     AutocorrelationPreconditioner,
     EkfacPreconditioner,
     KfacPreconditioner,
     _detect_variant,
+    is_factored_preconditioner,
     load_preconditioner,
 )
 
@@ -119,6 +121,41 @@ def test_detect_variant_autocorrelation(tmp_path):
     # A GradientProcessor dump has preconditioners.pth etc. but no eigen_ dirs.
     (tmp_path / "preconditioners.pth").touch()
     assert _detect_variant(tmp_path) == "autocorrelation"
+
+
+def test_is_factored_preconditioner(tmp_path):
+    """Public helper used by build_worker to gate projection placement."""
+    # None / empty path → not factored.
+    assert is_factored_preconditioner(PreprocessConfig()) is False
+    assert is_factored_preconditioner(PreprocessConfig(preconditioner_path="")) is False
+
+    # Directory with only a GradientProcessor dump → autocorrelation, not factored.
+    autocorr_dir = tmp_path / "autocorr"
+    autocorr_dir.mkdir()
+    (autocorr_dir / "preconditioners.pth").touch()
+    assert is_factored_preconditioner(
+        PreprocessConfig(preconditioner_path=str(autocorr_dir))
+    ) is False
+
+    # KFAC layout (no eigenvalue_correction_sharded/) → factored.
+    kfac_dir = tmp_path / "kfac"
+    for name in ("eigen_activation_sharded", "eigen_gradient_sharded"):
+        (kfac_dir / name).mkdir(parents=True)
+    assert is_factored_preconditioner(
+        PreprocessConfig(preconditioner_path=str(kfac_dir))
+    ) is True
+
+    # EKFAC layout (with correction dir) → factored.
+    ekfac_dir = tmp_path / "ekfac"
+    for name in (
+        "eigen_activation_sharded",
+        "eigen_gradient_sharded",
+        "eigenvalue_correction_sharded",
+    ):
+        (ekfac_dir / name).mkdir(parents=True)
+    assert is_factored_preconditioner(
+        PreprocessConfig(preconditioner_path=str(ekfac_dir))
+    ) is True
 
 
 def test_load_preconditioner_none_is_autocorrelation():
