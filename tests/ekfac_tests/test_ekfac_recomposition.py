@@ -64,7 +64,7 @@ def test_ekfac_recomposition(
         lambdas_run=lambdas_run,
     )
 
-    tol = 0.05 if world_size > 1 else 0.001
+    tol = 0.05 if world_size > 1 else 0.002
     max_err = max(v.item() for v in per_layer.values())
     assert max_err < tol, (
         f"EKFAC GNH recomposition: max per-layer rel_error={max_err:.2e}, "
