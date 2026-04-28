@@ -5,6 +5,7 @@ import subprocess
 import pytest
 
 SUBCOMMANDS = [
+    "apply_hessian",
     "build",
     "ekfac",
     "hessian",

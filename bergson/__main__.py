@@ -1,6 +1,6 @@
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Union, get_args
 
 from simple_parsing import ArgumentParser, ConflictResolution, Serializable
@@ -9,6 +9,7 @@ from bergson.hessians.pipeline import hessian_pipeline
 
 from .build import build
 from .config import (
+    DistributedConfig,
     HessianConfig,
     HessianPipelineConfig,
     IndexConfig,
@@ -18,6 +19,8 @@ from .config import (
     TrackstarConfig,
 )
 from .diagnose import DiagnoseConfig, diagnose
+from .distributed import launch_distributed_run
+from .hessians.apply_hessian import EkfacConfig, apply_worker
 from .hessians.hessian_approximations import approximate_hessians
 from .magic import MagicConfig, run_magic
 from .query.query_index import query
@@ -25,6 +28,31 @@ from .score.score import score_dataset
 from .trackstar import trackstar
 from .utils.worker_utils import validate_run_path
 from .yaml_pipeline import run_pipeline
+
+
+@dataclass
+class Apply_Hessian(Serializable):
+    """Apply a precomputed inverse Hessian to a saved query gradient.
+
+    Reads the Hessian factors written by `bergson hessian` and the mean
+    query gradient written by `bergson build` (with `aggregation: mean`),
+    and writes the inverse-Hessian-vector product (transformed query) to
+    `ekfac_cfg.run_path`. Used as the middle step of the EKFAC influence
+    flow, between building the query gradient and scoring training data
+    against it.
+    """
+
+    ekfac_cfg: EkfacConfig
+
+    distributed_cfg: DistributedConfig = field(default_factory=DistributedConfig)
+
+    def execute(self):
+        launch_distributed_run(
+            "apply_hessian",
+            apply_worker,
+            [self.ekfac_cfg],
+            self.distributed_cfg,
+        )
 
 
 @dataclass
@@ -182,6 +210,7 @@ class Main:
     """Routes to the subcommands."""
 
     command: Union[
+        Apply_Hessian,
         Build,
         Ekfac,
         Hessian,

@@ -4,13 +4,17 @@ These tests exercise parsing only — they never call `.execute()`, so they
 need no GPU and no model downloads.
 """
 
+from pathlib import Path
 from typing import get_args
 
 import pytest
 
-from bergson.__main__ import Build, Hessian, Main
+from bergson.__main__ import Apply_Hessian, Build, Hessian, Main, Score
 from bergson.config import HessianConfig, IndexConfig, PreprocessConfig
+from bergson.hessians.apply_hessian import EkfacConfig
 from bergson.yaml_pipeline import parse_pipeline
+
+EXAMPLES = Path(__file__).resolve().parent.parent / "examples" / "pipelines"
 
 
 @pytest.fixture
@@ -114,6 +118,37 @@ def test_unknown_command_raises(tmp_path, registry):
     )
     with pytest.raises(ValueError, match="unknown command 'not_a_real_command'"):
         parse_pipeline(yaml_path, registry)
+
+
+def test_build_ekfac_example_parses(registry):
+    """`build_EKFAC.yaml` must parse into a single hessian step."""
+    steps = parse_pipeline(str(EXAMPLES / "build_EKFAC.yaml"), registry)
+    assert len(steps) == 1
+    name, cmd = steps[0]
+    assert name == "hessian"
+    assert isinstance(cmd, Hessian)
+    assert cmd.hessian_cfg.method == "kfac"
+    assert cmd.hessian_cfg.ev_correction is True
+
+
+def test_query_ekfac_example_parses(registry):
+    """`query_EKFAC.yaml` must parse build → apply_hessian → score."""
+    steps = parse_pipeline(str(EXAMPLES / "query_EKFAC.yaml"), registry)
+    assert [name for name, _ in steps] == ["build", "apply_hessian", "score"]
+
+    _, build_cmd = steps[0]
+    assert isinstance(build_cmd, Build)
+    assert build_cmd.preprocess_cfg.aggregation == "mean"
+
+    _, apply_cmd = steps[1]
+    assert isinstance(apply_cmd, Apply_Hessian)
+    assert isinstance(apply_cmd.ekfac_cfg, EkfacConfig)
+    assert apply_cmd.ekfac_cfg.hessian_method_path == "runs/ekfac/hessian/kfac"
+
+    _, score_cmd = steps[2]
+    assert isinstance(score_cmd, Score)
+    # The score step's query_path must point at apply_hessian's output.
+    assert score_cmd.score_cfg.query_path == apply_cmd.ekfac_cfg.run_path
 
 
 def test_empty_step_body_uses_dataclass_defaults(tmp_path, registry):

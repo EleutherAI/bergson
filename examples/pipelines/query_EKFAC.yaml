@@ -1,0 +1,49 @@
+# Run the per-query half of the EKFAC influence flow against the Hessian
+# factors written by `build_EKFAC.yaml`. Three steps:
+#   1. build  — collect the mean query gradient across the query dataset
+#   2. apply_hessian — multiply that mean gradient by H^{-1} in eigenbasis
+#   3. score  — score every training example against the transformed query
+
+# Step 1 — mean query gradient.
+# `aggregation: mean` averages across the dataset; `projection_dim: 0` and
+# `skip_preconditioners: true` skip work this step doesn't need.
+- build:
+    index_cfg:
+      run_path: runs/ekfac/query
+      model: gpt2
+      projection_dim: 0
+      skip_preconditioners: true
+      data:
+        dataset: Salesforce/wikitext
+        subset: wikitext-2-raw-v1
+        split: "validation[:32]"
+        chunk_length: 128
+    preprocess_cfg:
+      aggregation: mean
+
+# Step 2 — apply inverse Hessian to the mean query gradient.
+# `hessian_method_path` points at the per-method subdir produced by
+# build_EKFAC (`<hessian_run_path>/<method>/`). For method=kfac that's
+# `runs/ekfac/hessian/kfac`.
+- apply_hessian:
+    ekfac_cfg:
+      hessian_method_path: runs/ekfac/hessian/kfac
+      gradient_path: runs/ekfac/query
+      run_path: runs/ekfac/kfac_query
+      lambda_damp_factor: 0.1
+
+# Step 3 — score training examples against the transformed query.
+- score:
+    index_cfg:
+      run_path: runs/ekfac/scores
+      model: gpt2
+      projection_dim: 0
+      skip_preconditioners: true
+      data:
+        dataset: Salesforce/wikitext
+        subset: wikitext-2-raw-v1
+        split: "train[:512]"
+        chunk_length: 128
+    score_cfg:
+      query_path: runs/ekfac/kfac_query
+    preprocess_cfg: {}

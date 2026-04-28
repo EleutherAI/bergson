@@ -8,7 +8,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from safetensors.torch import load_file
-from simple_parsing import ArgumentParser
+from simple_parsing import ArgumentParser, Serializable
 from torch import Tensor
 
 from bergson.data import create_index, load_gradients
@@ -17,7 +17,7 @@ from bergson.utils.logger import get_logger
 
 
 @dataclass
-class EkfacConfig:
+class EkfacConfig(Serializable):
     hessian_method_path: str
     gradient_path: str
     run_path: str

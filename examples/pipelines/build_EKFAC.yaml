@@ -1,0 +1,18 @@
+# Build the reusable half of an EKFAC influence run: fit Hessian factors
+# (eigen-decompositions of activation/gradient covariances + per-layer
+# eigenvalue corrections) on the training dataset. The resulting
+# `runs/ekfac/hessian/kfac/` directory is consumed by `query_EKFAC.yaml`
+# once per query you want to ask — it does not depend on the query data.
+
+- hessian:
+    hessian_cfg:
+      method: kfac
+      ev_correction: true   # the "E" in EKFAC
+    index_cfg:
+      run_path: runs/ekfac/hessian
+      model: gpt2
+      data:
+        dataset: Salesforce/wikitext
+        subset: wikitext-2-raw-v1
+        split: "train[:512]"
+        chunk_length: 128
