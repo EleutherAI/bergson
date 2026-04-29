@@ -59,3 +59,21 @@ def test_wandb_log_fn_reuses_existing_run():
 
         log(0, 1.5)
         mock_wandb.log.assert_called_once_with({"train/loss": 1.5}, step=0)
+
+
+def test_wandb_log_fn_falls_back_when_init_fails():
+    """If wandb.init raises (e.g. dead daemon, bad auth, network), the caller
+    gets a no-op log_fn and a warning, not an exception. Without this, a
+    rank-0 wandb hang/failure deadlocks the rest of the world on the next
+    distributed collective."""
+    mock_wandb = MagicMock()
+    mock_wandb.run = None
+    mock_wandb.init.side_effect = TimeoutError("wandb-service did not respond")
+
+    with patch.dict("sys.modules", {"wandb": mock_wandb}):
+        with pytest.warns(UserWarning, match="wandb.init failed"):
+            log = wandb_log_fn("test-project")
+
+        # log_fn must be callable and a no-op (does not call wandb.log)
+        log(0, 1.5)
+        mock_wandb.log.assert_not_called()

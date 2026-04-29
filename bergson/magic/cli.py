@@ -316,6 +316,9 @@ def worker(
     if run_cfg.wandb_project and global_rank == 0:
         log_fn = wandb_log_fn(run_cfg.wandb_project, config=asdict(run_cfg))
 
+    if dist.is_initialized():
+        dist.barrier()
+
     schedule = run_cfg.lr_schedule.get_schedule(len(stream))
     trainer, fwd_state, model = prepare_trainer(
         run_cfg,
