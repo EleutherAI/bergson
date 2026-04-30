@@ -54,6 +54,3 @@ class MagicConfig(AttributionConfig, TrainingConfig):
 
     per_token: bool = False
     """Whether to compute attribution scores per token (instead of per sequence)."""
-
-    def __post_init__(self):
-        assert not self.fsdp, "PyTorch FSDP is not currently supported for MAGIC."
