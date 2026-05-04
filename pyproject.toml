@@ -27,6 +27,7 @@ dependencies = [
     "transformers",
     "bitsandbytes",
     "traker",
+    "huggingface-hub>=1.13.0",
 ]
 version = "0.9.1"
 [project.optional-dependencies]
