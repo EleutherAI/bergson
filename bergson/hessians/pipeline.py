@@ -84,6 +84,7 @@ def hessian_pipeline(
             hessian_method_path=hessian_method_path,
             gradient_path=query_path,
             run_path=transformed_query_path,
+            ev_correction=hessian_cfg.ev_correction,
             lambda_damp_factor=hessian_pipeline_cfg.lambda_damp_factor,
         )
         launch_distributed_run(

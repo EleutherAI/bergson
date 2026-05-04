@@ -14,7 +14,11 @@ from bergson.collector.collector import (
 from bergson.config import AttentionConfig, HessianConfig, IndexConfig
 from bergson.data import allocate_batches
 from bergson.distributed import launch_distributed_run
-from bergson.hessians.eigenvectors import LambdaCollector, compute_eigendecomposition
+from bergson.hessians.eigenvectors import (
+    LambdaCollector,
+    compute_eigendecomposition,
+    save_uncorrected_eigenvalues,
+)
 from bergson.hessians.kfac import CovarianceCollector
 from bergson.hessians.shampoo import ShampooCollector
 from bergson.hessians.tkfac import TraceCovarianceCollector
@@ -182,16 +186,27 @@ def hessian_worker(
         weights_only=False,
     )
 
-    compute_eigendecomposition(
+    eva_a = compute_eigendecomposition(
         os.path.join(index_cfg.partial_run_path, "activation_sharded"),
         total_processed=total_processed,
     )
-    compute_eigendecomposition(
+    eva_g = compute_eigendecomposition(
         os.path.join(index_cfg.partial_run_path, "gradient_sharded"),
         total_processed=total_processed,
     )
 
     dist.barrier() if dist.is_initialized() else None
+
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    world_size = dist.get_world_size() if dist.is_initialized() else 1
+    save_uncorrected_eigenvalues(
+        partial_run_path=index_cfg.partial_run_path,
+        eva_a_local=eva_a,
+        eva_g_local=eva_g,
+        total_processed=total_processed,
+        rank=rank,
+        world_size=world_size,
+    )
 
     if hessian_cfg.ev_correction:
         collect_hessians(**kwargs, ev_correction=True)

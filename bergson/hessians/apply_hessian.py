@@ -23,6 +23,10 @@ class EkfacConfig:
     hessian_method_path: str
     gradient_path: str
     run_path: str
+    ev_correction: bool
+    """If True, use the corrected eigenvalues, this requires
+    `hessian_method_path` to have been created with
+    `HessianConfig.ev_correction=True`."""
     debug: bool = False
     lambda_damp_factor: float = 0.1
 
@@ -53,8 +57,13 @@ class EkfacApplicator:
             self.path + f"/eigen_gradient_sharded/shard_{self.rank}.safetensors",
             device=self.device,
         )
+        lambda_dir = (
+            "eigenvalue_correction_sharded"
+            if self.cfg.ev_correction
+            else "eigenvalue_sharded"
+        )
         lambda_factor = load_file(
-            self.path + f"/eigenvalue_correction_sharded/shard_{self.rank}.safetensors",
+            self.path + f"/{lambda_dir}/shard_{self.rank}.safetensors",
             device=self.device,
         )
 

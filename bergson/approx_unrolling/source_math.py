@@ -97,6 +97,7 @@ def apply_eigfn_to_query(
         hessian_method_path=str(segment_dir),
         gradient_path=str(src_grad_path),
         run_path=str(dst_grad_path),
+        ev_correction=True,
     )
     launch_distributed_run(
         "apply_eigfn_to_query",
