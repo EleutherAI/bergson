@@ -447,7 +447,7 @@ def save_identity_factors(
         dtype,
     )
 
-    lambda_dir = partial_run_path / "eigenvalue_kfac_sharded"
+    lambda_dir = partial_run_path / "eigenvalue_sharded"
     lambda_dir.mkdir(parents=True, exist_ok=True)
     lambda_payload = {
         n: torch.ones(o // world_size, i, dtype=dtype)
