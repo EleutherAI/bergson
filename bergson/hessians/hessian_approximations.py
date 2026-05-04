@@ -17,6 +17,7 @@ from bergson.distributed import launch_distributed_run
 from bergson.hessians.eigenvectors import (
     LambdaCollector,
     compute_eigendecomposition,
+    save_identity_factors,
     save_uncorrected_eigenvalues,
 )
 from bergson.hessians.kfac import CovarianceCollector
@@ -157,6 +158,23 @@ def hessian_worker(
         )
 
     model, target_modules = setup_model_and_peft(index_cfg)
+
+    if hessian_cfg.method == "identity":
+        layer_dims = {
+            name: tuple(mod.weight.shape)
+            for name, mod in model.named_modules()
+            if name in target_modules
+        }
+        save_identity_factors(
+            partial_run_path=index_cfg.partial_run_path,
+            layer_dims=layer_dims,
+            rank=rank,
+            world_size=world_size,
+            dtype=convert_precision_to_torch(hessian_cfg.hessian_dtype),
+        )
+        if dist.is_initialized():
+            dist.barrier()
+        return
 
     attention_cfgs = {
         module: index_cfg.attention for module in index_cfg.split_attention_modules

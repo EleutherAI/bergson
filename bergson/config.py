@@ -565,7 +565,9 @@ class ApproxUnrollingConfig(Serializable):
 class HessianConfig(Serializable):
     """Config for reducing the gradients."""
 
-    method: Literal["kfac", "tkfac", "shampoo", "autocorrelation"] = "autocorrelation"
+    method: Literal["kfac", "tkfac", "shampoo", "autocorrelation", "identity"] = (
+        "autocorrelation"
+    )
     """Method for approximating the Hessian."""
 
     ev_correction: bool = False
@@ -577,6 +579,10 @@ class HessianConfig(Serializable):
     use_dataset_labels: bool = False
     """Whether to use dataset labels for Hessian (empirical Fisher) approximation.
     If false, the model predictions will be used."""
+
+    def __post_init__(self):
+        if self.method == "identity" and self.ev_correction:
+            raise ValueError("method='identity' does not support ev_correction=True.")
 
 
 @dataclass
