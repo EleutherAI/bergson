@@ -109,6 +109,7 @@ def hessian_worker(
     hessian_cfg: HessianConfig,
     ds: Dataset,
     do_eigendecomposition: bool = True,
+    target_modules: set[str] | None = None,
 ):
     """
     Worker function for distributed Hessian approximation.
@@ -121,28 +122,17 @@ def hessian_worker(
         Local rank on this node.
     world_size : int
         Total number of workers.
-    cfg : IndexConfig
+    index_cfg : IndexConfig
         Configuration for model, data, and gradient collection.
     hessian_cfg : HessianConfig
         Configuration for Hessian approximation method (kfac or ekfac).
     ds : Dataset
         Dataset to use for covariance estimation.
-    """
-    """
-    Build worker executed per rank to collect gradients to populate the index.
-
-    Parameters
-    ----------
-    rank : int
-        Distributed rank / GPU ID for this worker.
-    local_rank : int
-        Local rank / GPU ID for this worker on the node.
-    world_size : int
-        Total number of workers participating in the run.
-    cfg : IndexConfig
-        Specifies the model, tokenizer, PEFT adapters, and other settings.
-    ds : Dataset | IterableDataset
-        The entire dataset to be indexed. A subset is assigned to each worker.
+    do_eigendecomposition : bool
+        If True (default), compute the eigendecomposition after collection.
+    target_modules : set[str] | None
+        Optional override for the target module set. When `None` (default)
+        we fall back to what `setup_model_and_peft` returns.
     """
     if torch.cuda.is_available():
         torch.cuda.set_device(get_device_index(local_rank))
@@ -161,7 +151,9 @@ def hessian_worker(
             world_size=world_size,
         )
 
-    model, target_modules = setup_model_and_peft(index_cfg)
+    model, peft_target_modules = setup_model_and_peft(index_cfg)
+    if target_modules is None:
+        target_modules = peft_target_modules
 
     if hessian_cfg.method == "identity":
         layer_dims = {
