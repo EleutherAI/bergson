@@ -388,6 +388,35 @@ def save_uncorrected_eigenvalues(
     get_logger().info(f"Saved uncorrected eigenvalues to {out_dir}")
 
 
+def save_identity_eigen(
+    partial_run_path: str | os.PathLike,
+    dim_per_key: dict[str, int],
+    sub_dir: str,
+    rank: int,
+    world_size: int,
+    dtype: torch.dtype = torch.float32,
+) -> None:
+    """Write per-rank shards of identity Q-side matrices to `sub_dir`.
+
+    `dim_per_key` maps each module name to the size `d` of its
+    `[d, d]` identity Q.
+    """
+    payload: dict[str, Tensor] = {}
+    for name, d in dim_per_key.items():
+        if d % world_size != 0:
+            raise ValueError(
+                f"dim={d} for {name} is not divisible by world_size={world_size}."
+            )
+        shard_size = d // world_size
+        shard = torch.zeros(shard_size, d, dtype=dtype)
+        shard.diagonal(offset=rank * shard_size).fill_(1.0)
+        payload[name] = shard
+
+    out_dir = Path(str(partial_run_path)) / sub_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+    save_file(payload, out_dir / f"shard_{rank}.safetensors")
+
+
 def save_identity_factors(
     partial_run_path: str | os.PathLike,
     layer_dims: dict[str, tuple[int, int]],
@@ -401,43 +430,29 @@ def save_identity_factors(
     `layer_dims` maps each target module name to its weight shape `(O, I)`.
     """
     partial_run_path = Path(str(partial_run_path))
-    eigen_a_dir = partial_run_path / "eigen_activation_sharded"
-    eigen_g_dir = partial_run_path / "eigen_gradient_sharded"
+    save_identity_eigen(
+        partial_run_path,
+        {n: i for n, (_, i) in layer_dims.items()},
+        "eigen_activation_sharded",
+        rank,
+        world_size,
+        dtype,
+    )
+    save_identity_eigen(
+        partial_run_path,
+        {n: o for n, (o, _) in layer_dims.items()},
+        "eigen_gradient_sharded",
+        rank,
+        world_size,
+        dtype,
+    )
+
     lambda_dir = partial_run_path / "eigenvalue_kfac_sharded"
-    eigen_a_dir.mkdir(parents=True, exist_ok=True)
-    eigen_g_dir.mkdir(parents=True, exist_ok=True)
     lambda_dir.mkdir(parents=True, exist_ok=True)
-
-    eigen_a_payload: dict[str, Tensor] = {}
-    eigen_g_payload: dict[str, Tensor] = {}
-    lambda_payload: dict[str, Tensor] = {}
-
-    for name, (out_dim, in_dim) in layer_dims.items():
-        if in_dim % world_size != 0:
-            raise ValueError(
-                f"in_dim={in_dim} for {name} is not divisible by "
-                f"world_size={world_size}."
-            )
-        if out_dim % world_size != 0:
-            raise ValueError(
-                f"out_dim={out_dim} for {name} is not divisible by "
-                f"world_size={world_size}."
-            )
-
-        a_shard_size = in_dim // world_size
-        a_shard = torch.zeros(a_shard_size, in_dim, dtype=dtype)
-        a_shard.diagonal(offset=rank * a_shard_size).fill_(1.0)
-        eigen_a_payload[name] = a_shard
-
-        g_shard_size = out_dim // world_size
-        g_shard = torch.zeros(g_shard_size, out_dim, dtype=dtype)
-        g_shard.diagonal(offset=rank * g_shard_size).fill_(1.0)
-        eigen_g_payload[name] = g_shard
-
-        lambda_payload[name] = torch.ones(g_shard_size, in_dim, dtype=dtype)
-
-    save_file(eigen_a_payload, eigen_a_dir / f"shard_{rank}.safetensors")
-    save_file(eigen_g_payload, eigen_g_dir / f"shard_{rank}.safetensors")
+    lambda_payload = {
+        n: torch.ones(o // world_size, i, dtype=dtype)
+        for n, (o, i) in layer_dims.items()
+    }
     save_file(lambda_payload, lambda_dir / f"shard_{rank}.safetensors")
 
     if rank == 0:

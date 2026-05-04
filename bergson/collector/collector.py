@@ -850,6 +850,19 @@ def fwd_bwd_hessian_factory(
     return fwd_bwd_hessian
 
 
+def fwd_only_factory(index_cfg: IndexConfig, hessian_cfg: HessianConfig) -> Callable:
+    """Forward-only variant of `fwd_bwd_hessian_factory` for collectors
+    that don't need the backward pass.
+    """
+
+    def fwd_only(model, x: Tensor, y: Tensor, batch: dict):
+        with torch.no_grad():
+            model(x)
+        return None
+
+    return fwd_only
+
+
 def create_projection_matrix(
     identifier: str,
     m: int,
