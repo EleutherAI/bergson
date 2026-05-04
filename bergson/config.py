@@ -580,10 +580,6 @@ class HessianConfig(Serializable):
     """Whether to use dataset labels for Hessian (empirical Fisher) approximation.
     If false, the model predictions will be used."""
 
-    def __post_init__(self):
-        if self.method == "identity" and self.ev_correction:
-            raise ValueError("method='identity' does not support ev_correction=True.")
-
 
 @dataclass
 class FaissConfig:

@@ -424,8 +424,7 @@ def save_identity_factors(
     world_size: int,
     dtype: torch.dtype = torch.float32,
 ) -> None:
-    """Synthesise Q_A=I, Q_G=I and λ=1 directly to disk in the same on-disk
-    layout as a real KFAC run, so apply_hessian works unchanged.
+    """Synthesise Q_A=I, Q_G=I and a sentinel `total_processed.pt = 1.0`.
 
     `layer_dims` maps each target module name to its weight shape `(O, I)`.
     """
@@ -446,14 +445,6 @@ def save_identity_factors(
         world_size,
         dtype,
     )
-
-    lambda_dir = partial_run_path / "eigenvalue_sharded"
-    lambda_dir.mkdir(parents=True, exist_ok=True)
-    lambda_payload = {
-        n: torch.ones(o // world_size, i, dtype=dtype)
-        for n, (o, i) in layer_dims.items()
-    }
-    save_file(lambda_payload, lambda_dir / f"shard_{rank}.safetensors")
 
     if rank == 0:
         torch.save(torch.tensor(1.0), partial_run_path / "total_processed.pt")

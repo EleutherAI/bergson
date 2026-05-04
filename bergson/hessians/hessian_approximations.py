@@ -155,38 +155,61 @@ def hessian_worker(
     if target_modules is None:
         target_modules = peft_target_modules
 
-    if hessian_cfg.method == "identity":
-        layer_dims = {
-            name: tuple(mod.weight.shape)
-            for name, mod in model.named_modules()
-            if name in target_modules
-        }
-        save_identity_factors(
-            partial_run_path=index_cfg.partial_run_path,
-            layer_dims=layer_dims,
-            rank=rank,
-            world_size=world_size,
-            dtype=convert_precision_to_torch(hessian_cfg.hessian_dtype),
-        )
-        if dist.is_initialized():
-            dist.barrier()
-        return
-
-    attention_cfgs = {
-        module: index_cfg.attention for module in index_cfg.split_attention_modules
-    }
-
     kwargs = {
         "model": model,
         "data": ds,
         "index_cfg": index_cfg,
         "hessian_cfg": hessian_cfg,
         "target_modules": target_modules,
-        "attention_cfgs": attention_cfgs,
+        "attention_cfgs": {
+            module: index_cfg.attention for module in index_cfg.split_attention_modules
+        },
+        "batches": allocate_batches(ds["length"][:], index_cfg.token_batch_size),
     }
 
-    batches = allocate_batches(ds["length"][:], index_cfg.token_batch_size)
-    kwargs["batches"] = batches
+    if hessian_cfg.method == "identity":
+        layer_dims = {
+            name: tuple(mod.weight.shape)
+            for name, mod in model.named_modules()
+            if name in target_modules
+        }
+        dtype = convert_precision_to_torch(hessian_cfg.hessian_dtype)
+        save_identity_factors(
+            partial_run_path=index_cfg.partial_run_path,
+            layer_dims=layer_dims,
+            rank=rank,
+            world_size=world_size,
+            dtype=dtype,
+        )
+        if dist.is_initialized():
+            dist.barrier()
+
+        if hessian_cfg.ev_correction:
+            # Note that LambdaCollector will rewrite total_processed.pt,
+            # replacing the 1.0 stored here by save_identity_factors.
+            collect_hessians(**kwargs, ev_correction=True)
+
+        total_processed = torch.load(
+            os.path.join(str(index_cfg.partial_run_path), "total_processed.pt"),
+            map_location="cpu",
+            weights_only=False,
+        )
+        save_uncorrected_eigenvalues(
+            partial_run_path=index_cfg.partial_run_path,
+            eva_a_local={
+                n: torch.ones(i // world_size, dtype=dtype)
+                for n, (_, i) in layer_dims.items()
+            },
+            eva_g_local={
+                n: torch.ones(o // world_size, dtype=dtype)
+                for n, (o, _) in layer_dims.items()
+            },
+            total_processed=total_processed,
+            rank=rank,
+            world_size=world_size,
+        )
+        return
+
     collect_hessians(**kwargs)
 
     dist.barrier() if dist.is_initialized() else None
