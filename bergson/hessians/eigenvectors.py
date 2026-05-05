@@ -391,19 +391,26 @@ def save_uncorrected_eigenvalues(
     get_logger().info(f"Saved uncorrected eigenvalues to {out_dir}")
 
 
-def save_identity_eigen(
+def save_identity_shards(
     partial_run_path: str | os.PathLike,
     dim_per_key: dict[str, int],
     sub_dir: str,
     rank: int,
     world_size: int,
     dtype: torch.dtype = torch.float32,
+    scale: float | int | Tensor = 1.0,
 ) -> None:
-    """Write per-rank shards of identity Q-side matrices to `sub_dir`.
+    """Write per-rank shards of `scale * I_d`
+    to `<run>/<sub_dir>/shard_<rank>.safetensors`.
 
-    `dim_per_key` maps each module name to the size `d` of its
-    `[d, d]` identity Q.
+    Each saved tensor for key `name` has shape `[dim/world_size, dim]` (the
+    rank-local row-slice). `dim_per_key` maps each module name to the size
+    `d` of its `[d, d]` identity matrix.
     """
+    if isinstance(scale, Tensor):
+        scale = scale.item()
+    scale = float(scale)
+
     payload: dict[str, Tensor] = {}
     for name, d in dim_per_key.items():
         if d % world_size != 0:
@@ -412,7 +419,7 @@ def save_identity_eigen(
             )
         shard_size = d // world_size
         shard = torch.zeros(shard_size, d, dtype=dtype)
-        shard.diagonal(offset=rank * shard_size).fill_(1.0)
+        shard.diagonal(offset=rank * shard_size).fill_(scale)
         payload[name] = shard
 
     out_dir = Path(str(partial_run_path)) / sub_dir
@@ -432,7 +439,7 @@ def save_identity_factors(
     `layer_dims` maps each target module name to its weight shape `(O, I)`.
     """
     partial_run_path = Path(str(partial_run_path))
-    save_identity_eigen(
+    save_identity_shards(
         partial_run_path,
         {n: i for n, (_, i) in layer_dims.items()},
         "eigen_activation_sharded",
@@ -440,7 +447,7 @@ def save_identity_factors(
         world_size,
         dtype,
     )
-    save_identity_eigen(
+    save_identity_shards(
         partial_run_path,
         {n: o for n, (o, _) in layer_dims.items()},
         "eigen_gradient_sharded",

@@ -18,8 +18,8 @@ from bergson.distributed import launch_distributed_run
 from bergson.hessians.eigenvectors import (
     LambdaCollector,
     compute_eigendecomposition,
-    save_identity_eigen,
     save_identity_factors,
+    save_identity_shards,
     save_uncorrected_eigenvalues,
 )
 from bergson.hessians.foof import ActivationCovarianceCollector
@@ -194,6 +194,24 @@ def hessian_worker(
             map_location="cpu",
             weights_only=False,
         )
+        save_identity_shards(
+            partial_run_path=index_cfg.partial_run_path,
+            dim_per_key={n: i for n, (_, i) in layer_dims.items()},
+            sub_dir="activation_sharded",
+            rank=rank,
+            world_size=world_size,
+            dtype=dtype,
+            scale=total_processed,
+        )
+        save_identity_shards(
+            partial_run_path=index_cfg.partial_run_path,
+            dim_per_key={n: o for n, (o, _) in layer_dims.items()},
+            sub_dir="gradient_sharded",
+            rank=rank,
+            world_size=world_size,
+            dtype=dtype,
+            scale=total_processed,
+        )
         save_uncorrected_eigenvalues(
             partial_run_path=index_cfg.partial_run_path,
             eva_a_local={
@@ -232,21 +250,32 @@ def hessian_worker(
     world_size = dist.get_world_size() if dist.is_initialized() else 1
 
     if hessian_cfg.method == "foof":
-        # F_FOOF = E[aaᵀ] ⊗ I. Synthesise identity Q_G and eva_g = 1 to reuse
-        # the standard apply path.
+        # F_FOOF = E[aaᵀ] ⊗ I. Synthesise identity Q_G, eva_g = 1, and
+        # gradient_sharded = total_processed * I so the on-disk
+        # layout matches `CovarianceCollector`'s.
+
         # named_modules() returns un-stripped PEFT paths; get_submodule resolves
         # the stripped target_modules names via PEFT's __getattr__ shim.
         out_dims = {
             name: model.get_submodule(name).weight.shape[0] for name in target_modules
         }
         dtype = convert_precision_to_torch(hessian_cfg.hessian_dtype)
-        save_identity_eigen(
+        save_identity_shards(
             index_cfg.partial_run_path,
             out_dims,
             "eigen_gradient_sharded",
             rank,
             world_size,
             dtype,
+        )
+        save_identity_shards(
+            partial_run_path=index_cfg.partial_run_path,
+            dim_per_key=out_dims,
+            sub_dir="gradient_sharded",
+            rank=rank,
+            world_size=world_size,
+            dtype=dtype,
+            scale=total_processed,
         )
         eva_g = {
             name: torch.ones(d // world_size, dtype=dtype)
