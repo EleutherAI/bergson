@@ -156,6 +156,22 @@ def hessian_worker(
         target_modules = peft_target_modules
     assert target_modules is not None
 
+    def _get_target_module(name: str):
+        """Resolve a `target_modules` entry against the loaded model.
+
+        PEFT-extracted names are full paths from the wrapper top (e.g.
+        ``model.layers.X.mlp.Y.lora_A``), so ``model.get_submodule`` works
+        thanks to PEFT's ``__getattr__`` shim. Non-PEFT runs (incl. FSDP-
+        wrapped HF causal LMs) typically pass paths relative to the inner
+        ``base_model`` (e.g. ``layers.X.mlp.Y``), where the wrapper class
+        has no matching top-level attribute. Fall back to ``base_model``
+        in that case.
+        """
+        try:
+            return model.get_submodule(name)
+        except AttributeError:
+            return model.base_model.get_submodule(name)
+
     kwargs = {
         "model": model,
         "data": ds,
@@ -170,7 +186,7 @@ def hessian_worker(
 
     if hessian_cfg.method == "identity":
         layer_dims = {
-            name: tuple(model.get_submodule(name).weight.shape)
+            name: tuple(_get_target_module(name).weight.shape)
             for name in target_modules
         }
         dtype = convert_precision_to_torch(hessian_cfg.hessian_dtype)
@@ -257,7 +273,7 @@ def hessian_worker(
         # named_modules() returns un-stripped PEFT paths; get_submodule resolves
         # the stripped target_modules names via PEFT's __getattr__ shim.
         out_dims = {
-            name: model.get_submodule(name).weight.shape[0] for name in target_modules
+            name: _get_target_module(name).weight.shape[0] for name in target_modules
         }
         dtype = convert_precision_to_torch(hessian_cfg.hessian_dtype)
         save_identity_shards(
