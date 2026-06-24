@@ -1,29 +1,36 @@
 #!/usr/bin/bash
 #SBATCH --job-name=bergson_score_data_parallel
-#SBATCH --nodes=64
-#SBATCH --ntasks=64
-#SBATCH --ntasks-per-node=1
+#SBATCH --array=0-63
+#SBATCH --requeue
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
 #SBATCH --gpus-per-node=4
 #SBATCH --time=24:00:00
-#SBATCH --output=logs/bergson_score_data_parallel_%A_%N.out
-#SBATCH --error=logs/bergson_score_data_parallel_%A_%N.err
+#SBATCH --output=logs/bergson_score_%A_%a.out
+#SBATCH --error=logs/bergson_score_%A_%a.err
+
+# Embarrassingly parallel scoring: every array task processes one contiguous
+# shard of the dataset and publishes it into the same run_path. A task that
+# dies is requeued by SLURM and rebuilds only its own shard; shards that
+# already finished are skipped, so requeues are idempotent. No stitching is
+# needed afterwards — bergson reads run_path as one index.
+#
+# Check progress at any time with: bergson status runs/$RUN_NAME
 
 mkdir -p logs
 
 hf auth login --token <HUGGINGFACE_TOKEN>
 
-# Set number of nodes
-NUM_NODES=64
+NUM_SHARDS=64  # keep equal to the array size above
 RUN_NAME="bergson_score"
 
-TOTAL_EXAMPLES=100_000_000
-EXAMPLES_PER_NODE=$((TOTAL_EXAMPLES / NUM_NODES))
-
-# Export variables for the worker script
-export TOTAL_EXAMPLES
-export EXAMPLES_PER_NODE
-export NUM_NODES
-export RUN_NAME
-
-# Run worker script on each node
-srun --kill-on-bad-exit=1 --output=logs/bergson_score_%A_%t.out --error=logs/bergson_score_%A_%t.err bash score_worker.sh
+# --shard_id is inferred from SLURM_ARRAY_TASK_ID
+python -m bergson score \
+    runs/$RUN_NAME \
+    --num_shards $NUM_SHARDS \
+    --query_path runs/$QUERY_RUN_NAME \
+    --score individual \
+    --dataset NeelNanda/pile-10k \
+    --model EleutherAI/pythia-14m \
+    --token_batch_size 15500 \
+    --truncation

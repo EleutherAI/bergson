@@ -1,6 +1,7 @@
 import shutil
 import warnings
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -32,6 +33,7 @@ from bergson.config.config import (
     IndexConfig,
     ModelConfig,
 )
+from bergson.config.config_io import publish_canonical_config
 from bergson.data import (
     load_data_string,
     tokenize,
@@ -39,6 +41,7 @@ from bergson.data import (
 )
 from bergson.format import apply_format
 from bergson.gradients import GradientProcessor, Normalizer
+from bergson.sharding import make_shard_record, shard_row_range, write_shard_record
 from bergson.utils import assert_type, get_layer_list, weighted_causal_lm_ce
 from bergson.utils.utils import get_device, simple_parse_kwargs_string
 
@@ -60,6 +63,78 @@ def validate_run_path(index_cfg: IndexConfig):
             raise FileExistsError(
                 f"Run path {path} already exists. Use --overwrite to overwrite it."
             )
+
+
+def prepare_shard(command: Any, index_cfg: IndexConfig) -> bool:
+    """Prepare the run path for one shard of a sharded run.
+
+    Publishes (or verifies) the canonical ``config.yaml`` shared by all
+    shards and cleans up this shard's directories. Returns True when the
+    shard is already published and there is nothing to do, which makes
+    re-running a sharded command (e.g. a requeued SLURM array task)
+    idempotent.
+    """
+    # Pin the env-derived shard id so the per-shard config.yaml records it.
+    index_cfg.shard_id = index_cfg.resolved_shard_id
+
+    # A shard is its own single-node world. Without this, SLURM's node
+    # numbering from a surrounding multi-node launch (SLURM_NODEID > 0)
+    # would leak into DistributedConfig and stop this process from acting
+    # as rank 0 of its shard.
+    index_cfg.distributed.node_rank = 0
+
+    publish_canonical_config(command, index_cfg.run_path)
+
+    final_path = index_cfg.final_run_path
+    if final_path.exists():
+        if not index_cfg.overwrite:
+            print(
+                f"Shard {index_cfg.shard_id}/{index_cfg.num_shards} is "
+                f"already published at {final_path}; nothing to do. "
+                f"Use --overwrite to rebuild it."
+            )
+            return True
+        shutil.rmtree(final_path)
+
+    # A .part directory is incomplete by definition: a crashed or
+    # concurrent run. Its contents are deterministic, so rebuilding is safe.
+    if index_cfg.partial_run_path.exists():
+        shutil.rmtree(index_cfg.partial_run_path)
+
+    return False
+
+
+def publish_shard(index_cfg: IndexConfig, num_items: int) -> None:
+    """Atomically publish this shard's ``.part`` directory.
+
+    Writes the shard's provenance record, then renames the directory into
+    ``run_path/shards/``. The rename is atomic, so a published shard is
+    always complete.
+    """
+    record = make_shard_record(
+        index_cfg.resolved_shard_id,
+        index_cfg.num_shards,
+        index_cfg.data.split,
+        getattr(index_cfg, "shard_row_range", None),
+        num_items,
+    )
+    write_shard_record(index_cfg.partial_run_path, record)
+
+    final_path = index_cfg.final_run_path
+    try:
+        index_cfg.partial_run_path.rename(final_path)
+    except OSError:
+        # A concurrent run of the same shard (e.g. a requeued SLURM task
+        # racing its predecessor) published first. Both runs build the same
+        # data, so the published shard is complete either way.
+        if final_path.exists():
+            print(
+                f"Shard already published by a concurrent run at "
+                f"{final_path}; discarding this build."
+            )
+            shutil.rmtree(index_cfg.partial_run_path)
+        else:
+            raise
 
 
 def create_processor(
@@ -335,6 +410,24 @@ def setup_data_pipeline(
     ds = load_data_string(
         data_cfg.dataset, data_cfg.split, data_cfg.subset, data_cfg.data_kwargs
     )
+
+    # Sharded runs process one contiguous slice of the resolved split.
+    num_shards = getattr(cfg, "num_shards", 1)
+    if num_shards > 1 and data_cfg is cfg.data:
+        assert isinstance(cfg, IndexConfig)
+        if not isinstance(ds, Dataset):
+            raise ValueError("Sharded runs require a non-streaming Dataset.")
+        shard_id = cfg.resolved_shard_id
+        row_range = shard_row_range(len(ds), num_shards, shard_id)
+        ds = ds.shard(num_shards=num_shards, index=shard_id, contiguous=True)
+        print(
+            f"Shard {shard_id}/{num_shards}: processing rows "
+            f"[{row_range[0]}, {row_range[1]}) of {data_cfg.split}"
+        )
+        # Stashed on the config (not a dataclass field) so publish_shard can
+        # record the slice in this shard's shard.json.
+        setattr(cfg, "shard_row_range", row_range)
+
     tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer or cfg.model)
     max_model_length = max_tokens_for_model(tokenizer, cfg.model, cfg.revision)
 

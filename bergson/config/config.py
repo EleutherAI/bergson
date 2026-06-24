@@ -8,6 +8,8 @@ from typing import Literal
 import torch
 from simple_parsing import Serializable, field
 
+from bergson.sharding import SHARDS_DIRNAME, shard_dir_name
+
 
 @dataclass
 class DataConfig(Serializable):
@@ -451,9 +453,77 @@ class IndexConfig(AttributionConfig, Serializable):
     modules: list[str] = field(default_factory=list)
     """Modules to use for the query. If empty, all modules will be used."""
 
+    num_shards: int = 1
+    """Split the dataset into this many contiguous shards, processing only
+    `shard_id`'s slice. Each shard is an independent single-node run that
+    publishes into `run_path/shards/`; readers present the published shards
+    as one index. Incompatible with `nnode` > 1."""
+
+    shard_id: int | None = None
+    """Which shard to process when `num_shards` > 1. If unset, inferred from
+    SLURM_ARRAY_TASK_ID or SLURM_PROCID."""
+
+    def __post_init__(self):
+        super().__post_init__()
+
+        if self.num_shards < 1:
+            raise ValueError(f"num_shards must be >= 1, got {self.num_shards}")
+        if self.num_shards > 1 and self.distributed.nnode > 1:
+            raise ValueError(
+                "num_shards launches independent single-node runs and cannot "
+                "be combined with nnode > 1. Use nnode for coordinated "
+                "multi-node runs, or num_shards for embarrassingly parallel "
+                "ones, not both."
+            )
+        if self.shard_id is not None and not self.sharded:
+            raise ValueError("shard_id requires num_shards > 1")
+        if self.shard_id is not None and not 0 <= self.shard_id < self.num_shards:
+            raise ValueError(
+                f"shard_id must be in [0, {self.num_shards}), got {self.shard_id}"
+            )
+
+    @property
+    def sharded(self) -> bool:
+        """Whether this run builds one shard of a sharded index."""
+        return self.num_shards > 1
+
+    @property
+    def resolved_shard_id(self) -> int:
+        """The shard to process, from config or SLURM environment variables."""
+        if self.shard_id is not None:
+            return self.shard_id
+
+        for var in ("SLURM_ARRAY_TASK_ID", "SLURM_PROCID"):
+            if var in os.environ:
+                shard_id = int(os.environ[var])
+                if not 0 <= shard_id < self.num_shards:
+                    raise ValueError(
+                        f"{var}={shard_id} is out of range for "
+                        f"num_shards={self.num_shards}"
+                    )
+                return shard_id
+
+        raise ValueError(
+            "num_shards > 1 but no shard id found. Set it with --shard_id, "
+            "or via SLURM_ARRAY_TASK_ID/SLURM_PROCID."
+        )
+
+    @property
+    def final_run_path(self) -> Path:
+        """Where this run's finished artifacts are published."""
+        if self.sharded:
+            name = shard_dir_name(self.resolved_shard_id, self.num_shards)
+            return Path(self.run_path) / SHARDS_DIRNAME / name
+
+        return Path(self.run_path)
+
     @property
     def partial_run_path(self) -> Path:
         """Temporary path to use while writing build artifacts."""
+        if self.sharded:
+            final = self.final_run_path
+            return final.with_name(final.name + ".part")
+
         return Path(self.run_path + ".part")
 
 

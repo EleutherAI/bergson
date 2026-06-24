@@ -40,6 +40,7 @@ from bergson.utils.utils import (
 )
 from bergson.utils.worker_utils import (
     create_processor,
+    publish_shard,
     setup_data_pipeline,
     setup_model_and_peft,
 )
@@ -388,7 +389,11 @@ def score_dataset(
     )
 
     if dist_cfg.rank == 0:
-        shutil.move(index_cfg.partial_run_path, index_cfg.run_path)
+        if index_cfg.sharded:
+            assert isinstance(ds, Dataset)
+            publish_shard(index_cfg, num_items=len(ds))
+        else:
+            shutil.move(index_cfg.partial_run_path, index_cfg.run_path)
 
     if dist_cfg.world_size < index_cfg.distributed.world_size:
         parent_barrier(index_cfg.distributed)

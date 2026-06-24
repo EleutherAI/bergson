@@ -9,6 +9,8 @@ import yaml
 from torch import Tensor
 from transformers.pytorch_utils import Conv1D as HFConv1D
 
+from bergson.sharding import is_sharded_run, published_shard_dirs
+
 NORMALIZER_TYPES: dict[str, type["Normalizer"]] = {}
 
 
@@ -142,6 +144,15 @@ class GradientProcessor:
         Load the normalizers and hessians from a file.
         """
         path = Path(path)
+
+        # Sharded runs store identical processor artifacts in every shard;
+        # read them from the first published one.
+        if not (path / "processor_config.yaml").exists() and is_sharded_run(path):
+            shard_dirs = published_shard_dirs(path, allow_partial=True)
+            if not shard_dirs:
+                raise FileNotFoundError(f"No published shards in {path}")
+            path = shard_dirs[0]
+
         cfg_path = path / "processor_config.yaml"
         norm_path = path / "normalizers.pth"
 

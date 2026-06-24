@@ -26,6 +26,7 @@ from .process_grads import mix_autocorrelation_matrices
 from .query.attributor import Attributor
 from .query.faiss_index import FaissConfig
 from .score.scorer import Scorer
+from .sharding import ShardedMemmap, shard_status
 from .utils.gradcheck import FiniteDiff
 from .utils.load_from_optimizer import load_from_optimizer
 
@@ -54,5 +55,7 @@ __all__ = [
     "Scorer",
     "ScoreConfig",
     "QueryConfig",
+    "ShardedMemmap",
+    "shard_status",
     "mix_autocorrelation_matrices",
 ]

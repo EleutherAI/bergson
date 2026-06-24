@@ -112,3 +112,39 @@ runs hessian fitting, build, and score as a single pipeline (see :doc:`trackstar
        --query.dataset NeelNanda/pile-10k \
        --query.truncation \
        --projection_dim 16
+
+Sharded (data-parallel) runs
+----------------------------
+
+``build`` and ``score`` are embarrassingly parallel across the dataset, and
+both accept ``--num_shards``/``--shard_id`` to split a run into independent
+single-node jobs that share one ``run_path``:
+
+.. code-block:: bash
+
+   # Typically launched as a SLURM job array (sbatch --array=0-63 --requeue);
+   # --shard_id is inferred from SLURM_ARRAY_TASK_ID when unset.
+   bergson build runs/my-index \
+       --model EleutherAI/pythia-14m \
+       --dataset NeelNanda/pile-10k \
+       --truncation \
+       --num_shards 64 --shard_id $SLURM_ARRAY_TASK_ID
+
+Each shard processes one contiguous slice of the dataset, writes into
+``run_path/shards/<id>-of-<n>.part``, and atomically renames the directory
+into place when it finishes. A crashed shard is rebuilt by re-running the
+same command; a finished shard is skipped, so requeued jobs are idempotent.
+The first shard to arrive writes a canonical ``run_path/config.yaml`` and
+every other shard verifies its configuration against it.
+
+No stitching is needed afterwards: ``load_gradients``, ``load_scores``,
+``Attributor``, and friends read the published shards as one concatenated
+index. Inspect progress with:
+
+.. code-block:: bash
+
+   bergson status runs/my-index
+
+See ``examples/slurm/data_parallel_score.sh`` for a complete job-array
+script. Sharded runs do not support simultaneous Hessian estimation or
+gradient aggregation; compute those separately.

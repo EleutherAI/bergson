@@ -24,6 +24,7 @@ from bergson.utils.utils import (
 )
 from bergson.utils.worker_utils import (
     create_processor,
+    publish_shard,
     setup_data_pipeline,
     setup_model_and_peft,
 )
@@ -156,6 +157,12 @@ def build(
     if index_cfg.debug:
         setup_reproducibility()
 
+    if index_cfg.sharded and preprocess_cfg.aggregation != "none":
+        raise ValueError(
+            "Sharded runs do not support gradient aggregation; per-shard "
+            "aggregates would be concatenated instead of summed."
+        )
+
     index_cfg.partial_run_path.mkdir(parents=True, exist_ok=True)
 
     ds, _ = setup_data_pipeline(index_cfg)
@@ -175,7 +182,10 @@ def build(
     )
 
     if dist_cfg.rank == 0:
-        shutil.move(index_cfg.partial_run_path, index_cfg.run_path)
+        if index_cfg.sharded:
+            publish_shard(index_cfg, num_items=len(ds))
+        else:
+            shutil.move(index_cfg.partial_run_path, index_cfg.run_path)
 
     if dist_cfg.world_size < index_cfg.distributed.world_size:
         parent_barrier(index_cfg.distributed)

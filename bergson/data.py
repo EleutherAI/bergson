@@ -26,6 +26,7 @@ from numpy.typing import DTypeLike, NDArray
 from transformers import PreTrainedTokenizerFast, logging
 
 from .config import DataConfig
+from .sharding import ShardedMemmap, is_sharded_run, published_shard_dirs
 from .utils.utils import (
     assert_type,
     simple_parse_kwargs_string,
@@ -129,7 +130,7 @@ def create_token_index(
 
 def load_token_gradients(
     root_dir: Path | str,
-) -> tuple[np.memmap, np.ndarray, np.ndarray]:
+) -> tuple[np.memmap | ShardedMemmap, np.ndarray, np.ndarray]:
     """Load per-token gradients stored by :func:`create_token_index`.
 
     Returns
@@ -140,6 +141,19 @@ def load_token_gradients(
         shape ``(num_token_grads[i], total_grad_dim)``.
     """
     root_dir = Path(root_dir)
+
+    # Sharded runs: concatenate the per-shard token indexes.
+    if not (root_dir / "token_gradients.bin").exists() and is_sharded_run(root_dir):
+        parts = [
+            load_token_gradients(shard_dir)
+            for shard_dir in published_shard_dirs(root_dir)
+        ]
+        mmap = ShardedMemmap([mmap for mmap, _, _ in parts])
+        num_token_grads = np.concatenate([counts for _, counts, _ in parts])
+        offsets = np.zeros(len(num_token_grads) + 1, dtype=np.int64)
+        np.cumsum(num_token_grads, out=offsets[1:])
+        return mmap, num_token_grads, offsets
+
     with (root_dir / "info.json").open("r") as f:
         info = json.load(f)
 
@@ -487,9 +501,27 @@ def load_data_string(
     return ds
 
 
-def load_gradients(root_dir: Path | str, structured: bool = True) -> np.memmap:
-    """Map the structured gradients stored in `root_dir` into memory."""
+def load_gradients(
+    root_dir: Path | str,
+    structured: bool = True,
+    allow_partial: bool = False,
+) -> np.memmap | ShardedMemmap:
+    """Map the structured gradients stored in `root_dir` into memory.
+
+    For sharded runs (a ``shards/`` directory of per-shard indexes), the
+    published shards are presented as one logically concatenated index.
+    ``allow_partial`` permits reading a sharded run whose shards have not
+    all been published yet.
+    """
     root_dir = Path(root_dir)
+    if not (root_dir / "gradients.bin").exists() and is_sharded_run(root_dir):
+        return ShardedMemmap(
+            [
+                load_gradients(shard_dir, structured=structured)
+                for shard_dir in published_shard_dirs(root_dir, allow_partial)
+            ]
+        )
+
     with (root_dir / "info.json").open("r") as f:
         info = json.load(f)
 
@@ -542,14 +574,19 @@ def load_gradient_dataset(root_dir: Path, structured: bool = True) -> Dataset:
     if (root_dir / "data.hf").exists():
         return load_shard(root_dir)
 
+    if is_sharded_run(root_dir):
+        shard_paths = published_shard_dirs(root_dir)
+    else:
+        shard_paths = [path for path in sorted(root_dir.iterdir()) if path.is_dir()]
+
     # Flatten indices to avoid CPU OOM
     return concatenate_datasets(
-        [load_shard(path) for path in sorted(root_dir.iterdir()) if path.is_dir()]
+        [load_shard(path) for path in shard_paths]
     ).flatten_indices()
 
 
 class Scores:
-    def __init__(self, mmap: np.memmap, info: dict[str, Any]):
+    def __init__(self, mmap: np.memmap | ShardedMemmap, info: dict[str, Any]):
         self.mmap = mmap
         self.info = info
         self.num_scores = info["num_scores"]
@@ -573,9 +610,23 @@ class Scores:
         return all(np.all(self.mmap[f"written_{i}"]) for i in range(self.num_scores))
 
 
-def load_scores(path: Path) -> Scores:
+def load_scores(path: Path, allow_partial: bool = False) -> Scores:
     bin_path = path / "scores.bin"
     info_path = path / "info.json"
+
+    # Sharded runs: present the per-shard scores as one concatenated array.
+    if not bin_path.exists() and is_sharded_run(path):
+        shards = [
+            load_scores(shard_dir)
+            for shard_dir in published_shard_dirs(path, allow_partial)
+        ]
+        if len({shard.num_scores for shard in shards}) != 1:
+            raise ValueError(f"Shards of {path} disagree on num_scores")
+
+        mmap = ShardedMemmap([shard.mmap for shard in shards])
+        info = dict(shards[0].info)
+        info["num_items"] = len(mmap)
+        return Scores(mmap, info)
 
     with open(info_path, "r") as f:
         info = json.load(f)

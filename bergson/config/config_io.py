@@ -1,3 +1,4 @@
+import os
 import subprocess
 from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError
@@ -11,6 +12,11 @@ import yaml
 from bergson.utils.logger import get_logger
 
 CONFIG_FILENAME = "config.yaml"
+
+# Per-invocation identity, not run configuration: these index_cfg fields may
+# differ between the shards of one sharded run and are stripped from the
+# canonical config.yaml shared by all shards.
+EPHEMERAL_INDEX_FIELDS = ("shard_id", "overwrite")
 
 
 def _resolve(path: str | Path) -> Path:
@@ -76,6 +82,64 @@ def save_run_config(command: Any, run_path: str | Path):
     """
     step = {(type(command).__name__).lower(): command.to_dict()}
     _write([step], Path(run_path) / CONFIG_FILENAME)
+
+
+def canonical_steps(command: Any) -> list[dict[str, Any]]:
+    """One-step ``steps`` list with per-invocation identity stripped.
+
+    All shards of a sharded run must produce the same canonical steps, so
+    fields that legitimately differ between shards (``shard_id``,
+    ``overwrite``, ``distributed.node_rank``) are removed.
+    """
+    # Round-trip through YAML so the comparison in publish_canonical_config
+    # sees the same plain types a reread of the file would produce.
+    steps = yaml.safe_load(
+        yaml.safe_dump([{(type(command).__name__).lower(): command.to_dict()}])
+    )
+
+    for parsed_step in steps:
+        for cmd_dict in parsed_step.values():
+            index_cfg = (cmd_dict or {}).get("index_cfg")
+            if not index_cfg:
+                continue
+            for field in EPHEMERAL_INDEX_FIELDS:
+                index_cfg.pop(field, None)
+            (index_cfg.get("distributed") or {}).pop("node_rank", None)
+
+    return steps
+
+
+def publish_canonical_config(command: Any, run_path: str | Path):
+    """Write the ``config.yaml`` shared by all shards of a sharded run.
+
+    The first shard to arrive writes it atomically; every later shard
+    verifies its own canonical config matches and errors out otherwise,
+    so shards built from different configurations can never mix in one
+    run_path.
+    """
+    path = Path(run_path) / CONFIG_FILENAME
+    steps = canonical_steps(command)
+
+    if path.exists():
+        existing = read_config(path)
+        if existing["steps"] != steps:
+            raise ValueError(
+                f"{path} was written by a run with a different configuration. "
+                f"Refusing to add shards to it; use a fresh run_path or "
+                f"rerun with the original configuration."
+            )
+        return
+
+    doc: dict[str, Any] = {"steps": steps, "metadata": make_metadata()}
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Concurrent shards may race to create the file; writing a temp file and
+    # renaming it into place is atomic, and every racer writes identical
+    # steps, so last-writer-wins is safe.
+    tmp_path = path.with_name(f".{CONFIG_FILENAME}.{os.getpid()}.tmp")
+    with tmp_path.open("w") as f:
+        yaml.safe_dump(doc, f, sort_keys=False)
+    os.rename(tmp_path, path)
 
 
 def save_pipeline_config(steps: list[tuple[str, Any]], run_path: str | Path | None):

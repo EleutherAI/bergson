@@ -8,7 +8,7 @@ corresponding CLI entrypoint.
 
 from dataclasses import dataclass
 
-from simple_parsing import Serializable
+from simple_parsing import Serializable, field
 
 from ..build import build
 from ..config.config import (
@@ -31,7 +31,7 @@ from ..magic import MagicConfig, run_magic
 from ..process_grads import mix_autocorrelation_matrices
 from ..query.query_index import query
 from ..score.score import score_dataset
-from ..utils.worker_utils import validate_run_path
+from ..utils.worker_utils import prepare_shard, validate_run_path
 
 
 @dataclass
@@ -51,6 +51,12 @@ class ApproxUnrolling(Serializable):
 
     def execute(self):
         from ..approx_unrolling.pipeline import approx_unrolling_pipeline
+
+        if self.index_cfg.sharded:
+            raise ValueError(
+                "approx_unrolling does not support sharded runs yet; "
+                "shard the build and score steps individually."
+            )
 
         save_run_config(self, self.index_cfg.run_path)
         approx_unrolling_pipeline(
@@ -92,7 +98,17 @@ class Build(Serializable):
                 f"{self.hessian_cfg.method}."
             )
 
-        validate_run_path(self.index_cfg)
+        if self.index_cfg.sharded:
+            if self.hessian_cfg is not None:
+                raise ValueError(
+                    "Sharded builds do not support simultaneous Hessian "
+                    "estimation; Hessian factors cannot be merged across "
+                    "independent shards yet. Run `bergson hessian` separately."
+                )
+            if prepare_shard(self, self.index_cfg):
+                return
+        else:
+            validate_run_path(self.index_cfg)
 
         save_run_config(self, self.index_cfg.partial_run_path)
         build(self.index_cfg, self.preprocess_cfg, self.hessian_cfg)
@@ -115,6 +131,12 @@ class Ekfac(Serializable):
     def execute(self):
         from ..hessians.pipeline import hessian_pipeline
 
+        if self.index_cfg.sharded:
+            raise ValueError(
+                "ekfac does not support sharded runs yet; "
+                "shard the build and score steps individually."
+            )
+
         save_run_config(self, self.index_cfg.run_path)
         hessian_pipeline(
             self.index_cfg,
@@ -134,6 +156,11 @@ class Hessian(Serializable):
 
     def execute(self):
         """Compute Hessian approximation."""
+        if self.index_cfg.sharded:
+            raise ValueError(
+                "hessian does not support sharded runs; Hessian factors "
+                "cannot be merged across independent shards yet."
+            )
 
         validate_run_path(self.index_cfg)
 
@@ -197,6 +224,12 @@ class Reduce(Serializable):
 
     def execute(self):
         """Reduce a gradient index."""
+        if self.index_cfg.sharded:
+            raise ValueError(
+                "reduce does not support sharded runs; per-shard aggregates "
+                "would be concatenated instead of summed."
+            )
+
         if self.index_cfg.projection_dim != 0:
             print(f"Using a projection dimension of {self.index_cfg.projection_dim}. ")
 
@@ -222,7 +255,12 @@ class Score(Serializable):
         if self.index_cfg.projection_dim != 0:
             print(f"Using a projection dimension of {self.index_cfg.projection_dim}. ")
 
-        validate_run_path(self.index_cfg)
+        if self.index_cfg.sharded:
+            if prepare_shard(self, self.index_cfg):
+                return
+        else:
+            validate_run_path(self.index_cfg)
+
         save_run_config(self, self.index_cfg.partial_run_path)
         score_dataset(self.index_cfg, self.score_cfg, self.preprocess_cfg)
 
@@ -238,6 +276,12 @@ class Trackstar(Serializable):
     def execute(self):
         from .trackstar import trackstar
 
+        if self.index_cfg.sharded:
+            raise ValueError(
+                "trackstar does not support sharded runs yet; "
+                "shard the build and score steps individually."
+            )
+
         save_run_config(self, self.index_cfg.run_path)
         trackstar(self.index_cfg, self.trackstar_cfg)
 
@@ -249,6 +293,32 @@ class Train(TrainingConfig):
     def execute(self):
         """Train the model."""
         run_magic(self)
+
+
+@dataclass
+class Status(Serializable):
+    """Report the progress of a sharded run: which shards are published,
+    in progress, or missing."""
+
+    run_path: str = field(positional=True)
+
+    def execute(self):
+        """Print the shard inventory of a run path."""
+        from ..sharding import shard_status
+
+        published, partial, num_shards = shard_status(self.run_path)
+        if num_shards is None:
+            print(f"{self.run_path} is not a sharded run.")
+            return
+
+        missing = sorted(set(range(num_shards)) - published.keys() - partial.keys())
+        print(f"{self.run_path}: {len(published)}/{num_shards} shards published")
+        if partial:
+            print(f"  in progress or crashed: {sorted(partial)}")
+        if missing:
+            print(f"  not started: {missing}")
+        if not partial and not missing:
+            print("  run complete")
 
 
 @dataclass

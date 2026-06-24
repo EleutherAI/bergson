@@ -13,6 +13,7 @@ from tqdm import tqdm
 
 from bergson.config.config import FaissConfig
 from bergson.process_grads import precondition_flat_grads
+from bergson.sharding import is_sharded_run, published_shard_dirs
 
 if TYPE_CHECKING:
     import faiss  # noqa: F401  # pyright: ignore[reportMissingImports]
@@ -103,6 +104,9 @@ def gradients_loader(root_dir: Path):
 
     if (root_dir / "info.json").exists():
         yield load_shard(root_dir)
+    elif is_sharded_run(root_dir):
+        for path in published_shard_dirs(root_dir):
+            yield load_shard(path)
     else:
         for path in sorted(root_dir.iterdir()):
             if "shard" in path.name:
@@ -218,6 +222,11 @@ class FaissIndex:
         # Write the gradients into an on-disk FAISS index
         if (gradients_path / "info.json").exists():
             info_paths = [gradients_path / "info.json"]
+        elif is_sharded_run(gradients_path):
+            info_paths = [
+                shard_path / "info.json"
+                for shard_path in published_shard_dirs(gradients_path)
+            ]
         else:
             info_paths = [
                 shard_path / "info.json"
