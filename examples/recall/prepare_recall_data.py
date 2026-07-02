@@ -168,8 +168,15 @@ def main():
     rng.shuffle(train_rows)
     train_ds = Dataset.from_list(train_rows)
 
-    # Sample queries from the kept facts and pre-tokenize them.
-    query_indices = rng.sample(range(len(facts)), run_cfg.num_queries)
+    # Sample queries from the kept facts and pre-tokenize them. With an
+    # asymmetric-answers dataset, only rows whose statement shares no surface
+    # form with the answer are eligible (asym column, see data/cvdb.py).
+    if "asym" in facts.column_names:
+        eligible = [i for i, asym in enumerate(facts["asym"]) if asym]
+        print(f"Sampling queries from {len(eligible)}/{len(facts)} asym facts")
+    else:
+        eligible = range(len(facts))
+    query_indices = rng.sample(eligible, run_cfg.num_queries)
     query_rows = []
     for i in query_indices:
         row = facts[i]
