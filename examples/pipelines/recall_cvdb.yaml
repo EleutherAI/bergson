@@ -44,8 +44,9 @@ steps:
         model: runs/recall/train/hf_model
         token_batch_size: 1024
         # Per-example fp32 gradients for each batch doc sit in GPU memory
-        # alongside one bf16 gradient per query; keep batches small.
-        max_batch_size: 16
+        # alongside one bf16 gradient per query (128 queries = 27GB); larger
+        # batches OOM a 48GB GPU during scoring.
+        max_batch_size: 8
         # The LM head is tied to the embeddings; exclude it like the other
         # EK-FAC examples.
         filter_modules: lm_head
