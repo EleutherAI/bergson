@@ -84,12 +84,16 @@ class EkfacApplicator:
         with open(os.path.join(self.gradient_path, "info.json")) as f:
             info = json.load(f)
 
-        grad_buffer = create_index(
-            Path(self.cfg.run_path),
-            num_grads=info["num_grads"],
-            grad_sizes=grad_sizes,
-            dtype=np.float32,
-        )
+        # Every rank computes the full result (the sharded ops broadcast and
+        # accumulate), so only the main rank writes it out.
+        grad_buffer = None
+        if self.rank == 0:
+            grad_buffer = create_index(
+                Path(self.cfg.run_path),
+                num_grads=info["num_grads"],
+                grad_sizes=grad_sizes,
+                dtype=np.float32,
+            )
 
         num_grads = info["num_grads"]
         chunk_size = self.cfg.query_chunk_size or num_grads
@@ -160,17 +164,22 @@ class EkfacApplicator:
             self.logger.debug("Finished H^{-1} G = Q_S @ (G' / lambda) @ Q_A^T")
 
             torch.cuda.synchronize()
-            for k, v in transformed_gradients.items():
-                grad_buffer[k][start:end] = (
-                    v.to(device="cpu", non_blocking=True).flatten(1).numpy()
-                )
+            if grad_buffer is not None:
+                for k, v in transformed_gradients.items():
+                    grad_buffer[k][start:end] = (
+                        v.to(device="cpu", non_blocking=True).flatten(1).numpy()
+                    )
 
             self.logger.info(f"Transformed queries {start}:{end} / {num_grads}")
             del transformed_gradients
             gc.collect()
 
         del eigen_a, eigen_g, lambda_factor
-        grad_buffer.flush()
+        if grad_buffer is not None:
+            grad_buffer.flush()
+        if dist.is_initialized():
+            # Ranks read the index back in the score step; wait for the write.
+            dist.barrier()
 
         self.logger.info(f"Saved IVHP gradients to {self.cfg.run_path}")
 
