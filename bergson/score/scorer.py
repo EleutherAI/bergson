@@ -67,11 +67,22 @@ class Scorer:
         self.writer = writer
         self.index_transform = index_transform
 
-        # Pre-transpose for scoring: [total_dim, n_queries]
-        q_list = [
-            query_grads[m].to(device=self.device, dtype=self.dtype) for m in modules
-        ]
-        self.query_grads_t = torch.cat(q_list, dim=-1).T
+        # Pre-transpose for scoring: [total_dim, n_queries]. Preallocate and
+        # copy module by module rather than torch.cat, which would briefly
+        # hold two full copies of the query gradients on-device (tens of GB
+        # for per-query scoring).
+        n_queries = query_grads[modules[0]].shape[0]
+        widths = [query_grads[m].shape[-1] for m in modules]
+        buffer = torch.empty(
+            (n_queries, sum(widths)), device=self.device, dtype=self.dtype
+        )
+        offset = 0
+        for m, width in zip(modules, widths):
+            buffer[:, offset : offset + width] = query_grads[m].to(
+                device=self.device, dtype=self.dtype
+            )
+            offset += width
+        self.query_grads_t = buffer.T
 
     def __call__(
         self,

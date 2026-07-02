@@ -197,7 +197,10 @@ def create_scorer(
         query_grads,
         score_cfg.modules,
         unit_normalize=unit_normalize,
-        device=device,
+        # Keep untransformed query gradients on the CPU: the Scorer stages
+        # them into its on-device buffer module by module, so a full extra
+        # on-device copy here would double the peak memory.
+        device=device if hessians else torch.device("cpu"),
         aggregate_grads=aggregation,
         normalize_aggregated_grad=normalize_aggregated_grad,
     )
