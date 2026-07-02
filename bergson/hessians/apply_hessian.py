@@ -29,6 +29,10 @@ class EkfacConfig:
     `HessianConfig.ev_correction=True`."""
     debug: bool = False
     lambda_damp_factor: float = 0.1
+    query_chunk_size: int = 16
+    """Number of query gradients to transform at once. Every rank holds
+    roughly two full fp32 model gradients per chunk row in GPU memory, so
+    this bounds peak memory independently of the query count."""
 
 
 class EkfacApplicator:
@@ -87,74 +91,85 @@ class EkfacApplicator:
             dtype=np.float32,
         )
 
+        num_grads = info["num_grads"]
+        chunk_size = self.cfg.query_chunk_size or num_grads
         self.logger.info(
-            f"Loaded gradients for {len(mmap)} queries and computing IVHP..."
+            f"Loaded gradients for {num_grads} queries and computing IVHP "
+            f"in chunks of {chunk_size}..."
         )
 
-        # Forward rotation into eigenbasis: Q_S^T @ G @ Q_A
-        transformed_gradients: dict[str, Tensor] = {}
-        for k, v in eigen_a.items():
-            gradients_noi = torch.from_numpy(mmap[k][:]).to(
-                device=self.device, dtype=torch.float32
-            )
-            gradients_noi = gradients_noi.view(
-                -1, eigen_g[k].shape[1], eigen_a[k].shape[1]
-            )
-            transformed_gradients[k] = self.sharded_computer._matmul(
-                vector_nsa=gradients_noi, matrix_cb=v
-            )
+        # Process the queries in chunks: every rank holds ~two full fp32
+        # model gradients per chunk row, so this bounds peak GPU memory
+        # independently of the query count. All ranks iterate chunks and
+        # modules in the same order, as the sharded ops broadcast internally.
+        for start in range(0, num_grads, chunk_size):
+            end = min(start + chunk_size, num_grads)
 
-        self.logger.debug("Finished G @ Q_A")
-
-        for k, v in eigen_g.items():
-            transformed_gradients[k] = self.sharded_computer._matmul(
-                vector_nsa=transformed_gradients[k].transpose(-2, -1), matrix_cb=v
-            ).transpose(-2, -1)
-
-        self.logger.debug("Finished G' = Q_S^T @ G @ Q_A")
-
-        # Apply eigenvalue function in eigenbasis (default = damped inverse).
-        for k, v in lambda_factor.items():
-            if self.apply_fn is None:
-                self.sharded_computer._hadamard(
-                    matrix_noi=transformed_gradients[k],
-                    lambda_ci=v,
-                    lambda_damp_factor=self.cfg.lambda_damp_factor,
+            # Forward rotation into eigenbasis: Q_S^T @ G @ Q_A
+            transformed_gradients: dict[str, Tensor] = {}
+            for k, v in eigen_a.items():
+                gradients_noi = torch.from_numpy(mmap[k][start:end]).to(
+                    device=self.device, dtype=torch.float32
                 )
-            else:
-                self.sharded_computer._apply_eigfn(
-                    matrix_noi=transformed_gradients[k],
-                    lambda_ci=v,
-                    fn=self.apply_fn,
+                gradients_noi = gradients_noi.view(
+                    -1, eigen_g[k].shape[1], eigen_a[k].shape[1]
+                )
+                transformed_gradients[k] = self.sharded_computer._matmul(
+                    vector_nsa=gradients_noi, matrix_cb=v
                 )
 
-        self.logger.debug("Finished G' / lambda")
-        del lambda_factor
-        gc.collect()
+            self.logger.debug("Finished G @ Q_A")
 
-        # Rotate back to parameter space: Q_S @ G' @ Q_A^T
-        for k, v in eigen_g.items():
-            transformed_gradients[k] = self.sharded_computer._transpose_matmul(
-                vector_nsa=transformed_gradients[k].transpose(-2, -1), matrix_cb=v
-            ).transpose(-2, -1)
+            for k, v in eigen_g.items():
+                transformed_gradients[k] = self.sharded_computer._matmul(
+                    vector_nsa=transformed_gradients[k].transpose(-2, -1), matrix_cb=v
+                ).transpose(-2, -1)
 
-        self.logger.debug("Finished Q_S @ G'")
-        del eigen_g
-        gc.collect()
+            self.logger.debug("Finished G' = Q_S^T @ G @ Q_A")
 
-        for k, v in eigen_a.items():
-            transformed_gradients[k] = self.sharded_computer._transpose_matmul(
-                vector_nsa=transformed_gradients[k], matrix_cb=v
-            )
+            # Apply eigenvalue function in eigenbasis (default = damped inverse).
+            for k, v in lambda_factor.items():
+                if self.apply_fn is None:
+                    self.sharded_computer._hadamard(
+                        matrix_noi=transformed_gradients[k],
+                        lambda_ci=v,
+                        lambda_damp_factor=self.cfg.lambda_damp_factor,
+                    )
+                else:
+                    self.sharded_computer._apply_eigfn(
+                        matrix_noi=transformed_gradients[k],
+                        lambda_ci=v,
+                        fn=self.apply_fn,
+                    )
 
-        self.logger.debug("Finished H^{-1} G = Q_S @ (G' / lambda) @ Q_A^T")
-        del eigen_a
-        gc.collect()
+            self.logger.debug("Finished G' / lambda")
 
-        torch.cuda.synchronize()
-        for k, v in transformed_gradients.items():
-            grad_buffer[k][:] = v.to(device="cpu", non_blocking=True).flatten(1).numpy()
+            # Rotate back to parameter space: Q_S @ G' @ Q_A^T
+            for k, v in eigen_g.items():
+                transformed_gradients[k] = self.sharded_computer._transpose_matmul(
+                    vector_nsa=transformed_gradients[k].transpose(-2, -1), matrix_cb=v
+                ).transpose(-2, -1)
 
+            self.logger.debug("Finished Q_S @ G'")
+
+            for k, v in eigen_a.items():
+                transformed_gradients[k] = self.sharded_computer._transpose_matmul(
+                    vector_nsa=transformed_gradients[k], matrix_cb=v
+                )
+
+            self.logger.debug("Finished H^{-1} G = Q_S @ (G' / lambda) @ Q_A^T")
+
+            torch.cuda.synchronize()
+            for k, v in transformed_gradients.items():
+                grad_buffer[k][start:end] = (
+                    v.to(device="cpu", non_blocking=True).flatten(1).numpy()
+                )
+
+            self.logger.info(f"Transformed queries {start}:{end} / {num_grads}")
+            del transformed_gradients
+            gc.collect()
+
+        del eigen_a, eigen_g, lambda_factor
         grad_buffer.flush()
 
         self.logger.info(f"Saved IVHP gradients to {self.cfg.run_path}")
