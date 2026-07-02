@@ -23,6 +23,7 @@ Example:
 """
 
 import csv
+import re
 from dataclasses import dataclass
 from dataclasses import field as dc_field
 from pathlib import Path
@@ -152,20 +153,29 @@ def summarize(
 
 
 def lexical_baseline_scores(train_ds, query_ds) -> np.ndarray:
-    """TF-IDF token-overlap scores: (num_train, num_queries)."""
-    doc_tokens = [set(text.lower().split()) for text in train_ds["text"]]
+    """TF-IDF token-overlap scores: (num_train, num_queries).
+
+    Note this is a strong foil, not a straw man: queries contain the answer
+    string (the gradient is of the answer tokens), and the entailing
+    statement states that answer verbatim, so answer-token overlap alone
+    solves within-entity discrimination on this dataset."""
+
+    def tokens(text: str) -> set[str]:
+        return set(re.findall(r"[a-z0-9<|>]+", text.lower()))
+
+    doc_tokens = [tokens(text) for text in train_ds["text"]]
     num_docs = len(doc_tokens)
 
     doc_freq: dict[str, int] = {}
     postings: dict[str, list[int]] = {}
-    for i, tokens in enumerate(doc_tokens):
-        for tok in tokens:
+    for i, doc_toks in enumerate(doc_tokens):
+        for tok in doc_toks:
             doc_freq[tok] = doc_freq.get(tok, 0) + 1
             postings.setdefault(tok, []).append(i)
 
     scores = np.zeros((num_docs, len(query_ds)))
     for q, text in enumerate(query_ds["text"]):
-        for tok in set(text.lower().split()):
+        for tok in tokens(text):
             if tok in postings:
                 idf = np.log(num_docs / doc_freq[tok])
                 scores[postings[tok], q] += idf
