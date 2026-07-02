@@ -320,6 +320,11 @@ class TrainingConfig(AttributionConfig, Serializable):
     resume: bool = False
     """Resume a previously interrupted run from the last checkpoint."""
 
+    export_hf_model: bool = False
+    """Save the post-training model in HuggingFace format to
+    ``run_path/hf_model`` so it can be loaded by attribution commands
+    (e.g. as ``IndexConfig.model``). Not supported under FSDP."""
+
     wandb_project: str = ""
     """Weights & Biases project name. If set, logs training loss to W&B."""
 
@@ -631,6 +636,25 @@ class HessianPipelineConfig:
 
     lambda_damp_factor: float = 0.1
     """Damping factor for EKFAC eigenvalue correction."""
+
+    lambda_damp_factors: list[float] = field(default_factory=list)
+    """When set, sweep these damping factors: the query gradients and Hessian
+    factors are computed once, and the (cheap) inverse-apply and score steps
+    run once per factor, writing to ``{method}_query_lam_{x}`` and
+    ``scores_lam_{x}`` subdirectories. Overrides ``lambda_damp_factor``."""
+
+    query_aggregation: Literal["mean", "none"] = "mean"
+    """How to reduce the query gradients. ``mean`` attributes against the
+    mean query gradient (one score per training example); ``none`` keeps one
+    gradient per query example (``score`` then writes one score column per
+    query). With ``none``, apply and score hold all query gradients in
+    memory, so keep the query dataset small (~hundreds of examples)."""
+
+    cleanup_transformed_query: bool = False
+    """Delete each transformed query directory after its scores are written.
+    The transformed queries are full-parameter fp32 gradients (num_queries x
+    num_params x 4 bytes per damping factor), which dominates the disk
+    footprint of a damping sweep."""
 
     resume: bool = False
     """Skip pipeline steps whose output directory already exists."""

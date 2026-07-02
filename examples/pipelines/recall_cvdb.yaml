@@ -1,0 +1,73 @@
+# Factual-entailment recall evaluation on the CVDB natural-statements corpus.
+#
+# Trains SmolLM2-135M on natural-language fact statements (optionally mixed
+# with random pretraining documents), then computes per-query EK-FAC
+# attribution scores of the training data against QA queries entailed by
+# those facts, sweeping several damping factors. The expensive steps (query
+# gradients, KFAC factors, eigenvalue correction) are computed once; only the
+# inverse-apply and score steps run per damping factor.
+#
+# 1. Prepare the datasets (see the script for mixing/scale options):
+#      python -m examples.recall.prepare_recall_data runs/recall/data \
+#          --num_entities 2000 --num_queries 128 --num_random 8000
+# 2. Run this pipeline:
+#      bergson examples/pipelines/recall_cvdb.yaml
+# 3. Evaluate recall@k of each damping factor's scores:
+#      python -m examples.recall.recall_eval runs/recall/ekfac \
+#          --train_dataset runs/recall/data/train \
+#          --query_dataset runs/recall/data/query
+#
+# Outputs: runs/recall/ekfac/scores_lam_*/ (one (num_train, num_queries)
+# score memmap per damping factor) and runs/recall/ekfac/recall.csv.
+
+run_path: runs/recall
+
+steps:
+  - train:
+      run_path: runs/recall/train
+      overwrite: true
+      model: HuggingFaceTB/SmolLM2-135M
+      export_hf_model: true
+      batch_size: 32
+      num_epochs: 3
+      lr_schedule:
+        lr: 1.0e-4
+      data:
+        dataset: runs/recall/data/train
+        split: train
+        truncation: true
+
+  - ekfac:
+      index_cfg:
+        run_path: runs/recall/ekfac
+        overwrite: true
+        model: runs/recall/train/hf_model
+        token_batch_size: 1024
+        # Per-example fp32 gradients for each batch doc sit in GPU memory
+        # alongside one bf16 gradient per query; keep batches small.
+        max_batch_size: 16
+        # The LM head is tied to the embeddings; exclude it like the other
+        # EK-FAC examples.
+        filter_modules: lm_head
+        data:
+          dataset: runs/recall/data/train
+          split: train
+          truncation: true
+      hessian_cfg:
+        method: kfac
+        ev_correction: true
+      score_cfg:
+        # bf16 halves the GPU memory needed to hold one gradient per query.
+        precision: bf16
+      preprocess_cfg: {}
+      hessian_pipeline_cfg:
+        # One gradient (and one score column) per query example.
+        query_aggregation: none
+        lambda_damp_factors: [1.0e-3, 1.0e-2, 1.0e-1, 1.0]
+        # Transformed queries are num_queries full fp32 model gradients per
+        # damping factor; delete each one once its scores are written.
+        cleanup_transformed_query: true
+        query:
+          dataset: runs/recall/data/query
+          split: train
+          truncation: true

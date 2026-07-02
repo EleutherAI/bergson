@@ -22,6 +22,7 @@ from torch.distributed._functional_collectives import (
 from torch.distributed.tensor import init_device_mesh
 from torchopt.pytree import tree_iter
 from tqdm import tqdm
+from transformers import AutoTokenizer
 from transformers.utils.logging import (
     disable_progress_bar as hf_disable_pbar,
 )
@@ -132,6 +133,32 @@ class CSVWriter:
     def close(self):
         if self._file is not None:
             self._file.close()
+
+
+def export_hf_model(
+    run_cfg: TrainingConfig,
+    model: torch.nn.Module,
+    fwd_state: TrainerState,
+    global_rank: int,
+) -> None:
+    """Save the post-training model in HuggingFace format to ``run_path/hf_model``.
+
+    ``fwd_state.activate`` swaps the trained parameters into ``model`` so
+    ``save_pretrained`` writes the trained weights. Only the main rank writes.
+    Not supported under FSDP, where parameters are sharded as DTensors.
+    """
+    if global_rank != 0:
+        return
+    if run_cfg.fsdp:
+        print("export_hf_model: skipping, not supported under FSDP.")
+        return
+
+    out_dir = os.path.join(run_cfg.run_path, "hf_model")
+    with fwd_state.activate(model):
+        model.save_pretrained(out_dir)  # type: ignore[attr-defined]
+    tokenizer = AutoTokenizer.from_pretrained(run_cfg.tokenizer or run_cfg.model)
+    tokenizer.save_pretrained(out_dir)
+    print(f"Saved post-training HF model to {out_dir}")
 
 
 def prepare_trainer(cfg: TrainingConfig, rank: int, schedule: Callable):
@@ -365,6 +392,9 @@ def worker(
         resume=resume,
         fsdp=run_cfg.fsdp,
     )
+
+    if run_cfg.export_hf_model:
+        export_hf_model(run_cfg, model, fwd_state, global_rank)
 
     # If no query dataset is provided, skip backward and validation entirely
     if query_dataset is None:

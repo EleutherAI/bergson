@@ -1,3 +1,4 @@
+import shutil
 import time
 from contextlib import contextmanager
 from copy import deepcopy
@@ -30,6 +31,11 @@ def _step_complete(path: str, resume: bool) -> bool:
     return False
 
 
+def damping_tag(lam: float) -> str:
+    """Filesystem-safe tag for a damping factor (e.g. 0.01 -> lam_1e-02)."""
+    return "lam_" + f"{lam:.0e}".replace("+", "")
+
+
 @contextmanager
 def _timed(label: str, durations: dict[str, float]):
     """Time a pipeline step and print the wall-clock duration on exit."""
@@ -60,9 +66,28 @@ def hessian_pipeline(
     method = hessian_cfg.method
     query_path = f"{run_path}/query"
     hessian_path = f"{run_path}/hessian"
-    transformed_query_path = f"{run_path}/{method}_query"
-    scores_path = f"{run_path}/scores"
     resume = hessian_pipeline_cfg.resume
+
+    # A damping sweep reuses the query gradients and Hessian factors, running
+    # the cheap apply + score steps once per factor in suffixed directories.
+    sweep = hessian_pipeline_cfg.lambda_damp_factors
+    if sweep:
+        damp_paths = [
+            (
+                lam,
+                f"{run_path}/{method}_query_{damping_tag(lam)}",
+                f"{run_path}/scores_{damping_tag(lam)}",
+            )
+            for lam in sweep
+        ]
+    else:
+        damp_paths = [
+            (
+                hessian_pipeline_cfg.lambda_damp_factor,
+                f"{run_path}/{method}_query",
+                f"{run_path}/scores",
+            )
+        ]
 
     def _validate(cfg: IndexConfig):
         if resume and cfg.partial_run_path.exists():
@@ -71,8 +96,9 @@ def hessian_pipeline(
 
     durations: dict[str, float] = {}
 
-    # ── Step 1: Build mean query gradient ─────────────────────────────────
-    print("Step 1/4: Building mean query gradient...")
+    # ── Step 1: Build query gradient(s) ───────────────────────────────────
+    aggregation = hessian_pipeline_cfg.query_aggregation
+    print(f"Step 1/4: Building query gradients (aggregation={aggregation})...")
     if not _step_complete(query_path, resume):
         with _timed("step1_build_query", durations):
             query_cfg = deepcopy(index_cfg)
@@ -81,7 +107,7 @@ def hessian_pipeline(
             query_cfg.projection_dim = 0
             _validate(query_cfg)
 
-            query_preprocess_cfg = PreprocessConfig(aggregation="mean")
+            query_preprocess_cfg = PreprocessConfig(aggregation=aggregation)
             save_run_config(
                 Build(query_cfg, query_preprocess_cfg, None),
                 query_cfg.partial_run_path,
@@ -100,41 +126,56 @@ def hessian_pipeline(
 
             approximate_hessians(hessian_index_cfg, hessian_cfg)
 
-    # ── Step 3: Apply inverse Hessian to the mean query gradient ──────────
-    print(f"Step 3/4: Applying {method} inverse Hessian to mean query gradient...")
-    if not _step_complete(transformed_query_path, resume):
-        hessian_method_path = f"{hessian_path}/{method}"
-        ekfac_cfg = EkfacConfig(
-            hessian_method_path=hessian_method_path,
-            gradient_path=query_path,
-            run_path=transformed_query_path,
-            ev_correction=hessian_cfg.ev_correction,
-            lambda_damp_factor=hessian_pipeline_cfg.lambda_damp_factor,
-        )
-        launch_distributed_run(
-            "apply_hessian",
-            apply_worker,
-            [ekfac_cfg],
-            index_cfg.distributed,
-        )
+    # ── Steps 3+4: Apply inverse Hessian and score, once per damping ──────
+    for i, (lam, transformed_query_path, scores_path) in enumerate(damp_paths):
+        suffix = f" [{damping_tag(lam)} {i + 1}/{len(damp_paths)}]" if sweep else ""
 
-    # ── Step 4: Score training examples ───────────────────────────────────
-    print("Step 4/4: Scoring training data against transformed query...")
-    if not _step_complete(scores_path, resume):
-        score_index_cfg = deepcopy(index_cfg)
-        score_index_cfg.run_path = scores_path
-        score_index_cfg.projection_dim = 0
-        score_cfg.query_path = transformed_query_path
-        score_cfg.higher_is_better = True
-        _validate(score_index_cfg)
-
-        save_run_config(
-            Score(score_cfg, score_index_cfg, preprocess_cfg),
-            score_index_cfg.partial_run_path,
+        print(
+            f"Step 3/4: Applying {method} inverse Hessian to query "
+            f"gradients...{suffix}"
         )
-        score_dataset(score_index_cfg, score_cfg, preprocess_cfg)
+        if not _step_complete(transformed_query_path, resume):
+            hessian_method_path = f"{hessian_path}/{method}"
+            ekfac_cfg = EkfacConfig(
+                hessian_method_path=hessian_method_path,
+                gradient_path=query_path,
+                run_path=transformed_query_path,
+                ev_correction=hessian_cfg.ev_correction,
+                lambda_damp_factor=lam,
+            )
+            launch_distributed_run(
+                "apply_hessian",
+                apply_worker,
+                [ekfac_cfg],
+                index_cfg.distributed,
+            )
 
-    print(f"Done! Scores saved to: {scores_path}")
+        print(
+            f"Step 4/4: Scoring training data against transformed " f"query...{suffix}"
+        )
+        if not _step_complete(scores_path, resume):
+            score_index_cfg = deepcopy(index_cfg)
+            score_index_cfg.run_path = scores_path
+            score_index_cfg.projection_dim = 0
+            damp_score_cfg = deepcopy(score_cfg)
+            damp_score_cfg.query_path = transformed_query_path
+            damp_score_cfg.higher_is_better = True
+            _validate(score_index_cfg)
+
+            save_run_config(
+                Score(damp_score_cfg, score_index_cfg, preprocess_cfg),
+                score_index_cfg.partial_run_path,
+            )
+            score_dataset(score_index_cfg, damp_score_cfg, preprocess_cfg)
+
+        if (
+            hessian_pipeline_cfg.cleanup_transformed_query
+            and Path(scores_path).exists()
+        ):
+            print(f"  Cleaning up {transformed_query_path}")
+            shutil.rmtree(transformed_query_path, ignore_errors=True)
+
+    print(f"Done! Scores saved to: {', '.join(p for _, _, p in damp_paths)}")
     if durations:
         total = sum(durations.values())
         print(f"Step timings (s): {durations} | total {total:.1f}s")
