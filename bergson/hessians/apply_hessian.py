@@ -29,10 +29,12 @@ class EkfacConfig:
     `HessianConfig.ev_correction=True`."""
     debug: bool = False
     lambda_damp_factor: float = 0.1
-    query_chunk_size: int = 16
+    query_chunk_size: int = 32
     """Number of query gradients to transform at once. Every rank holds
     roughly two full fp32 model gradients per chunk row in GPU memory, so
-    this bounds peak memory independently of the query count."""
+    this bounds peak memory independently of the query count. Each chunk
+    also pays a fixed number of broadcast rounds (modules x ranks), so
+    prefer the largest chunk that fits in memory."""
 
 
 class EkfacApplicator:
@@ -109,10 +111,16 @@ class EkfacApplicator:
         for start in range(0, num_grads, chunk_size):
             end = min(start + chunk_size, num_grads)
 
+            # One contiguous read of the chunk's records: per-module field
+            # slices of the structured memmap fault scattered pages across
+            # the whole file, which is pathologically slow on network
+            # filesystems.
+            records = np.array(mmap[start:end])
+
             # Forward rotation into eigenbasis: Q_S^T @ G @ Q_A
             transformed_gradients: dict[str, Tensor] = {}
             for k, v in eigen_a.items():
-                gradients_noi = torch.from_numpy(mmap[k][start:end]).to(
+                gradients_noi = torch.from_numpy(records[k]).to(
                     device=self.device, dtype=torch.float32
                 )
                 gradients_noi = gradients_noi.view(
@@ -171,7 +179,7 @@ class EkfacApplicator:
                     )
 
             self.logger.info(f"Transformed queries {start}:{end} / {num_grads}")
-            del transformed_gradients
+            del transformed_gradients, records
             gc.collect()
 
         del eigen_a, eigen_g, lambda_factor
