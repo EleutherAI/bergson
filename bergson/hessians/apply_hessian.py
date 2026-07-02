@@ -13,7 +13,7 @@ from torch import Tensor
 
 from bergson.data import create_index, load_gradients
 from bergson.distributed import init_dist
-from bergson.hessians.sharded_computation import ShardedMul
+from bergson.hessians.sharded_computation import ShardedMul, shard_bounds
 from bergson.utils.logger import get_logger
 from bergson.utils.utils import get_device
 
@@ -32,9 +32,14 @@ class EkfacConfig:
     query_chunk_size: int = 32
     """Number of query gradients to transform at once. Every rank holds
     roughly two full fp32 model gradients per chunk row in GPU memory, so
-    this bounds peak memory independently of the query count. Each chunk
-    also pays a fixed number of broadcast rounds (modules x ranks), so
-    prefer the largest chunk that fits in memory."""
+    this bounds peak memory independently of the query count."""
+
+    max_local_factor_gib: float = 8.0
+    """When the Hessian factors total at most this many GiB, every rank
+    loads the full (unsharded) factors and transforms a disjoint slice of
+    the queries with purely local matmuls. This avoids the per-module
+    broadcast rounds of the sharded path, which dominate wall-clock time
+    for small models. Set to 0 to force the sharded path."""
 
 
 class EkfacApplicator:
@@ -54,24 +59,52 @@ class EkfacApplicator:
 
         self.sharded_computer = ShardedMul()
 
+    def _load_factors(self, subdir: str, full: bool) -> dict[str, Tensor]:
+        """Load this rank's factor shard, or concatenate all shards into the
+        full matrices when ``full`` (shards are row ranges in rank order)."""
+        path = Path(self.path) / subdir
+        if not full:
+            return load_file(
+                str(path / f"shard_{self.rank}.safetensors"), device=self.device
+            )
+
+        shard_paths = sorted(
+            path.glob("shard_*.safetensors"), key=lambda p: int(p.stem.split("_")[1])
+        )
+        shards = [load_file(str(p), device=self.device) for p in shard_paths]
+        return {k: torch.cat([s[k] for s in shards], dim=0) for k in shards[0]}
+
     def compute_ivhp_sharded(self):
-        eigen_a = load_file(
-            self.path + f"/eigen_activation_sharded/shard_{self.rank}.safetensors",
-            device=self.device,
-        )
-        eigen_g = load_file(
-            self.path + f"/eigen_gradient_sharded/shard_{self.rank}.safetensors",
-            device=self.device,
-        )
         lambda_dir = (
             "eigenvalue_correction_sharded"
             if self.cfg.ev_correction
             else "eigenvalue_sharded"
         )
-        lambda_factor = load_file(
-            self.path + f"/{lambda_dir}/shard_{self.rank}.safetensors",
-            device=self.device,
+
+        # When the full factors fit comfortably on one GPU, shard the
+        # *queries* over ranks instead of the factor rows: each rank
+        # transforms its own slice with local matmuls and writes its own
+        # rows, with no collectives. The sharded path pays a broadcast round
+        # per (module, rank) per chunk, which dominates for small models.
+        factor_bytes = sum(
+            f.stat().st_size
+            for d in ("eigen_activation_sharded", "eigen_gradient_sharded", lambda_dir)
+            for f in (Path(self.path) / d).glob("shard_*.safetensors")
         )
+        local = (
+            self.world_size > 1
+            and factor_bytes <= self.cfg.max_local_factor_gib * 2**30
+        )
+        if local:
+            self.logger.info(
+                f"Factors total {factor_bytes / 2**30:.2f} GiB; sharding queries "
+                "over ranks with local matmuls"
+            )
+            self.sharded_computer = ShardedMul(local=True)
+
+        eigen_a = self._load_factors("eigen_activation_sharded", full=local)
+        eigen_g = self._load_factors("eigen_gradient_sharded", full=local)
+        lambda_factor = self._load_factors(lambda_dir, full=local)
 
         for k, v in lambda_factor.items():
             eigen_a[k] = eigen_a[k].to(dtype=torch.float32)
@@ -86,30 +119,38 @@ class EkfacApplicator:
         with open(os.path.join(self.gradient_path, "info.json")) as f:
             info = json.load(f)
 
-        # Every rank computes the full result (the sharded ops broadcast and
+        num_grads = info["num_grads"]
+
+        # In local mode each rank writes its own query rows; in sharded mode
+        # every rank computes the full result (the sharded ops broadcast and
         # accumulate), so only the main rank writes it out.
         grad_buffer = None
-        if self.rank == 0:
+        if local or self.rank == 0:
             grad_buffer = create_index(
                 Path(self.cfg.run_path),
-                num_grads=info["num_grads"],
+                num_grads=num_grads,
                 grad_sizes=grad_sizes,
                 dtype=np.float32,
             )
 
-        num_grads = info["num_grads"]
+        if local:
+            row_start, row_end = shard_bounds(num_grads, self.rank, self.world_size)
+        else:
+            row_start, row_end = 0, num_grads
+
         chunk_size = self.cfg.query_chunk_size or num_grads
         self.logger.info(
             f"Loaded gradients for {num_grads} queries and computing IVHP "
-            f"in chunks of {chunk_size}..."
+            f"for rows {row_start}:{row_end} in chunks of {chunk_size}..."
         )
 
         # Process the queries in chunks: every rank holds ~two full fp32
         # model gradients per chunk row, so this bounds peak GPU memory
-        # independently of the query count. All ranks iterate chunks and
-        # modules in the same order, as the sharded ops broadcast internally.
-        for start in range(0, num_grads, chunk_size):
-            end = min(start + chunk_size, num_grads)
+        # independently of the query count. In sharded mode all ranks iterate
+        # chunks and modules in the same order, as the sharded ops broadcast
+        # internally.
+        for start in range(row_start, row_end, chunk_size):
+            end = min(start + chunk_size, row_end)
 
             # One contiguous read of the chunk's records: per-module field
             # slices of the structured memmap fault scattered pages across
@@ -174,9 +215,10 @@ class EkfacApplicator:
             torch.cuda.synchronize()
             if grad_buffer is not None:
                 for k, v in transformed_gradients.items():
-                    grad_buffer[k][start:end] = (
-                        v.to(device="cpu", non_blocking=True).flatten(1).numpy()
-                    )
+                    # Blocking copy: a non_blocking GPU->CPU transfer is not
+                    # finished when .numpy() reads the buffer, silently
+                    # corrupting a random subset of modules.
+                    grad_buffer[k][start:end] = v.cpu().flatten(1).numpy()
 
             self.logger.info(f"Transformed queries {start}:{end} / {num_grads}")
             del transformed_gradients, records

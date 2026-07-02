@@ -22,10 +22,11 @@ def shard_bounds(dim: int, rank: int, world_size: int) -> tuple[int, int]:
 
 
 class ShardedMul:
-    def __init__(
-        self,
-    ):
-        self.dist = dist.is_initialized()
+    def __init__(self, local: bool = False):
+        # ``local`` forces the single-process code paths even under
+        # torch.distributed, for callers that hold full (unsharded) matrices
+        # and partition their work across ranks themselves.
+        self.dist = dist.is_initialized() and not local
 
         self.rank = dist.get_rank() if self.dist else 0
         self.world_size = dist.get_world_size() if self.dist else 1
