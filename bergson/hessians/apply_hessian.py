@@ -3,6 +3,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import torch
@@ -40,6 +41,30 @@ class EkfacConfig:
     the queries with purely local matmuls. This avoids the per-module
     broadcast rounds of the sharded path, which dominate wall-clock time
     for small models. Set to 0 to force the sharded path."""
+
+    inversion: Literal["damped_inverse", "cauchy", "pseudoinverse"] = "damped_inverse"
+    """Eigenvalue function used to invert the Hessian. With c =
+    lambda_damp_factor and eigenvalues lambda:
+
+    - "damped_inverse" (default): 1 / (lambda + c*mean(lambda)) — uniform
+      Tikhonov damping.
+    - "cauchy": lambda / (lambda^2 + (c*mean(lambda))^2) — Lorentzian-
+      filtered inverse.
+    - "pseudoinverse": 1/lambda where lambda > c*mean(lambda), else 0 —
+      truncated Moore-Penrose pseudoinverse.
+
+    Non-default inversions require the local (unsharded-factor) path, where
+    each module's full eigenvalue grid is on one device."""
+
+
+# Inversion modes expressible as a pure function of (lambda, mean(lambda), c),
+# ported from the damping-transfer fork's bergson/hessians/inversion.py.
+INVERSION_FNS = {
+    "cauchy": lambda lam, c: lam / (lam * lam + (c * lam.mean()) ** 2),
+    "pseudoinverse": lambda lam, c: torch.where(
+        lam > c * lam.mean(), lam.reciprocal(), torch.zeros_like(lam)
+    ),
+}
 
 
 class EkfacApplicator:
@@ -101,6 +126,17 @@ class EkfacApplicator:
                 "over ranks with local matmuls"
             )
             self.sharded_computer = ShardedMul(local=True)
+
+        if self.cfg.inversion != "damped_inverse" and self.apply_fn is None:
+            if not local and self.world_size > 1:
+                raise ValueError(
+                    f"inversion={self.cfg.inversion!r} needs the full eigenvalue "
+                    "grid per module (its mean); use the local path."
+                )
+            inversion_fn = INVERSION_FNS[self.cfg.inversion]
+            damp = self.cfg.lambda_damp_factor
+            self.apply_fn = lambda lam: inversion_fn(lam, damp)
+            self.logger.info(f"Using {self.cfg.inversion} inversion (c={damp})")
 
         eigen_a = self._load_factors("eigen_activation_sharded", full=local)
         eigen_g = self._load_factors("eigen_gradient_sharded", full=local)
