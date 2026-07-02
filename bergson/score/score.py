@@ -146,6 +146,10 @@ def create_scorer(
     """
     query_grads, query_preprocess_cfg = get_query_grads(score_cfg)
 
+    # Cast to the score dtype before anything moves on-device: per-query
+    # (aggregation="none") gradients can be tens of GB in fp32.
+    query_grads = {m: g.to(dtype) for m, g in query_grads.items()}
+
     # Load hessian: H^(-1/2) for split, H^(-1) for one-sided
     hessians = get_trackstar_hessian(
         preprocess_cfg.hessian_path,
