@@ -19,6 +19,7 @@ Example:
     python -m experiments.recall_variants runs/recall_asym
 """
 
+import os
 import shutil
 import subprocess
 import sys
@@ -56,9 +57,11 @@ class VariantSweepConfig:
     max_batch_size: int = 8
 
 
-def run(cmd: list[str]) -> None:
-    print(f"\n$ {' '.join(cmd)}\n", flush=True)
-    subprocess.run(cmd, check=True)
+def run(cmd: list[str], env_extra: dict[str, str] | None = None) -> None:
+    prefix = " ".join(f"{k}={v}" for k, v in (env_extra or {}).items())
+    print(f"\n$ {prefix + ' ' if prefix else ''}{' '.join(cmd)}\n", flush=True)
+    env = dict(os.environ, **(env_extra or {}))
+    subprocess.run(cmd, check=True, env=env)
 
 
 def score_cmd(
@@ -152,7 +155,10 @@ def main():
                 )
             )
 
-        run(score_cmd(run_cfg, query_path, str(scores_dir), cosine))
+        # Cosine scoring holds the fp32 query gradients in host RAM per rank
+        # (~54GB at 128 queries); run it single-GPU to avoid the OOM killer.
+        env = {"CUDA_VISIBLE_DEVICES": "0"} if cosine else None
+        run(score_cmd(run_cfg, query_path, str(scores_dir), cosine), env)
 
         if apply_spec is not None:
             print(f"[{tag}] cleaning up {query_path}")
