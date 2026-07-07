@@ -10,14 +10,17 @@ import torch
 from ml_dtypes import bfloat16
 from transformers import AutoConfig, AutoModelForCausalLM
 
+from bergson.cli.commands import Build
+from bergson.collection import collect_gradients
 from bergson.collector.collector import CollectorComputer
 from bergson.collector.gradient_collectors import GradientCollector
 from bergson.collector.in_memory_collector import InMemoryCollector
-from bergson.config import IndexConfig, PreprocessConfig
+from bergson.config import IndexConfig, PreprocessConfig, ScoreConfig
+from bergson.config.config_io import save_run_config
 from bergson.data import create_index
 from bergson.gradients import GradientProcessor
-from bergson.process_grads import get_trackstar_hessian
-from bergson.score.score import _make_split_hessian
+from bergson.hessians.preconditioner import DensePreconditioner, load_preconditioner
+from bergson.score.score import _make_split_hessian, create_scorer
 from bergson.score.score_writer import (
     InMemorySequenceScoreWriter,
     MemmapSequenceScoreWriter,
@@ -27,6 +30,13 @@ from bergson.utils.utils import (
     get_gradient_dtype,
     tensor_to_numpy,
 )
+
+
+def _h_inv(path, device, power):
+    """The dense inverse-Hessian matrices for a saved processor at ``path``."""
+    pre = load_preconditioner(str(path), power=power, device=device)
+    assert isinstance(pre, DensePreconditioner)
+    return pre.h_inv
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
@@ -187,7 +197,7 @@ def test_precondition_ds(tmp_path: Path, model, dataset):
     target_modules = list(collector.shapes().keys())
 
     # Produce preconditioned query gradients
-    h_inv = get_trackstar_hessian(str(tmp_path), device=preprocess_device, power=-1)
+    h_inv = _h_inv(tmp_path, preprocess_device, -1)
     preconditioned = {
         name: (query_grads[name].to(preprocess_device) @ h_inv[name]).cpu()
         for name in target_modules
@@ -284,11 +294,9 @@ def test_memmap_score_writer_float32(tmp_path: Path):
 
 
 def test_compute_hessian_h_inv():
-    """Test that get_trackstar_hessian returns empty dict for None path."""
+    """No hessian path → no preconditioner."""
 
-    # No path → empty dict
-    result = get_trackstar_hessian(None, device=torch.device("cpu"), power=-1)
-    assert result == {}
+    assert load_preconditioner(None, power=-1, device=torch.device("cpu")) is None
 
 
 def test_scorer_hessians(tmp_path: Path):
@@ -302,7 +310,7 @@ def test_scorer_hessians(tmp_path: Path):
     hess_path = tmp_path / "hessian"
     proc.save(hess_path)
 
-    h_inv = get_trackstar_hessian(str(hess_path), device=torch.device("cpu"), power=-1)
+    h_inv = _h_inv(hess_path, torch.device("cpu"), -1)
     preconditioned_query = {m: query_grads[m] @ h_inv[m] for m in modules}
 
     writer = MemmapSequenceScoreWriter(
@@ -351,9 +359,7 @@ def test_scorer_split_hessians(tmp_path: Path):
     proc.save(hess_path)
 
     # Load H^(-1/2) for split preconditioning
-    h_inv_sqrt = get_trackstar_hessian(
-        str(hess_path), device=torch.device("cpu"), power=-0.5
-    )
+    h_inv_sqrt = _h_inv(hess_path, torch.device("cpu"), -0.5)
 
     # Precondition query and build index_transform
     preconditioned_query = {m: query_grads[m] @ h_inv_sqrt[m] for m in modules}
@@ -386,7 +392,7 @@ def test_scorer_split_hessians(tmp_path: Path):
     scores_norm = scorer_norm.score(index_grads)
 
     # Score with one-sided preconditioning (query only, no index_transform)
-    h_inv = get_trackstar_hessian(str(hess_path), device=torch.device("cpu"), power=-1)
+    h_inv = _h_inv(hess_path, torch.device("cpu"), -1)
     one_sided_query = {m: query_grads[m] @ h_inv[m] for m in modules}
     scorer_inner_products = Scorer(
         query_grads=one_sided_query,
@@ -411,3 +417,85 @@ def test_scorer_split_hessians(tmp_path: Path):
     g = g / g.norm(dim=1, keepdim=True)  # unit normalize
     expected = g @ q.T
     assert torch.allclose(scores_hess_norm, expected, atol=1e-6)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_precondition_at_build_not_double_applied(tmp_path: Path, model, dataset):
+    """Preconditioning a query at build, then scoring, must not re-apply it.
+
+    A query preconditioned at build (its saved ``preprocess_cfg`` carries
+    ``hessian_path``) and a raw query preconditioned at score time must produce
+    identical query gradients in the Scorer. If the build-time preconditioning
+    were re-applied at score, the build path would be ``H^-2`` vs ``H^-1`` —
+    differing by orders of magnitude, not rounding.
+    """
+    model = model.cuda()
+    device = torch.device("cuda:0")
+    dtype = torch.float32
+
+    # Fit an autocorrelation Hessian on the data.
+    hess_cfg = IndexConfig(run_path=str(tmp_path / "hessian"), token_batch_size=1024)
+    hess_cfg.partial_run_path.mkdir(parents=True, exist_ok=True)
+    hess_proc = GradientProcessor(projection_dim=16)
+    CollectorComputer(
+        model=model,
+        data=dataset,
+        collector=InMemoryCollector(
+            model=model.base_model,
+            data=dataset,
+            cfg=hess_cfg,
+            processor=hess_proc,
+            skip_hessians=False,
+        ),
+        cfg=hess_cfg,
+    ).run_with_collector_hooks(desc="Fit Hessian")
+    hess_proc.save(hess_cfg.partial_run_path)
+    hessian_path = str(hess_cfg.partial_run_path)
+
+    def build_query(name: str, preprocess_cfg: PreprocessConfig) -> Path:
+        cfg = IndexConfig(run_path=str(tmp_path / name), token_batch_size=1024)
+        cfg.partial_run_path.mkdir(parents=True, exist_ok=True)
+        # Persist preprocess_cfg the way the CLI's Build command does, so score
+        # can tell whether the query was already preconditioned at build.
+        save_run_config(Build(cfg, preprocess_cfg), cfg.partial_run_path)
+        collect_gradients(
+            model=model,
+            data=dataset,
+            processor=GradientProcessor(projection_dim=16),
+            cfg=cfg,
+            preprocess_cfg=preprocess_cfg,
+        )
+        return cfg.partial_run_path
+
+    # One-sided (no unit_normalize): H^-1 applied to the query only.
+    query_precond = build_query(
+        "q_precond", PreprocessConfig(hessian_path=hessian_path)
+    )
+    query_raw = build_query("q_raw", PreprocessConfig())
+
+    def scored_query_grads(
+        query_path: Path, tag: str, score_hessian: str | None
+    ) -> torch.Tensor:
+        scorer = create_scorer(
+            path=tmp_path / f"scores_{tag}",
+            data=dataset,
+            score_cfg=ScoreConfig(query_path=str(query_path)),
+            preprocess_cfg=PreprocessConfig(hessian_path=score_hessian),
+            device=device,
+            dtype=dtype,
+        )
+        return scorer.query_grads_t
+
+    # Preconditioned once at build (guard skips re-apply) vs once at score
+    # (guard applies); plus the un-preconditioned query as a non-triviality check.
+    from_build = scored_query_grads(query_precond, "precond", hessian_path)
+    from_score = scored_query_grads(query_raw, "raw", hessian_path)
+    no_precond = scored_query_grads(query_raw, "vanilla", None)
+
+    # H^-1 must actually change the query — otherwise the test is vacuous.
+    assert not torch.allclose(
+        from_score, no_precond, atol=1e-3
+    ), "preconditioning is a no-op here; the equality check would be vacuous"
+    assert torch.allclose(
+        from_build, from_score, atol=1e-3, rtol=1e-3
+    ), "build-time vs score-time preconditioning differ — query was applied twice"

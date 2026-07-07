@@ -187,8 +187,7 @@ class TraceCollector(HookCollectorBase):
     Collects gradient traces for influence function computation.
 
     Accumulates per-sample gradients across batches in memory (as lists per module).
-    Optionally applies preconditioning using eigendecomposition of the gradient
-    covariance. Designed for query-time gradient collection rather than index building.
+    Designed for query-time gradient collection rather than index building.
     """
 
     mod_grads: dict = field(default_factory=lambda: defaultdict(list))
@@ -207,7 +206,7 @@ class TraceCollector(HookCollectorBase):
 
     @HookCollectorBase.split_attention_heads
     def backward_hook(self, module: nn.Module, g: Float[Tensor, "N S O"]):
-        """Compute per-sample gradient, optionally precondition, and store."""
+        """Compute and store the per-sample gradient."""
         name: str = module._name  # type: ignore[assignment]
         P = self._compute_gradient(module, g)
 

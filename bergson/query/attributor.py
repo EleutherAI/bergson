@@ -6,10 +6,15 @@ import torch
 from torch import Tensor, nn
 
 from bergson.collector.gradient_collectors import TraceCollector
+from bergson.config import InversionConfig
 from bergson.data import load_gradients
 from bergson.gradients import GradientProcessor
+from bergson.hessians.preconditioner import (
+    DensePreconditioner,
+    FactoredPreconditioner,
+    load_preconditioner,
+)
 from bergson.query.faiss_index import FaissConfig, FaissIndex
-from bergson.utils.math import damped_psd_power
 from bergson.utils.utils import numpy_to_tensor
 
 
@@ -48,19 +53,15 @@ class Attributor:
         device: str = "cpu",
         dtype: torch.dtype = torch.float32,
         unit_norm: bool = False,
-        precondition: bool = False,
         faiss_cfg: FaissConfig | None = None,
+        inversion_cfg: InversionConfig | None = None,
+        hessian_path: str | Path | None = None,
+        ev_correction: bool = False,
     ):
         self.device = device
         self.dtype = dtype
         self.unit_norm = unit_norm
-
-        if precondition and unit_norm:
-            self.precondition = "two-sided"
-        elif precondition:
-            self.precondition = "one-sided"
-        else:
-            self.precondition = "none"
+        self.inversion_cfg = inversion_cfg or InversionConfig()
 
         self.faiss_index = None
         index_path = Path(index_path)
@@ -68,22 +69,38 @@ class Attributor:
         # Load the gradient processor
         self.processor = GradientProcessor.load(index_path, map_location=device)
 
-        # Precompute hessians
-        self.h_inv: dict[str, Tensor] = {}
-        for name, H in self.processor.hessians.items():
-            if self.precondition == "two-sided":
-                # Two-sided: precompute H^(-1) for two-sided application
-                self.h_inv[name] = damped_psd_power(H, power=-0.5).to(device)
-            elif self.precondition == "one-sided":
-                # One-sided: precompute H^(-1) for query-side application in search()
-                self.h_inv[name] = damped_psd_power(H, power=-1.0).to(device)
+        # Set `hessian_path` to enable preconditioning. Two-sided
+        # preconditioning (H^(-1/2) on index as well as query) is
+        # applied if unit norm is enabled.
+        if hessian_path is None:
+            self.precondition = "none"
+            self.preconditioner = None
+        else:
+            self.precondition = "two-sided" if unit_norm else "one-sided"
+            self.preconditioner = load_preconditioner(
+                hessian_path,
+                inversion_cfg=self.inversion_cfg,
+                power=-0.5 if unit_norm else -1.0,
+                ev_correction=ev_correction,
+                device=device,
+            )
 
         # Load the gradients into a FAISS index
         if faiss_cfg:
+            if isinstance(self.preconditioner, FactoredPreconditioner):
+                raise NotImplementedError(
+                    "FAISS preconditioning is not supported for factored "
+                    "(EKFAC) Hessians; omit faiss or use the dense path."
+                )
+            h_inv = (
+                self.preconditioner.h_inv
+                if isinstance(self.preconditioner, DensePreconditioner)
+                else {}
+            )
             faiss_index_name = (
                 f"faiss_{faiss_cfg.index_factory.replace(',', '_')}"
                 f"{'_cosine' if unit_norm else ''}"
-                f"{'_precondition' if precondition else ''}"
+                f"{'_precondition' if self.precondition != 'none' else ''}"
             )
             faiss_path = index_path / faiss_index_name
 
@@ -94,7 +111,7 @@ class Attributor:
                     faiss_cfg,
                     device,
                     unit_norm,
-                    self.h_inv,
+                    h_inv,
                 )
 
             self.faiss_index = FaissIndex(
@@ -117,16 +134,14 @@ class Attributor:
         self.ordered_modules = mmap.dtype.names
 
         if unit_norm:
-            if precondition:
-                # Split: apply H^(-1/2) to index grads before normalization,
-                # for TrackStar
-                for name in self.grads:
-                    if name in self.processor.hessians:
-                        h_inv = damped_psd_power(
-                            self.processor.hessians[name], power=-0.5
-                        )
-                        self.grads[name] = self.grads[name].float() @ h_inv.to(device)
-                        self.grads[name] = self.grads[name].to(dtype=dtype)
+            if self.preconditioner is not None:
+                # Split: apply H^(-1/2) to the index grads before
+                # normalization (`self.precondition == "two-sided"`, so the
+                # preconditioner holds the H^(-1/2) factors/matrices).
+                self.grads = {
+                    name: g.to(dtype=dtype)
+                    for name, g in self.preconditioner.apply(self.grads).items()
+                }
 
             norm_sq = sum(
                 (
@@ -177,13 +192,12 @@ class Attributor:
         }
 
         # One- or two-sided preconditioning: apply H^(-1) or H^(-0.5) to query
-        if self.h_inv:
-            for name in q:
-                if name in self.h_inv:
-                    q[name] = q[name].float() @ self.h_inv[name]
-                    q[name] = q[name].to(self.dtype)
+        if self.preconditioner is not None:
+            q = {
+                name: g.to(self.dtype)
+                for name, g in self.preconditioner.apply(q).items()
+            }
 
-        # Preconditioning is applied inside TraceCollector
         if self.unit_norm:
             norm = torch.cat(list(q.values()), dim=1).norm(dim=1, keepdim=True)
 

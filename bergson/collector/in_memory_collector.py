@@ -12,7 +12,7 @@ from torch import Tensor, nn
 
 from bergson.builder import Builder
 from bergson.collector.collector import HookCollectorBase
-from bergson.config import IndexConfig, PreprocessConfig
+from bergson.config.config import IndexConfig, PreprocessConfig
 from bergson.process_autocorrelation import (
     process_autocorrelation_matrices,
 )

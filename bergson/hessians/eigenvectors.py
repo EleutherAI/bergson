@@ -360,6 +360,16 @@ def save_uncorrected_eigenvalues(
     out_dir = os.path.join(str(partial_run_path), "eigenvalue_sharded")
     os.makedirs(out_dir, exist_ok=True)
 
+    # Per-factor eigenvalues, saved to enable factored Tikhonov damping.
+    # This damping method uses the individual eigenvalues of the A and G factors.
+    # `factor_eig_a` holds the full activation
+    # eigenvalues λ_A [I] (replicated on every rank); `factor_eig_g` holds this
+    # rank's part of the row-sharded gradient eigenvalues λ_G [O].
+    factor_a_dir = os.path.join(str(partial_run_path), "factor_eig_a")
+    factor_g_dir = os.path.join(str(partial_run_path), "factor_eig_g")
+    os.makedirs(factor_a_dir, exist_ok=True)
+    os.makedirs(factor_g_dir, exist_ok=True)
+
     device = get_device(rank)
     # Mirror compute_eigendecomposition: keep total_processed in its native
     # dtype on the right device. PyTorch type promotion handles float * int
@@ -371,6 +381,8 @@ def save_uncorrected_eigenvalues(
         total_processed = total_processed.to(device)
 
     outer_product_sharded: dict[str, Tensor] = {}
+    factor_eig_a: dict[str, Tensor] = {}
+    factor_eig_g: dict[str, Tensor] = {}
     for key, eigenvalue_g_shard in eigenvalues_g.items():
         eigenvalue_g_shard = eigenvalue_g_shard.to(device)
         eigenvalue_a_shard = eigenvalues_a[key].to(device)
@@ -403,10 +415,19 @@ def save_uncorrected_eigenvalues(
         outer = torch.outer(eigenvalue_g_shard, eigenvalue_a_full) * total_processed
         outer_product_sharded[key] = outer.to(device="cpu").contiguous()
 
+        # Scale the per-factor eigenvalues by total_processed so they remain
+        # consistent with the outer product, whose product carries one factor
+        # of total_processed. Splitting it as sqrt keeps λ_A·λ_G == outer.
+        scale = total_processed.to(eigenvalue_a_full.dtype).sqrt()
+        factor_eig_a[key] = (eigenvalue_a_full * scale).to(device="cpu").contiguous()
+        factor_eig_g[key] = (eigenvalue_g_shard * scale).to(device="cpu").contiguous()
+
     save_file(
         outer_product_sharded,
         os.path.join(out_dir, f"shard_{rank}.safetensors"),
     )
+    save_file(factor_eig_a, os.path.join(factor_a_dir, f"shard_{rank}.safetensors"))
+    save_file(factor_eig_g, os.path.join(factor_g_dir, f"shard_{rank}.safetensors"))
 
     get_logger().info(f"Saved uncorrected eigenvalues to {out_dir}")
 

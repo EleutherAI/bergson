@@ -16,7 +16,8 @@ from trl import SFTConfig, SFTTrainer
 
 from bergson.config import DataConfig
 from bergson.data import load_gradient_dataset, load_scores, tokenize
-from bergson.process_grads import get_trackstar_hessian, precondition_flat_grads
+from bergson.hessians.preconditioner import DensePreconditioner, load_preconditioner
+from bergson.process_grads import precondition_flat_grads
 from bergson.utils.utils import assert_type
 
 
@@ -388,8 +389,13 @@ def _get_attribution_indices(
     if args.precondition:
         index_ds_path = Path(args.index_dataset)
         hessian_path = args.query_dataset if args.query_dataset else args.index_dataset
-        h_inv = get_trackstar_hessian(
-            hessian_path, device=torch.device("cuda"), power=-1
+        preconditioner = load_preconditioner(
+            hessian_path, power=-1, device=torch.device("cuda")
+        )
+        h_inv = (
+            preconditioner.h_inv
+            if isinstance(preconditioner, DensePreconditioner)
+            else {}
         )
 
         # Get ordered module names from info.json

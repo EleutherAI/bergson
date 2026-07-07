@@ -25,7 +25,7 @@ from numpy.lib.recfunctions import structured_to_unstructured
 from numpy.typing import DTypeLike, NDArray
 from transformers import PreTrainedTokenizerFast, logging
 
-from .config import DataConfig
+from .config.config import DataConfig
 from .utils.utils import (
     assert_type,
     simple_parse_kwargs_string,

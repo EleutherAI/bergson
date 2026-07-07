@@ -94,7 +94,10 @@ def test_attributor_precondition_split(tmp_path: Path, model, dataset):
     )
 
     attr = Attributor(
-        cfg.partial_run_path, device="cpu", unit_norm=True, precondition=True
+        cfg.partial_run_path,
+        device="cpu",
+        unit_norm=True,
+        hessian_path=cfg.partial_run_path,
     )
 
     x = torch.tensor(dataset[0]["input_ids"]).unsqueeze(0)
@@ -120,7 +123,10 @@ def test_attributor_precondition_one_sided(tmp_path: Path, model, dataset):
     )
 
     attr = Attributor(
-        cfg.partial_run_path, device="cpu", unit_norm=False, precondition=True
+        cfg.partial_run_path,
+        device="cpu",
+        unit_norm=False,
+        hessian_path=cfg.partial_run_path,
     )
 
     x = torch.tensor(dataset[0]["input_ids"]).unsqueeze(0)

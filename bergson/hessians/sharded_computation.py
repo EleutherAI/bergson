@@ -22,6 +22,15 @@ def shard_bounds(dim: int, rank: int, world_size: int) -> tuple[int, int]:
 
 
 class ShardedMul:
+    """Distributed-aware linear-algebra primitives for applying a factored Hessian:
+    eigenbasis rotations and in-place eigenvalue scaling.
+
+    Each method has a single-process fast path (``not self.dist``) operating on
+    full tensors and a distributed path operating on per-rank row-shards; both
+    leave every rank holding the full result. The eigenvalue *math* lives in
+    :mod:`bergson.hessians.inversion`.
+    """
+
     def __init__(
         self,
     ):
@@ -100,58 +109,64 @@ class ShardedMul:
             result_nsb = self._sharded_transpose_matmul(vector_nsa, matrix_cb)
         return result_nsb
 
-    def _hadamard(
-        self,
-        matrix_noi: Float[Tensor, "n o i"],
-        lambda_ci: Float[Tensor, "c i"],
-        lambda_damp_factor: float = 0.1,
-    ):
-        if not self.dist:
-            global_lambda_mean = lambda_ci.mean()
-            inverse_lambda = (
-                lambda_ci + lambda_damp_factor * global_lambda_mean
-            ).reciprocal()
-            matrix_noi.mul_(inverse_lambda)
-        else:
-            self._sharded_hadamard(matrix_noi, lambda_ci, lambda_damp_factor)
+    def global_mean(self, x_shard: Tensor, full_numel: int) -> Tensor:
+        """Mean of a row-sharded tensor over its full extent.
 
-    def _apply_eigfn(
-        self,
-        matrix_noi: Float[Tensor, "n o i"],
-        lambda_ci: Float[Tensor, "c i"],
-        fn,
-    ):
-        """In-place: matrix_noi[:, row_block_r, :] *= fn(λ_r) per rank r."""
-        if not self.dist:
-            matrix_noi.mul_(fn(lambda_ci))
-        else:
-            self._sharded_apply_eigfn(matrix_noi, lambda_ci, fn)
+        ``x_shard`` is this rank's row-shard; ``full_numel`` is the element count
+        of the full (un-sharded) tensor. Sums locally, all-reduces when
+        distributed, then divides, so every rank gets the global mean.
+        """
+        total = x_shard.sum()
+        if self.dist:
+            dist.all_reduce(total, op=dist.ReduceOp.SUM)
+        return total / full_numel
 
-    def _sharded_apply_eigfn(
+    def scale_rows_in_place(
         self,
         matrix_noi: Float[Tensor, "n o i"],
-        lambda_ci: Float[Tensor, "c i"],
-        fn,
+        inverse_eigvals_ci: Float[Tensor, "c i"],
     ):
-        """Sharded in-place ``matrix_noi *= fn(λ)`` (function-aware hadamard)."""
+        """In-place scale of ``matrix_noi`` rows by ``inverse_eigvals_ci``.
+
+        ``inverse_eigvals_ci`` is this rank's row-shard of the regularized inverse
+        eigenvalues (see :func:`~bergson.hessians.inversion.eigenvalue_multiplier`).
+        Non-distributed, the shard already spans all of ``o``; distributed, each
+        rank's shard is broadcast and applied to its row block, so every rank ends
+        with the fully-scaled ``matrix_noi``.
+        """
+        if not self.dist:
+            matrix_noi.mul_(inverse_eigvals_ci)
+        else:
+            self._sharded_scale_rows_in_place(matrix_noi, inverse_eigvals_ci)
+
+    def _sharded_scale_rows_in_place(
+        self,
+        matrix_noi: Float[Tensor, "n o i"],
+        inverse_eigvals_ci: Float[Tensor, "c i"],
+    ):
+        """Sharded in-place ``matrix_noi[:, row_block_r, :] *= inverse_eigvals_r``.
+
+        Each rank broadcasts its ``[c, i]`` row-shard of the inverse eigenvalues in
+        turn; every rank multiplies that shard into the matching ``[start:end]``
+        row block, so all ranks end with the fully-scaled ``matrix_noi``.
+        """
         o = matrix_noi.shape[1]
         for rank_index in range(self.world_size):
             start_row, end_row = self.shard_bounds(o, rank_index)
             if rank_index == self.rank:
-                shard_ci = lambda_ci
+                shard = inverse_eigvals_ci
             else:
-                shard_ci = torch.zeros(
-                    (end_row - start_row, lambda_ci.shape[1]),
-                    device=lambda_ci.device,
-                    dtype=lambda_ci.dtype,
+                shard = torch.zeros(
+                    (end_row - start_row, inverse_eigvals_ci.shape[1]),
+                    device=inverse_eigvals_ci.device,
+                    dtype=inverse_eigvals_ci.dtype,
                 )
 
-            dist.broadcast(shard_ci, src=rank_index)
-
-            matrix_noi[:, start_row:end_row, :].mul_(fn(shard_ci))
+            dist.broadcast(shard, src=rank_index)
+            matrix_noi[:, start_row:end_row, :].mul_(shard)
 
             if self.rank != rank_index:
-                del shard_ci
+                del shard
 
     def _sharded_matmul(
         self,
@@ -195,48 +210,6 @@ class ShardedMul:
                 del shard_cb
 
         return result_nsb
-
-    def _sharded_hadamard(
-        self,
-        matrix_noi: Float[Tensor, "n o i"],
-        lambda_ci: Float[Tensor, "c i"],
-        lambda_damp_factor: float = 0.1,
-    ):
-        """
-        Sharded in-place element-wise multiplication for distributed training.
-        gradients: [n, o, i]
-        matrix_shard: [c, i] where c is this rank's shard of o (see
-        shard_bounds)
-
-        """
-        o = matrix_noi.shape[1]
-
-        # Shards may be uneven, so compute the global mean from the global sum
-        global_lambda_mean = lambda_ci.sum()
-        dist.all_reduce(global_lambda_mean, op=dist.ReduceOp.SUM)
-        global_lambda_mean /= o * lambda_ci.shape[1]
-
-        for rank_index in range(self.world_size):
-            start_row, end_row = self.shard_bounds(o, rank_index)
-            if rank_index == self.rank:
-                shard_ci = lambda_ci
-            else:
-                shard_ci = torch.zeros(
-                    (end_row - start_row, lambda_ci.shape[1]),
-                    device=lambda_ci.device,
-                    dtype=lambda_ci.dtype,
-                )
-
-            dist.broadcast(shard_ci, src=rank_index)
-
-            inverse_lambda = (
-                shard_ci + lambda_damp_factor * global_lambda_mean
-            ).reciprocal()
-
-            matrix_noi[:, start_row:end_row, :].mul_(inverse_lambda)
-
-            if self.rank != rank_index:
-                del shard_ci
 
     def _sharded_transpose_matmul(
         self,

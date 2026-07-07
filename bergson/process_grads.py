@@ -7,29 +7,7 @@ import torch
 from bergson.config.config import HessianConfig
 from bergson.config.config_io import load_subconfig
 from bergson.gradients import GradientProcessor
-from bergson.utils.math import compute_lambda, damped_psd_power
-
-
-def normalize_grad(
-    grad_dict: dict[str, torch.Tensor],
-    unit_normalize: bool,
-    device: torch.device,
-) -> dict[str, torch.Tensor]:
-    """Preprocess a single gradient. Optionally unit-normalizes
-    across all columns, moves to device."""
-    final_dtype = next(iter(grad_dict.values())).dtype
-    grads = {
-        name: g.to(device=device, dtype=torch.float32) for name, g in grad_dict.items()
-    }
-
-    if unit_normalize:
-        norm = torch.sqrt(torch.stack([g.pow(2).sum() for g in grads.values()]).sum())
-        if norm > 0:
-            grads = {k: v / norm for k, v in grads.items()}
-        else:
-            warnings.warn("Gradient norm is zero, skipping normalization")
-
-    return {k: v.to(final_dtype) for k, v in grads.items()}
+from bergson.utils.math import compute_lambda
 
 
 def normalize_flat_grad(
@@ -129,45 +107,6 @@ def mix_autocorrelation_matrices(
     return output_path
 
 
-def get_trackstar_hessian(
-    hessian_path: str | None,
-    device: torch.device,
-    power: float = -0.5,
-    return_dtype: torch.dtype | None = None,
-) -> dict[str, torch.Tensor]:
-    """Compute hessian matrices from a saved processor file.
-
-    Parameters
-    ----------
-    hessian_path : str | None
-        Directory containing the saved GradientProcessor.
-    device : torch.device
-        Device to load the hessian onto.
-    power : float
-        Matrix power to apply to each H matrix.
-
-        * ``-0.5`` — H^(-1/2), used for split (two-sided) preconditioning
-          where both query and index gradients are multiplied by H^(-1/2).
-        * ``-1``   — H^(-1), used for one-sided preconditioning where only
-          the query gradients are preconditioned.
-    """
-    if hessian_path is None:
-        return {}
-
-    # Load hessians on device one-by-one for memory efficiency
-    hessians = GradientProcessor.load(
-        Path(hessian_path),
-        map_location="cpu",
-    ).hessians
-
-    final_dtype = return_dtype or next(iter(hessians.values())).dtype
-
-    return {
-        name: damped_psd_power(H.to(device=device), power=power).to(final_dtype)
-        for name, H in hessians.items()
-    }
-
-
 def precondition_flat_grads(
     grads: torch.Tensor,
     h_inv: dict[str, torch.Tensor],
@@ -195,25 +134,6 @@ def precondition_flat_grads(
             col += d
 
     return grads
-
-
-def precondition_grad(
-    grad: dict[str, torch.Tensor],
-    h_inv: dict[str, torch.Tensor],
-) -> dict[str, torch.Tensor]:
-    """Precondition a single example's gradients."""
-    if not h_inv:
-        return grad
-
-    final_device = next(iter(grad.values())).device
-
-    return {
-        name: (
-            grad[name].to(device=h_inv[name].device, dtype=h_inv[name].dtype)
-            @ h_inv[name]
-        ).to(final_device)
-        for name in grad.keys()
-    }
 
 
 def normalize_and_aggregate_grads(

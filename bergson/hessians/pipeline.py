@@ -109,12 +109,11 @@ def hessian_pipeline(
             gradient_path=query_path,
             run_path=transformed_query_path,
             ev_correction=hessian_cfg.ev_correction,
-            lambda_damp_factor=hessian_pipeline_cfg.lambda_damp_factor,
         )
         launch_distributed_run(
             "apply_hessian",
             apply_worker,
-            [ekfac_cfg],
+            [ekfac_cfg, hessian_pipeline_cfg.inversion_cfg],
             index_cfg.distributed,
         )
 

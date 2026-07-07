@@ -8,6 +8,8 @@ from typing import Literal
 import torch
 from simple_parsing import Serializable, field
 
+from ..hessians.inversion import Inversion
+
 
 @dataclass
 class DataConfig(Serializable):
@@ -62,6 +64,28 @@ class DataConfig(Serializable):
                 raise ValueError(
                     "chunk_length and format_template cannot both be specified"
                 )
+
+
+@dataclass
+class InversionConfig(Serializable):
+    inversion: Inversion = "damped_inverse"
+    """Eigenvalue function used to invert a Hessian with regularization.
+    Setting ``c = damping_factor`` and ``λ`` for an eigenvalue:
+
+    - "damped_inverse" (default): ``1 / (λ + c·mean(λ))`` — uniform Tikhonov
+      damping.
+    - "factored_tikhonov": damped inverse with the damping split across the
+      activation (A) and gradient (G) Kronecker factors via the Martens &
+      Grosse trace ratio ``π = sqrt(mean(λ_A) / mean(λ_G))``. Factored EKFAC
+      only; falls back to ``damped_inverse`` for the dense autocorrelation
+      Hessian, which has no Kronecker structure.
+    - "pseudoinverse": ``1/λ`` where ``λ > c·mean(λ)``, else ``0`` (truncated
+      Moore-Penrose pseudoinverse).
+    - "tikhonov_filtered": ``λ / (λ² + α²)`` with ``α = c·mean(λ)`` — the
+      Tikhonov filter factor / ridge solution ``(H² + α²I)⁻¹H``."""
+
+    damping_factor: float = 0.1
+    """Damping / truncation strength, relative to the mean eigenvalue."""
 
 
 @dataclass
@@ -467,6 +491,18 @@ class QueryConfig(Serializable):
     unit_norm: bool = True
     """Whether to unit normalize the query."""
 
+    hessian_path: str | None = None
+    """Path to a Hessian to precondition the gradients with. Two-sided
+    preconditioning (H^(-1/2) applied to query and index) will be used
+    if ``unit_norm`` is enabled."""
+
+    ev_correction: bool = False
+    """Use the corrected eigenvalues of a factored Hessian at ``hessian_path``
+    (requires it to have been fit with ``HessianConfig.ev_correction=True``)."""
+
+    inversion_cfg: InversionConfig = field(default_factory=InversionConfig)
+    """How to invert the Hessian at ``hessian_path``."""
+
     device_map_auto: bool = False
     """Load the model onto multiple devices if necessary."""
 
@@ -491,6 +527,9 @@ class PreprocessConfig(Serializable):
 
     hessian_path: str | None = None
     """Path to a precomputed gradient processor. Set to apply Hessian approx."""
+
+    inversion_cfg: InversionConfig = field(default_factory=InversionConfig)
+    """How to invert the (dense autocorrelation) Hessian at ``hessian_path``."""
 
     aggregation: Literal["mean", "sum", "none"] = "none"
     """Method for aggregating the gradients. In score, only query
@@ -622,8 +661,8 @@ class HessianPipelineConfig:
     query: DataConfig = field(default_factory=DataConfig)
     """Query dataset specification."""
 
-    lambda_damp_factor: float = 0.1
-    """Damping factor for EKFAC eigenvalue correction."""
+    inversion_cfg: InversionConfig = field(default_factory=InversionConfig)
+    """How to invert the fitted EKFAC Hessian when applying it to the query."""
 
     resume: bool = False
     """Skip pipeline steps whose output directory already exists."""

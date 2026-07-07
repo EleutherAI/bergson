@@ -92,7 +92,15 @@ def query(
     )
 
     faiss_cfg = FaissConfig() if query_cfg.faiss else None
-    attr = Attributor(Path(query_cfg.index), device="cuda", faiss_cfg=faiss_cfg)
+    attr = Attributor(
+        Path(query_cfg.index),
+        device="cuda",
+        unit_norm=query_cfg.unit_norm,
+        faiss_cfg=faiss_cfg,
+        inversion_cfg=query_cfg.inversion_cfg,
+        hessian_path=query_cfg.hessian_path,
+        ev_correction=query_cfg.ev_correction,
+    )
 
     # Get the device of the first model parameter for multi-GPU setups
     model_device = next(model.parameters()).device

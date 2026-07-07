@@ -93,45 +93,6 @@ def reshape_to_nearest_square(a: Tensor) -> Tensor:
     return a.reshape(*a.shape[:-2], rows, cols)
 
 
-@torch.compile
-def damped_psd_power(
-    H: Tensor,
-    power: float,
-    damping_factor: float = 0.1,
-    dtype: torch.dtype = torch.float64,
-    regularizer: Tensor | None = None,
-) -> Tensor:
-    """Compute a damped power of p.s.d. matrix `H` via eigendecomposition.
-
-    Adds adaptive damping before computing the power to improve numerical stability.
-
-    Args:
-        H: Positive semi-definite matrix.
-        power: Exponent to apply to eigenvalues (e.g. -0.5 for rsqrt, -1 for inverse).
-        damping_factor: Multiplier for the damping term (default: 0.1). Set to
-            0 to disable damping.
-        dtype: Dtype for intermediate computation (default: float64 for stability).
-        regularizer: Optional matrix to use as regularizer instead of identity.
-            If provided, computes (H + damping_factor * regularizer)^power.
-            If None (default), uses scaled identity:
-            (H + damping_factor * |H|_mean * I)^power.
-
-    Returns:
-        The damped power of H in the original dtype.
-    """
-    original_dtype = H.dtype
-    H = H.to(dtype=dtype)
-    if regularizer is not None:
-        regularizer = regularizer.to(dtype=dtype, device=H.device)
-        H = H + damping_factor * regularizer
-    else:
-        damping_val = damping_factor * H.abs().mean()
-        H = H + damping_val * torch.eye(H.shape[0], device=H.device, dtype=H.dtype)
-
-    eigval, eigvec = torch.linalg.eigh(H)
-    return (eigvec * eigval.pow(power) @ eigvec.mH).to(original_dtype)
-
-
 def trace(matrices: Tensor) -> Tensor:
     """Version of `torch.trace` that works for batches of matrices."""
     diag = torch.linalg.diagonal(matrices)

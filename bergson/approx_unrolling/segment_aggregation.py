@@ -6,7 +6,7 @@ import torch.distributed as dist
 from safetensors import safe_open
 from safetensors.torch import save_file
 
-from bergson.config import DistributedConfig
+from bergson.config.config import DistributedConfig
 from bergson.distributed import init_dist, launch_distributed_run
 from bergson.hessians.eigenvectors import compute_eigendecomposition
 from bergson.utils.logger import get_logger
