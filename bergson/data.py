@@ -56,6 +56,22 @@ def compute_num_token_grads(data: Dataset) -> np.ndarray:
         return lengths - 1
 
 
+def open_shared_memmap(
+    path: Path, dtype: DTypeLike, shape: tuple[int, ...]
+) -> np.memmap:
+    """Open an ``r+`` memmap shared across ranks; rank 0 zero-creates it only if
+    absent, so a resumed run reopens its partial file instead of clobbering it."""
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    if rank == 0 and not path.exists():
+        created = np.memmap(str(path), dtype=dtype, mode="w+", shape=shape)
+        created[:] = 0
+        created.flush()
+        del created
+    if dist.is_initialized():
+        dist.barrier()
+    return np.memmap(str(path), dtype=dtype, mode="r+", shape=shape)
+
+
 def create_token_index(
     root: Path,
     num_token_grads: np.ndarray,
@@ -91,7 +107,8 @@ def create_token_index(
     np_dtype = np.dtype(dtype)
     grad_path = root / "token_gradients.bin"
 
-    if rank == 0:
+    # Create only if missing, so a resumed build keeps its written rows.
+    if rank == 0 and not grad_path.exists():
         root.mkdir(parents=True, exist_ok=True)
         nbytes = np_dtype.itemsize * total_tokens * total_grad_dim
         with open(grad_path, "wb") as f:
@@ -386,8 +403,8 @@ def create_index(
     dtype: DTypeLike,
     with_structure: bool = True,
 ) -> np.memmap:
-    """Create a memory-mapped file for storing structured gradients
-    and persist metadata."""
+    """Memory-map a structured gradient file and persist metadata. Created only
+    if absent, so a resumed build re-opens it in place instead of clobbering."""
     grad_path = root / "gradients.bin"
     rank = dist.get_rank() if dist.is_initialized() else 0
 
@@ -398,8 +415,8 @@ def create_index(
         "itemsize": np.dtype(dtype).itemsize * sum(grad_sizes.values()),
     }
 
-    # ── 1. Rank-0 creates file & metadata exactly once ─────────────────────────
-    if rank == 0:
+    # Rank-0 creates file & metadata once; skipped on resume (file exists).
+    if rank == 0 and not grad_path.exists():
         # Ensure the directory exists
         root.mkdir(parents=True, exist_ok=True)
 
@@ -548,29 +565,48 @@ def load_gradient_dataset(root_dir: Path, structured: bool = True) -> Dataset:
     ).flatten_indices()
 
 
+def leading_written_count(written: np.ndarray, batches: list[list[int]]) -> int:
+    """Length of the longest fully-written prefix of ``batches`` (to skip on
+    resume; batches run in order so the written region is always a prefix)."""
+    count = 0
+    for indices in batches:
+        if not bool(written[indices].all()):
+            break
+        count += 1
+    return count
+
+
 class Scores:
+    """Read access to an on-disk scores index.
+
+    Current "flat" layout: a plain ``(num_items, num_scores)`` array. Legacy
+    layout: a structured dtype interleaving ``written_i`` with ``score_i``.
+    """
+
     def __init__(self, mmap: np.memmap, info: dict[str, Any]):
         self.mmap = mmap
         self.info = info
         self.num_scores = info["num_scores"]
+        self.flat = info.get("format") == "flat"
 
-        self._score_fields = [f"score_{i}" for i in range(self.num_scores)]
+        # TODO(Lucia, 2026-10): drop legacy structured-scores support.
+        if not self.flat:
+            self._score_fields = [f"score_{i}" for i in range(self.num_scores)]
 
     def __len__(self) -> int:
         return len(self.mmap)
 
     def __getitem__(self, key: Any) -> NDArray:
+        if self.flat:
+            return self.mmap[key]
         items = self.mmap[key]
         return structured_to_unstructured(items[self._score_fields])
 
     def get(self, key: Any, score_idx: int = 0) -> NDArray:
         """Get scores for a specific score index."""
+        if self.flat:
+            return self.mmap[key, score_idx]
         return self.mmap[key][f"score_{score_idx}"]
-
-    def is_written(self) -> bool:
-        """Check whether all scores in the structured mmap have
-        been written to (i.e. are not still zeros)"""
-        return all(np.all(self.mmap[f"written_{i}"]) for i in range(self.num_scores))
 
 
 def load_scores(path: Path) -> Scores:
@@ -580,12 +616,21 @@ def load_scores(path: Path) -> Scores:
     with open(info_path, "r") as f:
         info = json.load(f)
 
-    mmap = np.memmap(
-        bin_path,
-        dtype=info["dtype"],
-        mode="r",
-        shape=(info["num_items"],),
-    )
+    if info.get("format") == "flat":
+        mmap = np.memmap(
+            bin_path,
+            dtype=np.dtype(info["dtype"]),
+            mode="r",
+            shape=(info["num_items"], info["num_scores"]),
+        )
+    else:
+        # TODO(Lucia, 2026-10): drop legacy structured-scores support.
+        mmap = np.memmap(
+            bin_path,
+            dtype=info["dtype"],
+            mode="r",
+            shape=(info["num_items"],),
+        )
 
     return Scores(mmap, info)
 

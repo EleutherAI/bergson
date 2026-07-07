@@ -578,23 +578,31 @@ def worker(
         )
 
 
+def prepare_run_dir(run_cfg: TrainingConfig) -> None:
+    """Validate/clear the run path and persist the run config for reproducibility.
+
+    The MAGIC analogue of ``validate_run_path`` + ``save_run_config`` used by the
+    index commands (sharing ``clear_run_path`` for the overwrite policy): clear or
+    keep the run path (resume-aware), then write ``config.yaml`` before any
+    compute starts so the run can be replayed with
+    ``bergson <run_path>/config.yaml``. A no-op off the main node
+    (``SLURM_PROCID != 0``) so only one writer touches the shared run directory.
+    """
+    if int(os.environ.get("SLURM_PROCID", 0)) != 0:
+        return
+
+    run_path = Path(run_cfg.run_path)
+    if not run_cfg.resume:
+        clear_run_path(run_path, run_cfg.overwrite)
+
+    run_path.mkdir(parents=True, exist_ok=True)
+    save_run_config(run_cfg, run_path)
+
+
 def run_magic(run_cfg: TrainingConfig, *, score_path: str = ""):
     run_path = Path(run_cfg.run_path)
     is_main_node = int(os.environ.get("SLURM_PROCID", 0)) == 0
     multi_node = run_cfg.distributed.nnode > 1
-
-    if is_main_node:
-        if run_path.exists() and not run_cfg.resume:
-            if run_cfg.overwrite:
-                shutil.rmtree(run_path)
-            else:
-                raise FileExistsError(
-                    f"Run path {run_path} already exists. "
-                    f"Use --overwrite to overwrite it."
-                )
-
-        run_path.mkdir(parents=True, exist_ok=True)
-        save_run_config(run_cfg, run_path)
 
     # HF datasets caches are not safe for concurrent writers, so the main node
     # must finish populating the cache before others read from it.
@@ -632,6 +640,7 @@ def main():
     args = parser.parse_args()
 
     run_cfg: MagicConfig = args.run_cfg
+    prepare_run_dir(run_cfg)
     run_magic(run_cfg)
 
 

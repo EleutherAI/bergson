@@ -785,23 +785,11 @@ def test_trackstar_token_scores_sum_to_sequence_scores_on_disk(
     tok_writer.flush()
 
     # --- Read back from disk ---
-    with open(seq_path / "info.json") as f:
-        seq_info = json.load(f)
-    seq_dtype = np.dtype(
-        {
-            "names": seq_info["dtype"]["names"],
-            "formats": seq_info["dtype"]["formats"],
-            "offsets": seq_info["dtype"]["offsets"],
-            "itemsize": seq_info["dtype"]["itemsize"],
-        }
+    from bergson.data import load_scores
+
+    seq_scores = torch.from_numpy(
+        np.asarray(load_scores(seq_path).get(slice(None), 0)).copy()
     )
-    seq_mmap = np.memmap(
-        seq_path / "scores.bin",
-        dtype=seq_dtype,
-        mode="r",
-        shape=(seq_info["num_items"],),
-    )
-    seq_scores = torch.from_numpy(seq_mmap["score_0"].copy())
 
     with open(tok_path / "info.json") as f:
         tok_info = json.load(f)

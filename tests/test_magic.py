@@ -1,5 +1,6 @@
 """MAGIC integration test: forward + backward through 2 training steps."""
 
+import os
 import tempfile
 
 import pytest
@@ -678,3 +679,152 @@ def test_magic_resume(dataset):
 
         for k in final_state.params:
             torch.testing.assert_close(resumed_state.params[k], final_state.params[k])
+
+
+def _backward_once(
+    model_name,
+    ds,
+    ckpt_dir,
+    *,
+    save_mode,
+    resume,
+    save_every,
+    fwd_resume,
+    device="cpu",
+    seed=42,
+):
+    """One end-to-end MAGIC pass through `ckpt_dir`, mirroring worker():
+    (re)build the model, train forward (optionally resuming), compute query
+    grads at the end-of-forward state, then run the backward pass (optionally
+    resuming). Returns the final weight-grad scores.
+    """
+    torch.manual_seed(seed)
+    config = AutoConfig.from_pretrained(model_name)
+    model = AutoModelForCausalLM.from_config(
+        config, torch_dtype=torch.float32, attn_implementation="eager"
+    )
+    model.loss_function = weighted_causal_lm_ce
+    model.requires_grad_(True)
+
+    optimizer = torchopt.adamw(1e-4, betas=(0.95, 0.975), eps_root=1e-2)
+    trainer, fwd_state = Trainer.initialize(model, optimizer)
+    stream = DataStream(ds, batch_size=1, device=device)
+
+    fwd_state = trainer.train(
+        fwd_state,
+        stream,
+        inplace=True,
+        save_dir=ckpt_dir,
+        save_mode=save_mode,
+        resume=fwd_resume,
+    )
+
+    with fwd_state.activate(model) as params:
+        batch = stream[0]
+        del batch["example_weight"]
+        loss = model(**batch).loss
+        query_grads = {
+            k: g.detach().clone() for k, g in grad_tree(loss, params).items()
+        }
+        opt_grads = [
+            torch.zeros_like(buf)
+            for buf in tree_iter(fwd_state.opt_state)
+            if isinstance(buf, torch.Tensor) and buf.is_floating_point()
+        ]
+        bwd_state = BackwardState(
+            query_grads, opt_grads, torch.zeros_like(stream.weights)
+        )
+
+    stream.requires_grad = True
+    bwd_state = trainer.backward(
+        ckpt_dir,
+        stream,
+        bwd_state,
+        fwd_state,
+        inplace=True,
+        cleanup=True,
+        resume=resume,
+        save_every=save_every,
+        save_mode=save_mode,
+    )
+    return bwd_state.weight_grads.detach().cpu().clone()
+
+
+@pytest.mark.parametrize("save_mode", ["all", "sqrt"])
+def test_magic_backward_resume(save_mode):
+    """Crash mid-backward, resume, and verify identical final scores.
+
+    Reproduces the production crash/restart flow: forward checkpoints are
+    cleaned up as the backward pass consumes them, the run dies partway, and a
+    fresh process retrains the forward pass (resuming from the preserved last
+    checkpoint) before resuming the backward pass from ``backward_rank0.pt``.
+    """
+    from datasets import Dataset
+
+    model_name = "trl-internal-testing/tiny-Phi3ForCausalLM"
+
+    # 6 rows, batch_size=1 -> 6 training steps, enough to interrupt partway.
+    ds = Dataset.from_dict(
+        {
+            "input_ids": [[i + 1, i + 2, i + 3, i + 4, i + 5] for i in range(6)],
+            "labels": [[i + 1, i + 2, i + 3, i + 4, i + 5] for i in range(6)],
+            "attention_mask": [[1, 1, 1, 1, 1] for _ in range(6)],
+        }
+    )
+
+    # Reference: uninterrupted backward in its own checkpoint dir.
+    with tempfile.TemporaryDirectory() as ref_dir:
+        ref_scores = _backward_once(
+            model_name,
+            ds,
+            ref_dir,
+            save_mode=save_mode,
+            resume=False,
+            save_every=0,
+            fwd_resume=False,
+        )
+
+    # Interrupt the backward pass after two backward checkpoints are written,
+    # then resume in a fresh "process" sharing the same checkpoint dir.
+    with tempfile.TemporaryDirectory() as ckpt_dir:
+        orig_save = Trainer.save_backward_state
+        n_saves = {"count": 0}
+
+        def crashing_save(self, *args, **kwargs):
+            orig_save(self, *args, **kwargs)
+            n_saves["count"] += 1
+            if n_saves["count"] >= 2:
+                raise RuntimeError("simulated crash mid-backward")
+
+        Trainer.save_backward_state = crashing_save
+        try:
+            with pytest.raises(RuntimeError, match="simulated crash"):
+                _backward_once(
+                    model_name,
+                    ds,
+                    ckpt_dir,
+                    save_mode=save_mode,
+                    resume=False,
+                    save_every=1,
+                    fwd_resume=False,
+                )
+        finally:
+            Trainer.save_backward_state = orig_save
+
+        assert n_saves["count"] >= 2, "crash fired before any backward checkpoint"
+
+        # A backward checkpoint must be on disk for the resume to pick up.
+        bwd_pt = os.path.join(ckpt_dir, "backward_rank0.pt")
+        assert os.path.exists(bwd_pt), "backward checkpoint not written"
+
+        resumed_scores = _backward_once(
+            model_name,
+            ds,
+            ckpt_dir,
+            save_mode=save_mode,
+            resume=True,
+            save_every=1,
+            fwd_resume=True,
+        )
+
+    torch.testing.assert_close(resumed_scores, ref_scores, atol=1e-5, rtol=1e-4)

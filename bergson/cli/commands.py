@@ -27,7 +27,7 @@ from ..config.config import (
 from ..config.config_io import save_run_config
 from ..diagnose import DiagnoseConfig, diagnose
 from ..hessians.hessian_approximations import approximate_hessians
-from ..magic import MagicConfig, run_magic
+from ..magic import MagicConfig, prepare_run_dir, run_magic
 from ..process_grads import mix_autocorrelation_matrices
 from ..query.query_index import query
 from ..score.score import score_dataset
@@ -152,6 +152,7 @@ class Magic(MagicConfig):
 
     def execute(self):
         """Run MAGIC attribution."""
+        prepare_run_dir(self)
         run_magic(self)
 
 
@@ -248,6 +249,7 @@ class Train(TrainingConfig):
 
     def execute(self):
         """Train the model."""
+        prepare_run_dir(self)
         run_magic(self)
 
 
@@ -276,4 +278,5 @@ class Validate(ValidationConfig):
     def execute(self):
         """Run the validation."""
         assert self.scores, "Path to attribution scores must be provided."
+        prepare_run_dir(self)
         run_magic(self, score_path=self.scores)

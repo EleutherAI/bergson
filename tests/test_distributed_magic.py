@@ -12,7 +12,7 @@ import pytest
 import torch
 
 from bergson.config import DataConfig, DistributedConfig
-from bergson.magic.cli import MagicConfig, run_magic
+from bergson.magic.cli import MagicConfig, prepare_run_dir, run_magic
 
 
 @pytest.mark.skipif(
@@ -57,7 +57,9 @@ def test_fsdp_ddp_scores_match():
             distributed=dist_cfg,
         )
 
+        prepare_run_dir(ddp_cfg)
         run_magic(ddp_cfg)
+        prepare_run_dir(fsdp_cfg)
         run_magic(fsdp_cfg)
 
         ddp_scores = torch.load(f"{tmpdir}/ddp/scores.pt", weights_only=True)

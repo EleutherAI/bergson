@@ -2,6 +2,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .cli import MagicConfig as MagicConfig
+    from .cli import prepare_run_dir as prepare_run_dir
     from .cli import run_magic as run_magic
     from .data_stream import DataStream as DataStream
     from .dtensor_patch import apply_dtensor_patch as apply_dtensor_patch
@@ -18,6 +19,7 @@ if TYPE_CHECKING:
 
 _module_map = {
     "MagicConfig": ".cli",
+    "prepare_run_dir": ".cli",
     "run_magic": ".cli",
     "DataStream": ".data_stream",
     "apply_dtensor_patch": ".dtensor_patch",

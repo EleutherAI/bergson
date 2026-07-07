@@ -7,7 +7,6 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
-from ml_dtypes import bfloat16
 from transformers import AutoConfig, AutoModelForCausalLM
 
 from bergson.collector.collector import CollectorComputer
@@ -224,6 +223,7 @@ def test_memmap_score_writer_bfloat16(tmp_path: Path):
 
     # Verify the files exist
     assert (tmp_path / "scores.bin").exists()
+    assert (tmp_path / "written.bin").exists()
     assert (tmp_path / "info.json").exists()
 
     # Read back and verify
@@ -232,32 +232,21 @@ def test_memmap_score_writer_bfloat16(tmp_path: Path):
 
     assert info["num_items"] == num_items
     assert info["num_scores"] == num_scores
-    assert "bfloat16" in info["dtype"]["formats"][0]
+    assert info["format"] == "flat"
+    assert info["dtype"] == "bfloat16"
 
-    # Check written flags
-    assert writer.scores["written_0"][0]
-    assert writer.scores["written_0"][1]
-    assert not writer.scores["written_0"][2]  # Not written
-    assert writer.scores["written_0"][5]
-    assert writer.scores["written_0"][6]
-    assert writer.scores["written_0"][7]
+    # Check written flags (per-row bitmap)
+    assert writer.written[0]
+    assert writer.written[1]
+    assert not writer.written[2]  # Not written
+    assert writer.written[5]
+    assert writer.written[6]
+    assert writer.written[7]
 
-    # Check score values (convert back to compare)
-    expected_batch1 = tensor_to_numpy(scores_batch1)
-    expected_batch2 = tensor_to_numpy(scores_batch2)
-
+    # Check score values (plain (num_items, num_scores) array)
+    np.testing.assert_array_equal(writer.scores[[0, 1]], tensor_to_numpy(scores_batch1))
     np.testing.assert_array_equal(
-        writer.scores["score_0"][[0, 1]].view(bfloat16), expected_batch1[:, 0]
-    )
-    np.testing.assert_array_equal(
-        writer.scores["score_1"][[0, 1]].view(bfloat16), expected_batch1[:, 1]
-    )
-    np.testing.assert_array_equal(
-        writer.scores["score_2"][[0, 1]].view(bfloat16), expected_batch1[:, 2]
-    )
-
-    np.testing.assert_array_equal(
-        writer.scores["score_0"][[5, 6, 7]].view(bfloat16), expected_batch2[:, 0]
+        writer.scores[[5, 6, 7]], tensor_to_numpy(scores_batch2)
     )
 
 
@@ -274,13 +263,12 @@ def test_memmap_score_writer_float32(tmp_path: Path):
     writer([0, 1], scores)
     writer.flush()
 
-    # Verify values
+    # Verify values (plain (num_items, num_scores) array)
     np.testing.assert_array_almost_equal(
-        writer.scores["score_0"][[0, 1]], np.array([1.5, 3.5], dtype=np.float32)
+        writer.scores[[0, 1]], np.array([[1.5, 2.5], [3.5, 4.5]], dtype=np.float32)
     )
-    np.testing.assert_array_almost_equal(
-        writer.scores["score_1"][[0, 1]], np.array([2.5, 4.5], dtype=np.float32)
-    )
+    assert writer.written[0] and writer.written[1]
+    assert not writer.written[2]
 
 
 def test_compute_hessian_h_inv():

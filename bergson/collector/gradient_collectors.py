@@ -2,6 +2,7 @@ import math
 from collections import defaultdict
 from dataclasses import dataclass, field
 
+import numpy as np
 import torch
 import torch.distributed as dist
 import torch.nn as nn
@@ -144,6 +145,9 @@ class GradientCollector(HookCollectorBase):
 
         if self.builder:
             self.builder(indices, self.mod_grads)
+            # Persist per-row losses alongside the gradients so a resumed build
+            # recovers the loss column for rows it already finished.
+            self.builder.record_losses(indices, losses)
         if self.scorer:
             self.scorer(indices, self.mod_grads)
         self.mod_grads.clear()
@@ -186,9 +190,17 @@ class GradientCollector(HookCollectorBase):
                 if self.cfg.drop_columns:
                     self.data = self.data.remove_columns(["input_ids"])
 
+                # Prefer the builder's per-row losses memmap: each rank wrote its
+                # own rows, so it is complete across ranks and across a resumed
+                # run, unlike the in-memory (this-run-only) reduced tensor.
+                if self.builder is not None and self.builder.losses is not None:
+                    loss_col = np.asarray(self.builder.losses, dtype=np.float32)
+                else:
+                    loss_col = self.per_doc_losses.cpu().numpy()
+
                 self.data = self.data.add_column(
                     "loss",
-                    self.per_doc_losses.cpu().numpy(),
+                    loss_col,
                     feature=Value("float32"),
                     new_fingerprint="loss",
                 )

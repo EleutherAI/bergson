@@ -418,9 +418,6 @@ class IndexConfig(AttributionConfig, Serializable):
     near-zero gradients for high-confidence predictions that can cause numerical
     instability."""
 
-    stream_shard_size: int = 400_000
-    """Shard size for streaming the dataset into Dataset objects."""
-
     split_attention_modules: list[str] = field(default_factory=list)
     """Modules to split into head matrices."""
 
@@ -450,6 +447,10 @@ class IndexConfig(AttributionConfig, Serializable):
 
     modules: list[str] = field(default_factory=list)
     """Modules to use for the query. If empty, all modules will be used."""
+
+    resume: bool = False
+    """Resume an interrupted ``build``/``score`` run from its partial output,
+    skipping work that was already written to ``partial_run_path``."""
 
     @property
     def partial_run_path(self) -> Path:

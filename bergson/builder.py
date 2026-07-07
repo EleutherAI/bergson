@@ -6,7 +6,13 @@ import torch.distributed as dist
 from datasets import Dataset
 
 from .config.config import PreprocessConfig
-from .data import compute_num_token_grads, create_index, create_token_index
+from .data import (
+    compute_num_token_grads,
+    create_index,
+    create_token_index,
+    leading_written_count,
+    open_shared_memmap,
+)
 from .process_grads import (
     get_trackstar_hessian,
     normalize_flat_grad,
@@ -15,6 +21,24 @@ from .process_grads import (
 from .utils.utils import convert_dtype_to_np, tensor_to_numpy
 
 _EPS_SQ = torch.finfo(torch.float32).eps ** 2
+
+
+class IndexResumeTracker:
+    """Reads a build's ``written.bin`` so the worker can compute the resume skip
+    before the Builder is constructed. Reports 0 when there's no prior run."""
+
+    def __init__(self, path: Path, num_items: int):
+        f = Path(path) / "written.bin"
+        self.written: np.ndarray | None = (
+            np.memmap(str(f), dtype=np.bool_, mode="r", shape=(num_items,))
+            if f.exists()
+            else None
+        )
+
+    def leading_written_count(self, batches: list[list[int]]) -> int:
+        if self.written is None:
+            return 0
+        return leading_written_count(self.written, batches)
 
 
 def _preprocess(
@@ -69,10 +93,13 @@ class Builder:
         *,
         attribute_tokens: bool = False,
         path: Path | None = None,
+        flush_interval: int = 64,
     ):
         self.grad_sizes = grad_sizes
         self.num_items = len(data)
         self.preprocess_cfg = preprocess_cfg
+        self.flush_interval = flush_interval
+        self.num_batches_since_flush = 0
         total_grad_dim = sum(grad_sizes.values())
 
         # ── Device & precomputed hessian ──────────────────────────────────────
@@ -137,6 +164,21 @@ class Builder:
                 )
             self._scatter_flat = self._scatter_flat_sequences
 
+        # Per-row written flags + losses for resume. Only for on-disk,
+        # non-aggregated builds (aggregation sums into one in-memory row).
+        self.resumable = path is not None and preprocess_cfg.aggregation == "none"
+        if self.resumable:
+            assert path is not None
+            self.written = open_shared_memmap(
+                path / "written.bin", np.bool_, (self.num_items,)
+            )
+            self.losses = open_shared_memmap(
+                path / "losses.bin", np.float32, (self.num_items,)
+            )
+        else:
+            self.written = None
+            self.losses = None
+
     # ── __call__ ─────────────────────────────────────────────────────────
 
     def __call__(
@@ -188,11 +230,38 @@ class Builder:
             self.grad_buffer[buf_start:buf_end] = g_np[row : row + sl]
             row += sl
 
+    # ── Resume bookkeeping ───────────────────────────────────────────────
+
+    def record_losses(self, indices: list[int], losses: torch.Tensor) -> None:
+        """Persist per-row losses and mark these rows written. No-op when not
+        resumable; flushes every ``flush_interval`` batches."""
+        if not self.resumable:
+            return
+        assert self.losses is not None and self.written is not None
+        self.losses[indices] = tensor_to_numpy(losses.detach().to("cpu", torch.float32))
+        self.written[indices] = True
+
+        self.num_batches_since_flush += 1
+        if self.num_batches_since_flush >= self.flush_interval:
+            self.flush()
+
+    def leading_written_count(self, batches: list[list[int]]) -> int:
+        if not self.resumable or self.written is None:
+            return 0
+        return leading_written_count(self.written, batches)
+
     # ── Lifecycle ────────────────────────────────────────────────────────
 
     def flush(self) -> None:
+        # Flush gradients (and losses) before the written flags, so a persisted
+        # "written" mark always implies its data reached disk (crash-safe).
         if isinstance(self.grad_buffer, np.memmap):
             self.grad_buffer.flush()
+        if self.resumable:
+            assert self.losses is not None and self.written is not None
+            self.losses.flush()
+            self.written.flush()
+        self.num_batches_since_flush = 0
 
     def teardown(self) -> None:
         self.flush()

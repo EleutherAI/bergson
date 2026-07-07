@@ -15,6 +15,25 @@ from bergson.config.config import DistributedConfig
 from bergson.utils.utils import get_device, get_device_index
 
 
+def skip_completed_batches(
+    batches: list[list[int]],
+    tracker: Any,
+    *,
+    device: torch.device,
+) -> list[list[int]]:
+    """Drop leading batches already written, taking the global MIN across ranks
+    so every rank skips equally and per-step collectives stay in lockstep."""
+    skip = tracker.leading_written_count(batches)
+    if dist.is_initialized():
+        t = torch.tensor(skip, device=device)
+        dist.all_reduce(t, op=dist.ReduceOp.MIN)
+        skip = int(t.item())
+
+    if skip:
+        print(f"Resuming: skipping {skip}/{len(batches)} already-completed batches")
+    return batches[skip:]
+
+
 def init_dist(rank: int, local_rank: int, world_size: int) -> None:
     """Pin CUDA device and (if multi-rank) join the NCCL group set up by
     ``launch_distributed_run`` via MASTER_ADDR/MASTER_PORT env vars."""

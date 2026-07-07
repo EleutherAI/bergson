@@ -45,21 +45,32 @@ from bergson.utils.utils import get_device, simple_parse_kwargs_string
 BIG_NUM = np.iinfo(np.int64).max
 
 
+def clear_run_path(path: Path, overwrite: bool) -> None:
+    """Remove an existing run path when ``overwrite`` is set, else raise."""
+    if not path.exists():
+        return
+
+    if overwrite:
+        shutil.rmtree(path)
+    else:
+        raise FileExistsError(
+            f"Run path {path} already exists. Use --overwrite to overwrite it."
+        )
+
+
 def validate_run_path(index_cfg: IndexConfig):
     """Validate the run path."""
     if index_cfg.distributed.rank != 0:
         return
 
-    for path in [Path(index_cfg.run_path), Path(index_cfg.partial_run_path)]:
-        if not path.exists():
-            continue
+    # Resuming never clears: keep a partial run to continue, or a final run as done.
+    if index_cfg.resume and (
+        Path(index_cfg.partial_run_path).exists() or Path(index_cfg.run_path).exists()
+    ):
+        return
 
-        if index_cfg.overwrite:
-            shutil.rmtree(path)
-        else:
-            raise FileExistsError(
-                f"Run path {path} already exists. Use --overwrite to overwrite it."
-            )
+    for path in [Path(index_cfg.run_path), Path(index_cfg.partial_run_path)]:
+        clear_run_path(path, index_cfg.overwrite)
 
 
 def create_processor(

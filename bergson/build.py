@@ -1,12 +1,13 @@
 import os
 import shutil
 from datetime import timedelta
+from pathlib import Path
 
 import torch
 import torch.distributed as dist
 from datasets import Dataset, IterableDataset
-from tqdm.auto import tqdm
 
+from bergson.builder import IndexResumeTracker
 from bergson.collection import collect_gradients
 from bergson.config.config import HessianConfig, IndexConfig, PreprocessConfig
 from bergson.data import allocate_batches
@@ -14,10 +15,10 @@ from bergson.distributed import (
     cap_world_size_to_dataset,
     launch_distributed_run,
     parent_barrier,
+    skip_completed_batches,
 )
 from bergson.utils.batch_size import maybe_auto_batch_size
 from bergson.utils.utils import (
-    assert_type,
     get_device,
     get_device_index,
     setup_reproducibility,
@@ -97,43 +98,19 @@ def build_worker(
         "skip_hessians": skip_hessians,
     }
 
-    if isinstance(ds, Dataset):
-        batches = allocate_batches(
-            ds["length"][:],
-            index_cfg.token_batch_size,
-            max_batch_size=index_cfg.max_batch_size,
+    assert isinstance(ds, Dataset), "streaming (IterableDataset) is not supported"
+    batches = allocate_batches(
+        ds["length"][:],
+        index_cfg.token_batch_size,
+        max_batch_size=index_cfg.max_batch_size,
+    )
+    if index_cfg.resume:
+        tracker = IndexResumeTracker(index_cfg.partial_run_path, len(ds))
+        batches = skip_completed_batches(
+            batches, tracker, device=torch.device(get_device(local_rank))
         )
-        kwargs["batches"] = batches
-        collect_gradients(**kwargs)
-    else:
-        # Convert each shard to a Dataset then map over its gradients
-        buf, shard_id = [], 0
-
-        def flush(kwargs):
-            nonlocal buf, shard_id
-            if not buf:
-                return
-            ds_shard = assert_type(Dataset, Dataset.from_list(buf))
-            batches = allocate_batches(
-                ds_shard["length"][:],
-                index_cfg.token_batch_size,
-                max_batch_size=index_cfg.max_batch_size,
-            )
-            kwargs["ds"] = ds_shard
-            kwargs["batches"] = batches
-            collect_gradients(**kwargs)
-
-            buf.clear()
-            shard_id += 1
-
-        for ex in tqdm(ds, desc="Collecting gradients"):
-            buf.append(ex)
-            if len(buf) == index_cfg.stream_shard_size:
-                flush(kwargs=kwargs)
-
-        flush(kwargs=kwargs)  # Final flush
-        if rank == 0:
-            processor.save(index_cfg.partial_run_path)
+    kwargs["batches"] = batches
+    collect_gradients(**kwargs)
 
 
 def build(
@@ -155,6 +132,16 @@ def build(
     """
     if index_cfg.debug:
         setup_reproducibility()
+
+    if index_cfg.resume:
+        if Path(index_cfg.run_path).exists():  # already committed -> done
+            print(f"Resume: index already complete at {index_cfg.run_path}")
+            return
+        # Resume only skips written rows; Hessian/aggregation accumulate state.
+        assert hessian_cfg is None, "resume unsupported with Hessian fitting (--method)"
+        assert (
+            preprocess_cfg.aggregation == "none"
+        ), "resume unsupported for aggregated/reduce builds"
 
     index_cfg.partial_run_path.mkdir(parents=True, exist_ok=True)
 

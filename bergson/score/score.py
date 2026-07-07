@@ -8,7 +8,6 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from datasets import Dataset, IterableDataset
-from tqdm.auto import tqdm
 
 from bergson.collection import collect_gradients
 from bergson.config.config import IndexConfig, PreprocessConfig, ScoreConfig
@@ -21,6 +20,7 @@ from bergson.distributed import (
     cap_world_size_to_dataset,
     launch_distributed_run,
     parent_barrier,
+    skip_completed_batches,
 )
 from bergson.process_grads import (
     get_trackstar_hessian,
@@ -32,7 +32,6 @@ from bergson.score.score_writer import (
 )
 from bergson.score.scorer import Scorer
 from bergson.utils.utils import (
-    assert_type,
     convert_precision_to_torch,
     get_device,
     get_device_index,
@@ -292,62 +291,28 @@ def score_worker(
     )
     score_device = torch.device(get_device(local_rank))
 
-    if isinstance(ds, Dataset):
-        kwargs["batches"] = allocate_batches(
-            ds["length"][:],
-            index_cfg.token_batch_size,
-            max_batch_size=index_cfg.max_batch_size,
+    assert isinstance(ds, Dataset), "streaming (IterableDataset) is not supported"
+    kwargs["batches"] = allocate_batches(
+        ds["length"][:],
+        index_cfg.token_batch_size,
+        max_batch_size=index_cfg.max_batch_size,
+    )
+    kwargs["scorer"] = create_scorer(
+        index_cfg.partial_run_path,
+        ds,
+        score_cfg,
+        preprocess_cfg,
+        device=score_device,
+        dtype=score_dtype,
+        attribute_tokens=index_cfg.attribute_tokens,
+    )
+
+    if index_cfg.resume:
+        kwargs["batches"] = skip_completed_batches(
+            kwargs["batches"], kwargs["scorer"].writer, device=score_device
         )
-        kwargs["scorer"] = create_scorer(
-            index_cfg.partial_run_path,
-            ds,
-            score_cfg,
-            preprocess_cfg,
-            device=score_device,
-            dtype=score_dtype,
-            attribute_tokens=index_cfg.attribute_tokens,
-        )
 
-        collect_gradients(**kwargs)
-    else:
-        # Convert each shard to a Dataset then map over its gradients
-        buf, shard_id = [], 0
-
-        def flush(kwargs):
-            nonlocal buf, shard_id
-            if not buf:
-                return
-            ds_shard = assert_type(Dataset, Dataset.from_list(buf))
-            batches = allocate_batches(
-                ds_shard["length"][:],
-                index_cfg.token_batch_size,
-                max_batch_size=index_cfg.max_batch_size,
-            )
-            kwargs["ds"] = ds_shard
-            kwargs["batches"] = batches
-
-            kwargs["scorer"] = create_scorer(
-                index_cfg.partial_run_path / f"shard-{shard_id:05d}",
-                ds_shard,
-                score_cfg,
-                preprocess_cfg,
-                device=score_device,
-                dtype=score_dtype,
-            )
-
-            collect_gradients(**kwargs)
-
-            buf.clear()
-            shard_id += 1
-
-        for ex in tqdm(ds, desc="Collecting gradients"):
-            buf.append(ex)
-            if len(buf) == index_cfg.stream_shard_size:
-                flush(kwargs=kwargs)
-
-        flush(kwargs=kwargs)  # Final flush
-        if rank == 0:
-            processor.save(index_cfg.partial_run_path)
+    collect_gradients(**kwargs)
 
 
 def score_dataset(
@@ -369,6 +334,10 @@ def score_dataset(
     preprocess_cfg : PreprocessConfig
         Preprocessing configuration for gradient normalization/preconditioning.
     """
+    if index_cfg.resume and Path(index_cfg.run_path).exists():  # already done
+        print(f"Resume: scores already complete at {index_cfg.run_path}")
+        return
+
     index_cfg.partial_run_path.mkdir(parents=True, exist_ok=True)
 
     ds, _ = setup_data_pipeline(index_cfg)

@@ -122,6 +122,10 @@ def test_builder_teardown_rank0_guard(small_dataset, grad_sizes):
     builder.h_inv = {}
     builder.in_memory_grad_buffer = torch.ones(1, 8, device="cuda:0")
     builder.grad_buffer = np.zeros((1, 8), dtype=np.float32)
+    builder.resumable = False
+    builder.written = None
+    builder.losses = None
+    builder.num_batches_since_flush = 0
 
     with _fake_dist(rank=1):
         builder.teardown()
