@@ -95,14 +95,14 @@ def apply_eigfn_to_query(
     dst_grad_path: Path,
     segment_dir: Path,
     lr_times_steps: float,
-    n_seg: int,
     fn_kind: str,
     distributed: DistributedConfig,
 ) -> None:
     """Apply F_segment or F_backward of one segment to a stored query gradient.
 
-    ``fn_kind`` is "f_segment" or "f_backward". lambda is normalized by ``n_seg``
-    inside the worker (sum-of-squares -> expected eigenvalue) before fn is applied.
+    ``fn_kind`` is "f_segment" or "f_backward". The segment eigenvalues are
+    already checkpoint-averaged (expected eigenvalues), so the eigenfunction is
+    applied to them directly.
     """
     cfg = EkfacConfig(
         hessian_method_path=str(segment_dir),
@@ -113,7 +113,7 @@ def apply_eigfn_to_query(
     launch_distributed_run(
         "apply_eigfn_to_query",
         _apply_eigfn_worker,
-        [cfg, lr_times_steps, n_seg, fn_kind],
+        [cfg, lr_times_steps, fn_kind],
         distributed,
     )
 
@@ -124,15 +124,13 @@ def _apply_eigfn_worker(
     world_size: int,
     cfg: EkfacConfig,
     lr_times_steps: float,
-    n_seg: int,
     fn_kind: str,
 ) -> None:
     init_dist(rank, local_rank, world_size)
 
-    base_fn = {"f_segment": f_segment, "f_backward": f_backward}[fn_kind](
-        lr_times_steps
-    )
-    fn = lambda x: base_fn(x / n_seg)  # noqa: E731
+    # Segment eigenvalues are already checkpoint-averaged, so the eigenfunction
+    # is applied to them directly (no per-example normalization).
+    fn = {"f_segment": f_segment, "f_backward": f_backward}[fn_kind](lr_times_steps)
     EkfacApplicator(cfg, apply_fn=fn).compute_ivhp_sharded()
 
 
@@ -164,7 +162,6 @@ def walk_query_phase1(
             dst_grad_path=dst,
             segment_dir=segment_dir,
             lr_times_steps=lr_times_steps_per_segment[k],
-            n_seg=_load_n_seg(segment_dir),
             fn_kind="f_backward",
             distributed=distributed,
         )
@@ -200,23 +197,12 @@ def walk_query_phase2(
             dst_grad_path=dst,
             segment_dir=segment_dir,
             lr_times_steps=lr_times_steps_per_segment[l],
-            n_seg=_load_n_seg(segment_dir),
             fn_kind="f_segment",
             distributed=distributed,
         )
         query_grad_segment_paths.append(dst)
 
     return query_grad_segment_paths
-
-
-def _load_n_seg(segment_dir: Path) -> int:
-    return int(
-        torch.load(
-            segment_dir / "total_processed.pt",
-            map_location="cpu",
-            weights_only=False,
-        ).item()
-    )
 
 
 def score_per_segment_and_aggregate(
