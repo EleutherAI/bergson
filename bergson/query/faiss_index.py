@@ -12,6 +12,7 @@ from numpy.typing import NDArray
 from tqdm import tqdm
 
 from bergson.config.config import FaissConfig
+from bergson.data import FlatGradientView, load_gradients
 from bergson.process_grads import precondition_flat_grads
 
 if TYPE_CHECKING:
@@ -90,16 +91,11 @@ def gradients_loader(root_dir: Path):
     stays memory-mapped so downstream code can stream slices without excessive RAM.
     """
 
-    def load_shard(shard_dir: Path) -> np.memmap:
-        with (shard_dir / "info.json").open("r") as f:
-            info = json.load(f)
-
-        return np.memmap(
-            shard_dir / "gradients.bin",
-            dtype=info["dtype"],
-            mode="r",
-            shape=(info["num_grads"],),
-        )
+    def load_shard(shard_dir: Path) -> "np.memmap | FlatGradientView":
+        # Route through load_gradients so oversized stores (whose structured
+        # record itemsize overflows numpy's C-int cap) are served as a flat 2D
+        # view instead of raising while building the structured dtype.
+        return load_gradients(shard_dir, structured=True)
 
     if (root_dir / "info.json").exists():
         yield load_shard(root_dir)
@@ -288,7 +284,12 @@ class FaissIndex:
             if i == 0:
                 ordered_modules = list(grads.dtype.names or [])
 
-            grads = structured_to_unstructured(grads)
+            # A flat view is already unstructured; only real structured arrays
+            # need the (copying) structured_to_unstructured conversion.
+            if isinstance(grads, FlatGradientView):
+                grads = np.asarray(grads.base)
+            else:
+                grads = structured_to_unstructured(grads)
 
             if i == 0:
                 validate_ram(grads, shard_sizes[-1])

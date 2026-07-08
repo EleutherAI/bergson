@@ -6,6 +6,7 @@ import random
 import re
 from multiprocessing import cpu_count
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Sequence
 
 import ml_dtypes  # noqa: F401  # registers bfloat16 dtype with numpy
@@ -379,13 +380,78 @@ def _allocate_batches_world(
     return [allocation[rank] for rank in ranks]
 
 
+# numpy stores a structured dtype's record ``itemsize`` in a C ``int`` field, so
+# a structured record cannot exceed ``INT_MAX`` (2**31 - 1) bytes. An
+# unprojected EK-FAC query gradient is stored in full model space, so at fp32 the
+# record overflows this cap once a model has more than ~537M tracked-linear
+# params (2**31 / 4). The on-disk byte layout of the structured record is
+# identical to a flat 2D ``(num_grads, total_grad_dim)`` array, whose shape is
+# ``intp``-sized and therefore has no such ceiling, so oversized stores are
+# served through :class:`FlatGradientView` instead.
+_STRUCT_ITEMSIZE_MAX = int(np.iinfo(np.int32).max)
+
+
+def _structured_dtype_fits(dtype: DTypeLike, grad_sizes: dict[str, int]) -> bool:
+    """Whether a structured record over ``grad_sizes`` fits numpy's C-int cap."""
+    itemsize = np.dtype(dtype).itemsize * sum(grad_sizes.values())
+    return itemsize <= _STRUCT_ITEMSIZE_MAX
+
+
+class FlatGradientView:
+    """Field-accessible view over a flat 2D gradient memmap.
+
+    Emulates the subset of the numpy structured-array interface that Bergson
+    relies on (``view[module_name]``, ``view.dtype.names``, ``len(view)``,
+    ``view.flush()``) while backing the data with a plain
+    ``(num_grads, total_grad_dim)`` array. The flat layout is byte-identical to
+    the structured record layout but is not bound by numpy's 2**31-byte
+    structured-record ``itemsize`` cap, so it lets the EK-FAC gradient store
+    scale past ~537M tracked parameters.
+
+    ``view[name]`` returns the ``(num_grads, grad_sizes[name])`` column block for
+    a module as a live view into the underlying array, so both reads and
+    in-place writes (``view[name][:] = ...``) behave like structured field
+    access. Any non-string key indexes the underlying array directly (row
+    selection), matching ``mmap[i]`` / ``mmap[start:stop]`` on a structured
+    memmap at the flat level.
+    """
+
+    def __init__(self, mmap: np.ndarray, grad_sizes: dict[str, int]):
+        self.base = mmap
+        self.grad_sizes = dict(grad_sizes)
+
+        bounds = np.cumsum([0, *self.grad_sizes.values()])
+        self._spans = {
+            name: (int(bounds[i]), int(bounds[i + 1]))
+            for i, name in enumerate(self.grad_sizes)
+        }
+        # Mirror the ``.dtype.names`` attribute of a structured memmap so callers
+        # can enumerate modules the same way regardless of storage layout. We do
+        # *not* build a real structured dtype here: its itemsize would overflow
+        # numpy's C-int cap, which is the very failure this view exists to avoid.
+        self.dtype = SimpleNamespace(names=tuple(self.grad_sizes.keys()))
+
+    def __len__(self) -> int:
+        return int(self.base.shape[0])
+
+    def __getitem__(self, key: Any) -> np.ndarray:
+        if isinstance(key, str):
+            lo, hi = self._spans[key]
+            return self.base[:, lo:hi]
+        return self.base[key]
+
+    def flush(self) -> None:
+        if isinstance(self.base, np.memmap):
+            self.base.flush()
+
+
 def create_index(
     root: Path,
     num_grads: int,
     grad_sizes: dict[str, int],
     dtype: DTypeLike,
     with_structure: bool = True,
-) -> np.memmap:
+) -> np.memmap | FlatGradientView:
     """Create a memory-mapped file for storing structured gradients
     and persist metadata."""
     grad_path = root / "gradients.bin"
@@ -427,6 +493,18 @@ def create_index(
     # ── 2. Everyone blocks until the file is definitely there & sized ─────────────
     if dist.is_initialized():
         dist.barrier()
+
+    # A structured record whose itemsize overflows numpy's C-int cap cannot be
+    # constructed as a dtype; serve those stores as a flat 2D memmap wrapped in a
+    # field-access view (byte-identical layout, no itemsize ceiling).
+    if with_structure and not _structured_dtype_fits(dtype, grad_sizes):
+        flat = np.memmap(
+            grad_path,
+            dtype=np.dtype(dtype),
+            mode="r+",
+            shape=(num_grads, sum(grad_sizes.values())),
+        )
+        return FlatGradientView(flat, grad_sizes)
 
     if with_structure:
         dtype = np.dtype(struct_dtype)  # type: ignore
@@ -487,20 +565,34 @@ def load_data_string(
     return ds
 
 
-def load_gradients(root_dir: Path | str, structured: bool = True) -> np.memmap:
+def load_gradients(
+    root_dir: Path | str, structured: bool = True
+) -> np.memmap | FlatGradientView:
     """Map the structured gradients stored in `root_dir` into memory."""
     root_dir = Path(root_dir)
     with (root_dir / "info.json").open("r") as f:
         info = json.load(f)
 
     num_grads = info["num_grads"]
+    grad_sizes = info["grad_sizes"]
+
+    # A structured record whose itemsize overflows numpy's C-int cap cannot be
+    # constructed as a dtype; map those stores as a flat 2D memmap and expose the
+    # same field-access interface via a view (byte-identical layout).
+    if structured and not _structured_dtype_fits(info["base_dtype"], grad_sizes):
+        flat = np.memmap(
+            root_dir / "gradients.bin",
+            dtype=np.dtype(info["base_dtype"]),
+            mode="r",
+            shape=(num_grads, sum(grad_sizes.values())),
+        )
+        return FlatGradientView(flat, grad_sizes)
 
     if structured:
         dtype = info["dtype"]
         shape = (num_grads,)
     else:
         dtype = info["base_dtype"]
-        grad_sizes = info["grad_sizes"]
         shape = (num_grads, sum(grad_sizes.values()))
 
     return np.memmap(
