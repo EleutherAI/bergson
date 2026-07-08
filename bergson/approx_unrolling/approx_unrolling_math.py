@@ -128,8 +128,6 @@ def _apply_eigfn_worker(
 ) -> None:
     init_dist(rank, local_rank, world_size)
 
-    # Segment eigenvalues are already checkpoint-averaged, so the eigenfunction
-    # is applied to them directly (no per-example normalization).
     fn = {"f_segment": f_segment, "f_backward": f_backward}[fn_kind](lr_times_steps)
     EkfacApplicator(cfg, apply_fn=fn).compute_ivhp_sharded()
 
