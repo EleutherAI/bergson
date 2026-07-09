@@ -1,4 +1,9 @@
-# Single-step MAGIC attribution example (GPT-2 / WikiText, multi-node).
+# Replication of the GPT-2/WikiText experiment from MAGIC (arXiv 2504.16430,
+# App. A).
+
+# Hyperparameters are inferred from the MAGIC paper, the metagradients
+# paper it cites, and the datacomp competition that the metagradients paper cites.
+# The original batch size was lost.
 
 # Run with `bergson examples/magic/gpt2_wikitext.yaml`
 
@@ -6,13 +11,21 @@ steps:
   - magic:
       run_path: runs/gpt2_wikitext
       model: gpt2
-      overwrite: true
+      overwrite: false
       cleanup_ckpts: false
+
+      # Inferred from MAGIC
+      weight_decay: 1.0e-05
+      # Inferred from DataComp-small
+      adam_eps: 1.0e-06
+      # Inferred from metagradient descent paper
+      loss_reduction: sum_of_means
 
       data:
         dataset: EleutherAI/bergson-wikitext-512-chunks
         split: "train"
-        chunk_length: 512
+        chunk_length: 0
+        truncation: true
 
       query:
         dataset: EleutherAI/bergson-wikitext-512-chunks
@@ -23,6 +36,7 @@ steps:
         nproc_per_node: 4
         nnode: 4
 
+      # Original batch size lost
       batch_size: 256
       num_epochs: 4
       lr_schedule:
