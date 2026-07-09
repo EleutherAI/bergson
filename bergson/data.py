@@ -396,6 +396,18 @@ def _allocate_batches_world(
     return [allocation[rank] for rank in ranks]
 
 
+def column_offsets(grad_sizes: dict[str, int]) -> dict[str, tuple[int, int]]:
+    """Map each module name to its ``(start, end)`` column range in a flat
+    ``(num_grads, total_grad_dim)`` gradient array laid out in `grad_sizes`
+    order (the on-disk layout of :func:`create_index`)."""
+    offsets = {}
+    start = 0
+    for name, size in grad_sizes.items():
+        offsets[name] = (start, start + size)
+        start += size
+    return offsets
+
+
 def create_index(
     root: Path,
     num_grads: int,

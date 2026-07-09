@@ -1,3 +1,4 @@
+import json
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Generator, Literal
@@ -6,7 +7,7 @@ import torch
 from torch import Tensor, nn
 
 from bergson.collector.gradient_collectors import TraceCollector
-from bergson.data import load_gradients
+from bergson.data import column_offsets, load_gradients
 from bergson.gradients import GradientProcessor
 from bergson.query.faiss_index import FaissConfig, FaissIndex
 from bergson.utils.math import damped_psd_power
@@ -104,17 +105,20 @@ class Attributor:
             self.ordered_modules = self.faiss_index.ordered_modules
             return
 
-        # Load the gradients into memory
-        mmap = load_gradients(index_path)
-        assert mmap.dtype.names is not None
+        # Load the gradients into memory. The store is mapped flat rather than
+        # structured — a structured record's itemsize overflows the C-int cap
+        # above ~537M tracked fp32 params — and sliced per module by column.
+        mmap = load_gradients(index_path, structured=False)
+        with (index_path / "info.json").open("r") as f:
+            grad_sizes = json.load(f)["grad_sizes"]
         # Copy gradients into device memory
         self.grads = {
-            name: numpy_to_tensor(mmap[name]).to(device=device, dtype=dtype)
-            for name in mmap.dtype.names
+            name: numpy_to_tensor(mmap[:, lo:hi]).to(device=device, dtype=dtype)
+            for name, (lo, hi) in column_offsets(grad_sizes).items()
         }
-        self.N = mmap[mmap.dtype.names[0]].shape[0]
+        self.N = len(mmap)
 
-        self.ordered_modules = mmap.dtype.names
+        self.ordered_modules = list(grad_sizes)
 
         if unit_norm:
             if precondition:

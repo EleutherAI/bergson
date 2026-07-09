@@ -11,11 +11,11 @@ from safetensors.torch import load_file
 from simple_parsing import ArgumentParser
 from torch import Tensor
 
-from bergson.data import create_index, load_gradients
+from bergson.data import column_offsets, create_index, load_gradients
 from bergson.distributed import init_dist
 from bergson.hessians.sharded_computation import ShardedMul
 from bergson.utils.logger import get_logger
-from bergson.utils.utils import get_device
+from bergson.utils.utils import get_device, numpy_to_tensor
 
 
 @dataclass
@@ -76,16 +76,23 @@ class EkfacApplicator:
             name: eigen_g[name].shape[1] * eigen_a[name].shape[1] for name in eigen_a
         }
 
-        mmap = load_gradients(self.gradient_path)
+        # Load flat rather than structured: a structured record's itemsize is
+        # capped at C-int size, which overflows above ~537M tracked fp32
+        # params. Per-module blocks are contiguous within each row, so column
+        # offsets recover the same field access.
+        mmap = load_gradients(self.gradient_path, structured=False)
         with open(os.path.join(self.gradient_path, "info.json")) as f:
             info = json.load(f)
+        in_offsets = column_offsets(info["grad_sizes"])
 
         grad_buffer = create_index(
             Path(self.cfg.run_path),
             num_grads=info["num_grads"],
             grad_sizes=grad_sizes,
             dtype=np.float32,
+            with_structure=False,
         )
+        out_offsets = column_offsets(grad_sizes)
 
         self.logger.info(
             f"Loaded gradients for {len(mmap)} queries and computing IVHP..."
@@ -94,7 +101,8 @@ class EkfacApplicator:
         # Forward rotation into eigenbasis: Q_S^T @ G @ Q_A
         transformed_gradients: dict[str, Tensor] = {}
         for k, v in eigen_a.items():
-            gradients_noi = torch.from_numpy(mmap[k][:]).to(
+            lo, hi = in_offsets[k]
+            gradients_noi = numpy_to_tensor(mmap[:, lo:hi]).to(
                 device=self.device, dtype=torch.float32
             )
             gradients_noi = gradients_noi.view(
@@ -153,7 +161,10 @@ class EkfacApplicator:
 
         torch.cuda.synchronize()
         for k, v in transformed_gradients.items():
-            grad_buffer[k][:] = v.to(device="cpu", non_blocking=True).flatten(1).numpy()
+            lo, hi = out_offsets[k]
+            grad_buffer[:, lo:hi] = (
+                v.to(device="cpu", non_blocking=True).flatten(1).numpy()
+            )
 
         grad_buffer.flush()
 
