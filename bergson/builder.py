@@ -123,13 +123,17 @@ class Builder:
             self.num_token_grads = None
             self.offsets = None
             if path is not None:
-                self.grad_buffer = create_index(
+                # ``with_structure=False`` never takes the overflow path, so this
+                # is always a plain 2D memmap (not a FlatGradientView).
+                grad_buffer = create_index(
                     path,
                     num_grads=num_grads,
                     grad_sizes=grad_sizes,
                     dtype=np_dtype,
                     with_structure=False,
                 )
+                assert isinstance(grad_buffer, np.memmap)
+                self.grad_buffer = grad_buffer
             else:
                 self.grad_buffer = np.zeros(
                     (num_grads, total_grad_dim),

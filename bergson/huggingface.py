@@ -18,7 +18,7 @@ from transformers.training_args import TrainingArguments
 
 from bergson import AttentionConfig, GradientProcessor
 from bergson.collector.gradient_collectors import StreamingGradientCollector
-from bergson.data import create_index
+from bergson.data import FlatGradientView, create_index
 from bergson.gradients import AdafactorNormalizer, AdamNormalizer
 from bergson.utils.peft import detect_peft_modules
 from bergson.utils.utils import convert_dtype_to_torch
@@ -75,7 +75,7 @@ class GradientCollectorCallback(TrainerCallback):
 
         self.torch_dtype = convert_dtype_to_torch(self.dtype)
 
-    def write_grads(self, grad_buffer: np.memmap):
+    def write_grads(self, grad_buffer: np.memmap | FlatGradientView):
         torch.cuda.synchronize()
         for layer_name, g in self.collector.mod_grads.items():
             grad_buffer[layer_name][self.batch_indices, :] = g.numpy()

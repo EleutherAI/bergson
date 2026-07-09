@@ -77,7 +77,10 @@ def get_query_grads(
     if not score_cfg.modules:
         score_cfg.modules = target_modules
 
+    # ``structured=False`` never takes the overflow path, so this is always a
+    # plain 2D memmap (not a FlatGradientView).
     mmap = load_gradients(Path(score_cfg.query_path), structured=False)
+    assert isinstance(mmap, np.memmap)
 
     sizes = torch.tensor(list(grad_sizes.values()))
     module_offsets = torch.tensor([0] + torch.cumsum(sizes, dim=0).tolist())

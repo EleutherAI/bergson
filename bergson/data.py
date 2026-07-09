@@ -625,6 +625,9 @@ def load_gradient_dataset(root_dir: Path, structured: bool = True) -> Dataset:
                 col = pa.FixedSizeListArray.from_arrays(flat, mmap[field_name].shape[1])
                 ds = ds.add_column(field_name, col, new_fingerprint=field_name)
         else:
+            # ``structured=False`` never takes the overflow path, so the store is
+            # always a plain 2D memmap here (not a FlatGradientView).
+            assert isinstance(mmap, np.memmap)
             flat = _to_arrow(mmap.reshape(-1).copy())
             col_arrow = pa.FixedSizeListArray.from_arrays(flat, mmap.shape[1])
             ds = ds.add_column("gradients", col_arrow, new_fingerprint="gradients")
