@@ -762,8 +762,6 @@ class CollectorComputer:
             ):
                 batch = self.data[indices]
 
-                # Compute padded tensors and valid_mask before entering context
-                # TODO check if valid_mask has bug
                 # Local padding only: bin-packer enforces a per-rank
                 # ``max_len × batch_size ≤ N`` budget that a global-max
                 # all-reduce would silently violate.
@@ -775,8 +773,25 @@ class CollectorComputer:
                 )
                 total_processed += valid_mask.sum()
 
+                # ``valid_mask`` marks completion positions (labels[t+1] != -100)
+                # and drives the loss-scoped consumers (Hessian factors, MAGIC).
+                # Per-token gradient rows, however, cover EVERY real position:
+                # g_t is nonzero at prompt positions too (completion losses
+                # backprop through them via attention), so storing all positions
+                # makes the per-token rows sum to the per-document gradient. Only
+                # right-padding and the final position (predicts nothing) drop out.
+                if self.collector.attribute_tokens:
+                    lengths = torch.tensor(
+                        [len(ids) for ids in batch["input_ids"]],
+                        device=self.device,
+                    )
+                    positions = torch.arange(x.size(1), device=self.device)
+                    row_mask = (positions.unsqueeze(0) + 1) < lengths.unsqueeze(1)
+                else:
+                    row_mask = valid_mask
+
                 with (
-                    self.collector.with_batch(valid_mask),
+                    self.collector.with_batch(row_mask),
                     (
                         record_function(f"step_{step}")
                         if self.cfg.profile

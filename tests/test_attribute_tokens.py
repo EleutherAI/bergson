@@ -37,7 +37,9 @@ def test_compute_num_token_grads_no_labels():
 
 
 def test_compute_num_token_grads_with_labels():
-    """Only positions where labels[t+1] != -100 produce gradients."""
+    """Every real position produces a gradient row (length - 1), regardless of
+    the label mask: g_t is nonzero even at prompt positions, so per-token rows
+    cover all positions and sum to the per-doc gradient."""
     ds = Dataset.from_dict(
         {
             "input_ids": [[1, 2, 3, 4, 5], [6, 7, 8, 9, 10]],
@@ -46,13 +48,13 @@ def test_compute_num_token_grads_with_labels():
         }
     )
     sl = compute_num_token_grads(ds)
-    # first:  labels[1:] = [-100, 3, 4, 5]  → 3 valid
-    # second: labels[1:] = [7, -100, 9, 10] → 3 valid
-    np.testing.assert_array_equal(sl, [3, 3])
+    # length - 1, independent of where the completion mask falls
+    np.testing.assert_array_equal(sl, [4, 4])
 
 
 def test_compute_num_token_grads_all_masked():
-    """All labels -100 → zero valid positions."""
+    """Even with all labels -100 we store length - 1 rows (they carry zero
+    gradient, but the row count stays position-based, not label-based)."""
     ds = Dataset.from_dict(
         {
             "input_ids": [[1, 2, 3]],
@@ -61,7 +63,7 @@ def test_compute_num_token_grads_all_masked():
         }
     )
     sl = compute_num_token_grads(ds)
-    np.testing.assert_array_equal(sl, [0])
+    np.testing.assert_array_equal(sl, [2])
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +281,8 @@ def test_token_build_e2e(tmp_path: Path, model, dataset):
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_token_build_with_labels(tmp_path: Path, model):
-    """Build with partial labels — only assistant tokens get gradients."""
+    """Build with partial labels — per-token rows cover every real position
+    (length - 1), not just the completion, so they sum to the per-doc grad."""
     model = model.float()
     dataset = Dataset.from_dict(
         {
@@ -311,13 +314,12 @@ def test_token_build_with_labels(tmp_path: Path, model):
 
     tg = TokenGradients(cfg.partial_run_path)
 
-    # first example: labels[1:] = [-100, 3, 4, 5] → 3 valid
-    assert tg.num_token_grads[0] == 3
-    assert tg[0].shape[0] == 3
+    # length - 1 rows per example, independent of the completion mask
+    assert tg.num_token_grads[0] == 4
+    assert tg[0].shape[0] == 4
 
-    # second example: labels[1:] = [7, -100, 9, 10] → 3 valid
-    assert tg.num_token_grads[1] == 3
-    assert tg[1].shape[0] == 3
+    assert tg.num_token_grads[1] == 4
+    assert tg[1].shape[0] == 4
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
@@ -825,4 +827,145 @@ def test_trackstar_token_scores_sum_to_sequence_scores_on_disk(
                 f"Example {i}: on-disk token sum {tok_sum:.6e} != "
                 f"on-disk per-doc score {seq_scores[i]:.6e}"
             ),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Masked-prompt semantics: per-token rows cover ALL positions and sum to the
+# per-document gradient (== the autograd gradient of the completion-masked loss)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_masked_prompt_token_grads_cover_all_positions(tmp_path, model):
+    """With a prompt mask there is ONE mask: the loss mask. The per-doc gradient
+    is the true autograd gradient of the completion-masked loss, which includes
+    prompt-position contributions (completion losses backprop through the prompt
+    via causal attention).
+
+    Per-token gradients cover EVERY real position (prompt + completion), so:
+      * there are ``length - 1`` rows per example, and
+      * the rows sum to the per-doc gradient == the autograd gradient.
+
+    The test also checks that the prompt genuinely contributes (per-token sum !=
+    completion-only sum), so the all-positions behavior is materially different
+    from a completion-only decomposition -- i.e. masked positions really are
+    included.
+    """
+    model = model.float()
+
+    # Prompt/completion mask: the leading 6 positions are prompt (labels == -100),
+    # the trailing 4 are the completion.
+    masked = Dataset.from_dict(
+        {
+            "input_ids": [[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]],
+            "labels": [[-100, -100, -100, -100, -100, -100, 7, 8, 9, 10]],
+            "length": [10],
+        }
+    )
+
+    target_modules = {
+        name
+        for name, module in model.base_model.named_modules()
+        if isinstance(module, torch.nn.Linear)
+    }
+    processor = GradientProcessor(projection_dim=None)  # raw grads, no projection
+
+    seq_collector = _collect_in_memory(
+        model, masked, processor, target_modules,
+        attribute_tokens=False, run_path=str(tmp_path / "seq"),
+    )
+    tok_collector = _collect_in_memory(
+        model, masked, processor, target_modules,
+        attribute_tokens=True, run_path=str(tmp_path / "tok"),
+    )
+    offsets = tok_collector.builder.offsets
+    names = sorted(seq_collector.gradients.keys())
+    device = next(model.parameters()).device
+
+    for ex in range(len(masked)):
+        length = masked[ex]["length"]
+        start, end = int(offsets[ex]), int(offsets[ex + 1])
+        # one gradient row per real position except the last (length - 1)
+        assert end - start == length - 1
+
+        x = torch.tensor([masked[ex]["input_ids"]], device=device)
+        y = torch.tensor([masked[ex]["labels"]], device=device)
+        # completion positions only (for the "prompt really contributes" check)
+        vmask = torch.zeros(x.size(1), dtype=torch.bool, device=device)
+        vmask[:-1] = y[0, 1:] != -100
+
+        # Independent autograd reference: capture g (output grad) and a (input
+        # activation) for every target module in a single backward.
+        cap: dict[str, dict] = {}
+        handles = []
+        for n in names:
+            m = model.base_model.get_submodule(n)
+            handles.append(
+                m.register_forward_hook(
+                    lambda mod, inp, out, n=n: cap.setdefault(n, {}).update(
+                        a=inp[0].detach()
+                    )
+                )
+            )
+            handles.append(
+                m.register_full_backward_hook(
+                    lambda mod, gi, go, n=n: cap.setdefault(n, {}).update(
+                        g=go[0].detach()
+                    )
+                )
+            )
+        model.zero_grad(set_to_none=True)
+        logits = model(x).logits[:, :-1]
+        loss = torch.nn.functional.cross_entropy(
+            logits.reshape(-1, logits.size(-1)),
+            y[:, 1:].reshape(-1),
+            reduction="sum",  # matches _collect_in_memory(loss_reduction="sum")
+            ignore_index=-100,
+        )
+        loss.backward()
+        for h in handles:
+            h.remove()
+
+        max_prompt_frac = 0.0
+        for n in names:
+            module = model.base_model.get_submodule(n)
+            o, i_dim = module.weight.shape
+            a = cap[n]["a"][0].double()  # [S, I]
+            g = cap[n]["g"][0].double()  # [S, O]
+
+            full = g.mT @ a  # sum over ALL positions == autograd weight grad
+            comp = (g * vmask.unsqueeze(-1)).mT @ a  # completion positions only
+
+            seq_grad = seq_collector.gradients[n][ex].reshape(o, i_dim).double().cpu()
+            tok_sum = (
+                tok_collector.gradients[n][start:end]
+                .sum(0)
+                .reshape(o, i_dim)
+                .double()
+                .cpu()
+            )
+
+            # doc/sequence gradient == true masked-loss gradient (incl. prompt)
+            torch.testing.assert_close(
+                seq_grad, full.cpu(), atol=1e-3, rtol=1e-3,
+                msg=f"ex {ex} module {n}: per-doc grad must equal the autograd "
+                f"gradient of the masked loss (no separate gradient mask)",
+            )
+            # per-token rows now cover ALL positions, so they sum to the doc grad
+            torch.testing.assert_close(
+                tok_sum, full.cpu(), atol=1e-3, rtol=1e-3,
+                msg=f"ex {ex} module {n}: per-token rows must sum to the per-doc "
+                f"gradient (all positions included)",
+            )
+            max_prompt_frac = max(
+                max_prompt_frac,
+                ((full - comp).norm() / full.norm().clamp_min(1e-12)).item(),
+            )
+
+        # Prompt positions genuinely contribute, so including them is materially
+        # different from a completion-only decomposition (which would omit them).
+        assert max_prompt_frac > 0.1, (
+            f"ex {ex}: expected a substantial prompt-position contribution, got "
+            f"max fraction {max_prompt_frac:.4f}"
         )

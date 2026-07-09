@@ -33,27 +33,27 @@ from .utils.utils import (
 
 
 def compute_num_token_grads(data: Dataset) -> np.ndarray:
-    """Compute the number of valid gradient positions per example.
+    """Number of per-token gradient rows stored per example.
 
-    A token at position t produces a gradient iff the *next* token's label
-    is not -100 (the ignore index).  When there is no explicit ``labels``
-    column every position except the last is valid, so
-    ``num_token_grads = length - 1``.
+    Position ``t``'s row is ``g_t (x) a_t``. ``g_t`` is generally nonzero even
+    at prompt / masked positions, because the completion-token losses backprop
+    through them via causal attention -- masking is applied to the *loss*, not
+    to the gradient. Storing every position therefore makes the per-token rows
+    sum to the per-document gradient. Only the final position (which predicts
+    nothing after ``logits[:, :-1]``) and right-padding are excluded, so
+    ``num_token_grads = length - 1`` regardless of the label mask.
 
     Returns
     -------
     np.ndarray of shape ``(len(data),)`` with dtype int64.
     """
-    if "labels" in data.column_names:
-        # Count positions where labels[t+1] != -100 for t in 0..len-2
-        counts = []
-        for labels in data["labels"]:
-            labels_arr = np.asarray(labels)
-            counts.append(int(np.sum(labels_arr[1:] != -100)))
-        return np.array(counts, dtype=np.int64)
+    if "length" in data.column_names:
+        lengths = np.asarray(data["length"], dtype=np.int64)
+    elif "input_ids" in data.column_names:
+        lengths = np.asarray([len(x) for x in data["input_ids"]], dtype=np.int64)
     else:
-        lengths = np.array(data["length"], dtype=np.int64)
-        return lengths - 1
+        lengths = np.asarray([len(x) for x in data["labels"]], dtype=np.int64)
+    return lengths - 1
 
 
 def create_token_index(
