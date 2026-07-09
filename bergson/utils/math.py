@@ -14,6 +14,7 @@ def weighted_causal_lm_ce(
     ignore_index: int = -100,
     valid_mask: Tensor | None = None,
     vocab_size: int | None = None,
+    reduction: str = "mean",
     **kwargs,  # Ignored
 ) -> Tensor:
     """
@@ -25,6 +26,10 @@ def weighted_causal_lm_ce(
     example_weight : [B] or [B, T] float tensor of weights
     ignore_index   : int, label value to ignore in loss computation
     vocab_size     : optional int, vocabulary size (for validation)
+    reduction      : "mean": mean over all valid tokens in the batch
+                     (standard). "sum_of_means": mean over
+                     each sample's tokens, summed over the batch with no
+                     batch-size division.
     """
     assert logits.ndim == 3 and labels.ndim == 2
     B, T, V = logits.shape
@@ -40,25 +45,40 @@ def weighted_causal_lm_ce(
     shift_logits = logits[:, :-1, :].float().contiguous()  # [B, T-1, V]
     shift_labels = labels[:, 1:].contiguous()  # [B, T-1]
 
+    needs_per_token = example_weight is not None or reduction == "sum_of_means"
+
     # Per-token loss (fused), no reduction
     tok_loss = F.cross_entropy(
         shift_logits.view(-1, V),
         shift_labels.view(-1),
-        reduction="mean" if example_weight is None else "none",
+        reduction="none" if needs_per_token else "mean",
         ignore_index=ignore_index,
     )
 
     # Implicitly assume the weights are all ones
-    if example_weight is None:
+    if not needs_per_token:
         return tok_loss
-    else:
-        tok_loss = tok_loss.view(B, T - 1)  # [B, T-1]
+
+    tok_loss = tok_loss.view(B, T - 1)  # [B, T-1]
 
     # Per token weights
-    if example_weight.shape == (B, T):
+    if example_weight is None:
+        w = tok_loss.new_ones(B, 1)  # [B,1]
+    elif example_weight.shape == (B, T):
         w = example_weight[:, :-1].to(tok_loss.dtype)  # [B, T-1]
     else:
         w = example_weight.to(tok_loss.dtype).view(B, 1)  # [B,1]
+
+    if reduction == "sum_of_means":
+        # Per-sample token-mean, summed over the batch (no /B).
+        row_valid = (
+            valid_mask[:, :-1].to(tok_loss.dtype)
+            if valid_mask is not None
+            else (shift_labels != ignore_index).to(tok_loss.dtype)
+        )
+        row_counts = row_valid.sum(dim=1).clamp_min(1.0)  # [B]
+        row_loss = (tok_loss * w).sum(dim=1) / row_counts  # [B]
+        return row_loss.sum()
 
     denom = valid_mask[:, :-1].sum() if valid_mask is not None else T - 1
     return (tok_loss * w).sum() / denom

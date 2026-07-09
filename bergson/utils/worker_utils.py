@@ -1,5 +1,6 @@
 import shutil
 import warnings
+from functools import partial
 from pathlib import Path
 
 import numpy as np
@@ -198,7 +199,8 @@ def setup_model_and_peft(
         revision=cfg.revision,
         **model_kwargs,
     )
-    model.loss_function = weighted_causal_lm_ce
+    loss_reduction = getattr(cfg, "loss_reduction", "mean")
+    model.loss_function = partial(weighted_causal_lm_ce, reduction=loss_reduction)
     target_modules = None
 
     if cfg.peft_init_kwargs:

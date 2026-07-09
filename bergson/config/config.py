@@ -334,6 +334,17 @@ class TrainingConfig(AttributionConfig, Serializable):
     Note for TrackStar attribution: Adam normalization with a non-zero
     eps_root is untested. We recommend setting it to zero."""
 
+    adam_eps: float = 1e-8
+    """Epsilon (outside the square root) for AdamW. MAGIC
+    uses 1e-6."""
+
+    loss_reduction: Literal["mean", "sum_of_means"] = "mean"
+    """How the per-token training losses are reduced to a scalar.
+    "mean" (default): mean over all valid tokens in the batch (standard).
+    "sum_of_means": mean over each sample's tokens,
+    then summed over the batch with no batch-size division — sensitive
+    MAGIC/metagradients design choice (arXiv 2503.13751 App. D)."""
+
     optimizer: Literal["adamw", "muon", "sgd"] = "adamw"
     """Optimizer to use for the training steps. Muon is an efficient
     optimizer that can reduce memory usage and speed up training."""

@@ -842,6 +842,7 @@ def prepare_trainer(cfg: TrainingConfig, rank: int, schedule: Callable):
             opt = torchopt.adamw(
                 schedule,
                 betas=(cfg.adam_beta1, cfg.adam_beta2),
+                eps=cfg.adam_eps,
                 eps_root=cfg.eps_root,
                 weight_decay=cfg.weight_decay,
             )
