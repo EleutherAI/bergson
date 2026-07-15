@@ -499,7 +499,8 @@ def test_precondition_at_build_not_double_applied(tmp_path: Path, model, dataset
             device=device,
             dtype=dtype,
         )
-        return scorer.query_grads_t
+        # Concatenate the per-module dict into [total_dim, n_queries]
+        return torch.cat([scorer.query_grads_t[m] for m in scorer.modules], dim=0)
 
     # Preconditioned once at build (guard skips re-apply) vs once at score
     # (guard applies); plus the un-preconditioned query as a non-triviality check.
@@ -653,7 +654,8 @@ def test_score_factored_hessian_query_preconditioning(tmp_path: Path, dataset):
             device=device,
             dtype=dtype,
         )
-        return scorer.query_grads_t
+        # Concatenate the per-module dict into [total_dim, n_queries]
+        return torch.cat([scorer.query_grads_t[m] for m in scorer.modules], dim=0)
 
     from_reduce = scored_query_grads(q_precond, "precond", hessian_path)
     from_score = scored_query_grads(q_raw, "raw", hessian_path)

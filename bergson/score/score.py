@@ -50,9 +50,13 @@ from bergson.utils.worker_utils import (
 
 def get_query_grads(
     score_cfg: ScoreConfig,
+    query_range: tuple[int, int] | None = None,
 ) -> tuple[dict[str, torch.Tensor], PreprocessConfig]:
     """
     Load query gradients from the mmap index and return as a dict of tensors.
+
+    ``query_range`` selects a half-open row slice of the query set; ``None``
+    loads all queries.
 
     Returns
     -------
@@ -81,6 +85,8 @@ def get_query_grads(
         score_cfg.modules = target_modules
 
     mmap = load_gradients(Path(score_cfg.query_path))
+    if query_range is not None:
+        mmap = mmap[query_range[0] : query_range[1]]
 
     # Cast to float32 only for dtypes not natively supported by numpy (e.g. bfloat16)
     needs_cast = not np.issubdtype(mmap.dtype, np.floating)
@@ -138,6 +144,8 @@ def create_scorer(
     dtype: torch.dtype,
     *,
     attribute_tokens: bool = False,
+    query_range: tuple[int, int] | None = None,
+    num_queries_total: int | None = None,
 ) -> Scorer:
     """Create a Scorer with MemmapScoreWriter for disk-based scoring.
 
@@ -149,8 +157,12 @@ def create_scorer(
     * Normalizes and aggregates (unless already done).
     * Builds an ``index_transform`` closure for per-batch index
       preconditioning in split mode (``unit_normalize=True``).
+
+    ``query_range`` scores only that row slice of the query set, writing its
+    columns at the matching offset of the full-width (``num_queries_total``)
+    score file.
     """
-    query_grads, query_preprocess_cfg = get_query_grads(score_cfg)
+    query_grads, query_preprocess_cfg = get_query_grads(score_cfg, query_range)
 
     # Load hessian: H^(-1/2) for split, H^(-1) for one-sided.
     preconditioner = load_preconditioner(
@@ -202,16 +214,28 @@ def create_scorer(
         normalize_aggregated_grad=normalize_aggregated_grad,
     )
 
+    if query_range is not None and aggregation != "none":
+        raise ValueError(
+            "query_batch_size requires aggregation='none': aggregation mixes "
+            "gradients across queries, which a row slice would corrupt."
+        )
+    if query_range is not None and score_cfg.score != "individual":
+        raise ValueError(
+            "query_batch_size requires score='individual': 'nearest' reduces "
+            "over all queries, which per-chunk passes would compute wrongly."
+        )
+
     num_queries = len(query_grads[score_cfg.modules[0]])
+    num_scores = num_queries_total if num_queries_total is not None else num_queries
     if attribute_tokens:
         writer = MemmapTokenScoreWriter(
             path,
             data,
-            num_queries,
+            num_scores,
             dtype=dtype,
         )
     else:
-        writer = MemmapSequenceScoreWriter(path, len(data), num_queries, dtype=dtype)
+        writer = MemmapSequenceScoreWriter(path, len(data), num_scores, dtype=dtype)
 
     return Scorer(
         query_grads=query_grads,
@@ -223,6 +247,7 @@ def create_scorer(
         score_mode=score_cfg.score,
         attribute_tokens=attribute_tokens,
         index_transform=index_transform,
+        query_offset=query_range[0] if query_range is not None else 0,
     )
 
 
@@ -301,17 +326,36 @@ def score_worker(
             index_cfg.token_batch_size,
             max_batch_size=index_cfg.max_batch_size,
         )
-        kwargs["scorer"] = create_scorer(
-            index_cfg.partial_run_path,
-            ds,
-            score_cfg,
-            preprocess_cfg,
-            device=score_device,
-            dtype=score_dtype,
-            attribute_tokens=index_cfg.attribute_tokens,
-        )
 
-        collect_gradients(**kwargs)
+        with open(Path(score_cfg.query_path) / "info.json") as f:
+            num_queries = json.load(f)["num_grads"]
+        qbs = score_cfg.query_batch_size
+        if qbs is None or qbs >= num_queries:
+            query_ranges = [None]
+        else:
+            # Every rank loops the same slices so the collectives inside
+            # collect_gradients stay aligned.
+            query_ranges = [
+                (start, min(start + qbs, num_queries))
+                for start in range(0, num_queries, qbs)
+            ]
+
+        for query_range in query_ranges:
+            kwargs["scorer"] = create_scorer(
+                index_cfg.partial_run_path,
+                ds,
+                score_cfg,
+                preprocess_cfg,
+                device=score_device,
+                dtype=score_dtype,
+                attribute_tokens=index_cfg.attribute_tokens,
+                query_range=query_range,
+                num_queries_total=num_queries,
+            )
+
+            collect_gradients(**kwargs)
+            kwargs["scorer"].writer.flush()
+            del kwargs["scorer"]
     else:
         # Convert each shard to a Dataset then map over its gradients
         buf, shard_id = [], 0

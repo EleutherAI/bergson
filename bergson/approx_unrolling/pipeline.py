@@ -229,5 +229,6 @@ def approx_unrolling_pipeline(
         index_cfg=index_cfg,
         query_grad_segment_paths=query_grad_segment_paths,
         final_checkpoint=str(approx_unrolling_cfg.checkpoints[-1]),
+        query_batch_size=approx_unrolling_cfg.query_batch_size,
     )
     logger.info(f"[approximate unrolling pipeline] DONE. Final scores at {out_path}")

@@ -708,6 +708,11 @@ class ScoreConfig(Serializable):
     batch_size: int = 1024
     """Batch size for processing the query dataset."""
 
+    query_batch_size: int | None = None
+    """Batch size for query scoring: each query batch is scored in its own
+    pass over the training data. Requires score='individual' and
+    aggregation='none'. When None, score all queries in one pass."""
+
     precision: Literal["auto", "bf16", "fp16", "fp32"] = "fp32"
     """Precision (dtype) to convert the query and index gradients to before
     computing the scores. If "auto", the model's gradient dtype is used."""
@@ -753,6 +758,10 @@ class ApproxUnrollingConfig(Serializable):
     query_aggregation: Literal["mean", "sum", "none"] = "mean"
     """How to aggregate the query gradients. "none" produces one
     score column per query."""
+
+    query_batch_size: int | None = None
+    """Batch size for per-segment query scoring (see
+    ScoreConfig.query_batch_size)."""
 
 
 @dataclass

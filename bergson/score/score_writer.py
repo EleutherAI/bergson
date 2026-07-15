@@ -70,9 +70,13 @@ class ScoreWriter(ABC):
         self,
         indices: list[int],
         scores: torch.Tensor,
+        query_offset: int = 0,
     ):
         """
         Write the scores to the score writer.
+
+        ``query_offset`` is the position of ``scores``' first query column
+        in the full query set.
         """
         raise NotImplementedError("Subclasses must implement this method")
 
@@ -105,12 +109,15 @@ class InMemoryTokenScoreWriter(ScoreWriter):
         ]
         self.dtype = dtype
 
-    def __call__(self, indices: list[int], scores: torch.Tensor):
+    def __call__(self, indices: list[int], scores: torch.Tensor, query_offset: int = 0):
         # scores: [total_valid_in_batch, num_scores]
         row = 0
         for idx in indices:
             sl = int(self.num_token_grads[idx])
-            self.scores[idx] = scores[row : row + sl].to(dtype=self.dtype).cpu()
+            width = scores.shape[1]
+            self.scores[idx][:, query_offset : query_offset + width] = (
+                scores[row : row + sl].to(dtype=self.dtype).cpu()
+            )
             row += sl
 
     def flush(self):
@@ -126,8 +133,11 @@ class InMemorySequenceScoreWriter(ScoreWriter):
     ):
         self.scores = torch.zeros((num_items, num_scores), device="cpu", dtype=dtype)
 
-    def __call__(self, indices: list[int], scores: torch.Tensor):
-        self.scores[indices] = scores.to(dtype=self.scores.dtype).cpu()
+    def __call__(self, indices: list[int], scores: torch.Tensor, query_offset: int = 0):
+        width = scores.shape[1]
+        self.scores[indices, query_offset : query_offset + width] = scores.to(
+            dtype=self.scores.dtype
+        ).cpu()
 
     def flush(self):
         # No-op for in-memory storage
@@ -206,19 +216,20 @@ class MemmapTokenScoreWriter(ScoreWriter):
             shape=(total_tokens,),
         )
 
-    def __call__(self, indices: list[int], scores: torch.Tensor):
+    def __call__(self, indices: list[int], scores: torch.Tensor, query_offset: int = 0):
         # scores: [total_valid_in_batch, num_scores]
         scores = scores.to(dtype=self.dtype)
+        width = scores.shape[1]
 
         row = 0
         for idx in indices:
             sl = int(self.num_token_grads[idx])
             buf_start = int(self.offsets[idx])
             buf_end = int(self.offsets[idx + 1])
-            for i in range(self.num_scores):
+            for i in range(width):
                 col = tensor_to_numpy(scores[row : row + sl, i].cpu())
-                self.scores[f"score_{i}"][buf_start:buf_end] = col
-                self.scores[f"written_{i}"][buf_start:buf_end] = True
+                self.scores[f"score_{query_offset + i}"][buf_start:buf_end] = col
+                self.scores[f"written_{query_offset + i}"][buf_start:buf_end] = True
             row += sl
 
         self.num_batches_since_flush += 1
@@ -345,13 +356,13 @@ class MemmapSequenceScoreWriter(ScoreWriter):
             shape=(num_items,),
         )
 
-    def __call__(self, indices: list[int], scores: torch.Tensor):
-        # scores: [num_indices, num_scores]
+    def __call__(self, indices: list[int], scores: torch.Tensor, query_offset: int = 0):
+        # scores: [num_indices, width], written at columns query_offset onward
         scores = scores.to(dtype=self.dtype)
-        for i in range(self.num_scores):
+        for i in range(scores.shape[1]):
             score_col = tensor_to_numpy(scores[:, i].cpu()).flatten()
-            self.scores[f"score_{i}"][indices] = score_col
-            self.scores[f"written_{i}"][indices] = True
+            self.scores[f"score_{query_offset + i}"][indices] = score_col
+            self.scores[f"written_{query_offset + i}"][indices] = True
 
         self.num_batches_since_flush += 1
         if self.num_batches_since_flush >= self.flush_interval:

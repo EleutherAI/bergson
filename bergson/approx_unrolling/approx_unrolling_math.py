@@ -229,6 +229,7 @@ def score_per_segment_and_aggregate(
     index_cfg: IndexConfig,
     query_grad_segment_paths: list[Path],
     final_checkpoint: str,
+    query_batch_size: int | None = None,
 ) -> Path:
     """Phase 3: per-segment ``query_grad_segment_l . g(z_m)`` scores, summed.
 
@@ -249,7 +250,9 @@ def score_per_segment_and_aggregate(
         seg_index_cfg.run_path = str(scores_dir)
         seg_index_cfg.projection_dim = 0
         score_cfg = ScoreConfig(
-            query_path=str(query_grad_segment_paths[l]), higher_is_better=True
+            query_path=str(query_grad_segment_paths[l]),
+            higher_is_better=True,
+            query_batch_size=query_batch_size,
         )
         seg_preprocess_cfg = PreprocessConfig()
         save_run_config(
