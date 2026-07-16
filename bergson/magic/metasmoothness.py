@@ -98,7 +98,7 @@ def metasmoothness_worker(
 
     thetas: list[torch.Tensor] = []
     for k in range(3):
-        weights = 1.0 + run_cfg.h * k * v
+        weights = 1.0 + run_cfg.fd_step * k * v
         if pad_count:
             weights[-weight_pad_count:] = 0.0
         stream.weights.data.copy_(weights.to(stream.weights.device))
@@ -123,11 +123,11 @@ def metasmoothness_worker(
         movement = float((thetas[2] - thetas[0]).abs().sum())
         result = {
             "score": score,
-            "h": run_cfg.h,
+            "fd_step": run_cfg.fd_step,
             "direction_seed": run_cfg.direction_seed,
             "total_movement_l1": movement,
         }
-        print(f"[metasmoothness] score = {score:.4f} (h={run_cfg.h})")
+        print(f"[metasmoothness] score = {score:.4f} (h={run_cfg.fd_step})")
         os.makedirs(run_cfg.run_path, exist_ok=True)
         with open(os.path.join(run_cfg.run_path, "metasmoothness.json"), "w") as f:
             json.dump(result, f, indent=2)

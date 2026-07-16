@@ -381,7 +381,7 @@ class MetasmoothnessConfig(TrainingConfig):
     space. Costs three trainings; no retraining bank. The metagradients
     authors select eps_root and lr by maximizing this metric."""
 
-    h: float = 0.1
+    fd_step: float = 0.1
     """Finite-difference step size for the data-weight perturbation."""
 
     direction_seed: int = 0
