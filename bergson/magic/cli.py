@@ -218,7 +218,18 @@ def worker(
     schedule = run_cfg.lr_schedule.get_schedule(len(stream))
     torch.manual_seed(run_cfg.seed)
     torch.cuda.manual_seed_all(run_cfg.seed)
-    trainer, fwd_state, model = prepare_trainer(run_cfg, rank, schedule)
+    
+    # The metagradient (double backward) runs only when we compute MAGIC scores
+    # from scratch. When it does, the base must stay eager + uncompiled (double
+    # backward is incompatible with torch.compile and non-eager attention);
+    # otherwise the base may compile / use the configured attention like the
+    # retrains do.
+    do_metagradient = not score_path and not getattr(
+        run_cfg, "skip_metagradient", False
+    )
+    trainer, fwd_state, model = prepare_trainer(
+        run_cfg, rank, schedule
+    )
 
     ckpts_path = os.path.join(run_cfg.run_path, "checkpoints")
     resume = run_cfg.resume
@@ -234,10 +245,21 @@ def worker(
         resume=resume,
         fsdp=run_cfg.fsdp,
         max_grad_norm=run_cfg.max_grad_norm,
+        snapshot_optimizer_hparams=(
+            dict(
+                betas=(run_cfg.adam_beta1, run_cfg.adam_beta2),
+                eps=run_cfg.adam_eps,
+                eps_root=run_cfg.eps_root,
+            )
+            if getattr(run_cfg, "save_optimizer_state", False)
+            else None
+        ),
     )
-    if getattr(run_cfg, "save_optimizer_state", False) and global_rank == 0:
+    # Called on every rank: FSDP moments are DTensors whose gather is a
+    # collective; rank 0 writes inside.
+    if getattr(run_cfg, "save_optimizer_state", False):
         save_second_moments_as_optimizer_pt(
-            model,  # type: ignore[reportArgumentType]
+            model,
             fwd_state.opt_state,
             os.path.join(run_cfg.run_path, "optimizer.pt"),
         )
@@ -293,7 +315,7 @@ def worker(
     )
 
     multi_query = False
-    if not score_path:
+    if do_metagradient:
         # Sanity check
         if not isinstance(run_cfg, MagicConfig):
             raise RuntimeError("run_cfg must be a MagicConfig to compute scores")
@@ -343,6 +365,19 @@ def worker(
             score_path = os.path.join(run_cfg.run_path, "scores.pt")
             torch.save(scores, score_path)
             print(f"Saved attribution scores to {score_path}")
+    elif not score_path:
+        # skip_metagradient: no MAGIC scores; build the bank with dummy zeros.
+        scores = torch.zeros_like(stream.weights).cpu()
+        if pad_count:
+            scores = (
+                scores[:-weight_pad_count] if scores.ndim == 1 else scores[:-pad_count]
+            )
+        if global_rank == 0:
+            print(f"Baseline loss: {baseline}")
+            print(
+                "skip_metagradient: skipped MAGIC backward; using dummy zero "
+                "scores (bank build only)."
+            )
     elif os.path.isdir(score_path) or score_path.endswith(".npy"):
         scores, multi_query = load_attribution_scores(score_path)
     else:

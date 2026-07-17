@@ -24,6 +24,7 @@ from tqdm.auto import tqdm
 from ..config.config import TrainingConfig
 from ..data import sorted_checkpoints
 from ..distributed import grad_tree
+from ..utils.load_from_optimizer import save_second_moments_as_optimizer_pt
 from ..utils.utils import get_device
 from ..utils.worker_utils import setup_model_and_peft
 from .config import MagicSaveMode
@@ -428,6 +429,7 @@ class Trainer:
         resume: bool = False,
         fsdp: bool = False,
         max_grad_norm: float | None = None,
+        snapshot_optimizer_hparams: dict | None = None,
     ) -> TrainerState:
         """Train the model on the given data stream, starting from the given state.
 
@@ -451,6 +453,11 @@ class Trainer:
                 wrapped with FSDP.
             max_grad_norm: Clip gradients to this global norm before each optimizer
                 step. Passed through to `Trainer.step`.
+            snapshot_optimizer_hparams: When set (to the optimizer's betas/
+                eps/eps_root), write each snapshot's optimizer second moments
+                to ``step_<i>.optimizer.pt`` next to its checkpoint, with the
+                step and these hyperparameters included so consumers can
+                bias-correct and damp them. AdamW only.
 
         Returns:
             The final trainer state after training.
@@ -485,6 +492,17 @@ class Trainer:
 
                 p = os.path.join(save_dir, f"step_{i}.ckpt")
                 pending_save = state.save(p, debug_pbar=pbar if debug else None)
+
+                if snapshot_optimizer_hparams is not None:
+                    # Called on every rank: FSDP moments are DTensors whose
+                    # gather is a collective; rank 0 writes inside.
+                    save_second_moments_as_optimizer_pt(
+                        self.model,
+                        state.opt_state,
+                        os.path.join(save_dir, f"step_{i}.optimizer.pt"),
+                        step=i,
+                        **snapshot_optimizer_hparams,
+                    )
 
                 match save_mode:
                     case "all":

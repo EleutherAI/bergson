@@ -1,3 +1,4 @@
+import re
 from enum import Enum
 from pathlib import Path
 
@@ -5,7 +6,10 @@ import torch
 from huggingface_hub import hf_hub_download
 from huggingface_hub.utils import parse_hf_uri
 from peft import PeftModel, get_peft_model_state_dict
+from torch import nn
 from transformers import PreTrainedModel
+from transformers.pytorch_utils import ALL_LAYERNORM_LAYERS
+from transformers.trainer_pt_utils import get_parameter_names
 
 from bergson.gradients import (
     AdafactorNormalizer,
@@ -111,26 +115,43 @@ def _base_model_prefix(model) -> str:
     return ""
 
 
-def _orient_weight_second_moment(exp_avg_sq, model, layer_name):
-    """Return ``exp_avg_sq`` in the collector's ``[out, in]`` orientation.
+def orient_second_moment(
+    t: torch.Tensor, out_dim: int, in_dim: int, layer=None
+) -> torch.Tensor | None:
+    """Return ``t`` in ``[out, in]`` orientation.
 
-    The optimizer stores the second moment in the parameter's own layout, which
-    is ``[out, in]`` for ``nn.Linear`` but ``[in, out]`` for HF ``Conv1D`` (GPT-2
-    attn/mlp). The collector always feeds ``AdamNormalizer`` a ``[out, in]``
-    gradient, so a Conv1D moment must be transposed or the divide broadcasts
-    against the wrong axis. Orient by matching the module's out/in sizes.
+    When ``layer`` is a supported module its class decides the storage
+    convention (``LayerAdapter.weight_transposed``; HF Conv1D stores
+    ``[in, out]``) — required for square weights, where shapes cannot
+    distinguish the orientations. Otherwise fall back to shape matching.
+    ``None`` when the (oriented) shape does not match ``(out_dim, in_dim)``.
     """
+    if layer is not None and isinstance(layer, LayerAdapter.supported_modules):
+        oriented = t.T if LayerAdapter.weight_transposed(layer) else t
+        return (
+            oriented.contiguous()
+            if tuple(oriented.shape) == (out_dim, in_dim)
+            else None
+        )
+    if tuple(t.shape) == (out_dim, in_dim):
+        return t.contiguous()
+    if tuple(t.shape) == (in_dim, out_dim):
+        return t.T.contiguous()
+    return None
+
+
+def _orient_weight_second_moment(exp_avg_sq, model, layer_name):
+    """Return ``exp_avg_sq`` in the collector's ``[out, in]`` orientation,
+    per the module's storage convention; unknown modules or shapes pass
+    through unchanged."""
     try:
         module = model.get_submodule(layer_name)
         o = getattr(module, LayerAdapter.out_attr(module))
         i = getattr(module, LayerAdapter.in_attr(module))
     except (AttributeError, ValueError):
         return exp_avg_sq  # unknown module; leave as-is
-    if tuple(exp_avg_sq.shape) == (o, i):
-        return exp_avg_sq
-    if tuple(exp_avg_sq.shape) == (i, o):
-        return exp_avg_sq.T.contiguous()
-    return exp_avg_sq
+    oriented = orient_second_moment(exp_avg_sq, o, i, layer=module)
+    return exp_avg_sq if oriented is None else oriented
 
 
 def get_normalizers(
@@ -146,10 +167,15 @@ def get_normalizers(
     normalizers: dict[str, Normalizer] = {}
     for param_idx, state in optimizer_state["state"].items():
         param_idx = int(param_idx)
-        if param_idx not in target_param_index_to_name:
+        # Prefer the recorded param_name when the file carries one: positional
+        # indices written from an FSDP-wrapped model do not match a fresh
+        # model's enumeration.
+        param_name = (
+            state.get("param_name") if isinstance(state, dict) else None
+        ) or target_param_index_to_name.get(param_idx)
+        if param_name is None:
             continue
 
-        param_name = target_param_index_to_name[param_idx]
         if not param_name.endswith(".weight"):
             continue
 
@@ -203,6 +229,59 @@ def get_normalizers(
     return normalizers
 
 
+def optimizer_param_index_to_name(optimizer_pt: dict, model) -> dict[int, str]:
+    """Map ``optimizer.pt`` state indices to param names for a non-PEFT model.
+
+    With a single param group the indices follow ``model.named_parameters()``
+    order. With multiple groups, assume HF Trainer's decay/no-decay split and
+    reconstruct it with transformers' own utilities. Entries that record a
+    ``param_name`` (bergson snapshot exports) should take precedence over
+    this mapping in consumers; remaining second-moment shapes are verified
+    against the mapped params.
+    """
+    groups = optimizer_pt.get("param_groups", [])
+    if len(groups) <= 1:
+        mapping = {idx: name for idx, (name, _) in enumerate(model.named_parameters())}
+    else:
+        decay = {
+            n
+            for n in get_parameter_names(model, ALL_LAYERNORM_LAYERS)
+            if "bias" not in n
+        }
+        named = [(n, p) for n, p in model.named_parameters() if p.requires_grad]
+        ordered = [n for n, _ in named if n in decay] + [
+            n for n, _ in named if n not in decay
+        ]
+        group_sizes = [len(g.get("params", [])) for g in groups]
+        expected = [len([n for n, _ in named if n in decay])]
+        expected.append(len(named) - expected[0])
+        if len(groups) != 2 or group_sizes != expected:
+            raise ValueError(
+                f"Cannot map optimizer.pt state indices to params: "
+                f"{len(groups)} param groups of sizes {group_sizes} do not "
+                f"match HF Trainer's decay/no-decay split {expected} for this "
+                f"model."
+            )
+        flat_indices = [i for g in groups for i in g["params"]]
+        mapping = dict(zip(flat_indices, ordered))
+
+    shapes = {n: tuple(p.shape) for n, p in model.named_parameters()}
+    for idx, entry in optimizer_pt.get("state", {}).items():
+        if not isinstance(entry, dict) or "param_name" in entry:
+            continue
+        name = mapping.get(int(idx))
+        if name is None or "exp_avg_sq" not in entry:
+            continue
+        if tuple(entry["exp_avg_sq"].shape) != shapes.get(name):
+            raise ValueError(
+                f"optimizer.pt state entry {idx} has second-moment shape "
+                f"{tuple(entry['exp_avg_sq'].shape)} but maps to {name!r} of "
+                f"shape {shapes.get(name)}; the index layout is not the "
+                f"expected one."
+            )
+    return mapping
+
+
 def load_from_optimizer(
     model: PreTrainedModel | PeftModel,
     optimizer_state: str,
@@ -248,15 +327,27 @@ def load_from_optimizer(
         adapters = list(model.peft_config.keys())
         if len(adapters) == 1:
             adapter_suffix = "." + adapters[0]
+        if len(optimizer_state_dict.get("param_groups", [])) > 1:
+            # HF Trainer applies its decay/no-decay split to PEFT params too;
+            # map group-aware over named_parameters, then translate to the
+            # serialized (adapter-stripped) naming the module lookups expect.
+            target_param_index_to_name = {
+                idx: name.replace(f"{adapter_suffix}.", ".")
+                for idx, name in optimizer_param_index_to_name(
+                    optimizer_state_dict, model
+                ).items()
+            }
+        else:
+            target_param_index_to_name = {
+                idx: name for idx, (name, _param) in enumerate(params_for_index)
+            }
     else:
-        params_for_index = list(model.named_parameters())
         # Collection runs on ``model.base_model``, so normalizer keys must be
         # relative to it (e.g. drop GPT-2's "transformer." prefix).
         base_prefix = _base_model_prefix(model)
-
-    target_param_index_to_name: dict[int, str] = {}
-    for idx, (name, _param) in enumerate(params_for_index):
-        target_param_index_to_name[idx] = name
+        target_param_index_to_name = optimizer_param_index_to_name(
+            optimizer_state_dict, model
+        )
 
     device = next(model.parameters()).device
 
@@ -283,17 +374,31 @@ def load_from_optimizer(
     return normalizers
 
 
+def _canonical_param_name(name: str) -> str:
+    """Undo parametrization renaming: ``X.parametrizations.weight.original``
+    (what e.g. the simple_fsdp wrapper registers) -> ``X.weight``."""
+    return re.sub(r"\.parametrizations\.([^.]+)\.original$", r".\1", name)
+
+
 def save_second_moments_as_optimizer_pt(
-    model: PreTrainedModel | PeftModel,
+    model: nn.Module,
     opt_state,
     path: str | Path,
+    step: int | None = None,
+    betas: tuple[float, float] | None = None,
+    eps: float | None = None,
+    eps_root: float | None = None,
 ) -> int:
     """Export a torchopt AdamW ``opt_state`` to a PyTorch ``optimizer.pt``.
 
     Writes ``{"state": {idx: {"exp_avg_sq": nu}}, "param_groups": [...]}`` where
     ``idx`` indexes ``model.named_parameters()`` (deduplicated) exactly as
     :func:`load_from_optimizer` reads it, so the file round-trips into
-    attribution normalizers.
+    attribution normalizers. When given, ``step`` (per entry) and ``betas`` /
+    ``eps`` / ``eps_root`` (param_groups) are stored in the standard
+    locations, making the file self-describing for consumers that
+    bias-correct and damp the raw moments. Call from every rank — gathering sharded
+    (DTensor) moments is a collective; only rank 0 writes the file.
 
     The mapping is done **by name**, not by position, because torchopt stores
     ``nu`` as a flat list in optree's sorted-key order of the params dict passed
@@ -327,9 +432,11 @@ def save_second_moments_as_optimizer_pt(
     )
 
     def _to_cpu(t):
+        # FSDP: gather the sharded moment (a collective — all ranks reach it).
         t = t.full_tensor() if hasattr(t, "full_tensor") else t
         return t.detach().to("cpu")
 
+    main = not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0
     name_to_nu = {}
     for name, moment in zip(ordered_names, nu):
         if moment is None:  # e.g. Muon leaves 2D params without a second moment
@@ -338,16 +445,40 @@ def save_second_moments_as_optimizer_pt(
             f"second-moment shape {tuple(moment.shape)} != param shape "
             f"{tuple(params[name].shape)} for '{name}' -- nu/name misalignment."
         )
-        name_to_nu[name] = _to_cpu(moment)
+        moment = _to_cpu(moment)
+        if main:
+            name_to_nu[name] = moment
 
+    # Each entry also records its param_name: FSDP wrapping re-registers
+    # params through parametrizations, renaming them
+    # (``X.parametrizations.weight.original``) and reordering
+    # named_parameters(), so positional indices from a wrapped model do not
+    # match a fresh model's. The recorded name is canonicalized back to the
+    # fresh-model form; readers prefer it and fall back to index mapping for
+    # older files.
     state: dict[int, dict] = {}
     param_ids: list[int] = []
     for idx, (name, _param) in enumerate(model.named_parameters()):
         if name in name_to_nu:
-            state[idx] = {"exp_avg_sq": name_to_nu[name]}
+            state[idx] = {
+                "exp_avg_sq": name_to_nu[name],
+                "param_name": _canonical_param_name(name),
+            }
+            if step is not None:
+                state[idx]["step"] = torch.tensor(step)
             param_ids.append(idx)
 
-    optimizer_pt = {"state": state, "param_groups": [{"params": param_ids}]}
+    if not main:
+        return len(param_ids)
+
+    param_group: dict = {"params": param_ids}
+    if betas is not None:
+        param_group["betas"] = tuple(betas)
+    if eps is not None:
+        param_group["eps"] = eps
+    if eps_root is not None:
+        param_group["eps_root"] = eps_root
+    optimizer_pt = {"state": state, "param_groups": [param_group]}
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(optimizer_pt, path)
@@ -366,6 +497,16 @@ def _get_bias_second_moment(
         return None
 
     bias_name = layer_name + ".bias"
+    # Prefer entries that record their param_name (see get_normalizers).
+    for bias_state in optimizer_state["state"].values():
+        if isinstance(bias_state, dict) and bias_state.get("param_name") == bias_name:
+            if (
+                get_optimizer_state_format(bias_state)
+                == OptimizerStateFormat.UNFACTORED
+            ):
+                return get_unfactored_second_moment(bias_state)
+            return None
+
     for idx, name in param_index_to_name.items():
         if name == bias_name:
             bias_state = optimizer_state["state"].get(idx)

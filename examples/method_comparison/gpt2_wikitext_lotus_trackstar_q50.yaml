@@ -1,0 +1,170 @@
+# TrackStar (Chang et al., 2024) attribution scores for the lotus GPT-2
+# base model against the 50 test queries, validated against the complete
+# 400-model lotus bank -- the same setting as the MAGIC (rho=0.92) and
+# SOURCE (rho=0.39) comparisons. Doc-level scoring, projection_dim 32,
+# Adam-normalized gradients from runs/lotus/optimizer.pt, standard
+# query/value hessian mixing.
+
+# Run with `bergson examples/method_comparison/gpt2_wikitext_lotus_trackstar_q50.yaml`
+
+steps:
+- trackstar:
+    index_cfg:
+      run_path: runs/lotus_trackstar_q50
+      overwrite: true
+      model: runs/lotus/retrained/base
+      precision: fp32
+      revision: null
+      distributed:
+        nnode: 1
+        nproc_per_node: 8
+        node_rank: null
+      fsdp: false
+      peft_init_kwargs: ''
+      model_kwargs: ''
+      data:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: train
+        subset: null
+        prompt_column: text
+        completion_column: ''
+        conversation_column: ''
+        reward_column: ''
+        skip_nan_rewards: false
+        truncation: false
+        format_template: ''
+        data_kwargs: ''
+        chunk_length: 0
+      tokenizer: ''
+      drop_columns: true
+      max_tokens: null
+      use_tf32_matmuls: false
+      debug: false
+      projection_dim: 32
+      include_bias: false
+      reshape_to_square: false
+      projection_type: rademacher
+      projection_target: per_module
+      token_batch_size: 1024
+      max_batch_size: null
+      auto_batch_size: false
+      optimizer_state: runs/lotus/optimizer.pt
+      loss_fn: ce
+      loss_reduction: sum
+      label_smoothing: 0.0
+      stream_shard_size: 400000
+      split_attention_modules: []
+      attention:
+        num_heads: 0
+        head_size: 0
+        head_dim: 0
+      profile: false
+      filter_modules: lm_head
+      force_math_sdp: false
+      attribute_tokens: false
+      modules: []
+    trackstar_cfg:
+      query:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: test[1:51]
+        subset: null
+        prompt_column: text
+        completion_column: ''
+        conversation_column: ''
+        reward_column: ''
+        skip_nan_rewards: false
+        truncation: false
+        format_template: ''
+        data_kwargs: ''
+        chunk_length: 0
+      preprocess_cfg:
+        unit_normalize: true
+        hessian_path: null
+        inversion_cfg:
+          inversion: damped_inverse
+          damping_factor: 0.1
+        aggregation: none
+        normalize_aggregated_grad: false
+      score_cfg:
+        query_path: ''
+        score: individual
+        batch_size: 1024
+        precision: fp32
+        modules: []
+        higher_is_better: true
+      target_downweight_components: 1000
+      stats_sample_size: 10000
+      resume: true
+- validate:
+    run_path: runs/lotus_trackstar_q50_validate
+    overwrite: true
+    model: gpt2
+    precision: fp32
+    revision: null
+    distributed:
+      nnode: 1
+      nproc_per_node: 8
+      node_rank: null
+    fsdp: false
+    peft_init_kwargs: ''
+    model_kwargs: ''
+    data:
+      dataset: EleutherAI/bergson-wikitext-512-chunks
+      split: train
+      subset: null
+      prompt_column: text
+      completion_column: ''
+      conversation_column: ''
+      reward_column: ''
+      skip_nan_rewards: false
+      truncation: false
+      format_template: ''
+      data_kwargs: ''
+      chunk_length: 512
+    tokenizer: ''
+    drop_columns: true
+    max_tokens: null
+    use_tf32_matmuls: false
+    debug: false
+    lr_schedule:
+      lr: 1.0e-05
+      lr_scheduler_type: linear
+      lr_start: 0.0
+      lr_end: 0.0
+      warmup_steps: 0
+      num_cycles: 0.5
+      power: 1.0
+    batch_size: 64
+    num_epochs: 1
+    seed: 42
+    adam_beta1: 0.95
+    adam_beta2: 0.975
+    eps_root: 1.0e-08
+    optimizer: adamw
+    save_optimizer_state: false
+    weight_decay: 0.01
+    max_grad_norm: null
+    grad_checkpointing: false
+    resume: false
+    wandb_project: ''
+    save_retrained_models: false
+    query:
+      dataset: EleutherAI/bergson-wikitext-512-chunks
+      split: test[1:51]
+      subset: null
+      prompt_column: text
+      completion_column: ''
+      conversation_column: ''
+      reward_column: ''
+      skip_nan_rewards: false
+      truncation: false
+      format_template: ''
+      data_kwargs: ''
+      chunk_length: 0
+    query_method: mean
+    num_subsets: 100
+    subset_strategy: random
+    exclude_zero_scores: false
+    subset_fraction: 0.0
+    scores: runs/lotus_trackstar_q50/scores
+    retrained_dir: runs/lotus

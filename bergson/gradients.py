@@ -261,6 +261,12 @@ class LayerAdapter:
             case _:
                 raise ValueError(f"Unsupported layer type: {type(layer)}")
 
+    @staticmethod
+    def weight_transposed(layer: nn.Module) -> bool:
+        """Whether the layer stores its weight ``[in, out]`` (HF Conv1D)
+        rather than ``[out, in]``."""
+        return isinstance(layer, HFConv1D)
+
 
 @dataclass
 class AdafactorNormalizer(Normalizer):

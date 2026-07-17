@@ -76,7 +76,10 @@ def load_attribution_scores(score_path: str) -> tuple[torch.Tensor, bool]:
 
     Score directories are negated when their ``score_cfg.higher_is_better`` is
     set, aligning them with the loss-diff convention. ``.npy`` files carry no
-    ``score_cfg`` and are loaded as-is.
+    ``score_cfg`` and are loaded as-is: they must already be in the loss-diff
+    convention, as the summed approximate-unrolling scores are (their
+    aggregation applies this same conversion per segment; see
+    :func:`bergson.approx_unrolling.approx_unrolling_math.score_per_segment_and_aggregate`).
     """
     if os.path.isdir(score_path) and os.path.isfile(
         os.path.join(score_path, "token_scores.bin")

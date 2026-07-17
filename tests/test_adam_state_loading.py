@@ -13,6 +13,8 @@ from transformers import (
     Trainer,
     TrainingArguments,
 )
+from transformers.pytorch_utils import ALL_LAYERNORM_LAYERS
+from transformers.trainer_pt_utils import get_parameter_names
 
 from bergson.gradients import AdafactorNormalizer, AdamNormalizer
 from bergson.utils.load_from_optimizer import (
@@ -20,6 +22,7 @@ from bergson.utils.load_from_optimizer import (
     get_optimizer_state_format,
     get_unfactored_second_moment,
     load_from_optimizer,
+    optimizer_param_index_to_name,
     save_second_moments_as_optimizer_pt,
 )
 from bergson.utils.worker_utils import extract_peft_target_modules
@@ -565,9 +568,19 @@ def test_load_adam_checkpoint():
     for norm in normalizers.values():
         assert isinstance(norm, AdamNormalizer)
 
-    # Verify loaded values match the raw checkpoint
-    params = list(model.named_parameters())
-    for idx, (name, _param) in enumerate(params):
+    # Verify loaded values match the raw checkpoint, looking entries up via
+    # the group-aware index mapping (HF Trainer writes two param groups).
+    index_to_name = optimizer_param_index_to_name(opt_state, model)
+    shapes = {n: tuple(p.shape) for n, p in model.named_parameters()}
+    name_to_idx = {n: i for i, n in index_to_name.items()}
+    for name, idx in name_to_idx.items():
+        entry = opt_state["state"].get(idx)
+        if (
+            entry is not None
+            and "exp_avg_sq" in entry
+            and entry["exp_avg_sq"].ndim == 2
+        ):
+            assert tuple(entry["exp_avg_sq"].shape) == shapes[name]
         if not name.endswith(".weight"):
             continue
         module_name = name.removesuffix(".weight")
@@ -594,9 +607,19 @@ def test_load_adafactor_checkpoint():
     for norm in normalizers.values():
         assert isinstance(norm, AdafactorNormalizer)
 
-    # Verify loaded values match the raw checkpoint
-    params = list(model.named_parameters())
-    for idx, (name, _param) in enumerate(params):
+    # Verify loaded values match the raw checkpoint, looking entries up via
+    # the group-aware index mapping (HF Trainer writes two param groups).
+    index_to_name = optimizer_param_index_to_name(opt_state, model)
+    shapes = {n: tuple(p.shape) for n, p in model.named_parameters()}
+    name_to_idx = {n: i for i, n in index_to_name.items()}
+    for name, idx in name_to_idx.items():
+        entry = opt_state["state"].get(idx)
+        if (
+            entry is not None
+            and "exp_avg_sq" in entry
+            and entry["exp_avg_sq"].ndim == 2
+        ):
+            assert tuple(entry["exp_avg_sq"].shape) == shapes[name]
         if not name.endswith(".weight"):
             continue
         module_name = name.removesuffix(".weight")
@@ -625,9 +648,19 @@ def test_load_8bit_adam_checkpoint():
     for norm in normalizers.values():
         assert isinstance(norm, AdamNormalizer)
 
-    # Verify loaded values match the raw checkpoint
-    params = list(model.named_parameters())
-    for idx, (name, _param) in enumerate(params):
+    # Verify loaded values match the raw checkpoint, looking entries up via
+    # the group-aware index mapping (HF Trainer writes two param groups).
+    index_to_name = optimizer_param_index_to_name(opt_state, model)
+    shapes = {n: tuple(p.shape) for n, p in model.named_parameters()}
+    name_to_idx = {n: i for i, n in index_to_name.items()}
+    for name, idx in name_to_idx.items():
+        entry = opt_state["state"].get(idx)
+        if (
+            entry is not None
+            and "exp_avg_sq" in entry
+            and entry["exp_avg_sq"].ndim == 2
+        ):
+            assert tuple(entry["exp_avg_sq"].shape) == shapes[name]
         if not name.endswith(".weight"):
             continue
         module_name = name.removesuffix(".weight")
@@ -638,3 +671,117 @@ def test_load_8bit_adam_checkpoint():
         norm = normalizers[module_name]
         assert isinstance(norm, AdamNormalizer)
         torch.testing.assert_close(norm.weight_avg_sq.cpu(), raw)
+
+
+def test_optimizer_index_mapping_hf_decay_groups():
+    """The two-group (HF Trainer decay/no-decay) index reconstruction maps
+    every state entry back to the right param — verified by tensor identity
+    against a real torch AdamW built the way HF Trainer builds it."""
+    model = _create_model()
+    decay_names = {
+        n for n in get_parameter_names(model, ALL_LAYERNORM_LAYERS) if "bias" not in n
+    }
+    named = [(n, p) for n, p in model.named_parameters() if p.requires_grad]
+    optimizer = torch.optim.AdamW(
+        [
+            {"params": [p for n, p in named if n in decay_names], "weight_decay": 0.01},
+            {
+                "params": [p for n, p in named if n not in decay_names],
+                "weight_decay": 0.0,
+            },
+        ],
+        lr=1e-3,
+    )
+    # One step so every param has state.
+    for _, p in named:
+        p.grad = torch.rand_like(p)
+    optimizer.step()
+
+    opt_state = optimizer.state_dict()
+    mapping = optimizer_param_index_to_name(opt_state, model)
+
+    params_by_name = dict(named)
+    assert len(mapping) == len(named)
+    for idx, name in mapping.items():
+        expected = optimizer.state[params_by_name[name]]["exp_avg_sq"]
+        torch.testing.assert_close(opt_state["state"][idx]["exp_avg_sq"], expected)
+
+
+def test_square_conv1d_moment_is_transposed(tmp_path):
+    """A SQUARE HF Conv1D weight is stored ``[in, out]`` but its shape cannot
+    reveal that — orientation must come from the module class (LayerAdapter),
+    or the moment is silently used transposed."""
+    from transformers.pytorch_utils import Conv1D
+
+    class SquareConvModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = Conv1D(4, 4)  # weight [in=4, out=4]
+            self.fc = nn.Linear(4, 6)
+
+    model = SquareConvModel()
+    opt_state = _create_fake_optimizer_state(model)
+    opt_path = tmp_path / "optimizer.pt"
+    torch.save(opt_state, opt_path)
+
+    normalizers = load_from_optimizer(model, str(opt_path))
+    names = [n for n, _ in model.named_parameters()]
+    proj_moment = opt_state["state"][names.index("proj.weight")]["exp_avg_sq"]
+    fc_moment = opt_state["state"][names.index("fc.weight")]["exp_avg_sq"]
+
+    # Conv1D: stored [in, out] -> normalizer holds the transpose; Linear: as-is.
+    torch.testing.assert_close(normalizers["proj"].weight_avg_sq, proj_moment.T)
+    torch.testing.assert_close(normalizers["fc"].weight_avg_sq, fc_moment)
+
+
+def test_load_peft_hf_two_group_checkpoint(tmp_path):
+    """PEFT + HF Trainer checkpoints: the optimizer's decay/no-decay groups
+    reorder state indices relative to the serialized PEFT param list, so the
+    mapping must be reconstructed group-aware. bias="lora_only" interleaves
+    trainable (no-decay) biases with the (decay) LoRA weights, which breaks
+    the old positional convention."""
+    # tiny-gpt2's Conv1D layers have biases, so bias="lora_only" yields
+    # trainable (no-decay) bias params.
+    base = AutoModelForCausalLM.from_pretrained("sshleifer/tiny-gpt2")
+    model = get_peft_model(
+        base,
+        LoraConfig(
+            r=4,
+            lora_alpha=8,
+            target_modules=["c_attn"],
+            fan_in_fan_out=True,
+            bias="lora_only",
+            task_type="CAUSAL_LM",
+        ),
+    )
+
+    # Build the optimizer exactly as HF Trainer does: [decay, no_decay].
+    decay_names = {
+        n for n in get_parameter_names(model, ALL_LAYERNORM_LAYERS) if "bias" not in n
+    }
+    named = [(n, p) for n, p in model.named_parameters() if p.requires_grad]
+    assert any(n not in decay_names for n, _ in named), "need no-decay params"
+    optimizer = torch.optim.AdamW(
+        [
+            {"params": [p for n, p in named if n in decay_names], "weight_decay": 0.01},
+            {
+                "params": [p for n, p in named if n not in decay_names],
+                "weight_decay": 0.0,
+            },
+        ],
+        lr=1e-3,
+    )
+    for _, p in named:
+        p.grad = torch.rand_like(p)
+    optimizer.step()
+
+    opt_path = tmp_path / "optimizer.pt"
+    torch.save(optimizer.state_dict(), opt_path)
+
+    normalizers = load_from_optimizer(model, str(opt_path))
+    assert normalizers, "expected LoRA normalizers"
+    for module_name, norm in normalizers.items():
+        assert isinstance(norm, AdamNormalizer)
+        weight = model.get_submodule(f"base_model.{module_name}").weight
+        expected = optimizer.state[weight]["exp_avg_sq"]
+        torch.testing.assert_close(norm.weight_avg_sq, expected)

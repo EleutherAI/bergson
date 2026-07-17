@@ -349,11 +349,6 @@ class TrainingConfig(AttributionConfig, Serializable):
     """Optimizer to use for the training steps. Muon is an efficient
     optimizer that can reduce memory usage and speed up training."""
 
-    save_optimizer_state: bool = False
-    """After training, export the optimizer's second moments to
-    ``<run_path>/optimizer.pt`` for use as an attribution normalizer.
-    AdamW only."""
-
     weight_decay: float = 0.01
     """Weight decay coefficient for AdamW and Muon."""
 
@@ -369,6 +364,19 @@ class TrainingConfig(AttributionConfig, Serializable):
 
     wandb_project: str = ""
     """Weights & Biases project name. If set, logs training loss to W&B."""
+
+    save_optimizer_state: bool = False
+    """Persist the optimizer's second moments as ``optimizer.pt`` files: the
+    final state at ``<run_path>/optimizer.pt`` and each snapshot's state at
+    ``step_<i>.optimizer.pt`` next to its checkpoint. The final state can be
+    used as an attribution normalizer. AdamW only."""
+
+    save_retrained_models: bool = False
+    """When True, save the fully-trained model (HF format, weights + tokenizer)
+    to ``<run_path>/retrained/base/``. For validation runs, each leave-k-out
+    retrained model is also saved to ``<run_path>/retrained/subset_<i>/`` so it
+    can be reused for later attribution queries without retraining. ~0.5 GB per
+    model for GPT-2."""
 
 
 @dataclass
@@ -411,11 +419,6 @@ class ValidationConfig(TrainingConfig, ABC):
     """When True, drop doc_ids with score == 0 from the validation
     permutation. These scores may be produced by items with fewer than
     2 tokens."""
-
-    save_retrained_models: bool = False
-    """When True, save each leave-k-out retrained model (HF format, weights +
-    tokenizer) to ``<run_path>/retrained/subset_<i>/`` so it can be reused for
-    later attribution queries without retraining. ~0.5 GB per subset for GPT-2."""
 
     subset_fraction: float = 0.0
     """When > 0, each of the ``num_subsets`` leave-k-out subsets is an
@@ -738,6 +741,16 @@ class ApproxUnrollingConfig(Serializable):
     step_size_list: list[int] = field(default_factory=list)
     """Per-segment optimizer step count; length must == segments. If
     empty, inferred from per-checkpoint step counts."""
+
+    momentum: float = 0.0
+    """SGD heavy-ball momentum beta used during training; scales each
+    segment's lr*steps by 1/(1-beta). Leave 0 for Adam-family optimizers."""
+
+    use_adam_preconditioner: bool = False
+    """Evaluate the unrolling eigenfunctions on a diagonal approximation of
+    the preconditioned Hessian P^1/2 H P^1/2 (the Adam/AdamW SOURCE variant,
+    Bae et al. 2024, Appendix C). Requires an ``optimizer.pt`` in every
+    checkpoint dir; see :mod:`bergson.approx_unrolling.adam_preconditioner`."""
 
     query: DataConfig = field(default_factory=DataConfig)
     """Query dataset spec; gradients computed at the final checkpoint."""
