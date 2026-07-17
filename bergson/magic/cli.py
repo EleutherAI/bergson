@@ -263,9 +263,11 @@ def worker(
             else None
         ),
     )
-    if getattr(run_cfg, "save_optimizer_state", "none") != "none" and global_rank == 0:
+    # Called on every rank: FSDP moments are DTensors whose gather is a
+    # collective; rank 0 writes inside.
+    if getattr(run_cfg, "save_optimizer_state", "none") != "none":
         save_second_moments_as_optimizer_pt(
-            model,  # type: ignore[reportArgumentType]
+            model,
             fwd_state.opt_state,
             os.path.join(run_cfg.run_path, "optimizer.pt"),
         )

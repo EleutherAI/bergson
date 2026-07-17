@@ -239,3 +239,23 @@ def test_grad_accum_matches_across_fsdp_ddp_under_dropout(tmp_path):
         f"FSDP and DDP scores differ under dropout: {fsdp_ddp_diff:.2e} "
         f"(scale {scale:.2e}) — the ranks are likely drawing different masks"
     )
+
+
+@requires_multi_gpu
+def test_save_optimizer_state_completes_under_fsdp(tmp_path):
+    """save_optimizer_state must not hang under FSDP.
+
+    Gathering each rank's sharded second moments (DTensor.full_tensor()) is a
+    collective, so every rank must call save_second_moments_as_optimizer_pt;
+    if worker() ever gates that call behind `global_rank == 0` again, this
+    hangs instead of failing cleanly, since the rank-0 all-gather then waits
+    forever for peers that never join it.
+    """
+    cfg = magic_cfg(f"{tmp_path}/fsdp_opt", fsdp=True, clip=False)
+    cfg.save_optimizer_state = True
+    run_magic(cfg)
+
+    optimizer_pt = torch.load(f"{tmp_path}/fsdp_opt/optimizer.pt", weights_only=False)
+    assert optimizer_pt["state"], "optimizer.pt has no second-moment entries"
+    for entry in optimizer_pt["state"].values():
+        assert torch.isfinite(entry["exp_avg_sq"]).all()

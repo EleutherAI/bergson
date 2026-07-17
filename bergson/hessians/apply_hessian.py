@@ -14,7 +14,10 @@ from bergson.collector.collector import create_projection_matrix
 from bergson.config import InversionConfig
 from bergson.data import column_offsets, create_index, load_gradients
 from bergson.distributed import init_dist
-from bergson.hessians.preconditioner import FactoredPreconditioner
+from bergson.hessians.preconditioner import (
+    DiagonalFactoredPreconditioner,
+    FactoredPreconditioner,
+)
 from bergson.utils.logger import get_logger
 from bergson.utils.utils import get_device, numpy_to_tensor
 
@@ -34,9 +37,19 @@ class EkfacConfig:
     """When set, compress each module's IVHP output to a ``[p, p]`` Kronecker
     random projection (``P_S @ (H^-1 G) @ P_A^T``)."""
     projection_type: Literal["normal", "rademacher"] = "rademacher"
-
     projection_scale: Literal["jl", "row_norm"] = "jl"
     """Must match the index being scored. See ``IndexConfig``."""
+    precond_path: str = ""
+    """Safetensors of a diagonal optimizer preconditioner (module name ->
+    [out, in] grid). When set, ``apply_fn`` is evaluated elementwise on a
+    diagonal approximation of P^1/2 H P^1/2 in parameter space (the
+    Adam/AdamW approximate-unrolling variant) instead of on the eigenvalues
+    in the EKFAC eigenbasis. Requires ``apply_fn``."""
+    precond_post_multiply: bool = False
+    """With ``precond_path``: multiply the applied function's output by the
+    preconditioner grid — the P^1/2 F(M) P^1/2 sandwich of the segment
+    eigenfunction. Leave False for the backward eigenfunction, whose
+    P^1/2 exp(-t M) P^-1/2 sandwich cancels."""
     debug: bool = False
 
 
@@ -84,14 +97,29 @@ class EkfacApplicator:
         self.device = get_device(self.rank)
 
     def compute_ivhp_sharded(self):
-        preconditioner = FactoredPreconditioner.from_shards(
-            self.path,
-            rank=self.rank,
-            device=self.device,
-            inversion_cfg=None if self.apply_fn is not None else self.inversion_cfg,
-            apply_fn=self.apply_fn,
-            ev_correction=self.cfg.ev_correction,
-        )
+        if self.cfg.precond_path:
+            if self.apply_fn is None:
+                raise ValueError("precond_path requires apply_fn.")
+            preconditioner = DiagonalFactoredPreconditioner.from_shards(
+                self.path,
+                self.cfg.precond_path,
+                rank=self.rank,
+                device=self.device,
+                apply_fn=self.apply_fn,
+                multiply_by_precond=self.cfg.precond_post_multiply,
+                ev_correction=self.cfg.ev_correction,
+            )
+        else:
+            preconditioner = FactoredPreconditioner.from_shards(
+                self.path,
+                rank=self.rank,
+                device=self.device,
+                inversion_cfg=(
+                    None if self.apply_fn is not None else self.inversion_cfg
+                ),
+                apply_fn=self.apply_fn,
+                ev_correction=self.cfg.ev_correction,
+            )
 
         o_dims = {
             name: preconditioner.eigen_g[name].shape[1]

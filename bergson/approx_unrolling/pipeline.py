@@ -37,7 +37,12 @@ from ..config import (
     PreprocessConfig,
 )
 from ..config.config_io import save_run_config
+from ..distributed import parent_barrier
 from ..utils.logger import get_logger
+from .adam_preconditioner import (
+    OPTIMIZER_STATE_FILE,
+    build_segment_preconditioners,
+)
 from .approx_unrolling_math import (
     compute_lr_times_steps_per_segment,
     score_per_segment_and_aggregate,
@@ -103,6 +108,16 @@ def approx_unrolling_pipeline(
 
     assert hessian_cfg.ev_correction, "Approximate unrolling pipeline currently only "
     "supports EV correction on."
+
+    if approx_unrolling_cfg.use_adam_preconditioner:
+        for ckpt in approx_unrolling_cfg.checkpoints:
+            state_path = Path(ckpt) / OPTIMIZER_STATE_FILE
+            if not state_path.exists():
+                raise FileNotFoundError(
+                    f"use_adam_preconditioner requires {state_path}; write it "
+                    "during training with TrainingConfig.save_optimizer_state "
+                    "and copy it into the exported checkpoint dir."
+                )
 
     lr_times_steps_per_segment = compute_lr_times_steps_per_segment(
         approx_unrolling_cfg
@@ -197,6 +212,24 @@ def approx_unrolling_pipeline(
         )
         build(query_cfg, query_preprocess_cfg)
 
+    # ── Per-segment Adam preconditioners from the checkpoints' second moments
+    precond_paths: list[Path] = []
+    if approx_unrolling_cfg.use_adam_preconditioner:
+        logger.info("Building per-segment Adam preconditioners...")
+        if index_cfg.distributed._node_rank == 0:
+            precond_paths = build_segment_preconditioners(
+                run_path=index_cfg.run_path,
+                method=hessian_cfg.method,
+                checkpoints=[str(c) for c in approx_unrolling_cfg.checkpoints],
+                segments=n_segments,
+            )
+        else:
+            precond_paths = [
+                Path(index_cfg.run_path) / f"segment_{l}" / "preconditioner.safetensors"
+                for l in range(n_segments)
+            ]
+        parent_barrier(index_cfg.distributed)
+
     # ── Step 6: Phase 1 -- walk query backwards to get segment queries
     logger.info(
         f"Step 6/{_N_TOTAL_STEPS}: "
@@ -204,11 +237,21 @@ def approx_unrolling_pipeline(
         f"query_grad_0..query_grad_(L-1)..."
     )
     logger.info(f"  lr_times_steps per segment: {lr_times_steps_per_segment}")
+    logger.info(
+        f"  optimizer variant         : "
+        f"{'preconditioned (Adam/AdamW)' if precond_paths else 'sgd'}"
+        + (
+            f", momentum={approx_unrolling_cfg.momentum}"
+            if approx_unrolling_cfg.momentum
+            else ""
+        )
+    )
     query_grad_paths = walk_query_phase1(
         run_path=index_cfg.run_path,
         method=hessian_cfg.method,
         lr_times_steps_per_segment=lr_times_steps_per_segment,
         distributed=index_cfg.distributed,
+        preconditioner_paths=[str(p) for p in precond_paths] or None,
     )
 
     # ── Step 7: Phase 2 -- Get per-ckpt queries from segment queries
@@ -223,6 +266,7 @@ def approx_unrolling_pipeline(
         lr_times_steps_per_segment=lr_times_steps_per_segment,
         query_grad_paths=query_grad_paths,
         distributed=index_cfg.distributed,
+        preconditioner_paths=[str(p) for p in precond_paths] or None,
     )
 
     # ── Step 8: Phase 3 -- per-segment scoring + sum

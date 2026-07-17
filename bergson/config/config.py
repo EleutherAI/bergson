@@ -428,11 +428,6 @@ class ValidationConfig(TrainingConfig, ABC):
     permutation. These scores may be produced by items with fewer than
     2 tokens."""
 
-    save_retrained_models: bool = False
-    """When True, save each leave-k-out retrained model (HF format, weights +
-    tokenizer) to ``<run_path>/retrained/subset_<i>/`` so it can be reused for
-    later attribution queries without retraining. ~0.5 GB per subset for GPT-2."""
-
     subset_fraction: float = 0.0
     """When > 0, each of the ``num_subsets`` leave-k-out subsets is an
     independent draw (without replacement within a subset, overlapping across
@@ -795,6 +790,12 @@ class ApproxUnrollingConfig(Serializable):
     """SGD heavy-ball momentum beta; scales lr*steps by 1/(1-beta) (Bae et al.
     2024, App. D.2). When ``None`` it's derived from the run if present or set
     to 0.0."""
+
+    use_adam_preconditioner: bool = False
+    """Evaluate the unrolling eigenfunctions on a diagonal approximation of
+    the preconditioned Hessian P^1/2 H P^1/2 (the Adam/AdamW SOURCE variant,
+    Bae et al. 2024, Appendix C). Requires an ``optimizer.pt`` in every
+    checkpoint dir; see :mod:`bergson.approx_unrolling.adam_preconditioner`."""
 
     query: DataConfig = field(default_factory=DataConfig)
     """Query dataset spec; gradients computed at the final checkpoint."""

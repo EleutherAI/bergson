@@ -60,6 +60,7 @@ def compute_lr_times_steps_per_segment(
 ) -> list[float]:
     """Per-segment lr * K. Use ``lr_list * step_size_list`` if set on config;
     else equal-partition log_history.json into segments and sum per-step LRs.
+<<<<<<< HEAD
 
     With SGD heavy-ball ``momentum`` beta, scale by the terminal velocity
     1/(1-beta) (Bae et al. 2024, App. D.2).
@@ -71,6 +72,15 @@ def compute_lr_times_steps_per_segment(
         raise ValueError(f"momentum must be in [0, 1), got {momentum}.")
     momentum_scale = 1.0 / (1.0 - momentum)
 
+=======
+    With SGD heavy-ball ``momentum`` beta, scale by the terminal velocity
+    1/(1-beta) (Bae et al., 2024, Appendix D.2)."""
+    cfg = approx_unrolling_cfg
+    L = cfg.segments
+    if not 0.0 <= cfg.momentum < 1.0:
+        raise ValueError(f"momentum must be in [0, 1), got {cfg.momentum}.")
+    momentum_scale = 1.0 / (1.0 - cfg.momentum)
+>>>>>>> 45df0de8 (feat: ADAM SOURCE and per-checkpoint optimizer saving in Trainer)
     if cfg.lr_list and cfg.step_size_list:
         return [
             lr * k * momentum_scale for lr, k in zip(cfg.lr_list, cfg.step_size_list)
@@ -136,18 +146,24 @@ def apply_eigfn_to_query(
     lr_times_steps: float,
     fn_kind: str,
     distributed: DistributedConfig,
+    precond_path: str = "",
 ) -> None:
     """Apply F_segment or F_backward of one segment to a stored query gradient.
 
     ``fn_kind`` is "f_segment" or "f_backward". The segment eigenvalues are
     already checkpoint-averaged (expected eigenvalues), so the eigenfunction is
-    applied to them directly.
-    """
+    applied to them directly. ``precond_path`` selects the
+    preconditioned-optimizer variant: the eigenfunction is evaluated on a
+    diagonal approximation of P^1/2 H P^1/2 in parameter space, with
+    F_segment's output additionally multiplied by P (its P^1/2 . P^1/2
+    sandwich; F_backward's sandwich cancels)."""
     cfg = EkfacConfig(
         hessian_method_path=str(segment_dir),
         gradient_path=str(src_grad_path),
         run_path=str(dst_grad_path),
         ev_correction=True,
+        precond_path=precond_path,
+        precond_post_multiply=fn_kind == "f_segment",
     )
     launch_distributed_run(
         "apply_eigfn_to_query",
@@ -178,6 +194,7 @@ def walk_query_phase1(
     method: str,
     lr_times_steps_per_segment: list[float],
     distributed: DistributedConfig,
+    preconditioner_paths: list[str] | None = None,
 ) -> list[Path]:
     """Phase 1: build query_grad_0, ..., query_grad_{L-1} by walking F_backward.
 
@@ -203,6 +220,7 @@ def walk_query_phase1(
             lr_times_steps=lr_times_steps_per_segment[k],
             fn_kind="f_backward",
             distributed=distributed,
+            precond_path=preconditioner_paths[k] if preconditioner_paths else "",
         )
         query_grad_paths[k - 1] = dst
 
@@ -215,6 +233,7 @@ def walk_query_phase2(
     lr_times_steps_per_segment: list[float],
     query_grad_paths: list[Path],
     distributed: DistributedConfig,
+    preconditioner_paths: list[str] | None = None,
 ) -> list[Path]:
     """Phase 2: build query_grad_segment_0, ..., query_grad_segment_{L-1} via F_segment.
 
@@ -238,6 +257,7 @@ def walk_query_phase2(
             lr_times_steps=lr_times_steps_per_segment[l],
             fn_kind="f_segment",
             distributed=distributed,
+            precond_path=preconditioner_paths[l] if preconditioner_paths else "",
         )
         query_grad_segment_paths.append(dst)
 
