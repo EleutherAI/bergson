@@ -9,7 +9,7 @@ from bergson import GradientProcessor, collect_gradients
 from bergson.collector.collector import CollectorComputer, create_projection_matrix
 from bergson.collector.gradient_collectors import GradientCollector
 from bergson.config import IndexConfig
-from bergson.data import load_module_gradients
+from bergson.data import load_gradients
 
 
 def test_global_projector_processor_field_default():
@@ -145,8 +145,8 @@ def test_global_projector_e2e(tmp_path: Path, model, dataset):
 
     collect_gradients(model=model.cuda(), data=dataset, processor=processor, cfg=cfg)
 
-    grads = load_module_gradients(cfg.partial_run_path)
-    assert list(grads.keys()) == ["gradients"]
+    grads = load_gradients(cfg.partial_run_path)
+    assert grads.dtype.names == ("gradients",)
     assert grads["gradients"].shape == (len(dataset), proj_dim)
 
 

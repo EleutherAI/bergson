@@ -6,7 +6,7 @@ import random
 import re
 from multiprocessing import cpu_count
 from pathlib import Path
-from typing import Any, Iterator, Sequence
+from typing import Any, Sequence
 
 import ml_dtypes  # noqa: F401  # registers bfloat16 dtype with numpy
 import numpy as np
@@ -379,30 +379,19 @@ def _allocate_batches_world(
     return [allocation[rank] for rank in ranks]
 
 
-def column_offsets(grad_sizes: dict[str, int]) -> dict[str, tuple[int, int]]:
-    """Map each module name to its ``(start, end)`` column range in a flat
-    ``(num_grads, total_grad_dim)`` gradient array laid out in `grad_sizes`
-    order (the on-disk layout of :func:`create_index`)."""
-    offsets = {}
-    start = 0
-    for name, size in grad_sizes.items():
-        offsets[name] = (start, start + size)
-        start += size
-    return offsets
-
-
 def create_index(
     root: Path,
     num_grads: int,
     grad_sizes: dict[str, int],
     dtype: DTypeLike,
+    with_structure: bool = True,
 ) -> np.memmap:
-    """Create a memory-mapped ``(num_grads, total_grad_dim)`` gradient file
-    (modules laid out in `grad_sizes` order) and persist metadata."""
+    """Create a memory-mapped file for storing structured gradients
+    and persist metadata."""
     grad_path = root / "gradients.bin"
     rank = dist.get_rank() if dist.is_initialized() else 0
 
-    # Legacy structured dtype, still written for external readers of older stores
+    # Build a json-serializable structured dtype
     struct_dtype = {
         "names": [name for name in grad_sizes.keys()],
         "formats": [f"({size},){np.dtype(dtype).str}" for size in grad_sizes.values()],
@@ -439,11 +428,18 @@ def create_index(
     if dist.is_initialized():
         dist.barrier()
 
+    if with_structure:
+        dtype = np.dtype(struct_dtype)  # type: ignore
+        shape = (num_grads,)
+    else:
+        dtype = np.dtype(dtype)
+        shape = (num_grads, sum(grad_sizes.values()))
+
     return np.memmap(
         grad_path,
-        dtype=np.dtype(dtype),
+        dtype=dtype,
         mode="r+",
-        shape=(num_grads, sum(grad_sizes.values())),
+        shape=shape,
     )
 
 
@@ -491,71 +487,38 @@ def load_data_string(
     return ds
 
 
-def load_gradients(root_dir: Path | str) -> np.memmap:
-    """Map the gradients stored in `root_dir` into memory as a flat
-    ``(num_grads, total_grad_dim)`` array, with modules laid out in
-    ``grad_sizes`` order (see :func:`column_offsets` for per-module slicing)."""
+def load_gradients(root_dir: Path | str, structured: bool = True) -> np.memmap:
+    """Map the structured gradients stored in `root_dir` into memory."""
     root_dir = Path(root_dir)
     with (root_dir / "info.json").open("r") as f:
         info = json.load(f)
 
-    if "base_dtype" in info:
-        dtype = np.dtype(info["base_dtype"])
+    num_grads = info["num_grads"]
+
+    if structured:
+        dtype = info["dtype"]
+        shape = (num_grads,)
     else:
-        # Old stores lack base_dtype; recover the scalar dtype from a field format
-        dtype = np.dtype(info["dtype"]["formats"][0]).base
+        dtype = info["base_dtype"]
+        grad_sizes = info["grad_sizes"]
+        shape = (num_grads, sum(grad_sizes.values()))
 
     return np.memmap(
         root_dir / "gradients.bin",
         dtype=dtype,
         mode="r",
-        shape=(info["num_grads"], sum(info["grad_sizes"].values())),
+        shape=shape,
     )
 
 
-class ModuleGradients:
-    """Dict-like, module-name-keyed view over a flat memmapped gradient store:
-    ``grads[name]`` returns the ``(num_grads, size)`` column slice for that
-    module."""
-
-    def __init__(self, mmap: np.memmap, grad_sizes: dict[str, int]):
-        self.mmap = mmap
-        self.offsets = column_offsets(grad_sizes)
-
-    def __getitem__(self, name: str) -> np.ndarray:
-        lo, hi = self.offsets[name]
-        return self.mmap[:, lo:hi]
-
-    def __len__(self) -> int:
-        return len(self.mmap)
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(self.offsets)
-
-    def __contains__(self, name: str) -> bool:
-        return name in self.offsets
-
-    def keys(self):
-        return self.offsets.keys()
-
-
-def load_module_gradients(root_dir: Path | str) -> ModuleGradients:
-    """Load the gradients stored in `root_dir` keyed by module name."""
-    root_dir = Path(root_dir)
-    with (root_dir / "info.json").open("r") as f:
-        grad_sizes = json.load(f)["grad_sizes"]
-
-    return ModuleGradients(load_gradients(root_dir), grad_sizes)
-
-
-def load_gradient_dataset(root_dir: Path) -> Dataset:
+def load_gradient_dataset(root_dir: Path, structured: bool = True) -> Dataset:
     """Load a dataset of gradients from `root_dir`."""
 
     def load_shard(dir: Path) -> Dataset:
         ds = Dataset.load_from_disk(str(dir / "data.hf"))
 
         # Add gradients to HF dataset.
-        mmap = load_gradients(dir)
+        mmap = load_gradients(dir, structured=structured)
 
         def _to_arrow(arr: np.ndarray) -> pa.Array:
             """Convert numpy array to PyArrow, casting bfloat16 to float32."""
@@ -563,9 +526,16 @@ def load_gradient_dataset(root_dir: Path) -> Dataset:
                 arr = arr.astype(np.float32)
             return pa.array(arr)
 
-        flat = _to_arrow(mmap.reshape(-1).copy())
-        col_arrow = pa.FixedSizeListArray.from_arrays(flat, mmap.shape[1])
-        ds = ds.add_column("gradients", col_arrow, new_fingerprint="gradients")
+        if structured:
+            assert mmap.dtype.names is not None
+            for field_name in mmap.dtype.names:
+                flat = _to_arrow(mmap[field_name].reshape(-1).copy())
+                col = pa.FixedSizeListArray.from_arrays(flat, mmap[field_name].shape[1])
+                ds = ds.add_column(field_name, col, new_fingerprint=field_name)
+        else:
+            flat = _to_arrow(mmap.reshape(-1).copy())
+            col_arrow = pa.FixedSizeListArray.from_arrays(flat, mmap.shape[1])
+            ds = ds.add_column("gradients", col_arrow, new_fingerprint="gradients")
 
         return ds
 

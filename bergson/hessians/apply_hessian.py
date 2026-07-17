@@ -10,11 +10,11 @@ import torch.distributed as dist
 from simple_parsing import ArgumentParser
 
 from bergson.config import InversionConfig
-from bergson.data import column_offsets, create_index, load_gradients
+from bergson.data import create_index, load_gradients
 from bergson.distributed import init_dist
 from bergson.hessians.preconditioner import FactoredPreconditioner
 from bergson.utils.logger import get_logger
-from bergson.utils.utils import get_device, numpy_to_tensor
+from bergson.utils.utils import get_device
 
 
 @dataclass
@@ -26,8 +26,6 @@ class EkfacConfig:
     """If True, use the corrected eigenvalues, this requires
     `hessian_method_path` to have been created with
     `HessianConfig.ev_correction=True`."""
-    apply_batch_size: int = 32
-    """Number of query gradients moved on-device and preconditioned at a time."""
     debug: bool = False
 
 
@@ -86,7 +84,6 @@ class EkfacApplicator:
         mmap = load_gradients(self.gradient_path)
         with open(os.path.join(self.gradient_path, "info.json")) as f:
             info = json.load(f)
-        in_offsets = column_offsets(info["grad_sizes"])
 
         grad_buffer = create_index(
             Path(self.cfg.run_path),
@@ -94,53 +91,43 @@ class EkfacApplicator:
             grad_sizes=grad_sizes,
             dtype=np.float32,
         )
-        out_offsets = column_offsets(grad_sizes)
 
-        num_queries = info["num_grads"]
         self.logger.info(
-            f"Loaded gradients for {num_queries} queries and computing IVHP..."
+            f"Loaded gradients for {len(mmap)} queries and computing IVHP..."
         )
 
-        # Precondition the queries
-        for start in range(0, num_queries, self.cfg.apply_batch_size):
-            end = min(start + self.cfg.apply_batch_size, num_queries)
+        # Load the gradients into memory. They are mmap'd read-only; `from_numpy`
+        # uses the same buffer and warns that writes would be unsafe.
+        # We never write through `grads` (the preconditioner returns fresh
+        # tensors) so we suppress the warning.
+        grads: dict[str, torch.Tensor] = {}
+        for name in preconditioner.eigen_a:
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message="The given NumPy array is not writable",
+                    category=UserWarning,
+                )
+                grads[name] = torch.from_numpy(mmap[name][:]).to(
+                    device=self.device, dtype=torch.float32
+                )
 
-            # The gradients are mmap'd read-only which pytorch doesn't
-            # support: suppress the warning (the preconditioner returns
-            # fresh tensors.
-            grads: dict[str, torch.Tensor] = {}
-            for name in preconditioner.eigen_a:
-                lo, hi = in_offsets[name]
-                with warnings.catch_warnings():
-                    warnings.filterwarnings(
-                        "ignore",
-                        message="The given NumPy array is not writable",
-                        category=UserWarning,
-                    )
-                    grads[name] = numpy_to_tensor(mmap[start:end, lo:hi]).to(
-                        device=self.device, dtype=torch.float32
-                    )
-
-            transformed = preconditioner.apply(grads)
-            del grads
-
-            self.logger.debug("Finished H^{-1} G = Q_S @ (G' / lambda) @ Q_A^T batch")
-
-            # Stage the async D2H copies, synchronize once, then read them
-            # into the numpy buffer. `.numpy()` is a host read so the
-            # sync must sit between it and the copies.
-            staged = {
-                name: v.to(device="cpu", non_blocking=True)
-                for name, v in transformed.items()
-            }
-            del transformed
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-            for name, t in staged.items():
-                lo, hi = out_offsets[name]
-                grad_buffer[start:end, lo:hi] = t.flatten(1).numpy()
+        transformed = preconditioner.apply(grads)
 
         self.logger.debug("Finished H^{-1} G = Q_S @ (G' / lambda) @ Q_A^T")
+
+        # Stage the async D2H copies, synchronize once, then read them into the
+        # (pageable) numpy buffer — the collector/builder idiom. `.numpy()` is a
+        # host read, so the sync must sit between the copies and it; the earlier
+        # bug synchronized *before* issuing the copies, leaving NaNs.
+        staged = {
+            name: v.to(device="cpu", non_blocking=True)
+            for name, v in transformed.items()
+        }
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        for name, t in staged.items():
+            grad_buffer[name][:] = t.flatten(1).numpy()
 
         grad_buffer.flush()
 

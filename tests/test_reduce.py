@@ -52,7 +52,7 @@ def test_reduce_cli(tmp_path: Path):
 
     # Load the gradient index
     index_cfg = IndexConfig(run_path=str(tmp_path / "test_reduce_e2e"))
-    ds = load_gradient_dataset(Path(index_cfg.run_path))
+    ds = load_gradient_dataset(Path(index_cfg.run_path), structured=False)
     assert len(ds) == 1
 
     grads = torch.tensor(ds["gradients"][:])
@@ -71,7 +71,7 @@ def test_programmatic_reduce(tmp_path: Path):
     build(index_cfg, PreprocessConfig(aggregation="mean"))
 
     # Assert 1-row reduction exists at the tmp_path
-    ds = load_gradient_dataset(Path(index_cfg.run_path))
+    ds = load_gradient_dataset(Path(index_cfg.run_path), structured=False)
     assert len(ds) == 1
 
 
@@ -112,7 +112,7 @@ def test_reduce_with_preconditioning(tmp_path: Path, model, dataset):
         preprocess_cfg=preprocess_cfg,
     )
 
-    ds_out = load_gradient_dataset(reduce_index_cfg.partial_run_path)
+    ds_out = load_gradient_dataset(reduce_index_cfg.partial_run_path, structured=False)
     assert len(ds_out) == 1
     grads = torch.tensor(ds_out["gradients"][:])
     assert not torch.isnan(grads).any()

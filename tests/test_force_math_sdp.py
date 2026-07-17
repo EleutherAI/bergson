@@ -7,7 +7,7 @@ import torch
 
 from bergson import GradientProcessor, collect_gradients
 from bergson.config import IndexConfig
-from bergson.data import load_module_gradients
+from bergson.data import load_gradients
 from bergson.utils.worker_utils import apply_force_math_sdp
 
 
@@ -91,9 +91,9 @@ def test_force_math_sdp_persists_through_collect(
         not torch.backends.cuda.mem_efficient_sdp_enabled()
     ), "mem-efficient SDP was re-enabled during collect_gradients"
 
-    mixed_index = load_module_gradients(cfg.partial_run_path)
+    mixed_index = load_gradients(cfg.partial_run_path)
     mixed_grad_short = torch.from_numpy(
-        mixed_index[next(iter(mixed_index))][0].copy()
+        mixed_index[mixed_index.dtype.names[0]][0].copy()
     ).float()
 
     # Now collect with only the short doc
@@ -112,9 +112,9 @@ def test_force_math_sdp_persists_through_collect(
         cfg=cfg_alone,
     )
 
-    alone_index = load_module_gradients(cfg_alone.partial_run_path)
+    alone_index = load_gradients(cfg_alone.partial_run_path)
     alone_grad_short = torch.from_numpy(
-        alone_index[next(iter(alone_index))][0].copy()
+        alone_index[alone_index.dtype.names[0]][0].copy()
     ).float()
 
     cos_sim = torch.nn.functional.cosine_similarity(

@@ -15,7 +15,7 @@ from trl import SFTConfig, SFTTrainer
 
 from bergson import GradientProcessor
 from bergson.config import AttentionConfig
-from bergson.data import load_gradients, load_module_gradients
+from bergson.data import load_gradients
 from bergson.gradients import AdafactorNormalizer, AdamNormalizer
 from bergson.huggingface import (
     GradientCollectorCallback,
@@ -295,8 +295,8 @@ class TestGradientCollectorCallback:
 
         # Verify per-head gradient files were created
         gradient_dir = tmp_path / "gradients" / "train" / "epoch_0"
-        gradients = load_module_gradients(gradient_dir)
-        module_names = list(gradients.keys())
+        gradients = load_gradients(gradient_dir)
+        module_names = gradients.dtype.names
 
         head_modules = [n for n in module_names if "head_" in n]
         assert len(head_modules) == num_heads, (

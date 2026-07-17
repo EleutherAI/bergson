@@ -464,7 +464,7 @@ def _compute_epoch_scores(
     eval_queries = []
     for subdir in sorted(eval_index_path.iterdir()):
         if subdir.is_dir():
-            eval_grad_ds = load_gradient_dataset(subdir)
+            eval_grad_ds = load_gradient_dataset(subdir, structured=False)
             eval_grad_ds.set_format("torch")
 
             # Compute the mean of the gradients in the evaluation subset
@@ -855,7 +855,7 @@ def main(
             train_grad_parts = []
             for subdir in sorted(epoch_train_index.iterdir()):
                 if subdir.is_dir():
-                    grad_ds = load_gradient_dataset(subdir)
+                    grad_ds = load_gradient_dataset(subdir, structured=False)
                     grad_ds = grad_ds.add_column(
                         "ds_name", [subdir.stem] * len(grad_ds)
                     )

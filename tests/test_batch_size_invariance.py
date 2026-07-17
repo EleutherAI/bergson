@@ -86,10 +86,14 @@ def test_gradient_scale_invariance(tmp_path, batch_size_a, batch_size_b):
         assert proc.returncode == 0, f"bergson build failed:\n{stderr}"
 
     # Load gradients
-    grads_a = torch.from_numpy(load_gradients(index_a_path).copy()).float()
-    grads_b = torch.from_numpy(load_gradients(index_b_path).copy()).float()
+    grads_a = torch.from_numpy(
+        load_gradients(index_a_path, structured=False).copy()
+    ).float()
+    grads_b = torch.from_numpy(
+        load_gradients(index_b_path, structured=False).copy()
+    ).float()
     grads_combined = torch.from_numpy(
-        load_gradients(index_combined_path).copy()
+        load_gradients(index_combined_path, structured=False).copy()
     ).float()
 
     # Split combined to match a and b

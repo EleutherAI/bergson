@@ -127,6 +127,7 @@ class Builder:
                     num_grads=num_grads,
                     grad_sizes=grad_sizes,
                     dtype=np_dtype,
+                    with_structure=False,
                 )
             else:
                 self.grad_buffer = np.zeros(

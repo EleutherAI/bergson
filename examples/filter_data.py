@@ -361,9 +361,9 @@ def _get_attribution_indices(
     if args.query_scores:
         query_dataset = train.filter(lambda x: x["quality"] == "excellent")
     elif args.query_dataset:
-        query_dataset = load_gradient_dataset(Path(args.query_dataset)).with_format(
-            "torch"
-        )
+        query_dataset = load_gradient_dataset(
+            Path(args.query_dataset), structured=False
+        ).with_format("torch")
     else:
         query_dataset = train
 
@@ -532,7 +532,7 @@ def main(
             )
 
         build_index(args, args.index_dataset, model=sft_model_path)
-        grad_dataset = load_gradient_dataset(Path(args.index_dataset))
+        grad_dataset = load_gradient_dataset(Path(args.index_dataset), structured=False)
 
         # Split gradient dataset the same way
         grad_split = grad_dataset.train_test_split(test_size=0.05, seed=args.seed)

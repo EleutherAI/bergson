@@ -14,13 +14,13 @@ neighbours for both an ANN (IVF) index and an exact ``Flat`` index. The unit tes
 exercise the ``index_to_device`` guard directly. Adapted from the bug2 repro.
 """
 
+import json
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 from bergson.config import FaissConfig
-from bergson.data import create_index
 from bergson.query.faiss_index import FaissIndex, _is_gpu_resident, index_to_device
 
 
@@ -37,12 +37,34 @@ requires_faiss = pytest.mark.skipif(not _has_faiss(), reason="faiss not availabl
 
 
 def _write_gradient_store(root: Path, n: int, dim: int) -> np.ndarray:
-    """Write a tiny on-disk gradient store with random gradients."""
+    """Write a tiny on-disk gradient store matching bergson's info.json layout."""
+    root.mkdir(parents=True, exist_ok=True)
+    grad_sizes = {"module_a": dim}
+    struct_dtype = {
+        "names": list(grad_sizes),
+        "formats": [f"({s},)<f4" for s in grad_sizes.values()],
+        "itemsize": 4 * sum(grad_sizes.values()),
+    }
     rng = np.random.default_rng(0)
     data = rng.standard_normal((n, dim)).astype("<f4")
-    mm = create_index(root, num_grads=n, grad_sizes={"module_a": dim}, dtype=np.float32)
-    mm[:] = data
+    mm = np.memmap(
+        root / "gradients.bin",
+        dtype=np.dtype(struct_dtype),
+        mode="w+",
+        shape=(n,),
+    )
+    mm["module_a"] = data
     mm.flush()
+    with (root / "info.json").open("w") as f:
+        json.dump(
+            {
+                "num_grads": n,
+                "dtype": struct_dtype,
+                "grad_sizes": grad_sizes,
+                "base_dtype": "float32",
+            },
+            f,
+        )
     return data
 
 

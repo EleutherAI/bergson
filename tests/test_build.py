@@ -7,7 +7,7 @@ from transformers import AutoModelForCausalLM
 
 from bergson import GradientProcessor, collect_gradients
 from bergson.config import AttentionConfig, IndexConfig
-from bergson.data import load_module_gradients
+from bergson.data import load_gradients
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
@@ -26,17 +26,17 @@ def test_build_consistency(tmp_path: Path, model, dataset):
         cfg=cfg,
     )
 
-    index = load_module_gradients(cfg.partial_run_path)
+    index = load_gradients(cfg.partial_run_path)
 
     cache_path = Path("runs/test_build_cache.npy")
 
     assert cache_path.exists()
     # if not cache_path.exists():
     #   Regenerate cache
-    #   np.save(cache_path, index[next(iter(index))][0])
+    #   np.save(cache_path, index[index.dtype.names[0]][0])
 
     cached_item_grad = np.load(cache_path)
-    first_module_grad = index[next(iter(index))][0]
+    first_module_grad = index[index.dtype.names[0]][0]
 
     assert np.allclose(first_module_grad, cached_item_grad, atol=1e-6)
 
@@ -65,8 +65,8 @@ def test_split_attention_build(tmp_path: Path, model, dataset):
     ), "Expected artifacts in the temp run_path"
 
     # Verify that per-head gradient columns exist and have non-zero values
-    index = load_module_gradients(cfg.partial_run_path)
-    module_names = list(index.keys())
+    index = load_gradients(cfg.partial_run_path)
+    module_names = index.dtype.names
     head_modules = [n for n in module_names if "head_" in n]
     assert (
         len(head_modules) == 2
@@ -102,9 +102,9 @@ def test_conv1d_build(tmp_path: Path, dataset):
         Path(cfg.partial_run_path).iterdir()
     ), "Expected artifacts in the run path"
 
-    index = load_module_gradients(cfg.partial_run_path)
+    index = load_gradients(cfg.partial_run_path)
 
-    assert len(modules := list(index.keys())) != 0
+    assert len(modules := index.dtype.names) != 0
     assert len(index[modules[0]]) == len(dataset)
     assert index[modules[0]][0].sum().item() != 0.0
 

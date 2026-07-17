@@ -9,7 +9,7 @@ import torch
 from tqdm import tqdm
 
 from bergson import IndexConfig
-from bergson.data import load_gradients, load_module_gradients
+from bergson.data import load_gradients
 from bergson.gradients import GradientProcessor
 from bergson.process_grads import mix_autocorrelation_matrices
 from bergson.utils.math import damped_psd_power
@@ -87,12 +87,12 @@ def compute_scores_fast(
 
     # Load gradients
     print("Loading gradients from index...")
-    grads = load_module_gradients(index_path)
+    grads = load_gradients(index_path, structured=True)
 
     # Get module names
     with open(index_path / "info.json") as f:
         info = json.load(f)
-    module_names = list(info["grad_sizes"])
+    module_names = info["dtype"]["names"]
     n_samples = info["num_grads"]
 
     print(f"  {n_samples} samples, {len(module_names)} modules")
@@ -154,7 +154,9 @@ def compute_scores_fast(
     else:
         # No preconditioning - just concatenate modules
         print("Concatenating gradients (no preconditioning)...")
-        all_grads = torch.from_numpy(load_gradients(index_path).copy()).float()
+        all_grads = torch.from_numpy(
+            load_gradients(index_path, structured=False).copy()
+        ).float()
 
         print(f"Gradient matrix shape: {all_grads.shape}")
 

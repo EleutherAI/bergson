@@ -728,7 +728,7 @@ def score_attribute_eval(
     import torch
     from tqdm import tqdm
 
-    from bergson.data import ModuleGradients, load_module_gradients
+    from bergson.data import load_gradients
     from bergson.gradients import GradientProcessor
     from bergson.utils.math import damped_psd_power
 
@@ -779,11 +779,11 @@ def score_attribute_eval(
 
     # Load train gradients
     print("Loading train gradients...")
-    train_grads = load_module_gradients(index_path)
+    train_grads = load_gradients(index_path, structured=True)
 
     with open(index_path / "info.json") as f:
         info = json.load(f)
-    module_names = list(info["grad_sizes"])
+    module_names = info["dtype"]["names"]
 
     # Load hessian if specified
     h_inv = {}
@@ -795,10 +795,10 @@ def score_attribute_eval(
             H = proc.hessians[name].to(device=device)
             h_inv[name] = damped_psd_power(H, power=-1, damping_factor=damping_factor)
 
-    def load_grad_as_float(grads: ModuleGradients, name: str) -> np.ndarray:
-        g = np.asarray(grads[name])
-        if g.dtype != np.float32:
-            g = g.astype(np.float32)
+    def load_grad_as_float(grads: np.memmap, name: str) -> np.ndarray:
+        g = grads[name]
+        if g.dtype == np.dtype("|V2"):
+            g = g.view(ml_dtypes.bfloat16).astype(np.float32)
         return g
 
     # Prepare train gradients
@@ -865,7 +865,7 @@ def score_attribute_eval(
         print(result.stdout)
 
     # Load eval gradients
-    eval_grads = load_module_gradients(eval_grads_path)
+    eval_grads = load_gradients(eval_grads_path, structured=True)
     eval_grad_list = []
     for name in tqdm(module_names, desc="Loading eval grads"):
         g = torch.from_numpy(load_grad_as_float(eval_grads, name))
@@ -1148,7 +1148,7 @@ def score_attribute_eval_with_pca(
     import torch
     from tqdm import tqdm
 
-    from bergson.data import ModuleGradients, load_module_gradients
+    from bergson.data import load_gradients
     from bergson.gradients import GradientProcessor
     from bergson.utils.math import damped_psd_power
 
@@ -1202,11 +1202,11 @@ def score_attribute_eval_with_pca(
 
     # Load train gradients
     print("Loading train gradients...")
-    train_grads = load_module_gradients(index_path)
+    train_grads = load_gradients(index_path, structured=True)
 
     with open(index_path / "info.json") as f:
         info = json.load(f)
-    module_names = list(info["grad_sizes"])
+    module_names = info["dtype"]["names"]
 
     # Load hessian if specified
     h_inv = {}
@@ -1218,10 +1218,10 @@ def score_attribute_eval_with_pca(
             H = proc.hessians[name].to(device=device)
             h_inv[name] = damped_psd_power(H, -1.0, damping_factor=damping_factor)
 
-    def load_grad_as_float(grads: ModuleGradients, name: str) -> np.ndarray:
-        g = np.asarray(grads[name])
-        if g.dtype != np.float32:
-            g = g.astype(np.float32)
+    def load_grad_as_float(grads: np.memmap, name: str) -> np.ndarray:
+        g = grads[name]
+        if g.dtype == np.dtype("|V2"):
+            g = g.view(ml_dtypes.bfloat16).astype(np.float32)
         return g
 
     # Prepare train gradients (no PCA projection on train - only on eval)
@@ -1283,7 +1283,7 @@ def score_attribute_eval_with_pca(
         print(result.stdout)
 
     # Load eval gradients and apply PCA projection
-    eval_grads = load_module_gradients(eval_grads_path)
+    eval_grads = load_gradients(eval_grads_path, structured=True)
     eval_grad_list = []
 
     for name in tqdm(module_names, desc="Loading and projecting eval grads"):
@@ -1510,7 +1510,7 @@ def compute_style_hessian_from_data(
     import torch
     from tqdm import tqdm
 
-    from bergson.data import ModuleGradients, load_module_gradients
+    from bergson.data import load_gradients
     from bergson.gradients import GradientProcessor
 
     base_path = Path(base_path)
@@ -1530,11 +1530,11 @@ def compute_style_hessian_from_data(
         train_ds = train_ds["train"]
 
     train_styles = train_ds["style"]
-    train_grads = load_module_gradients(index_path)
+    train_grads = load_gradients(index_path, structured=True)
 
     with open(index_path / "info.json") as f:
         info = json.load(f)
-    module_names = list(info["grad_sizes"])
+    module_names = info["dtype"]["names"]
 
     # Get unique styles
     unique_styles = list(set(train_styles))
@@ -1550,10 +1550,10 @@ def compute_style_hessian_from_data(
     # Load base processor
     base_proc = GradientProcessor.load(index_path)
 
-    def load_grad_as_float(grads: ModuleGradients, name: str) -> np.ndarray:
-        g = np.asarray(grads[name])
-        if g.dtype != np.float32:
-            g = g.astype(np.float32)
+    def load_grad_as_float(grads: np.memmap, name: str) -> np.ndarray:
+        g = grads[name]
+        if g.dtype == np.dtype("|V2"):
+            g = g.view(ml_dtypes.bfloat16).astype(np.float32)
         return g
 
     # Compute per-module style means and R_between
@@ -1621,7 +1621,7 @@ def compute_eval_second_moment(
     import torch
     from tqdm import tqdm
 
-    from bergson.data import ModuleGradients, load_module_gradients
+    from bergson.data import load_gradients
     from bergson.gradients import GradientProcessor
 
     base_path = Path(base_path)
@@ -1638,18 +1638,18 @@ def compute_eval_second_moment(
 
     print("Computing H_eval (second moment of eval gradients)...")
 
-    eval_grads = load_module_gradients(eval_grads_path)
+    eval_grads = load_gradients(eval_grads_path, structured=True)
 
     with open(eval_grads_path / "info.json") as f:
         info = json.load(f)
-    module_names = list(info["grad_sizes"])
+    module_names = info["dtype"]["names"]
 
     base_proc = GradientProcessor.load(index_path)
 
-    def load_grad_as_float(grads: ModuleGradients, name: str) -> np.ndarray:
-        g = np.asarray(grads[name])
-        if g.dtype != np.float32:
-            g = g.astype(np.float32)
+    def load_grad_as_float(grads: np.memmap, name: str) -> np.ndarray:
+        g = grads[name]
+        if g.dtype == np.dtype("|V2"):
+            g = g.view(ml_dtypes.bfloat16).astype(np.float32)
         return g
 
     eval_precs = {}
@@ -1757,7 +1757,7 @@ def score_majority_style_eval(
     import torch
     from tqdm import tqdm
 
-    from bergson.data import ModuleGradients, load_module_gradients
+    from bergson.data import load_gradients
     from bergson.gradients import GradientProcessor
     from bergson.utils.math import damped_psd_power
 
@@ -1798,11 +1798,11 @@ def score_majority_style_eval(
 
     # Load train gradients
     print("Loading train gradients...")
-    train_grads = load_module_gradients(index_path)
+    train_grads = load_gradients(index_path, structured=True)
 
     with open(index_path / "info.json") as f:
         info = json.load(f)
-    module_names = list(info["grad_sizes"])
+    module_names = info["dtype"]["names"]
 
     # Load hessian if specified
     h_inv = {}
@@ -1814,10 +1814,10 @@ def score_majority_style_eval(
             H = proc.hessians[name].to(device=device)
             h_inv[name] = damped_psd_power(H, power=-1, damping_factor=damping_factor)
 
-    def load_grad_as_float(grads: ModuleGradients, name: str) -> np.ndarray:
-        g = np.asarray(grads[name])
-        if g.dtype != np.float32:
-            g = g.astype(np.float32)
+    def load_grad_as_float(grads: np.memmap, name: str) -> np.ndarray:
+        g = grads[name]
+        if g.dtype == np.dtype("|V2"):
+            g = g.view(ml_dtypes.bfloat16).astype(np.float32)
         return g
 
     # Prepare train gradients
@@ -1868,7 +1868,7 @@ def score_majority_style_eval(
         print(result.stdout)
 
     # Load eval gradients
-    eval_grads = load_module_gradients(majority_eval_grads_path)
+    eval_grads = load_gradients(majority_eval_grads_path, structured=True)
     eval_grad_list = []
     for name in tqdm(module_names, desc="Loading eval grads"):
         g = torch.from_numpy(load_grad_as_float(eval_grads, name))

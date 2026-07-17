@@ -8,27 +8,27 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from bergson.data import ModuleGradients, load_module_gradients
+from bergson.data import load_gradients
 from bergson.gradients import GradientProcessor
 from bergson.utils.utils import numpy_to_tensor
 
 from .data import create_qwen_only_dataset
 
 
-def _load_gradients_as_float(grads: ModuleGradients, name: str) -> np.ndarray:
-    """Load a module's gradients and convert from bfloat16 to float32.
+def _load_gradients_as_float(grads: np.memmap, name: str) -> np.ndarray:
+    """Load a gradient field and convert from bfloat16 to float32.
 
     Args:
-        grads: Module-keyed view over a flat gradient store.
-        name: Module name to access.
+        grads: Structured gradient memmap.
+        name: Field name to access.
 
     Returns:
         Float32 numpy array.
     """
-    g = np.asarray(grads[name])
-    # Gradients may be stored as bfloat16, which torch can't view directly
-    if g.dtype != np.float32:
-        g = g.astype(np.float32)
+    g = grads[name]
+    # Gradients are stored as bfloat16 (2-byte void)
+    if g.dtype == np.dtype("|V2"):
+        g = g.view(ml_dtypes.bfloat16).astype(np.float32)
     return g
 
 
@@ -217,11 +217,12 @@ def compute_between_hessian_means(
     pirate_path = Path(pirate_index_path)
     shakespeare_path = Path(shakespeare_index_path)
 
-    print("  Loading pirate gradients (per-module)...")
-    pirate_grads = load_module_gradients(pirate_path)
+    # Load structured gradients (per-module) instead of flattened
+    print("  Loading pirate gradients (structured)...")
+    pirate_grads = load_gradients(pirate_path, structured=True)
 
-    print("  Loading shakespeare gradients (per-module)...")
-    shakespeare_grads = load_module_gradients(shakespeare_path)
+    print("  Loading shakespeare gradients (structured)...")
+    shakespeare_grads = load_gradients(shakespeare_path, structured=True)
 
     # Load a processor to get module names and metadata
     pirate_proc = GradientProcessor.load(pirate_path)
@@ -232,6 +233,7 @@ def compute_between_hessian_means(
 
     print(f"  Computing per-module R_between for {len(module_names)} modules...")
     for name in tqdm(module_names):
+        # Get gradients for this module (numpy structured array access)
         pirate_mod = numpy_to_tensor(pirate_grads[name]).float()
         shakespeare_mod = numpy_to_tensor(shakespeare_grads[name]).float()
 
@@ -344,11 +346,11 @@ def compute_summed_loss_hessian(
     pirate_path = Path(pirate_index_path)
     shakespeare_path = Path(shakespeare_index_path)
 
-    # Load per-module gradients
+    # Load structured gradients
     print("  Loading pirate gradients...")
-    pirate_grads = load_module_gradients(pirate_path)
+    pirate_grads = load_gradients(pirate_path, structured=True)
     print("  Loading shakespeare gradients...")
-    shakespeare_grads = load_module_gradients(shakespeare_path)
+    shakespeare_grads = load_gradients(shakespeare_path, structured=True)
 
     # Load datasets to match facts
     pirate_ds = load_from_disk(
@@ -461,11 +463,11 @@ def compute_pca_style_subspace(
     pirate_path = Path(pirate_index_path)
     shakespeare_path = Path(shakespeare_index_path)
 
-    # Load per-module gradients
+    # Load structured gradients
     print("  Loading pirate gradients...")
-    pirate_grads = load_module_gradients(pirate_path)
+    pirate_grads = load_gradients(pirate_path, structured=True)
     print("  Loading shakespeare gradients...")
-    shakespeare_grads = load_module_gradients(shakespeare_path)
+    shakespeare_grads = load_gradients(shakespeare_path, structured=True)
 
     # Load datasets to match facts
     pirate_ds = load_from_disk("data/facts_dataset_pirate-Qwen3-8B-Base.hf")
@@ -598,9 +600,9 @@ def report_pca_variance(
 
     print("Computing PCA variance analysis...")
     print("  Loading pirate gradients...")
-    pirate_grads = load_module_gradients(pirate_path)
+    pirate_grads = load_gradients(pirate_path, structured=True)
     print("  Loading shakespeare gradients...")
-    shakespeare_grads = load_module_gradients(shakespeare_path)
+    shakespeare_grads = load_gradients(shakespeare_path, structured=True)
 
     pirate_ds = load_from_disk("data/facts_dataset_pirate-Qwen3-8B-Base.hf")
     shakespeare_ds = load_from_disk("data/facts_dataset_shakespeare-Qwen3-8B-Base.hf")
@@ -784,14 +786,14 @@ def compute_eval_hessian(
 
     eval_path = Path(eval_grads_path)
 
-    # Load per-module gradients
+    # Load structured gradients
     print("  Loading eval gradients...")
-    eval_grads = load_module_gradients(eval_path)
+    eval_grads = load_gradients(eval_path, structured=True)
 
     # Get module names from info.json
     with open(eval_path / "info.json") as f:
         info = json.load(f)
-    module_names = list(info["grad_sizes"])
+    module_names = info["dtype"]["names"]
 
     # Load a reference processor to get metadata
     # (use reference if eval doesn't have precs)
@@ -861,11 +863,11 @@ def compute_train_eval_mixed_hessian(
     train_path = Path(train_index_path)
     eval_path = Path(eval_grads_path)
 
-    # Load per-module gradients
+    # Load structured gradients
     print("  Loading train gradients...")
-    train_grads = load_module_gradients(train_path)
+    train_grads = load_gradients(train_path, structured=True)
     print("  Loading eval gradients...")
-    eval_grads = load_module_gradients(eval_path)
+    eval_grads = load_gradients(eval_path, structured=True)
 
     # Load a processor to get metadata and module names
     base_proc = GradientProcessor.load(train_path)
@@ -873,7 +875,7 @@ def compute_train_eval_mixed_hessian(
     # Get module names from info.json
     with open(train_path / "info.json") as f:
         info = json.load(f)
-    module_names = list(info["grad_sizes"])
+    module_names = info["dtype"]["names"]
 
     # Compute per-module mixed second moment matrices
     mixed_precs = {}

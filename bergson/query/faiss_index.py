@@ -7,11 +7,11 @@ from typing import TYPE_CHECKING, Protocol
 import numpy as np
 import psutil
 import torch
+from numpy.lib.recfunctions import structured_to_unstructured
 from numpy.typing import NDArray
 from tqdm import tqdm
 
 from bergson.config.config import FaissConfig
-from bergson.data import load_gradients
 from bergson.process_grads import precondition_flat_grads
 
 if TYPE_CHECKING:
@@ -83,19 +83,23 @@ def normalize_grads(
 
 def gradients_loader(root_dir: Path):
     """
-    Yield ``(gradients, module_names)`` pairs for the shards under ``root_dir``.
+    Yield memory-mapped gradient shards stored under ``root_dir``.
 
     Handles both single-shard exports (``info.json`` directly under ``root_dir``)
-    and multi-shard layouts (directories named ``*shard*``). Gradients are
-    memory-mapped as ``(num_grads, total_grad_dim)``.
-    so downstream code can stream slices without excessive RAM.
+    and multi-shard layouts (directories named ``*shard*``). Each yielded object
+    stays memory-mapped so downstream code can stream slices without excessive RAM.
     """
 
-    def load_shard(shard_dir: Path) -> tuple[np.memmap, list[str]]:
+    def load_shard(shard_dir: Path) -> np.memmap:
         with (shard_dir / "info.json").open("r") as f:
             info = json.load(f)
 
-        return load_gradients(shard_dir), list(info["grad_sizes"])
+        return np.memmap(
+            shard_dir / "gradients.bin",
+            dtype=info["dtype"],
+            mode="r",
+            shape=(info["num_grads"],),
+        )
 
     if (root_dir / "info.json").exists():
         yield load_shard(root_dir)
@@ -298,9 +302,11 @@ class FaissIndex:
             faiss.write_index(index, str(shard_path))
 
         ordered_modules = []
-        for i, (grads, module_names) in enumerate(tqdm(dl, desc="Loading gradients")):
+        for i, grads in enumerate(tqdm(dl, desc="Loading gradients")):
             if i == 0:
-                ordered_modules = module_names
+                ordered_modules = list(grads.dtype.names or [])
+
+            grads = structured_to_unstructured(grads)
 
             if i == 0:
                 validate_ram(grads, shard_sizes[-1])

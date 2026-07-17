@@ -14,13 +14,13 @@ import torch
 from safetensors.torch import load_file
 
 from bergson.config import InversionConfig
-from bergson.data import create_index, load_module_gradients
+from bergson.data import create_index, load_gradients
 from bergson.hessians.apply_hessian import EkfacApplicator, EkfacConfig
 from bergson.hessians.inversion import INVERSIONS
 
 
 def _make_query_gradients(query_path: str, grad_sizes: dict[str, int], num_grads: int):
-    """Write a small query-gradient index with random gradients."""
+    """Write a small structured query-gradient index with random gradients."""
     index = create_index(
         root=Path(query_path),
         num_grads=num_grads,
@@ -28,7 +28,8 @@ def _make_query_gradients(query_path: str, grad_sizes: dict[str, int], num_grads
         dtype=np.float32,
     )
     rng = np.random.default_rng(0)
-    index[:] = rng.standard_normal(index.shape).astype(np.float32)
+    for name, size in grad_sizes.items():
+        index[name][:] = rng.standard_normal((num_grads, size)).astype(np.float32)
     index.flush()
 
 
@@ -48,7 +49,7 @@ def _apply(
     )
     inversion_cfg = InversionConfig(inversion=inversion, damping_factor=damping_factor)
     EkfacApplicator(cfg, inversion_cfg=inversion_cfg).compute_ivhp_sharded()
-    return load_module_gradients(out_path)
+    return load_gradients(out_path)
 
 
 def test_inversion_methods_apply(ekfac_results_path: str, tmp_path):

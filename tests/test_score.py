@@ -23,7 +23,7 @@ from bergson.config import (
     ScoreConfig,
 )
 from bergson.config.config_io import save_run_config
-from bergson.data import column_offsets, create_index
+from bergson.data import create_index
 from bergson.gradients import GradientProcessor
 from bergson.hessians.preconditioner import (
     DensePreconditioner,
@@ -69,6 +69,7 @@ def test_large_gradients_query(tmp_path: Path, dataset):
         num_grads=len(dataset),
         grad_sizes=grad_sizes,
         dtype=np.float32,
+        with_structure=False,
     )
 
     result = subprocess.run(
@@ -567,8 +568,8 @@ def _write_query_index(
     index = create_index(
         path, num_grads=num_grads, grad_sizes=grad_sizes, dtype=np.float32
     )
-    for name, (lo, hi) in column_offsets(grad_sizes).items():
-        index[:, lo:hi] = grads[name].numpy()
+    for name in grad_sizes:
+        index[name][:] = grads[name].numpy()
     index.flush()
     # Persist preprocess_cfg like the CLI does, so get_query_grads can tell
     # whether the query was already preconditioned upstream (e.g. at reduce).
