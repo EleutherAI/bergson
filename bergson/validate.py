@@ -356,7 +356,7 @@ def validate_scores(
                 stream.weights.data[-weight_pad_count:] = 0.0
             else:
                 stream.weights.data[-pad_count:] = 0.0
-        stream.weights.view(-1)[subset] = 0.0
+        stream.weights.view(-1)[subset] = run_cfg.subset_weight
 
         for x in stream:
             fwd_state = trainer.step(
