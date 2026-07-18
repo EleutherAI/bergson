@@ -367,6 +367,11 @@ class TrainingConfig(AttributionConfig, Serializable):
     grad_checkpointing: bool = False
     """Whether to use gradient checkpointing during the forward pass."""
 
+    grad_accum_steps: int = 1
+    """Number of micro-batches to split each (per-rank) training batch into,
+    accumulating their gradients before a single optimizer step. The effective
+    batch size is unchanged; peak memory drops to that of one micro-batch."""
+
     resume: bool = False
     """Resume a previously interrupted run from the last checkpoint."""
 

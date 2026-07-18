@@ -320,6 +320,71 @@ class TrainerState:
         )
 
 
+def _loss_denom(batch: dict) -> float:
+    """The loss denominator ``weighted_causal_lm_ce`` uses for ``batch``.
+
+    Weighted CE normalizes by the number of valid (non-ignored) label tokens
+    (``valid_mask[:, :-1].sum()``), falling back to ``T-1`` when no mask is
+    present. Micro-batch accumulation must rescale by this to stay exact.
+    """
+    vm = batch.get("valid_mask")
+    if vm is not None:
+        return float(vm[:, :-1].sum())
+    return float(batch["input_ids"].shape[1] - 1)
+
+
+def _split_batch(inputs: dict, n: int) -> list[dict]:
+    """Split a collated batch dict into up to ``n`` micro-batches along dim 0.
+    Tensors whose leading dim equals the batch size are sliced; everything
+    else is shared by reference."""
+    tensors = [
+        v for v in inputs.values() if isinstance(v, torch.Tensor) and v.ndim >= 1
+    ]
+    batch_size = tensors[0].shape[0]
+    n = max(1, min(n, batch_size))
+    sizes = [batch_size // n + (1 if i < batch_size % n else 0) for i in range(n)]
+    micro, off = [], 0
+    for s in sizes:
+        mb = {}
+        for k, v in inputs.items():
+            if isinstance(v, torch.Tensor) and v.ndim >= 1 and v.shape[0] == batch_size:
+                mb[k] = v[off : off + s]
+            else:
+                mb[k] = v
+        micro.append(mb)
+        off += s
+    return micro
+
+
+def _accumulate_grads(
+    model, params, inputs: dict, grad_accum_steps: int, *, create_graph: bool
+) -> tuple[dict, float]:
+    """Sum normalized per-micro-batch gradients into the full-batch gradient.
+
+    Each micro-batch's loss is normalized by its own token count; scaling by
+    ``denom_i / D`` (D = full-batch token count) makes the sum identical to the
+    full-batch gradient up to float associativity. Returns ``(grads, loss)``.
+    """
+    total_denom = _loss_denom(inputs)
+    grads: dict | None = None
+    last_loss = 0.0
+    for mb in _split_batch(inputs, grad_accum_steps):
+        outputs = model(**mb)
+        loss_i = outputs.loss if hasattr(outputs, "loss") else outputs
+        assert isinstance(loss_i, torch.Tensor), "Loss must be a Tensor"
+        coef = _loss_denom(mb) / total_denom
+        last_loss += float(loss_i.detach()) * coef
+        g_i = grad_tree(loss_i * coef, params, create_graph=create_graph)
+        if grads is None:
+            grads = {k: v for k, v in g_i.items()}
+        else:
+            for k in grads:
+                if g_i[k] is not None:
+                    grads[k] = grads[k] + g_i[k] if grads[k] is not None else g_i[k]
+    assert grads is not None
+    return grads, last_loss
+
+
 class Trainer:
     """Stateless, functional trainer for a model and optimizer."""
 
@@ -372,6 +437,7 @@ class Trainer:
         trace: bool = False,
         fsdp: bool = False,
         max_grad_norm: float | None = None,
+        grad_accum_steps: int = 1,
     ) -> TrainerState:
         """Perform a single training step on `state`, returning the new state.
 
@@ -392,6 +458,9 @@ class Trainer:
             max_grad_norm: Clip gradients to this global norm before the optimizer step,
                 matching HuggingFace Trainer's ``max_grad_norm``. ``None`` or ``0``
                 disables clipping.
+            grad_accum_steps: Split the batch into this many micro-batches and
+                sum their normalized gradients before the single optimizer
+                update; the full-batch gradient is reproduced exactly.
         """
         torch.random.set_rng_state(state.cpu_rng_state)
         _maybe_set_cuda_rng_state(state.cuda_rng_state)
@@ -404,20 +473,47 @@ class Trainer:
             state.buffers,
             preserve_graph=trace,
         ) as params:
-            outputs = self.model(**inputs)
+            if grad_accum_steps <= 1:
+                outputs = self.model(**inputs)
 
-            # Currently we support two output types: HuggingFace, and "raw loss"
-            # - HuggingFace models output a dict/dataclass with a "loss" field
-            # - Raw loss models output a single scalar loss value as a Tensor
-            if hasattr(outputs, "loss"):
-                loss = outputs.loss
+                # Two output types are supported: HuggingFace (a dict/dataclass
+                # with a "loss" field) and "raw loss" (a scalar loss Tensor).
+                if hasattr(outputs, "loss"):
+                    loss = outputs.loss
+                else:
+                    loss = outputs
+
+                assert isinstance(loss, torch.Tensor), "Loss must be a Tensor"
+                self._last_loss = loss.detach().item()
+                grads = grad_tree(loss, params, create_graph=trace)
             else:
-                loss = outputs
+                # With ``trace`` every micro-graph would stay alive for the
+                # outer VJP, so the metagradient backward uses ``metagrad_step``
+                # instead, which frees them one at a time.
+                grads, self._last_loss = _accumulate_grads(
+                    self.model, params, inputs, grad_accum_steps, create_graph=trace
+                )
 
-            assert isinstance(loss, torch.Tensor), "Loss must be a Tensor"
-            self._last_loss = loss.detach().item()
-            grads = grad_tree(loss, params, create_graph=trace)
+        return self._apply_update(
+            state,
+            grads,
+            inplace=inplace,
+            trace=trace,
+            fsdp=fsdp,
+            max_grad_norm=max_grad_norm,
+        )
 
+    def _apply_update(
+        self,
+        state: TrainerState,
+        grads: dict[str, torch.Tensor],
+        *,
+        inplace: bool = False,
+        trace: bool = False,
+        fsdp: bool = False,
+        max_grad_norm: float | None = None,
+    ) -> TrainerState:
+        """Reduce/clip ``grads`` and apply one optimizer update to ``state``."""
         if dist.is_initialized() and not fsdp:
             if trace:
                 # Twice-differentiable all-reduce.
@@ -462,13 +558,136 @@ class Trainer:
             grads, state.opt_state, inplace=inplace, params=state.params
         )
         new_params = torchopt.apply_updates(state.params, updates, inplace=inplace)
-        state = TrainerState(
+        return TrainerState(
             new_params,
             new_state,
             state.buffers,
             state.batch_index + 1,
         )
-        return state
+
+    def metagrad_step(
+        self,
+        fwd_state: TrainerState,
+        inputs: dict[str, Any],
+        bwd_state: "BackwardState",
+        data_weights: torch.Tensor,
+        *,
+        fsdp: bool = False,
+        max_grad_norm: float | None = None,
+        grad_accum_steps: int = 1,
+    ) -> "BackwardState":
+        """Micro-batched VJP through one training step (metagradient replay).
+
+        Equivalent to the single-shot ``step(trace=True)`` + ``autograd.grad``
+        in :meth:`backward`, with peak memory bounded to one micro-batch.
+        ``fwd_state`` must be detached and marked ``requires_grad``;
+        ``data_weights`` must require grad.
+
+        Two stages, exploiting ``grads = Σ_i c_i · grad_tree(L_i)``:
+          A. VJP from the next state's cotangents through only the
+             all-reduce/clip/update graph, yielding a cotangent ``g_bar`` on
+             the combined gradient plus the direct-path cotangents on the
+             incoming params/opt-state.
+          B. Per micro-batch, recompute its gradient graph, VJP it against
+             ``g_bar``, and free it before the next micro-batch.
+        """
+        params = fwd_state.params
+        buffers = fwd_state.buffers
+        flat_i = fwd_state.differentiable_tensors()
+        p_keys = list(bwd_state.param_grads.keys())
+        p_grads = list(bwd_state.param_grads.values())
+        o_grads = bwd_state.opt_grads
+        w_grads = bwd_state.weight_grads
+        n_p = len(p_keys)
+        n_i = len(flat_i)
+
+        # Stage 0: combined gradient values (no graph) to drive the update.
+        with swap_parameters(self.model, params, buffers, preserve_graph=False) as ps:
+            grads_detached, _ = _accumulate_grads(
+                self.model, ps, inputs, grad_accum_steps, create_graph=False
+            )
+        grads_var = {
+            k: v.detach().clone().requires_grad_(True)
+            for k, v in grads_detached.items()
+        }
+
+        # Stage A: VJP through the update only -> g_bar (on combined grad) and
+        # the direct-path cotangents on the incoming params/opt-state.
+        state_fa = self._apply_update(
+            fwd_state,
+            grads_var,
+            inplace=False,
+            trace=True,
+            fsdp=fsdp,
+            max_grad_norm=max_grad_norm,
+        )
+        flat_fa = state_fa.differentiable_tensors()
+        res_a = list(
+            torch.autograd.grad(
+                flat_fa,
+                flat_i + list(grads_var.values()),
+                grad_outputs=p_grads + o_grads,
+                allow_unused=True,
+            )
+        )
+        direct_i, g_bar_list = res_a[:n_i], res_a[n_i:]
+        g_bar = {
+            k: (g if g is not None else torch.zeros_like(grads_var[k]))
+            for k, g in zip(grads_var.keys(), g_bar_list)
+        }
+
+        def _or_zero(c, ref):
+            return c if c is not None else torch.zeros_like(ref)
+
+        param_cot = [_or_zero(direct_i[i], flat_i[i]).clone() for i in range(n_p)]
+        opt_cot = [_or_zero(direct_i[i], flat_i[i]) for i in range(n_p, n_i)]
+
+        # ``example_weight`` is one indexing of ``data_weights`` shared by all
+        # micro-batch slices, so accumulate cotangents on it and map them back
+        # to ``data_weights`` once after the loop.
+        ew = inputs.get("example_weight")
+        ew_cot = torch.zeros_like(ew) if ew is not None else None
+
+        # Stage B: per micro-batch through-gradient VJP, one graph at a time.
+        total_denom = _loss_denom(inputs)
+        for mb in _split_batch(inputs, grad_accum_steps):
+            with swap_parameters(
+                self.model, params, buffers, preserve_graph=True
+            ) as ps:
+                outputs = self.model(**mb)
+                loss_i = outputs.loss if hasattr(outputs, "loss") else outputs
+                coef = _loss_denom(mb) / total_denom
+                g_i = grad_tree(loss_i * coef, ps, create_graph=True)
+                keys = list(g_i.keys())
+                targets = [ps[k] for k in keys]
+                if ew is not None:
+                    targets = targets + [ew]
+                contrib = torch.autograd.grad(
+                    [g_i[k] for k in keys],
+                    targets,
+                    grad_outputs=[g_bar[k] for k in keys],
+                    allow_unused=True,
+                )
+            for j, k in enumerate(keys):
+                if contrib[j] is not None:
+                    param_cot[p_keys.index(k)] = param_cot[p_keys.index(k)] + contrib[j]
+            if ew_cot is not None and contrib[-1] is not None:
+                ew_cot = ew_cot + contrib[-1]
+            del g_i, contrib
+
+        weight_cot = torch.zeros_like(data_weights)
+        if ew is not None and ew_cot is not None and float(ew_cot.abs().sum()) > 0:
+            if ew is data_weights:
+                weight_cot = weight_cot + ew_cot
+            else:
+                (dw,) = torch.autograd.grad(
+                    ew, data_weights, grad_outputs=ew_cot, allow_unused=True
+                )
+                if dw is not None:
+                    weight_cot = weight_cot + dw
+
+        param_grads = {k: param_cot[i] for i, k in enumerate(p_keys)}
+        return BackwardState(param_grads, opt_cot, weight_cot + w_grads)
 
     def resume(self, state: TrainerState, save_dir: str) -> TrainerState:
         """Resume training from the most recent checkpoint in `save_dir`.
@@ -510,6 +729,7 @@ class Trainer:
         resume: bool = False,
         fsdp: bool = False,
         max_grad_norm: float | None = None,
+        grad_accum_steps: int = 1,
     ) -> TrainerState:
         """Train the model on the given data stream, starting from the given state.
 
@@ -582,6 +802,7 @@ class Trainer:
                 trace=trace,
                 fsdp=fsdp,
                 max_grad_norm=max_grad_norm,
+                grad_accum_steps=grad_accum_steps,
             )
 
             if log_fn is not None:
@@ -654,6 +875,7 @@ class Trainer:
         save_every: int = 0,
         save_mode: MagicSaveMode = "sqrt",
         max_grad_norm: float | None = None,
+        grad_accum_steps: int = 1,
     ) -> BackwardState:
         """Run a backward pass through the training trajectory saved at `ckpt_dir`.
 
@@ -686,6 +908,9 @@ class Trainer:
                 step when replaying the forward trajectory. Must match the value used
                 during the forward pass for the replay to be faithful. Passed through
                 to `Trainer.step`.
+            grad_accum_steps: Micro-batch count used during the forward pass;
+                must match for the replay to be faithful. When > 1 the traced
+                step uses the two-stage micro-VJP (`Trainer.metagrad_step`).
 
         Returns:
             The final backward state after processing the entire trajectory.
@@ -773,6 +998,7 @@ class Trainer:
                     trace=False,
                     fsdp=fsdp,
                     max_grad_norm=max_grad_norm,
+                    grad_accum_steps=grad_accum_steps,
                 )
                 idx += 1
                 sub_pbar.update()
@@ -811,55 +1037,69 @@ class Trainer:
             fwd_state.requires_grad = True
             data.requires_grad = True
 
-            flat_i = fwd_state.differentiable_tensors()
-
-            # Re-do the training step
-            state_f = self.step(
-                fwd_state,
-                data[fwd_state.batch_index],
-                trace=True,
-                fsdp=fsdp,
-                max_grad_norm=max_grad_norm,
-            )
-            main_pbar.update()
-
-            # Carefully consume the bwd state to save memory
-            flat_f = state_f.differentiable_tensors()
-            p_grads = list(bwd_state.param_grads.values())
-            o_grads = bwd_state.opt_grads
-
-            p_keys = list(bwd_state.param_grads.keys())
-            w_grads = bwd_state.weight_grads
-            del bwd_state
-
-            # grad_outputs is the gradient of the loss wrt the next TrainerState. We're
-            # doing a VJP to get the gradient wrt the current TrainerState, AND the
-            # example weights for this batch.
-            inps = flat_i + [data.weights]
-            result = list(
-                torch.autograd.grad(
-                    flat_f,
-                    inps,
-                    grad_outputs=p_grads + o_grads,
-                    allow_unused=True,
+            if grad_accum_steps > 1:
+                bwd_state = self.metagrad_step(
+                    fwd_state,
+                    data[fwd_state.batch_index],
+                    bwd_state,
+                    data.weights,
+                    fsdp=fsdp,
+                    max_grad_norm=max_grad_norm,
+                    grad_accum_steps=grad_accum_steps,
                 )
-            )
-            del p_grads
+                main_pbar.update()
+            else:
+                flat_i = fwd_state.differentiable_tensors()
 
-            # Accumulate parameter gradients
-            param_grads = {k: result[i] for i, k in enumerate(p_keys)}
-            del result[: len(p_keys)]
+                # Re-do the training step
+                state_f = self.step(
+                    fwd_state,
+                    data[fwd_state.batch_index],
+                    trace=True,
+                    fsdp=fsdp,
+                    max_grad_norm=max_grad_norm,
+                )
+                main_pbar.update()
 
-            this_step_weight_grad = result[-1]
-            if dist.is_initialized() and not fsdp:
-                # The all-reduce above correctly gives the true, averaged
-                # gradient for the parameter update. But a given document
-                # only contributes to 1/world_size of that average, so to
-                # recover its score from the average gradient we divide
-                # by world_size.
-                this_step_weight_grad = this_step_weight_grad / dist.get_world_size()
-            weight_grads = this_step_weight_grad + w_grads
-            bwd_state = BackwardState(param_grads, result[:-1], weight_grads)
+                # Carefully consume the bwd state to save memory
+                flat_f = state_f.differentiable_tensors()
+                p_grads = list(bwd_state.param_grads.values())
+                o_grads = bwd_state.opt_grads
+
+                p_keys = list(bwd_state.param_grads.keys())
+                w_grads = bwd_state.weight_grads
+                del bwd_state
+
+                # grad_outputs is the gradient of the loss wrt the next
+                # TrainerState. We're doing a VJP to get the gradient wrt the
+                # current TrainerState, AND the example weights for this batch.
+                inps = flat_i + [data.weights]
+                result = list(
+                    torch.autograd.grad(
+                        flat_f,
+                        inps,
+                        grad_outputs=p_grads + o_grads,
+                        allow_unused=True,
+                    )
+                )
+                del p_grads
+
+                # Accumulate parameter gradients
+                param_grads = {k: result[i] for i, k in enumerate(p_keys)}
+                del result[: len(p_keys)]
+
+                this_step_weight_grad = result[-1]
+                if dist.is_initialized() and not fsdp:
+                    # The all-reduce above correctly gives the true, averaged
+                    # gradient for the parameter update. But a given document
+                    # only contributes to 1/world_size of that average, so to
+                    # recover its score from the average gradient we divide
+                    # by world_size.
+                    this_step_weight_grad = (
+                        this_step_weight_grad / dist.get_world_size()
+                    )
+                weight_grads = this_step_weight_grad + w_grads
+                bwd_state = BackwardState(param_grads, result[:-1], weight_grads)
 
             # Save backward state for resume
             steps_done = last_idx - expected_idx

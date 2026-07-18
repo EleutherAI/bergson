@@ -31,7 +31,9 @@ requires_multi_gpu = pytest.mark.skipif(
 )
 
 
-def magic_cfg(run_path: str, *, fsdp: bool, clip: bool) -> MagicConfig:
+def magic_cfg(
+    run_path: str, *, fsdp: bool, clip: bool, grad_accum: int = 1
+) -> MagicConfig:
     data = DataConfig(
         dataset="Salesforce/wikitext",
         subset="wikitext-2-raw-v1",
@@ -50,6 +52,7 @@ def magic_cfg(run_path: str, *, fsdp: bool, clip: bool) -> MagicConfig:
         overwrite=True,
         num_subsets=2,
         max_grad_norm=MAX_GRAD_NORM if clip else None,
+        grad_accum_steps=grad_accum,
         distributed=DistributedConfig(nproc_per_node=min(torch.cuda.device_count(), 4)),
     )
 
@@ -126,4 +129,44 @@ def test_fsdp_ddp_scores_match_with_grad_clipping(noclip_scores, tmp_path):
     assert fsdp_ddp_diff < 0.05 * clip_effect, (
         f"clipped FSDP and DDP scores differ too much: {fsdp_ddp_diff:.2e} "
         f"(clip effect {clip_effect:.2e}) — cross-shard norm reduction is likely wrong"
+    )
+
+
+@requires_multi_gpu
+def test_grad_accum_matches_full_batch(noclip_scores, tmp_path):
+    """grad_accum_steps > 1 must not change the trajectory or the metagradient.
+
+    Micro-batch accumulation rescales each micro-loss by its token count, so the
+    summed gradient equals the full-batch gradient up to float associativity;
+    the replayed backward routes through the two-stage micro-VJP
+    (Trainer.metagrad_step) instead of the single-shot traced step. Comparing
+    against the full-batch no-clip runs checks both: DDP accum vs DDP full-batch
+    verifies exactness of the accumulation, FSDP accum vs DDP accum verifies the
+    micro-VJP's stage-A update VJP and stage-B per-micro-batch VJPs are
+    shard-correct.
+    """
+    ddp_noclip = noclip_scores["ddp"]
+
+    run_magic(magic_cfg(f"{tmp_path}/ddp", fsdp=False, clip=False, grad_accum=2))
+    run_magic(magic_cfg(f"{tmp_path}/fsdp", fsdp=True, clip=False, grad_accum=2))
+
+    ddp_scores = torch.load(f"{tmp_path}/ddp/scores.pt", weights_only=True)
+    fsdp_scores = torch.load(f"{tmp_path}/fsdp/scores.pt", weights_only=True)
+
+    assert fsdp_scores.shape == ddp_noclip.shape
+
+    # Scale-free checks: scores are tiny (~1e-6), so bound the deviations by a
+    # fraction of the scores' own magnitude rather than an absolute atol.
+    scale = ddp_noclip.abs().max()
+    accum_effect = (ddp_scores - ddp_noclip).abs().max()
+    fsdp_ddp_diff = (fsdp_scores - ddp_scores).abs().max()
+
+    assert accum_effect < 0.05 * scale, (
+        f"grad accumulation changed DDP scores by {accum_effect:.2e} "
+        f"(scale {scale:.2e}) — accumulation is not reproducing the "
+        "full-batch gradient"
+    )
+    assert fsdp_ddp_diff < 0.05 * scale, (
+        f"FSDP and DDP scores differ with grad accumulation: {fsdp_ddp_diff:.2e} "
+        f"(scale {scale:.2e}) — the micro-VJP is likely not shard-correct"
     )

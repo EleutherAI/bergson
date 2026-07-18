@@ -323,7 +323,14 @@ def validate_scores(
         stream.weights.view(-1)[subset] = 0.0
 
         for x in stream:
-            fwd_state = trainer.step(fwd_state, x, inplace=True, fsdp=run_cfg.fsdp)
+            fwd_state = trainer.step(
+                fwd_state,
+                x,
+                inplace=True,
+                fsdp=run_cfg.fsdp,
+                max_grad_norm=run_cfg.max_grad_norm,
+                grad_accum_steps=run_cfg.grad_accum_steps,
+            )
 
         if save_models and global_rank == 0:
             out_dir = os.path.join(run_cfg.run_path, "retrained", f"subset_{i}")
