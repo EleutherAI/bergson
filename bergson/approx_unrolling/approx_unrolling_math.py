@@ -22,6 +22,7 @@ from bergson.data import load_scores
 from bergson.distributed import init_dist, launch_distributed_run
 from bergson.hessians.apply_hessian import EkfacApplicator, EkfacConfig
 from bergson.score.score import score_dataset
+from bergson.score.score_writer import save_sequence_scores, save_token_scores
 
 
 def _checkpoint_step(p: str) -> int:
@@ -252,13 +253,7 @@ def score_per_segment_and_aggregate(
     For each l, runs :func:`score_dataset` against the training data at the
     final checkpoint with ``query_grad_segment_l`` as the query. Writes
     per-segment outputs to ``<run>/segment_{l}/scores/``, then sums into
-    ``<run>/scores.npy`` in the loss-diff convention (positive = removing the
-    doc lowers the query loss): raw score files carry no score_cfg, so each
-    segment is negated per its saved ``score_cfg.higher_is_better`` before
-    summing — the segment scores are proponent-positive dot products
-    (``q_tilde . g(z_m) > 0`` means training on z_m helps the query), the
-    same conversion :func:`bergson.validate.load_attribution_scores` applies
-    to score directories.
+    ``<run>/scores/``.
     """
     base_run = Path(index_cfg.run_path)
     num_segments = len(query_grad_segment_paths)
@@ -295,9 +290,18 @@ def score_per_segment_and_aggregate(
             seg_scores = -seg_scores
         total = seg_scores if total is None else total + seg_scores
     assert total is not None, "num_segments >= 1 is validated by the pipeline"
-    # Make single-query runs 1D.
-    if total.ndim == 2 and total.shape[1] == 1:
-        total = total[:, 0]
-    out_path = base_run / "scores.npy"
-    np.save(out_path, total)
+
+    out_path = base_run / "scores"
+    if index_cfg.attribute_tokens:
+        offsets = np.load(score_dirs[0] / "offsets.npy")
+        save_token_scores(out_path, total, offsets)
+    else:
+        save_sequence_scores(out_path, total)
+
+    out_index_cfg = deepcopy(index_cfg)
+    out_index_cfg.run_path = str(out_path)
+    save_run_config(
+        Score(ScoreConfig(higher_is_better=False), out_index_cfg, PreprocessConfig()),
+        out_path,
+    )
     return out_path

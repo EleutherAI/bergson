@@ -63,7 +63,7 @@ steps:
       model: gpt2
       overwrite: true
 
-      scores: runs/lotus_source_q50_damp0/scores.npy
+      scores: runs/lotus_source_q50_damp0/scores
       retrained_dir: runs/lotus
 
       data:
