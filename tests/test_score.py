@@ -599,9 +599,7 @@ def test_get_query_grads_token_index(tmp_path: Path):
     expected = rng.standard_normal((total_tokens, 7)).astype(np.float32)
     buffer[:] = expected
     buffer.flush()
-    save_run_config(
-        Build(IndexConfig(run_path=str(path)), PreprocessConfig()), path
-    )
+    save_run_config(Build(IndexConfig(run_path=str(path)), PreprocessConfig()), path)
 
     score_cfg = ScoreConfig(query_path=str(path))
     grads, preprocess_cfg = get_query_grads(score_cfg)
