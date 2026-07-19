@@ -45,7 +45,7 @@ class ApproxUnrolling(Serializable):
     """Run the SOURCE (approximate unrolling) training-data attribution pipeline.
 
     Runs from per-checkpoint Hessian precompute through per-segment scoring and
-    aggregation into ``<run>/scores.npy``. See
+    aggregation into ``<run>/scores/``. See
     :mod:`bergson.approx_unrolling.pipeline` for the step list.
     """
 

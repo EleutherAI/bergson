@@ -17,11 +17,12 @@ from bergson.config.config import (
     PreprocessConfig,
     ScoreConfig,
 )
-from bergson.config.config_io import save_run_config
+from bergson.config.config_io import load_subconfig, save_run_config
 from bergson.data import load_scores
 from bergson.distributed import init_dist, launch_distributed_run
 from bergson.hessians.apply_hessian import EkfacApplicator, EkfacConfig
 from bergson.score.score import score_dataset
+from bergson.score.score_writer import save_sequence_scores, save_token_scores
 
 
 def _checkpoint_step(p: str) -> int:
@@ -234,7 +235,7 @@ def score_per_segment_and_aggregate(
     For each l, runs :func:`score_dataset` against the training data at the
     final checkpoint with ``query_grad_segment_l`` as the query. Writes
     per-segment outputs to ``<run>/segment_{l}/scores/``, then sums into
-    ``<run>/scores.npy``.
+    ``<run>/scores/``.
     """
     base_run = Path(index_cfg.run_path)
     num_segments = len(query_grad_segment_paths)
@@ -247,7 +248,9 @@ def score_per_segment_and_aggregate(
         seg_index_cfg.model = final_checkpoint
         seg_index_cfg.run_path = str(scores_dir)
         seg_index_cfg.projection_dim = 0
-        score_cfg = ScoreConfig(query_path=str(query_grad_segment_paths[l]))
+        score_cfg = ScoreConfig(
+            query_path=str(query_grad_segment_paths[l]), higher_is_better=True
+        )
         seg_preprocess_cfg = PreprocessConfig()
         save_run_config(
             Score(score_cfg, seg_index_cfg, seg_preprocess_cfg),
@@ -256,12 +259,31 @@ def score_per_segment_and_aggregate(
         score_dataset(seg_index_cfg, score_cfg, seg_preprocess_cfg)
         score_dirs.append(scores_dir)
 
-    total = load_scores(score_dirs[0])[:]
-    for scores_dir in score_dirs[1:]:
-        total = total + load_scores(scores_dir)[:]
-    # Make single-query runs 1D.
-    if total.ndim == 2 and total.shape[1] == 1:
-        total = total[:, 0]
-    out_path = base_run / "scores.npy"
-    np.save(out_path, total)
+    total = None
+    for scores_dir in score_dirs:
+        seg_scores = load_scores(scores_dir)[:]
+        seg_score_cfg = load_subconfig(scores_dir, "score_cfg", ScoreConfig)
+        if seg_score_cfg is None:
+            raise FileNotFoundError(
+                f"No score_cfg found at {scores_dir}; cannot determine the "
+                "segment scores' orientation for aggregation."
+            )
+        if seg_score_cfg.higher_is_better:
+            seg_scores = -seg_scores
+        total = seg_scores if total is None else total + seg_scores
+    assert total is not None, "num_segments >= 1 is validated by the pipeline"
+
+    out_path = base_run / "scores"
+    if index_cfg.attribute_tokens:
+        offsets = np.load(score_dirs[0] / "offsets.npy")
+        save_token_scores(out_path, total, offsets)
+    else:
+        save_sequence_scores(out_path, total)
+
+    out_index_cfg = deepcopy(index_cfg)
+    out_index_cfg.run_path = str(out_path)
+    save_run_config(
+        Score(ScoreConfig(higher_is_better=False), out_index_cfg, PreprocessConfig()),
+        out_path,
+    )
     return out_path

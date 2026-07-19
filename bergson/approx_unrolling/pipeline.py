@@ -20,7 +20,7 @@ query_grad_0.. query_grad_{L-1} and save at
 7. Phase 2: Apply per-segment F_segment on query_grad_l to build query_grad_segment at
    ``<run>/segment_{l}/query_grad_segment/``.
 8. Phase 3: per-segment scores at ``<run>/segment_{l}/scores/``, summed
-   into ``<run>/scores.npy``.
+   into ``<run>/scores/``.
 """
 
 import gc

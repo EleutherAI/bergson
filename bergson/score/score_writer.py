@@ -183,6 +183,53 @@ class MemmapTokenScoreWriter(ScoreWriter):
         self.num_batches_since_flush = 0
 
 
+def save_token_scores(
+    path: Path,
+    scores: np.ndarray,
+    offsets: np.ndarray,
+    *,
+    dtype: torch.dtype = torch.float32,
+) -> None:
+    """One-shot equivalent of :class:`MemmapTokenScoreWriter`'s on-disk
+    layout, for callers that already hold the full flat ``(total_tokens,
+    num_scores)`` array in memory (e.g. summed across upstream per-token
+    score dirs sharing the same ``offsets``), rather than streaming batches
+    through ``__call__``.
+    """
+    if scores.ndim == 1:
+        scores = scores[:, None]
+    total_tokens, num_scores = scores.shape
+    num_items = len(offsets) - 1
+
+    path.mkdir(parents=True, exist_ok=True)
+    np_dtype = convert_dtype_to_np(dtype)
+
+    mmap = np.memmap(
+        path / "token_scores.bin",
+        dtype=np_dtype,
+        mode="w+",
+        shape=(total_tokens, num_scores),
+    )
+    mmap[:] = tensor_to_numpy(torch.from_numpy(scores).to(dtype))
+    mmap.flush()
+
+    np.save(path / "offsets.npy", offsets)
+    np.save(path / "num_token_grads.npy", np.diff(offsets).astype(np.int64))
+
+    with (path / "info.json").open("w") as f:
+        json.dump(
+            {
+                "attribute_tokens": True,
+                "total_tokens": total_tokens,
+                "num_items": num_items,
+                "num_scores": num_scores,
+                "dtype": np_dtype.name,
+            },
+            f,
+            indent=2,
+        )
+
+
 class MemmapSequenceScoreWriter(ScoreWriter):
     """
     Writes scores to a memory-mapped file on disk.
@@ -299,3 +346,23 @@ class MemmapSequenceScoreWriter(ScoreWriter):
     def flush(self):
         self.scores.flush()
         self.num_batches_since_flush = 0
+
+
+def save_sequence_scores(
+    path: Path,
+    scores: np.ndarray,
+    *,
+    dtype: torch.dtype = torch.float32,
+) -> None:
+    """One-shot equivalent of :class:`MemmapSequenceScoreWriter`, for callers
+    that already hold the full ``[num_items, num_scores]`` matrix in memory
+    (e.g. summed across upstream per-segment score dirs) rather than
+    streaming batches through ``__call__``.
+    """
+    if scores.ndim == 1:
+        scores = scores[:, None]
+    num_items, num_scores = scores.shape
+
+    writer = MemmapSequenceScoreWriter(path, num_items, num_scores, dtype=dtype)
+    writer(list(range(num_items)), torch.from_numpy(np.ascontiguousarray(scores)))
+    writer.flush()

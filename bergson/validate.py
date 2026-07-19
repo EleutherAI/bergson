@@ -29,40 +29,12 @@ from transformers.utils.logging import (
 
 from .config.config import ScoreConfig, ValidationConfig
 from .config.config_io import load_subconfig, save_run_config
-from .data import load_scores, pad_and_tensor
+from .data import TokenScores, load_scores, pad_and_tensor
 from .magic.data_stream import DataStream, pad_dataset_to_batch_size
 from .magic.trainer import TrainerState, prepare_trainer
 from .utils.csv_writer import CSVWriter
 from .utils.utils import get_device, simple_parse_kwargs_string
 from .utils.worker_utils import setup_data_pipeline
-
-
-def _load_token_grid(path: str) -> torch.Tensor:
-    """Unpack a packed per-token score directory into a zero-padded
-    ``[docs, seq_len]`` grid, so token ``t`` of doc ``d`` lands at
-    ``grid[d, t]`` (the per-token training weight layout)."""
-    score_dir = Path(path)
-    info = json.loads((score_dir / "info.json").read_text())
-    num_docs, num_scores = info["num_items"], info["num_scores"]
-
-    offsets = np.load(score_dir / "offsets.npy")
-    tokens_per_doc = np.diff(offsets).astype(np.int64)
-    packed = np.memmap(
-        score_dir / "token_scores.bin",
-        dtype=info["dtype"],
-        mode="r",
-        shape=(info["total_tokens"], num_scores),
-    )
-
-    # A doc of length L stores L-1 rows (nothing is predicted at the last
-    # position), so the weight-grid width is one more than the widest doc.
-    seq_len = int(tokens_per_doc.max()) + 1
-    grid = np.zeros((num_docs, seq_len, num_scores), dtype=np.float32)
-    for doc in range(num_docs):
-        grid[doc, : tokens_per_doc[doc]] = packed[offsets[doc] : offsets[doc + 1]]
-
-    scores = torch.from_numpy(grid)
-    return scores[..., 0] if num_scores == 1 else scores
 
 
 def load_attribution_scores(score_path: str) -> tuple[torch.Tensor, bool]:
@@ -76,28 +48,31 @@ def load_attribution_scores(score_path: str) -> tuple[torch.Tensor, bool]:
 
     Score directories are negated when their ``score_cfg.higher_is_better`` is
     set, aligning them with the loss-diff convention. ``.npy`` files carry no
-    ``score_cfg`` and are loaded as-is.
+    ``score_cfg`` and are loaded as-is: they must already be in the loss-diff
+    convention.
     """
-    if os.path.isdir(score_path) and os.path.isfile(
-        os.path.join(score_path, "token_scores.bin")
-    ):
-        scores = _load_token_grid(score_path)
-        score_cfg = load_subconfig(score_path, "score_cfg", ScoreConfig)
-        if score_cfg is not None and score_cfg.higher_is_better:
-            scores = -scores
-        return scores, scores.ndim == 3
-    if os.path.isdir(score_path):
-        scores = torch.from_numpy(load_scores(Path(score_path))[:])
-        score_cfg = load_subconfig(score_path, "score_cfg", ScoreConfig)
-        if score_cfg is not None and score_cfg.higher_is_better:
-            scores = -scores
-    elif score_path.endswith(".npy"):
-        scores = torch.from_numpy(np.load(score_path))
-    else:
-        scores = torch.load(score_path, map_location="cpu")
-        return scores, False
+    if os.path.isdir(score_path) or score_path.endswith(".npy"):
+        loaded = load_scores(Path(score_path))
+        score_cfg = (
+            load_subconfig(score_path, "score_cfg", ScoreConfig)
+            if os.path.isdir(score_path)
+            else None
+        )
+        negate = score_cfg is not None and score_cfg.higher_is_better
 
-    return scores, scores.ndim == 2 and scores.shape[1] > 1
+        if isinstance(loaded, TokenScores):
+            scores = loaded.to_grid()
+            if negate:
+                scores = -scores
+            return scores, scores.ndim == 3
+
+        scores = torch.from_numpy(loaded[:])
+        if negate:
+            scores = -scores
+        return scores, scores.ndim == 2 and scores.shape[1] > 1
+
+    scores = torch.load(score_path, map_location="cpu")
+    return scores, False
 
 
 def _load_banked_model(
