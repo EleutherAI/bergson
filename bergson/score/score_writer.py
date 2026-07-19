@@ -13,6 +13,51 @@ from bergson.data import compute_num_token_grads
 from bergson.utils.utils import convert_dtype_to_np, tensor_to_numpy
 
 
+def _score_struct_dtype(num_scores: int, np_dtype: np.dtype) -> tuple[dict, dict]:
+    """Interleaved ``(score_i, written_i)`` structured dtype shared by every
+    score writer -- per-document or per-token -- so every stored score
+    carries a per-cell written flag for resumability. Each pair is aligned
+    to the next power of 2 for efficiency.
+
+    Returns ``(numpy_dtype_spec, json_safe_dtype_spec)``.
+    """
+    score_size = np_dtype.itemsize
+    bool_size = np.dtype("bool").itemsize
+    pair_size = score_size + bool_size
+    aligned_pair_size = 1 << (pair_size - 1).bit_length()
+
+    names = []
+    formats = []
+    offsets = []
+    for i in range(num_scores):
+        names.append(f"score_{i}")
+        formats.append(np_dtype)
+        offsets.append(i * aligned_pair_size)
+
+        names.append(f"written_{i}")
+        formats.append("bool")
+        offsets.append(i * aligned_pair_size + score_size)
+
+    total_bytes = num_scores * aligned_pair_size
+    # Round up to the nearest 8 bytes
+    itemsize = ((total_bytes + 7) // 8) * 8
+
+    struct_dtype = {
+        "names": names,
+        "formats": formats,
+        "offsets": offsets,
+        "itemsize": itemsize,
+    }
+    # For JSON serialization, convert numpy dtype to string
+    struct_dtype_json = {
+        "names": names,
+        "formats": [str(f) if isinstance(f, np.dtype) else f for f in formats],
+        "offsets": offsets,
+        "itemsize": itemsize,
+    }
+    return struct_dtype, struct_dtype_json
+
+
 class ScoreWriter(ABC):
     """
     Base class for score writers.
@@ -90,11 +135,12 @@ class InMemorySequenceScoreWriter(ScoreWriter):
 
 
 class MemmapTokenScoreWriter(ScoreWriter):
-    """Writes per-token scores to a flat memory-mapped file.
-
-    The flat buffer has shape ``(total_tokens, num_scores)`` where
-    ``total_tokens = sum(num_token_grads)``.  Example *i*'s scores live at
-    rows ``offsets[i]:offsets[i+1]``.
+    """Writes per-token scores to a flat memory-mapped file, the same
+    ``(score_i, written_i)`` structured layout as
+    :class:`MemmapSequenceScoreWriter` -- so a per-token store is a plain
+    per-document store with ``num_rows = total_tokens`` instead of
+    ``num_items``, plus an ``offsets.npy`` saying which rows belong to which
+    document. Example *i*'s scores live at rows ``offsets[i]:offsets[i+1]``.
     """
 
     def __init__(
@@ -120,8 +166,9 @@ class MemmapTokenScoreWriter(ScoreWriter):
         total_tokens = int(self.offsets[-1])
 
         self.path.mkdir(parents=True, exist_ok=True)
-        scores_file_path = self.path / "token_scores.bin"
+        scores_file_path = self.path / "scores.bin"
         np_dtype = convert_dtype_to_np(dtype)
+        struct_dtype, struct_dtype_json = _score_struct_dtype(num_scores, np_dtype)
 
         rank = dist.get_rank() if dist.is_initialized() else 0
         if rank == 0 and not scores_file_path.exists():
@@ -129,27 +176,24 @@ class MemmapTokenScoreWriter(ScoreWriter):
 
             self.scores = np.memmap(
                 str(scores_file_path),
-                dtype=np_dtype,
+                dtype=np.dtype(struct_dtype),  # type: ignore
                 mode="w+",
-                shape=(total_tokens, num_scores),
+                shape=(total_tokens,),
             )
-            self.scores[:] = 0
-            self.flush()
 
             with (path / "info.json").open("w") as f:
                 json.dump(
                     {
                         "attribute_tokens": True,
-                        "total_tokens": total_tokens,
                         "num_items": num_items,
+                        "num_rows": total_tokens,
                         "num_scores": num_scores,
-                        "dtype": np_dtype.name,
+                        "dtype": struct_dtype_json,
                     },
                     f,
                     indent=2,
                 )
 
-            np.save(path / "num_token_grads.npy", num_token_grads)
             np.save(path / "offsets.npy", self.offsets)
 
         if dist.is_initialized():
@@ -157,21 +201,24 @@ class MemmapTokenScoreWriter(ScoreWriter):
 
         self.scores = np.memmap(
             str(scores_file_path),
-            dtype=np_dtype,
+            dtype=np.dtype(struct_dtype),  # type: ignore
             mode="r+",
-            shape=(total_tokens, num_scores),
+            shape=(total_tokens,),
         )
 
     def __call__(self, indices: list[int], scores: torch.Tensor):
         # scores: [total_valid_in_batch, num_scores]
-        scores_np = tensor_to_numpy(scores.to(dtype=self.dtype).cpu())
+        scores = scores.to(dtype=self.dtype)
 
         row = 0
         for idx in indices:
             sl = int(self.num_token_grads[idx])
             buf_start = int(self.offsets[idx])
             buf_end = int(self.offsets[idx + 1])
-            self.scores[buf_start:buf_end] = scores_np[row : row + sl]
+            for i in range(self.num_scores):
+                col = tensor_to_numpy(scores[row : row + sl, i].cpu())
+                self.scores[f"score_{i}"][buf_start:buf_end] = col
+                self.scores[f"written_{i}"][buf_start:buf_end] = True
             row += sl
 
         self.num_batches_since_flush += 1
@@ -203,27 +250,30 @@ def save_token_scores(
 
     path.mkdir(parents=True, exist_ok=True)
     np_dtype = convert_dtype_to_np(dtype)
+    struct_dtype, struct_dtype_json = _score_struct_dtype(num_scores, np_dtype)
 
     mmap = np.memmap(
-        path / "token_scores.bin",
-        dtype=np_dtype,
+        path / "scores.bin",
+        dtype=np.dtype(struct_dtype),  # type: ignore
         mode="w+",
-        shape=(total_tokens, num_scores),
+        shape=(total_tokens,),
     )
-    mmap[:] = tensor_to_numpy(torch.from_numpy(scores).to(dtype))
+    scores_np = tensor_to_numpy(torch.from_numpy(scores).to(dtype))
+    for i in range(num_scores):
+        mmap[f"score_{i}"] = scores_np[:, i]
+        mmap[f"written_{i}"] = True
     mmap.flush()
 
     np.save(path / "offsets.npy", offsets)
-    np.save(path / "num_token_grads.npy", np.diff(offsets).astype(np.int64))
 
     with (path / "info.json").open("w") as f:
         json.dump(
             {
                 "attribute_tokens": True,
-                "total_tokens": total_tokens,
                 "num_items": num_items,
+                "num_rows": total_tokens,
                 "num_scores": num_scores,
-                "dtype": np_dtype.name,
+                "dtype": struct_dtype_json,
             },
             f,
             indent=2,
@@ -257,45 +307,7 @@ class MemmapSequenceScoreWriter(ScoreWriter):
 
         # Convert torch dtype to numpy dtype (handles bfloat16 via ml_dtypes)
         np_dtype = convert_dtype_to_np(dtype)
-        score_size = np_dtype.itemsize
-        bool_size = np.dtype("bool").itemsize
-
-        # Build a structured dtype with (score, written) pairs per query
-        # Align each pair to the next power of 2 for efficiency
-        pair_size = score_size + bool_size
-        aligned_pair_size = 1 << (pair_size - 1).bit_length()  # Next power of 2
-
-        names = []
-        formats = []
-        offsets = []
-        for i in range(num_scores):
-            names.append(f"score_{i}")
-            formats.append(np_dtype)
-            offsets.append(i * aligned_pair_size)
-
-            names.append(f"written_{i}")
-            formats.append("bool")
-            offsets.append(i * aligned_pair_size + score_size)
-
-        total_bytes = num_scores * aligned_pair_size
-        # Round up to the nearest 8 bytes
-        itemsize = ((total_bytes + 7) // 8) * 8
-
-        # For JSON serialization, convert numpy dtype to string
-        format_strs = [str(f) if isinstance(f, np.dtype) else f for f in formats]
-        struct_dtype_json = {
-            "names": names,
-            "formats": format_strs,
-            "offsets": offsets,
-            "itemsize": itemsize,
-        }
-
-        struct_dtype = {
-            "names": names,
-            "formats": formats,
-            "offsets": offsets,
-            "itemsize": itemsize,
-        }
+        struct_dtype, struct_dtype_json = _score_struct_dtype(num_scores, np_dtype)
 
         rank = dist.get_rank() if dist.is_initialized() else 0
         if rank == 0 and not scores_file_path.exists():
@@ -313,7 +325,9 @@ class MemmapSequenceScoreWriter(ScoreWriter):
             with (path / "info.json").open("w") as f:
                 json.dump(
                     {
+                        "attribute_tokens": False,
                         "num_items": num_items,
+                        "num_rows": num_items,
                         "num_scores": num_scores,
                         "dtype": struct_dtype_json,
                     },

@@ -155,30 +155,15 @@ def test_datastream_serves_reweighted_per_token_weights():
 
 
 def _write_token_dir(path, ntg, values, num_scores=1):
-    import json
-
     import numpy as np
+
+    from bergson.score.score_writer import save_token_scores
 
     offsets = np.zeros(len(ntg) + 1, dtype=np.int64)
     np.cumsum(ntg, out=offsets[1:])
     total = int(offsets[-1])
-    mm = np.memmap(
-        path / "token_scores.bin", dtype="float32", mode="w+", shape=(total, num_scores)
-    )
-    mm[:] = np.asarray(values, dtype=np.float32).reshape(total, num_scores)
-    mm.flush()
-    np.save(path / "offsets.npy", offsets)
-    (path / "info.json").write_text(
-        json.dumps(
-            {
-                "attribute_tokens": True,
-                "total_tokens": total,
-                "num_items": len(ntg),
-                "num_scores": num_scores,
-                "dtype": "float32",
-            }
-        )
-    )
+    values_arr = np.asarray(values, dtype=np.float32).reshape(total, num_scores)
+    save_token_scores(path, values_arr, offsets)
 
 
 def test_load_token_dir_scatters_packed_to_grid(tmp_path):

@@ -593,15 +593,30 @@ def load_gradient_dataset(root_dir: Path) -> Dataset:
 
 
 class Scores:
-    def __init__(self, mmap: np.memmap, info: dict[str, Any]):
+    """Score store written by
+    :class:`bergson.score.score_writer.MemmapSequenceScoreWriter` or
+    :class:`bergson.score.score_writer.MemmapTokenScoreWriter` -- both write
+    the same ``scores.bin`` layout (a structured ``(score_i, written_i))``
+    array), differing only in what a row means. ``offsets`` is set when the
+    store is per-token (``info["attribute_tokens"]``): row
+    ``offsets[i]:offsets[i+1]`` holds document ``i``'s per-token scores.
+    Otherwise row ``i`` is document ``i`` directly."""
+
+    def __init__(
+        self,
+        mmap: np.memmap,
+        info: dict[str, Any],
+        offsets: NDArray | None = None,
+    ):
         self.mmap = mmap
         self.info = info
+        self.offsets = offsets
         self.num_scores = info["num_scores"]
 
         self._score_fields = [f"score_{i}" for i in range(self.num_scores)]
 
     def __len__(self) -> int:
-        return len(self.mmap)
+        return self.info["num_items"]
 
     def __getitem__(self, key: Any) -> NDArray:
         items = self.mmap[key]
@@ -612,9 +627,27 @@ class Scores:
         return self.mmap[key][f"score_{score_idx}"]
 
     def is_written(self) -> bool:
-        """Check whether all scores in the structured mmap have
-        been written to (i.e. are not still zeros)"""
+        """Check whether every stored cell has been written to."""
         return all(np.all(self.mmap[f"written_{i}"]) for i in range(self.num_scores))
+
+    def to_grid(self) -> torch.Tensor:
+        """Unpack a per-token store into a zero-padded ``[docs, seq_len]``
+        grid (``[docs, seq_len, num_scores]`` when multi-query), so token
+        ``t`` of doc ``d`` lands at ``grid[d, t]`` -- the per-token training
+        weight layout. Only valid when ``offsets`` is set."""
+        assert self.offsets is not None, "to_grid() requires a per-token store"
+        num_docs = len(self)
+        tokens_per_doc = np.diff(self.offsets).astype(np.int64)
+        seq_len = int(tokens_per_doc.max()) + 1
+
+        grid = np.zeros((num_docs, seq_len, self.num_scores), dtype=np.float32)
+        for doc in range(num_docs):
+            grid[doc, : tokens_per_doc[doc]] = self[
+                self.offsets[doc] : self.offsets[doc + 1]
+            ]
+
+        scores = torch.from_numpy(grid)
+        return scores[..., 0] if self.num_scores == 1 else scores
 
 
 class ArrayScores:
@@ -641,55 +674,12 @@ class ArrayScores:
         return True
 
 
-class TokenScores:
-    """Flat ``(total_tokens, num_scores)`` per-token score store, as written
-    by :class:`bergson.score.score_writer.MemmapTokenScoreWriter`. Document
-    ``i``'s per-token scores live at rows ``offsets[i]:offsets[i+1]``."""
-
-    def __init__(self, mmap: np.memmap, info: dict[str, Any], offsets: NDArray):
-        self.mmap = mmap
-        self.info = info
-        self.offsets = offsets
-        self.num_scores = info["num_scores"]
-
-    def __len__(self) -> int:
-        return self.info["num_items"]
-
-    def __getitem__(self, key: Any) -> NDArray:
-        return np.asarray(self.mmap[key])
-
-    def get(self, key: Any, score_idx: int = 0) -> NDArray:
-        return np.asarray(self.mmap[key, score_idx])
-
-    def is_written(self) -> bool:
-        return True
-
-    def to_grid(self) -> torch.Tensor:
-        """Unpack into a zero-padded ``[docs, seq_len]`` grid (``[docs,
-        seq_len, num_scores]`` when multi-query), so token ``t`` of doc ``d``
-        lands at ``grid[d, t]`` -- the per-token training weight layout."""
-        num_docs = len(self)
-        tokens_per_doc = np.diff(self.offsets).astype(np.int64)
-        seq_len = int(tokens_per_doc.max()) + 1
-
-        grid = np.zeros((num_docs, seq_len, self.num_scores), dtype=np.float32)
-        for doc in range(num_docs):
-            grid[doc, : tokens_per_doc[doc]] = self.mmap[
-                self.offsets[doc] : self.offsets[doc + 1]
-            ]
-
-        scores = torch.from_numpy(grid)
-        return scores[..., 0] if self.num_scores == 1 else scores
-
-
-def load_scores(path: Path) -> Scores | ArrayScores | TokenScores:
+def load_scores(path: Path) -> Scores | ArrayScores:
     """Load a score store written by the standard scoring pipeline.
 
-    Dispatches on ``path``: a plain ``.npy`` array loads as
-    :class:`ArrayScores`; a directory whose ``info.json`` has
-    ``attribute_tokens`` set loads its ``token_scores.bin`` as
-    :class:`TokenScores`; any other score directory loads its ``scores.bin``
-    as :class:`Scores`.
+    A plain ``.npy`` array loads as :class:`ArrayScores`. Any other score
+    directory loads its ``scores.bin`` as :class:`Scores`, with ``offsets``
+    set when ``info["attribute_tokens"]`` marks it as a per-token store.
     """
     if path.suffix == ".npy":
         return ArrayScores(np.load(path))
@@ -698,24 +688,15 @@ def load_scores(path: Path) -> Scores | ArrayScores | TokenScores:
     with open(info_path, "r") as f:
         info = json.load(f)
 
-    if info.get("attribute_tokens"):
-        offsets = np.load(path / "offsets.npy")
-        mmap = np.memmap(
-            path / "token_scores.bin",
-            dtype=info["dtype"],
-            mode="r",
-            shape=(info["total_tokens"], info["num_scores"]),
-        )
-        return TokenScores(mmap, info, offsets)
-
     mmap = np.memmap(
         path / "scores.bin",
         dtype=info["dtype"],
         mode="r",
-        shape=(info["num_items"],),
+        shape=(info["num_rows"],),
     )
+    offsets = np.load(path / "offsets.npy") if info.get("attribute_tokens") else None
 
-    return Scores(mmap, info)
+    return Scores(mmap, info, offsets)
 
 
 def sorted_checkpoints(folder: str) -> list[tuple[int, str]]:
