@@ -69,8 +69,8 @@ def get_query_grads(
 
     with open(query_path / "info.json", "r") as f:
         metadata = json.load(f)
-        target_modules = metadata["dtype"]["names"]
         grad_sizes = metadata["grad_sizes"]
+        target_modules = list(grad_sizes)
 
     preprocess_cfg = (
         load_subconfig(query_path, "preprocess_cfg", PreprocessConfig)

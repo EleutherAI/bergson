@@ -23,7 +23,7 @@ from bergson.config import (
     ScoreConfig,
 )
 from bergson.config.config_io import save_run_config
-from bergson.data import column_offsets, create_index
+from bergson.data import column_offsets, create_index, create_token_index
 from bergson.gradients import GradientProcessor
 from bergson.hessians.preconditioner import (
     DensePreconditioner,
@@ -31,7 +31,12 @@ from bergson.hessians.preconditioner import (
     load_preconditioner,
 )
 from bergson.hessians.sharded_computation import shard_bounds
-from bergson.score.score import _make_split_hessian, create_scorer, score_dataset
+from bergson.score.score import (
+    _make_split_hessian,
+    create_scorer,
+    get_query_grads,
+    score_dataset,
+)
 from bergson.score.score_writer import (
     InMemorySequenceScoreWriter,
     MemmapSequenceScoreWriter,
@@ -574,6 +579,38 @@ def _write_query_index(
     # whether the query was already preconditioned upstream (e.g. at reduce).
     save_run_config(Build(IndexConfig(run_path=str(path)), preprocess_cfg), path)
     return path
+
+
+def test_get_query_grads_token_index(tmp_path: Path):
+    """get_query_grads must derive module ordering from grad_sizes for a
+    per-token query index, which has no top-level "dtype" field in
+    info.json."""
+    grad_sizes = {"mod_a": 4, "mod_b": 3}
+    num_token_grads = np.array([2, 1], dtype=np.int64)
+    path = tmp_path / "token_query"
+    buffer, offsets = create_token_index(
+        path,
+        num_token_grads=num_token_grads,
+        grad_sizes=grad_sizes,
+        dtype=np.float32,
+    )
+    total_tokens = int(offsets[-1])
+    rng = np.random.default_rng(0)
+    expected = rng.standard_normal((total_tokens, 7)).astype(np.float32)
+    buffer[:] = expected
+    buffer.flush()
+    save_run_config(
+        Build(IndexConfig(run_path=str(path)), PreprocessConfig()), path
+    )
+
+    score_cfg = ScoreConfig(query_path=str(path))
+    grads, preprocess_cfg = get_query_grads(score_cfg)
+
+    assert set(grads) == set(grad_sizes)
+    np.testing.assert_array_equal(grads["mod_a"].numpy(), expected[:, :4])
+    np.testing.assert_array_equal(grads["mod_b"].numpy(), expected[:, 4:])
+    assert score_cfg.modules == list(grad_sizes)
+    assert preprocess_cfg == PreprocessConfig()
 
 
 def test_score_factored_hessian_query_preconditioning(tmp_path: Path, dataset):
