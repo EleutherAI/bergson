@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import time
@@ -105,7 +106,11 @@ def compute_query_gradients(
 
 def scores_are_per_token(score_path: str) -> bool:
     if os.path.isdir(score_path):
-        return os.path.isfile(os.path.join(score_path, "token_scores.bin"))
+        info_path = os.path.join(score_path, "info.json")
+        if not os.path.isfile(info_path):
+            return False
+        with open(info_path) as f:
+            return bool(json.load(f).get("attribute_tokens", False))
     if score_path.endswith(".npy"):
         return False
     scores = torch.load(score_path, map_location="cpu")

@@ -19,10 +19,10 @@ from bergson import (
 from bergson.builder import Builder
 from bergson.collector.gradient_collectors import GradientCollector
 from bergson.config import IndexConfig, PreprocessConfig
-from bergson.data import compute_num_token_grads, create_token_index
+from bergson.data import compute_num_token_grads, create_token_index, load_scores
 from bergson.score.score_writer import MemmapTokenScoreWriter
 from bergson.score.scorer import Scorer
-from bergson.utils.utils import convert_dtype_to_np, get_gradient_dtype
+from bergson.utils.utils import get_gradient_dtype
 
 # ---------------------------------------------------------------------------
 # compute_num_token_grads
@@ -193,6 +193,10 @@ def test_token_score_writer(tmp_path: Path):
     # Write example 1 first (non-contiguous)
     scores_ex1 = torch.tensor([[10.0, 20.0], [30.0, 40.0]])
     writer([1], scores_ex1)
+    writer.flush()
+
+    # Example 0's cells aren't written yet.
+    assert not load_scores(tmp_path).is_written()
 
     # Write example 0
     scores_ex0 = torch.tensor([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
@@ -200,22 +204,18 @@ def test_token_score_writer(tmp_path: Path):
     writer.flush()
 
     # Read back
-    assert (tmp_path / "token_scores.bin").exists()
+    assert (tmp_path / "scores.bin").exists()
     assert (tmp_path / "info.json").exists()
 
     with (tmp_path / "info.json").open() as f:
         info = json.load(f)
     assert info["attribute_tokens"] is True
-    assert info["total_tokens"] == 5
+    assert info["num_rows"] == 5
     assert info["num_scores"] == 2
 
-    offsets = np.load(tmp_path / "offsets.npy")
-    scores = np.memmap(
-        tmp_path / "token_scores.bin",
-        dtype=np.float32,
-        mode="r",
-        shape=(5, 2),
-    )
+    scores = load_scores(tmp_path)
+    assert scores.is_written()
+    offsets = scores.offsets
 
     # Example 0 at offsets[0]:offsets[1] = 0:3
     np.testing.assert_array_equal(
@@ -376,14 +376,9 @@ def test_token_score_e2e(tmp_path: Path, model, dataset):
     writer.flush()
 
     # Verify scores
-    offsets = writer.offsets
-    total_tokens = int(offsets[-1])
-    scores = np.memmap(
-        tmp_path / "scores" / "token_scores.bin",
-        dtype=convert_dtype_to_np(score_dtype),
-        mode="r",
-        shape=(total_tokens, 1),
-    )
+    scores = load_scores(tmp_path / "scores")
+    assert scores.is_written()
+    offsets = scores.offsets
 
     # All examples should have 4 valid tokens (length 5, all labels valid)
     for i in range(len(dataset)):
@@ -707,8 +702,8 @@ def test_trackstar_token_scores_sum_to_sequence_scores_on_disk(
     Same property as ``test_trackstar_token_scores_sum_to_sequence_scores``,
     routed through ``MemmapSequenceScoreWriter`` /
     ``MemmapTokenScoreWriter`` so the disk write + read-back paths
-    (info.json, structured scores.bin, token_scores.bin, offsets.npy)
-    are exercised end-to-end.
+    (info.json, structured scores.bin, offsets.npy) are exercised
+    end-to-end.
     """
     from bergson.score.score_writer import (
         MemmapSequenceScoreWriter,
@@ -784,36 +779,13 @@ def test_trackstar_token_scores_sum_to_sequence_scores_on_disk(
     tok_scorer(indices, tok_collector.gradients)
     tok_writer.flush()
 
-    # --- Read back from disk ---
-    with open(seq_path / "info.json") as f:
-        seq_info = json.load(f)
-    seq_dtype = np.dtype(
-        {
-            "names": seq_info["dtype"]["names"],
-            "formats": seq_info["dtype"]["formats"],
-            "offsets": seq_info["dtype"]["offsets"],
-            "itemsize": seq_info["dtype"]["itemsize"],
-        }
-    )
-    seq_mmap = np.memmap(
-        seq_path / "scores.bin",
-        dtype=seq_dtype,
-        mode="r",
-        shape=(seq_info["num_items"],),
-    )
-    seq_scores = torch.from_numpy(seq_mmap["score_0"].copy())
+    # --- Read back from disk, through the same reader for both formats ---
+    seq_scores = torch.from_numpy(load_scores(seq_path)[:][:, 0].copy())
 
-    with open(tok_path / "info.json") as f:
-        tok_info = json.load(f)
-    tok_np_dtype = np.dtype(tok_info["dtype"])
-    tok_mmap = np.memmap(
-        tok_path / "token_scores.bin",
-        dtype=tok_np_dtype,
-        mode="r",
-        shape=(tok_info["total_tokens"], tok_info["num_scores"]),
-    )
-    tok_scores = torch.from_numpy(tok_mmap[:, 0].copy())
-    offsets = np.load(tok_path / "offsets.npy")
+    tok_store = load_scores(tok_path)
+    assert tok_store.is_written()
+    tok_scores = torch.from_numpy(tok_store[:][:, 0].copy())
+    offsets = tok_store.offsets
 
     for i in range(len(dataset)):
         start, end = int(offsets[i]), int(offsets[i + 1])

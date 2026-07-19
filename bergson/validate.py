@@ -29,7 +29,7 @@ from transformers.utils.logging import (
 
 from .config.config import ScoreConfig, ValidationConfig
 from .config.config_io import load_subconfig, save_run_config
-from .data import TokenScores, load_scores, pad_and_tensor
+from .data import load_scores, pad_and_tensor
 from .magic.data_stream import DataStream, pad_dataset_to_batch_size
 from .magic.trainer import TrainerState, prepare_trainer
 from .utils.csv_writer import CSVWriter
@@ -60,7 +60,7 @@ def load_attribution_scores(score_path: str) -> tuple[torch.Tensor, bool]:
         )
         negate = score_cfg is not None and score_cfg.higher_is_better
 
-        if isinstance(loaded, TokenScores):
+        if getattr(loaded, "offsets", None) is not None:
             scores = loaded.to_grid()
             if negate:
                 scores = -scores
