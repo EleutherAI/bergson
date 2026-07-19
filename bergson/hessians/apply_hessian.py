@@ -117,15 +117,14 @@ class EkfacApplicator:
             info = json.load(f)
         in_offsets = column_offsets(info["grad_sizes"])
 
+        num_queries = mmap.shape[0]
         grad_buffer = create_index(
             Path(self.cfg.run_path),
-            num_grads=info["num_grads"],
+            num_grads=num_queries,
             grad_sizes=grad_sizes,
             dtype=np.float32,
         )
         out_offsets = column_offsets(grad_sizes)
-
-        num_queries = info["num_grads"]
         self.logger.info(
             f"Loaded gradients for {num_queries} queries and computing IVHP..."
         )

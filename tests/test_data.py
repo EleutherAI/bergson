@@ -1,6 +1,11 @@
 import numpy as np
 
-from bergson.data import create_index, load_gradients, load_module_gradients
+from bergson.data import (
+    create_index,
+    create_token_index,
+    load_gradients,
+    load_module_gradients,
+)
 
 
 def test_large_gradients_build(tmp_path, dataset):
@@ -43,5 +48,34 @@ def test_module_gradients_roundtrip(tmp_path, dataset):
     buffer.flush()
 
     grads = load_module_gradients(tmp_path)
+    np.testing.assert_array_equal(grads["a.weight"], expected[:, :3])
+    np.testing.assert_array_equal(grads["b.weight"], expected[:, 3:])
+
+
+def test_load_gradients_token_index_roundtrip(tmp_path):
+    """load_gradients must also read the per-token store created by
+    create_token_index."""
+    grad_sizes = {"a.weight": 3, "b.weight": 5}
+    num_token_grads = np.array([2, 3, 1], dtype=np.int64)
+    buffer, offsets = create_token_index(
+        tmp_path,
+        num_token_grads=num_token_grads,
+        grad_sizes=grad_sizes,
+        dtype=np.float32,
+    )
+    total_tokens = int(offsets[-1])
+    assert total_tokens == num_token_grads.sum()
+
+    rng = np.random.default_rng(0)
+    expected = rng.standard_normal((total_tokens, 8)).astype(np.float32)
+    buffer[:] = expected
+    buffer.flush()
+
+    mmap = load_gradients(tmp_path)
+    assert mmap.shape == (total_tokens, 8)
+    np.testing.assert_array_equal(mmap[:], expected)
+
+    grads = load_module_gradients(tmp_path)
+    assert len(grads) == total_tokens
     np.testing.assert_array_equal(grads["a.weight"], expected[:, :3])
     np.testing.assert_array_equal(grads["b.weight"], expected[:, 3:])

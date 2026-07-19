@@ -494,7 +494,13 @@ def load_data_string(
 def load_gradients(root_dir: Path | str) -> np.memmap:
     """Map the gradients stored in `root_dir` into memory as a flat
     ``(num_grads, total_grad_dim)`` array, with modules laid out in
-    ``grad_sizes`` order (see :func:`column_offsets` for per-module slicing)."""
+    ``grad_sizes`` order (see :func:`column_offsets` for per-module slicing).
+
+    Dispatches on ``info.json["attribute_tokens"]``: a per-token index (as
+    written by :func:`create_token_index`) maps ``token_gradients.bin`` with
+    ``num_grads = total_tokens``; a plain index (as written by
+    :func:`create_index`) maps ``gradients.bin``.
+    """
     root_dir = Path(root_dir)
     with (root_dir / "info.json").open("r") as f:
         info = json.load(f)
@@ -504,6 +510,14 @@ def load_gradients(root_dir: Path | str) -> np.memmap:
     else:
         # Old stores lack base_dtype; recover the scalar dtype from a field format
         dtype = np.dtype(info["dtype"]["formats"][0]).base
+
+    if info.get("attribute_tokens"):
+        return np.memmap(
+            root_dir / "token_gradients.bin",
+            dtype=dtype,
+            mode="r",
+            shape=(info["total_tokens"], info["total_grad_dim"]),
+        )
 
     return np.memmap(
         root_dir / "gradients.bin",
