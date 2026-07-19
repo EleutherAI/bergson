@@ -492,8 +492,12 @@ class AttentionConfig:
 class IndexConfig(AttributionConfig, Serializable):
     """Config for building the index and running the model/dataset pipeline."""
 
-    projection_dim: int = 16
-    """Dimension of the random projection for the index, or 0 to disable it."""
+    projection_dim: int = 0
+    """Dimension of the random projection for the index, or 0 to disable it.
+    Defaults to 0 (no projection): the Kronecker-factored / build path
+    (Build, Ekfac, Hessian) is incompatible with random-projection
+    compression (EK-FAC needs ev_correction, which requires projection_dim=0).
+    The Trackstar command overrides this to 16."""
 
     include_bias: bool = False
     """Whether to include linear layers' bias gradients."""
@@ -576,6 +580,15 @@ class IndexConfig(AttributionConfig, Serializable):
     def partial_run_path(self) -> Path:
         """Temporary path to use while writing build artifacts."""
         return Path(self.run_path + ".part")
+
+
+@dataclass
+class TrackstarIndexConfig(IndexConfig):
+    """IndexConfig for the Trackstar command, which uses random-projection
+    compression and so defaults ``projection_dim`` to 16 (the base default is 0
+    for the Kronecker-factored/build path)."""
+
+    projection_dim: int = 16
 
 
 @dataclass

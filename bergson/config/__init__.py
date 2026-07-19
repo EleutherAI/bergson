@@ -18,6 +18,7 @@ from .config import (
     RecallDataConfig,
     ScoreConfig,
     TrackstarConfig,
+    TrackstarIndexConfig,
     TrainingConfig,
     ValidationConfig,
 )
@@ -42,6 +43,7 @@ __all__ = [
     "RecallDataConfig",
     "ScoreConfig",
     "TrackstarConfig",
+    "TrackstarIndexConfig",
     "TrainingConfig",
     "ValidationConfig",
 ]
