@@ -400,7 +400,7 @@ def _get_attribution_indices(
 
         # Get ordered module names from info.json
         with open(index_ds_path / "info.json") as f:
-            ordered_modules = json.load(f)["dtype"]["names"]
+            ordered_modules = list(json.load(f)["grad_sizes"])
 
         query = precondition_flat_grads(
             query.unsqueeze(0), h_inv, ordered_modules
