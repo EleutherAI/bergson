@@ -64,11 +64,17 @@ def create_token_index(
 ) -> tuple[np.memmap, np.ndarray]:
     """Allocate a flat memory-mapped file for ragged per-token gradients.
 
+    Same on-disk format as :func:`create_index` (``gradients.bin`` +
+    ``info.json`` with ``num_grads``/``grad_sizes``/``base_dtype``), plus
+    ``offsets.npy`` so row ``offsets[i]:offsets[i+1]`` -- rather than row
+    ``i`` -- is example *i*'s gradients. ``info["attribute_tokens"]`` marks
+    that distinction for readers.
+
     Parameters
     ----------
     root : Path
-        Directory in which ``token_gradients.bin``, ``num_token_grads.npy``,
-        ``offsets.npy`` and ``info.json`` will be created.
+        Directory in which ``gradients.bin``, ``offsets.npy`` and
+        ``info.json`` will be created.
     num_token_grads : np.ndarray
         Number of valid gradient rows per example, shape ``(num_items,)``.
     grad_sizes : dict[str, int]
@@ -89,7 +95,7 @@ def create_token_index(
     total_tokens = int(offsets[-1])
 
     np_dtype = np.dtype(dtype)
-    grad_path = root / "token_gradients.bin"
+    grad_path = root / "gradients.bin"
 
     if rank == 0:
         root.mkdir(parents=True, exist_ok=True)
@@ -98,16 +104,14 @@ def create_token_index(
             f.truncate(nbytes)
             os.fsync(f.fileno())
 
-        np.save(root / "num_token_grads.npy", num_token_grads)
         np.save(root / "offsets.npy", offsets)
 
         with (root / "info.json").open("w") as f:
             json.dump(
                 {
                     "attribute_tokens": True,
-                    "total_tokens": total_tokens,
-                    "total_grad_dim": total_grad_dim,
                     "num_items": len(num_token_grads),
+                    "num_grads": total_tokens,
                     "grad_sizes": grad_sizes,
                     "base_dtype": np_dtype.name,
                 },
@@ -140,21 +144,9 @@ def load_token_gradients(
         shape ``(num_token_grads[i], total_grad_dim)``.
     """
     root_dir = Path(root_dir)
-    with (root_dir / "info.json").open("r") as f:
-        info = json.load(f)
-
-    total_tokens = info["total_tokens"]
-    total_grad_dim = info["total_grad_dim"]
-    base_dtype = info["base_dtype"]
-
-    mmap = np.memmap(
-        root_dir / "token_gradients.bin",
-        dtype=np.dtype(base_dtype),
-        mode="r",
-        shape=(total_tokens, total_grad_dim),
-    )
-    num_token_grads = np.load(root_dir / "num_token_grads.npy")
+    mmap = load_gradients(root_dir)
     offsets = np.load(root_dir / "offsets.npy")
+    num_token_grads = np.diff(offsets).astype(np.int64)
     return mmap, num_token_grads, offsets
 
 
@@ -398,16 +390,15 @@ def create_index(
     dtype: DTypeLike,
 ) -> np.memmap:
     """Create a memory-mapped ``(num_grads, total_grad_dim)`` gradient file
-    (modules laid out in `grad_sizes` order) and persist metadata."""
+    (modules laid out in `grad_sizes` order) and persist metadata.
+
+    Same on-disk format as :func:`create_token_index` minus ``offsets.npy``:
+    row ``i`` is example *i*'s gradients directly (``num_grads ==
+    num_items``), rather than a range picked out by ``offsets``.
+    """
     grad_path = root / "gradients.bin"
     rank = dist.get_rank() if dist.is_initialized() else 0
-
-    # Legacy structured dtype, still written for external readers of older stores
-    struct_dtype = {
-        "names": [name for name in grad_sizes.keys()],
-        "formats": [f"({size},){np.dtype(dtype).str}" for size in grad_sizes.values()],
-        "itemsize": np.dtype(dtype).itemsize * sum(grad_sizes.values()),
-    }
+    itemsize = np.dtype(dtype).itemsize * sum(grad_sizes.values())
 
     # ── 1. Rank-0 creates file & metadata exactly once ─────────────────────────
     if rank == 0:
@@ -415,7 +406,7 @@ def create_index(
         root.mkdir(parents=True, exist_ok=True)
 
         # Allocate (extends file to right size without writing zeros byte-by-byte)
-        nbytes = struct_dtype["itemsize"] * num_grads
+        nbytes = itemsize * num_grads
         with open(grad_path, "wb") as f:
             f.truncate(nbytes)
 
@@ -426,8 +417,9 @@ def create_index(
         with (root / "info.json").open("w") as f:
             json.dump(
                 {
+                    "attribute_tokens": False,
+                    "num_items": num_grads,
                     "num_grads": num_grads,
-                    "dtype": struct_dtype,
                     "grad_sizes": grad_sizes,
                     "base_dtype": np.dtype(dtype).name,
                 },
@@ -496,10 +488,12 @@ def load_gradients(root_dir: Path | str) -> np.memmap:
     ``(num_grads, total_grad_dim)`` array, with modules laid out in
     ``grad_sizes`` order (see :func:`column_offsets` for per-module slicing).
 
-    Dispatches on ``info.json["attribute_tokens"]``: a per-token index (as
-    written by :func:`create_token_index`) maps ``token_gradients.bin`` with
-    ``num_grads = total_tokens``; a plain index (as written by
-    :func:`create_index`) maps ``gradients.bin``.
+    :func:`create_index` and :func:`create_token_index` write the same
+    ``gradients.bin`` layout -- ``num_grads`` is the row count either way
+    (``== num_items`` for a plain index, ``== total_tokens`` for a
+    per-token one). ``info["attribute_tokens"]`` only matters for callers
+    that need ``offsets.npy`` to know which rows belong to which document;
+    this function doesn't care.
     """
     root_dir = Path(root_dir)
     with (root_dir / "info.json").open("r") as f:
@@ -510,14 +504,6 @@ def load_gradients(root_dir: Path | str) -> np.memmap:
     else:
         # Old stores lack base_dtype; recover the scalar dtype from a field format
         dtype = np.dtype(info["dtype"]["formats"][0]).base
-
-    if info.get("attribute_tokens"):
-        return np.memmap(
-            root_dir / "token_gradients.bin",
-            dtype=dtype,
-            mode="r",
-            shape=(info["total_tokens"], info["total_grad_dim"]),
-        )
 
     return np.memmap(
         root_dir / "gradients.bin",

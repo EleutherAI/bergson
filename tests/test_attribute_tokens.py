@@ -85,8 +85,8 @@ def test_create_and_load_token_index(tmp_path: Path):
     with (tmp_path / "info.json").open() as f:
         info = json.load(f)
     assert info["attribute_tokens"] is True
-    assert info["total_tokens"] == 10
-    assert info["total_grad_dim"] == 10
+    assert info["num_grads"] == 10
+    assert sum(info["grad_sizes"].values()) == 10
 
     # Write some data and reload
     mmap[:] = np.arange(100, dtype=np.float32).reshape(10, 10)
@@ -258,8 +258,7 @@ def test_token_build_e2e(tmp_path: Path, model, dataset):
     )
 
     # Verify artifacts exist
-    assert (cfg.partial_run_path / "token_gradients.bin").exists()
-    assert (cfg.partial_run_path / "num_token_grads.npy").exists()
+    assert (cfg.partial_run_path / "gradients.bin").exists()
     assert (cfg.partial_run_path / "offsets.npy").exists()
     assert (cfg.partial_run_path / "info.json").exists()
 
@@ -434,8 +433,7 @@ def test_token_build_adam_e2e(tmp_path: Path, model, dataset):
     )
 
     # Verify artifacts exist
-    assert (cfg.partial_run_path / "token_gradients.bin").exists()
-    assert (cfg.partial_run_path / "num_token_grads.npy").exists()
+    assert (cfg.partial_run_path / "gradients.bin").exists()
     assert (cfg.partial_run_path / "offsets.npy").exists()
 
     # Load and verify shapes
