@@ -10,7 +10,7 @@ import torch.distributed as dist
 from datasets import Dataset
 
 from bergson.data import compute_num_token_grads
-from bergson.utils.utils import convert_dtype_to_np, tensor_to_numpy
+from bergson.utils.utils import convert_dtype_to_np, numpy_to_tensor, tensor_to_numpy
 
 
 def _score_struct_dtype(num_scores: int, np_dtype: np.dtype) -> tuple[dict, dict]:
@@ -269,7 +269,8 @@ def save_token_scores(
         mode="w+",
         shape=(total_tokens,),
     )
-    scores_np = tensor_to_numpy(torch.from_numpy(scores).to(dtype))
+    # numpy_to_tensor handles bf16, which torch.from_numpy cannot.
+    scores_np = tensor_to_numpy(numpy_to_tensor(np.ascontiguousarray(scores)).to(dtype))
     for i in range(num_scores):
         mmap[f"score_{i}"] = scores_np[:, i]
         mmap[f"written_{i}"] = True
@@ -296,6 +297,9 @@ class MemmapSequenceScoreWriter(ScoreWriter):
     Writes scores to a memory-mapped file on disk.
 
     Supports bfloat16 via ml_dtypes.
+
+    Unless overwrite is set, an existing ``scores.bin`` is reused so an
+    interrupted scoring run can resume.
     """
 
     def __init__(
@@ -306,6 +310,7 @@ class MemmapSequenceScoreWriter(ScoreWriter):
         *,
         dtype: torch.dtype = torch.float32,
         flush_interval: int = 64,
+        overwrite: bool = False,
     ):
         self.path = path
         self.num_scores = num_scores
@@ -321,7 +326,7 @@ class MemmapSequenceScoreWriter(ScoreWriter):
         struct_dtype, struct_dtype_json = _score_struct_dtype(num_scores, np_dtype)
 
         rank = dist.get_rank() if dist.is_initialized() else 0
-        if rank == 0 and not scores_file_path.exists():
+        if rank == 0 and (overwrite or not scores_file_path.exists()):
             print(f"Creating new scores file: {scores_file_path}")
 
             # w+ mode creates a zero-filled file.
@@ -380,14 +385,14 @@ def save_sequence_scores(
     dtype: torch.dtype = torch.float32,
 ) -> None:
     """One-shot equivalent of :class:`MemmapSequenceScoreWriter`, for callers
-    that already hold the full ``[num_items, num_scores]`` matrix in memory
-    (e.g. summed across upstream per-segment score dirs) rather than
-    streaming batches through ``__call__``.
+    that already hold the full ``[num_items, num_scores]`` matrix in memory.
     """
     if scores.ndim == 1:
         scores = scores[:, None]
     num_items, num_scores = scores.shape
 
-    writer = MemmapSequenceScoreWriter(path, num_items, num_scores, dtype=dtype)
-    writer(list(range(num_items)), torch.from_numpy(np.ascontiguousarray(scores)))
+    writer = MemmapSequenceScoreWriter(
+        path, num_items, num_scores, dtype=dtype, overwrite=True
+    )
+    writer(list(range(num_items)), numpy_to_tensor(np.ascontiguousarray(scores)))
     writer.flush()

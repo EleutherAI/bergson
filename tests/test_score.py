@@ -27,6 +27,7 @@ from bergson.data import (
     compute_num_token_grads,
     create_index,
     create_token_index,
+    load_scores,
 )
 from bergson.gradients import GradientProcessor
 from bergson.hessians.preconditioner import (
@@ -44,6 +45,7 @@ from bergson.score.score import (
 from bergson.score.score_writer import (
     InMemorySequenceScoreWriter,
     MemmapSequenceScoreWriter,
+    save_sequence_scores,
 )
 from bergson.score.scorer import Scorer
 from bergson.utils.utils import (
@@ -310,6 +312,82 @@ def test_memmap_score_writer_float32(tmp_path: Path):
     np.testing.assert_array_almost_equal(
         writer.scores["score_1"][[0, 1]], np.array([2.5, 4.5], dtype=np.float32)
     )
+
+
+def test_load_attribution_scores_bfloat16(tmp_path: Path):
+    """A bf16 per-document store must be readable back.
+
+    ``torch.from_numpy`` cannot ingest ``ml_dtypes.bfloat16`` directly, so the
+    per-document branch has to cast the way the per-token one does.
+    """
+    from bergson.validate import load_attribution_scores
+
+    writer = MemmapSequenceScoreWriter(tmp_path, 4, 1, dtype=torch.bfloat16)
+    writer([0, 1, 2, 3], torch.tensor([[1.0], [2.0], [3.0], [4.0]]))
+    writer.flush()
+
+    scores, multi_query = load_attribution_scores(str(tmp_path))
+    assert not multi_query
+    assert scores.dtype == torch.float32
+    np.testing.assert_array_equal(scores.squeeze(-1).numpy(), [1.0, 2.0, 3.0, 4.0])
+
+
+def test_save_sequence_scores_bfloat16_roundtrip(tmp_path: Path):
+    """``save_sequence_scores`` must accept a bf16 array read out of another
+    store, which is what SOURCE's ``reduce_scores`` feeds it."""
+    src = tmp_path / "src"
+    writer = MemmapSequenceScoreWriter(src, 4, 1, dtype=torch.bfloat16)
+    writer([0, 1, 2, 3], torch.tensor([[1.0], [2.0], [3.0], [4.0]]))
+    writer.flush()
+
+    dst = tmp_path / "dst"
+    save_sequence_scores(dst, load_scores(src)[:], dtype=torch.bfloat16)
+
+    got = np.asarray(load_scores(dst)[:], dtype=np.float64).ravel()
+    np.testing.assert_array_equal(got, [1.0, 2.0, 3.0, 4.0])
+
+
+def test_save_sequence_scores_overwrites_existing_store(tmp_path: Path):
+    """A one-shot save into a pre-existing directory must fully replace it.
+
+    Covers a shrinking ``num_scores`` and a dtype change, both of which change
+    the on-disk itemsize.
+    """
+    # num_scores 2 -> 1 (itemsize shrinks)
+    path = tmp_path / "shrink"
+    save_sequence_scores(path, np.arange(100, 110, dtype=np.float32).reshape(5, 2))
+    save_sequence_scores(path, np.array([1.0, 2.0, 3.0], dtype=np.float32))
+
+    with (path / "info.json").open() as f:
+        assert json.load(f)["num_scores"] == 1
+    np.testing.assert_array_equal(load_scores(path)[:].ravel(), [1.0, 2.0, 3.0])
+
+    # dtype fp32 -> bf16 (element width changes)
+    path = tmp_path / "retype"
+    save_sequence_scores(path, np.arange(50, 54, dtype=np.float32), dtype=torch.float32)
+    save_sequence_scores(
+        path, np.arange(50, 54, dtype=np.float32), dtype=torch.bfloat16
+    )
+    got = np.asarray(load_scores(path)[:], dtype=np.float64).ravel()
+    np.testing.assert_array_equal(got, [50.0, 51.0, 52.0, 53.0])
+
+
+def test_memmap_sequence_writer_resume_preserves_existing(tmp_path: Path):
+    """The streaming writer must still resume into an existing store: the
+    ``overwrite`` default must not disturb the ``query_batch_size`` path,
+    which reopens the same directory to fill in remaining query columns."""
+    writer = MemmapSequenceScoreWriter(tmp_path, 3, 2, dtype=torch.float32)
+    writer([0, 1, 2], torch.tensor([[1.0], [2.0], [3.0]]), query_offset=0)
+    writer.flush()
+
+    resumed = MemmapSequenceScoreWriter(tmp_path, 3, 2, dtype=torch.float32)
+    assert not load_scores(tmp_path).is_written()  # column 1 still missing
+    resumed([0, 1, 2], torch.tensor([[4.0], [5.0], [6.0]]), query_offset=1)
+    resumed.flush()
+
+    scores = load_scores(tmp_path)
+    assert scores.is_written()
+    np.testing.assert_array_equal(scores[:], [[1.0, 4.0], [2.0, 5.0], [3.0, 6.0]])
 
 
 def test_compute_hessian_h_inv():

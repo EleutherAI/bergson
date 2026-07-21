@@ -66,7 +66,10 @@ def load_attribution_scores(score_path: str) -> tuple[torch.Tensor, bool]:
                 scores = -scores
             return scores, scores.ndim == 3
 
-        scores = torch.from_numpy(loaded[:])
+        arr = np.asarray(loaded[:])
+        # Copy: the slice is a read-only view onto the memmap.
+        out_dtype = arr.dtype if np.issubdtype(arr.dtype, np.floating) else np.float32
+        scores = torch.from_numpy(arr.astype(out_dtype, copy=True))
         if negate:
             scores = -scores
         return scores, scores.ndim == 2 and scores.shape[1] > 1

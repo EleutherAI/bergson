@@ -74,10 +74,8 @@ def test_compute_num_token_grads_all_masked():
 def test_compute_num_token_grads_short_documents():
     """Documents with < 2 tokens contribute zero rows.
 
-    ``_allocate_batches_world`` drops them from the forward pass (no valid
-    next-token label), so allocating rows for them would leave holes. An
-    empty document used to give ``length - 1 == -1``, which made the
-    cumulative offsets non-monotonic and overlapped its neighbours' rows.
+    ``_allocate_batches_world`` drops them from the forward pass, so any rows
+    allocated for them would be holes.
     """
     ds = Dataset.from_dict(
         {
@@ -98,10 +96,7 @@ def test_compute_num_token_grads_short_documents():
 def test_token_index_with_empty_document(tmp_path: Path):
     """An empty document must not corrupt the index layout.
 
-    Regression test: with ``num_token_grads = length - 1`` the empty document
-    contributed -1 rows, giving offsets ``[0, 5, 4, 8, 11]`` (non-monotonic,
-    doc 0's last row aliased by doc 2) and ``info["num_grads"] == 11``
-    instead of 12.
+    Offsets stay monotonic and ``info["num_grads"]`` counts every row.
     """
     ds = Dataset.from_dict(
         {
@@ -385,8 +380,7 @@ def test_token_build_with_empty_document(tmp_path: Path, model):
 
     ``tokenizer("")`` returns ``[]`` and only ``tokenize_and_chunk`` filters
     empty text, so unchunked datasets can carry zero-length rows. The forward
-    pass skips them (``< 2`` tokens), so their row count must be 0 too --
-    otherwise the index and the collector disagree and rows overlap.
+    pass skips documents with < 2 tokens, so their row count must be 0 too.
     """
     model = model.float()
     # No projection: keeps the two builds bit-comparable.
