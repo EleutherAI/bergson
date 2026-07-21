@@ -106,7 +106,9 @@ class SaveFuture:
         return result
 
 
-def next_save_index(current: int, n: int, save_mode: MagicSaveMode) -> int:
+def next_save_index(
+    current: int, n: int, save_mode: MagicSaveMode, save_interval: int = 0
+) -> int:
     """Index of the checkpoint following the one saved at step `current`.
 
     `n` is the total number of training steps. The result is always strictly
@@ -117,6 +119,10 @@ def next_save_index(current: int, n: int, save_mode: MagicSaveMode) -> int:
         case "all":
             # Save every step
             return current + 1
+        case "interval":
+            if save_interval <= 0:
+                raise ValueError("save_mode='interval' requires save_interval > 0.")
+            return current + save_interval
         case "sqrt":
             chunk_size = math.isqrt(n)
 
@@ -555,6 +561,7 @@ class Trainer:
         max_grad_norm: float | None = None,
         grad_accum_steps: int = 1,
         optimizer_cfg: dict | None = None,
+        save_interval: int = 0,
     ) -> TrainerState:
         """Train the model on the given data stream, starting from the given state.
 
@@ -583,6 +590,7 @@ class Trainer:
             optimizer_cfg: When set (to the optimizer's betas/eps/eps_root),
                 write each checkpoint's second moments to ``optimizer.pt``,
                 tagged with the step and these hyperparameters. AdamW only.
+            save_interval: Snapshot spacing in steps for ``save_mode="interval"``.
 
         Returns:
             The final trainer state after training.
@@ -634,7 +642,7 @@ class Trainer:
 
                 pending_save = state.save(p, debug_pbar=pbar if debug else None)
 
-                next_save = next_save_index(next_save, n, save_mode)
+                next_save = next_save_index(next_save, n, save_mode, save_interval)
 
             x = data[i]
             state = self.step(
@@ -652,6 +660,21 @@ class Trainer:
 
         if pending_save is not None:
             pending_save.result()
+
+        # Snapshots are written BEFORE each step, so the post-training state has
+        # no snapshot of its own; write it when the cadence lands exactly on n.
+        if save_dir and next_save == n:
+            p = os.path.join(save_dir, f"step_{n}.ckpt")
+            if optimizer_cfg is not None:
+                os.makedirs(p, exist_ok=True)
+                save_second_moments_as_optimizer_pt(
+                    self.model,
+                    state.opt_state,
+                    os.path.join(p, "optimizer.pt"),
+                    step=n,
+                    **optimizer_cfg,
+                )
+            state.save(p).result()
 
         return state
 

@@ -262,6 +262,7 @@ def worker(
             if getattr(run_cfg, "save_optimizer_state", "none") == "all"
             else None
         ),
+        save_interval=getattr(run_cfg, "save_interval", 0),
     )
     # Called on every rank: FSDP moments are DTensors whose gather is a
     # collective; rank 0 writes inside.

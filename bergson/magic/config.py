@@ -3,7 +3,7 @@ from typing import Literal
 
 from ..config.config import ValidationConfig
 
-MagicSaveMode = Literal["all", "sqrt", "log"]
+MagicSaveMode = Literal["all", "sqrt", "log", "interval"]
 
 
 @dataclass
@@ -20,9 +20,16 @@ class MagicConfig(ValidationConfig):
     - 'sqrt' saves at a linearly-spaced interval, every sqrt(N) steps. This method uses
       O(sqrt N) space and O(N) time.
 
+    - 'interval' saves every `save_interval` steps (plus the final state when the
+      cadence lands on it). Use for SOURCE-style runs that need a few evenly
+      spaced checkpoints rather than backward-replay coverage.
+
     The original MAGIC paper used 'log', but 'sqrt' is often a better choice when disk
     space is not a concern.
     """
+
+    save_interval: int = 0
+    """Snapshot spacing in steps for `save_mode: interval`."""
 
     backward_save_every: int = 0
     """How often (in steps) to save backward state for resume."""

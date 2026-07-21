@@ -277,7 +277,17 @@ def approx_unrolling_pipeline(
     out_path = score_per_segment_and_aggregate(
         index_cfg=index_cfg,
         query_grad_segment_paths=query_grad_segment_paths,
-        final_checkpoint=str(approx_unrolling_cfg.checkpoints[-1]),
+        # Bae et al. Sec. 3.4: g_bar_l averages the training gradients over the
+        # checkpoints within segment l, not the final checkpoint alone.
+        segment_checkpoints=[
+            [
+                str(c)
+                for c in approx_unrolling_cfg.checkpoints[
+                    l * (n_ckpts // n_segments) : (l + 1) * (n_ckpts // n_segments)
+                ]
+            ]
+            for l in range(n_segments)
+        ],
         query_batch_size=approx_unrolling_cfg.query_batch_size,
     )
     logger.info(f"[approximate unrolling pipeline] DONE. Final scores at {out_path}")
