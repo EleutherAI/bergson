@@ -1,5 +1,6 @@
 import functools
 import hashlib
+import math
 import os
 from abc import ABC, abstractmethod
 from contextlib import ContextDecorator, nullcontext
@@ -945,5 +946,8 @@ def create_projection_matrix(
         A = A.add_(-0.5).mul_(2)
     else:
         raise ValueError(f"Unknown projection type: {projection_type}")
-    A /= A.norm(dim=1, keepdim=True)
+
+    # divide by sqrt(m) to achieve variance of 1/m:
+    # https://arxiv.org/html/2410.17413v1#A1.SS1.SSS2
+    A /= math.sqrt(m)
     return A
