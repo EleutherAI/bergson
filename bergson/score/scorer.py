@@ -109,6 +109,7 @@ class Scorer:
             scores.div_(sq_norm.sqrt().clamp_min_(1e-12).unsqueeze(1))
 
         if self.score_mode == "nearest":
-            return scores.max(dim=-1).values
+            # Keep the query dimension: ScoreWriter expects [rows, width].
+            return scores.max(dim=-1, keepdim=True).values
 
         return scores

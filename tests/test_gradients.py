@@ -721,3 +721,94 @@ def test_projected_bias_gradients_match_full_projection(
 
         collected = collector.mod_grads[name].squeeze(0).view(P, P)
         torch.testing.assert_close(collected, expected, atol=1e-4, rtol=1e-4)
+
+
+class _MixedBiasModel(nn.Module):
+    """Two linear layers where only the first has a bias, like Qwen2's
+    attention (q/k/v biased, o_proj and MLP not)."""
+
+    def __init__(self, I: int, H: int, O: int):
+        super().__init__()
+        self.fc1 = nn.Linear(I, H, bias=True)
+        self.relu = nn.ReLU()
+        self.fc2 = nn.Linear(H, O, bias=False)
+
+    @property
+    def device(self):
+        return next(self.parameters()).device
+
+    def forward(self, x):
+        return self.fc2(self.relu(self.fc1(x)))
+
+
+@pytest.mark.parametrize("normalizer_kind", ["adam", "adafactor"])
+@pytest.mark.parametrize("projection_dim", [None, 4])
+def test_mixed_bias_model_with_optimizer_normalizers(
+    normalizer_kind: str, projection_dim: int | None, test_params
+):
+    """include_bias=True on a model where only some layers have a bias.
+
+    The Adam / Adafactor branches of ``_compute_gradient`` used to gate bias
+    handling on the global ``processor.include_bias`` rather than the
+    per-module ``_collect_bias`` (which is what ``shapes()``,
+    ``discover_targets()`` and the forward hook use), so a biasless module
+    hit ``assert self.bias_avg_sq is not None`` inside ``normalize_bias``.
+    """
+    torch.manual_seed(0)
+    N, S, I, O = test_params["N"], test_params["S"], test_params["I"], test_params["O"]
+    H = O * 2
+
+    model = _MixedBiasModel(I, H, O)
+    if normalizer_kind == "adam":
+        normalizers = {
+            "fc1": AdamNormalizer(
+                torch.rand(H, I) + 0.1, bias_avg_sq=torch.rand(H) + 0.1
+            ),
+            "fc2": AdamNormalizer(torch.rand(O, H) + 0.1, bias_avg_sq=None),
+        }
+    else:
+        normalizers = {
+            "fc1": AdafactorNormalizer(
+                torch.rand(H) + 0.1,
+                torch.rand(I) + 0.1,
+                bias_avg_sq=torch.rand(H) + 0.1,
+            ),
+            "fc2": AdafactorNormalizer(
+                torch.rand(O) + 0.1, torch.rand(H) + 0.1, bias_avg_sq=None
+            ),
+        }
+
+    temp_dir = Path(tempfile.mkdtemp())
+    processor = GradientProcessor(
+        normalizers=normalizers, projection_dim=projection_dim, include_bias=True
+    )
+    collector = GradientCollector(
+        model=model,
+        cfg=IndexConfig(run_path=str(temp_dir / "run")),
+        data=Dataset.from_dict({"input_ids": [[1] * 10] * N}),
+        skip_index=True,
+        processor=processor,
+        target_modules={"fc1", "fc2"},
+    )
+
+    shapes = collector.shapes()
+    x = torch.randn(N, S, I)
+    with collector:
+        model.zero_grad()
+        (model(x) ** 2).sum().backward()
+
+    grads = collector.mod_grads
+    assert set(grads) == {"fc1", "fc2"}
+    for name, shape in shapes.items():
+        expected = 1
+        for d in shape:
+            expected *= d
+        assert grads[name].shape == (N, expected), (
+            f"{name}: gradient width {grads[name].shape[1]} disagrees with "
+            f"shapes() {shape}"
+        )
+
+    if projection_dim is None:
+        # fc1 carries a bias column, fc2 does not.
+        assert shapes["fc1"] == (H, I + 1)
+        assert shapes["fc2"] == (O, H)

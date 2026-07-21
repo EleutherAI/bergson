@@ -5,6 +5,8 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
+_VALID_CE_REDUCTIONS = frozenset({"mean", "sum", "sum_of_means"})
+
 
 def weighted_causal_lm_ce(
     logits: Tensor,
@@ -28,11 +30,16 @@ def weighted_causal_lm_ce(
     shift_loss_mask : optional [B, T] bool tensor;
                       mask[i] = labels[i+1] != ignore_index
     vocab_size      : optional int, vocabulary size (for validation)
-    reduction       : "mean": mean over all valid tokens in the batch
-                      (standard). "sum_of_means": mean over
-                      each sample's tokens, summed over the batch with no
-                      batch-size division.
+    reduction       : one of
+                      "mean": mean over all valid tokens in the batch
+                          (standard).
+                      "sum": weighted sum over every valid token in the
+                          batch, with no division.
+                      "sum_of_means": mean over each sample's tokens,
+                          summed over the batch.
     """
+    assert reduction in _VALID_CE_REDUCTIONS, f"Unknown reduction {reduction!r}"
+
     assert logits.ndim == 3 and labels.ndim == 2
     B, T, V = logits.shape
     assert labels.shape == (B, T)
@@ -47,7 +54,10 @@ def weighted_causal_lm_ce(
     shift_logits = logits[:, :-1, :].float().contiguous()  # [B, T-1, V]
     shift_labels = labels[:, 1:].contiguous()  # [B, T-1]
 
-    needs_per_token = example_weight is not None or reduction == "sum_of_means"
+    needs_per_token = example_weight is not None or reduction in (
+        "sum",
+        "sum_of_means",
+    )
 
     # Per-token loss (fused), no reduction
     tok_loss = F.cross_entropy(
@@ -70,6 +80,10 @@ def weighted_causal_lm_ce(
         w = example_weight[:, :-1].to(tok_loss.dtype)  # [B, T-1]
     else:
         w = example_weight.to(tok_loss.dtype).view(B, 1)  # [B,1]
+
+    if reduction == "sum":
+        # Weighted sum over every valid token.
+        return (tok_loss * w).sum()
 
     if reduction == "sum_of_means":
         # Per-sample token-mean, summed over the batch (no /B).

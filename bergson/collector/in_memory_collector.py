@@ -73,6 +73,11 @@ class InMemoryCollector(HookCollectorBase):
             self.model.device, torch.device
         ), "Model device is not set correctly"
         self.attribute_tokens = self.cfg.attribute_tokens
+        if self.processor.projection_target == "global":
+            assert self.skip_hessians, (
+                "projection_target='global' sums all modules into a single key, "
+                "so per-module autocorrelation statistics are undefined."
+            )
         if self.cfg.attribute_tokens:
             assert self.preprocess_cfg.aggregation == "none", (
                 "attribute_tokens is incompatible" " with reduce mode."
@@ -148,6 +153,10 @@ class InMemoryCollector(HookCollectorBase):
             else:
                 self.processor.hessians[name] = P.mT @ P
 
+        # In global mode every module sums into one "gradients" key.
+        if self.accumulate_global_projection(name, P):
+            return
+
         # GPU for scorer/reduce, CPU for builder
         if self.scorer is not None or self.preprocess_cfg.aggregation != "none":
             self.mod_grads[name] = P.to(dtype=self.save_dtype)
@@ -161,6 +170,8 @@ class InMemoryCollector(HookCollectorBase):
     def process_batch(self, indices: list[int], **kwargs) -> None:
         losses = kwargs.get("losses")
         assert losses is not None, "losses must be provided in kwargs"
+
+        self.finalize_global_projection()
 
         if self.builder is not None:
             self.builder(indices, self.mod_grads)

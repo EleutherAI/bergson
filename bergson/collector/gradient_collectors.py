@@ -99,24 +99,10 @@ class GradientCollector(HookCollectorBase):
         name: str = module._name  # type: ignore[assignment]
         P = self._compute_gradient(module, g)
 
-        global_proj = self.processor.projection_target == "global"
+        if self.accumulate_global_projection(name, P):
+            return
 
-        if global_proj:
-            assert self.processor.projection_dim is not None
-            R = self.projection(
-                name,
-                self.processor.projection_dim,
-                P.shape[1],
-                "single",
-                P.device,
-                P.dtype,
-            )
-            projected = P @ R.T  # [N, proj_dim]
-            if "gradients" in self.mod_grads:
-                self.mod_grads["gradients"].add_(projected)
-            else:
-                self.mod_grads["gradients"] = projected
-        elif self.save_index and self.preprocess_cfg.aggregation == "none":
+        if self.save_index and self.preprocess_cfg.aggregation == "none":
             # Asynchronously move the gradient to CPU and convert to the final
             # dtype
             self.mod_grads[name] = P.to(
@@ -130,10 +116,7 @@ class GradientCollector(HookCollectorBase):
         losses = kwargs.get("losses")
         assert losses is not None, "losses must be provided in kwargs"
 
-        if self.processor.projection_target == "global":
-            self.mod_grads["gradients"] = self.mod_grads["gradients"].to(
-                device="cpu", dtype=self.save_dtype, non_blocking=True
-            )
+        self.finalize_global_projection()
 
         if self.builder:
             self.builder(indices, self.mod_grads)

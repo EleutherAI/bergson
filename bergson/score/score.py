@@ -226,7 +226,11 @@ def create_scorer(
         )
 
     num_queries = len(query_grads[score_cfg.modules[0]])
-    num_scores = num_queries_total if num_queries_total is not None else num_queries
+    if score_cfg.score == "nearest":
+        # 'nearest' maxes over all queries, producing a single column.
+        num_scores = 1
+    else:
+        num_scores = num_queries_total if num_queries_total is not None else num_queries
     if attribute_tokens:
         writer = MemmapTokenScoreWriter(
             path,

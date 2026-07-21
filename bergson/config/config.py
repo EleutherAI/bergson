@@ -532,7 +532,13 @@ class IndexConfig(AttributionConfig, Serializable):
     """Loss function to use."""
 
     loss_reduction: Literal["mean", "sum"] = "sum"
-    """Reduction method for the loss function."""
+    """How the per-token losses of a document are reduced before the backward
+    pass that produces its gradient.
+
+    "sum" (default): sum over the document's valid tokens (no division), so
+        the stored gradient is the sum of per-token gradients.
+    "mean": divide by the document's valid-token count, so the stored
+        gradient is length-normalized."""
 
     label_smoothing: float = 0.0
     """Label smoothing coefficient for cross-entropy loss. When > 0, prevents

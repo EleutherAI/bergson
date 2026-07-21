@@ -280,3 +280,72 @@ def test_global_projector_e2e_cpu(tmp_path: Path, model, dataset):
     assert torch.isfinite(all_projected).all()
     # Different examples should produce different projections
     assert not torch.allclose(all_projected[0], all_projected[1])
+
+
+class _GradCapturer:
+    """Stands in for a Scorer so a collector can run without CUDA (Builder
+    allocates on cuda unconditionally)."""
+
+    def __init__(self):
+        self.chunks: list[dict[str, torch.Tensor]] = []
+
+        class _Writer:
+            scores = None
+
+        self.writer = _Writer()
+
+    def __call__(self, _indices, mod_grads):
+        self.chunks.append({k: v.clone() for k, v in mod_grads.items()})
+
+
+def test_in_memory_collector_honors_global_projection(tmp_path: Path, model, dataset):
+    """``InMemoryCollector`` must implement the global-projection sum too.
+
+    Only ``GradientCollector.backward_hook`` had the global branch, so the
+    same config gave ``InMemoryCollector`` per-module keys instead of the
+    single "gradients" key its ``shapes()`` promises -- and ``Builder``'s
+    ``_preprocess`` then raised ``KeyError: 'gradients'``.
+    """
+    from bergson.collector.in_memory_collector import InMemoryCollector
+
+    proj_dim = 16  # BasicProjector has no multiple-of-512 constraint
+
+    def run(collector_cls, tag):
+        cfg = IndexConfig(
+            run_path=str(tmp_path / tag),
+            token_batch_size=64,
+            projection_dim=proj_dim,
+            projection_target="global",
+        )
+        cfg.partial_run_path.mkdir(parents=True, exist_ok=True)
+        capturer = _GradCapturer()
+        collector = collector_cls(
+            model=model.base_model,
+            data=dataset,
+            cfg=cfg,
+            processor=GradientProcessor(
+                projection_dim=proj_dim, projection_target="global"
+            ),
+            attention_cfgs={},
+            scorer=capturer,
+        )
+        assert list(collector.shapes()) == ["gradients"]
+        CollectorComputer(
+            model=model, data=dataset, collector=collector, cfg=cfg
+        ).run_with_collector_hooks(desc="Collecting")
+        return capturer.chunks
+
+    in_memory = run(InMemoryCollector, "in_memory")
+    reference = run(GradientCollector, "reference")
+
+    for chunk in in_memory:
+        assert list(chunk) == ["gradients"], (
+            "InMemoryCollector produced per-module keys under "
+            f"projection_target='global': {sorted(chunk)}"
+        )
+
+    got = torch.cat([c["gradients"] for c in in_memory], dim=0)
+    expected = torch.cat([c["gradients"] for c in reference], dim=0)
+    assert got.shape == (len(dataset), proj_dim)
+    assert torch.isfinite(got).all()
+    torch.testing.assert_close(got.float(), expected.float())

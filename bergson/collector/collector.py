@@ -93,6 +93,12 @@ class HookCollectorBase(ContextDecorator, ABC):
     hi: float = float("inf")
     """Upper clamp bound for gradients. May be narrowed in subclass ``setup()``."""
 
+    mod_grads: dict = field(default_factory=dict)
+    """Gradients collected for the current batch, keyed by module name."""
+
+    save_dtype: torch.dtype = torch.float32
+    """Dtype gradients are cast to on the way out. Set in subclass ``setup()``."""
+
     logger = get_logger("HookCollectorBase", level="INFO")
 
     def __post_init__(
@@ -296,6 +302,46 @@ class HookCollectorBase(ContextDecorator, ABC):
         )
         self.processor._projection_matrices[key] = A
         return A
+
+    def accumulate_global_projection(self, name: str, P: Tensor) -> bool:
+        """Project ``P`` with module ``name``'s block of the global projection
+        matrix and accumulate it into the single ``"gradients"`` key of
+        ``self.mod_grads``.
+
+        Returns ``False`` and does nothing when
+        ``projection_target != "global"``, for use as a ``backward_hook``
+        early-out.
+        """
+        if self.processor.projection_target != "global":
+            return False
+
+        assert self.processor.projection_dim is not None
+        R = self.projection(
+            name,
+            self.processor.projection_dim,
+            P.shape[1],
+            "single",
+            P.device,
+            P.dtype,
+        )
+        projected = P @ R.T  # [N, proj_dim]
+        if "gradients" in self.mod_grads:
+            self.mod_grads["gradients"].add_(projected)
+        else:
+            self.mod_grads["gradients"] = projected
+        return True
+
+    def finalize_global_projection(self) -> None:
+        """Move the accumulated global gradient to CPU / the save dtype.
+
+        Called from ``process_batch``; accumulation stays on the compute
+        device across the backward pass.
+        """
+        if self.processor.projection_target != "global":
+            return
+        self.mod_grads["gradients"] = self.mod_grads["gradients"].to(
+            device="cpu", dtype=self.save_dtype, non_blocking=True
+        )
 
     def num_rows(self, data: Dataset) -> int:
         """Number of gradient rows accumulated into an autocorrelation Gram
@@ -503,7 +549,10 @@ class HookCollectorBase(ContextDecorator, ABC):
         normalizer = self.processor.normalizers.get(name)
 
         if isinstance(normalizer, AdamNormalizer):
-            if self.processor.include_bias:
+            # Gate on the per-module flag, as shapes(), discover_targets() and
+            # the forward hook do: in a mixed-bias model (e.g. Qwen2) the
+            # biasless modules have no bias_avg_sq.
+            if module._collect_bias:
                 if self.attribute_tokens:
                     bias_grad = normalizer.normalize_bias(g)  # [N, S, O]
                 else:
@@ -537,7 +586,7 @@ class HookCollectorBase(ContextDecorator, ABC):
                     P = self.double_sided_projection(name, P, g, p, o, i)
 
         elif isinstance(normalizer, AdafactorNormalizer):
-            if self.processor.include_bias:
+            if module._collect_bias:
                 if self.attribute_tokens:
                     bias_grad = normalizer.normalize_bias(g)  # [N, S, O]
                 else:

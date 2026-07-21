@@ -22,7 +22,12 @@ from bergson.config import (
     ScoreConfig,
 )
 from bergson.config.config_io import save_run_config
-from bergson.data import column_offsets, create_index, create_token_index
+from bergson.data import (
+    column_offsets,
+    compute_num_token_grads,
+    create_index,
+    create_token_index,
+)
 from bergson.gradients import GradientProcessor
 from bergson.hessians.preconditioner import (
     DensePreconditioner,
@@ -744,3 +749,83 @@ def test_score_factored_hessian_rejects_projection_with_unit_normalize(
             ScoreConfig(query_path=str(tmp_path / "q")),
             PreprocessConfig(hessian_path=hessian_path, unit_normalize=True),
         )
+
+
+def test_score_nearest_sequence_writer(tmp_path: Path, dataset):
+    """score='nearest' must run end to end and store a single column.
+
+    The reduced scores used to come back 1-D ([batch]), so every
+    ``ScoreWriter.__call__`` raised ``IndexError: tuple index out of range``
+    on ``scores.shape[1]``, and ``create_scorer`` sized the writer at
+    ``num_queries`` columns even though 'nearest' produces one.
+    """
+    grad_sizes = {"mod_a": 4, "mod_b": 3}
+    num_q = 5
+    rng = torch.Generator().manual_seed(0)
+    raw = {m: torch.randn(num_q, s, generator=rng) for m, s in grad_sizes.items()}
+    q_path = _write_query_index(tmp_path / "q", raw, PreprocessConfig(), num_q)
+
+    scorer = create_scorer(
+        path=tmp_path / "scores",
+        data=dataset,
+        score_cfg=ScoreConfig(query_path=str(q_path), score="nearest"),
+        preprocess_cfg=PreprocessConfig(),
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+    )
+    assert scorer.writer.num_scores == 1, "nearest writer must have one column"
+
+    batch = {
+        m: torch.randn(len(dataset), s, generator=rng) for m, s in grad_sizes.items()
+    }
+    reduced = scorer.score({k: v.clone() for k, v in batch.items()})
+    assert reduced.shape == (
+        len(dataset),
+        1,
+    ), f"expected [batch, 1], got {reduced.shape}"
+
+    scorer(list(range(len(dataset))), {k: v.clone() for k, v in batch.items()})
+    scorer.writer.flush()
+
+    full = (
+        torch.cat([batch[m] for m in scorer.modules], dim=1)
+        @ torch.cat([raw[m] for m in scorer.modules], dim=1).T
+    )
+    expected = full.max(dim=-1).values
+    got = torch.from_numpy(np.asarray(scorer.writer.scores["score_0"]).copy())
+    torch.testing.assert_close(got, expected, atol=1e-4, rtol=1e-4)
+    assert np.asarray(scorer.writer.scores["written_0"]).all()
+
+    with open(tmp_path / "scores" / "info.json") as f:
+        assert json.load(f)["num_scores"] == 1
+
+
+def test_score_nearest_token_writer(tmp_path: Path, dataset):
+    """The per-token writer path must work with score='nearest' too."""
+    grad_sizes = {"mod_a": 4}
+    num_q = 3
+    rng = torch.Generator().manual_seed(1)
+    raw = {m: torch.randn(num_q, s, generator=rng) for m, s in grad_sizes.items()}
+    q_path = _write_query_index(tmp_path / "q", raw, PreprocessConfig(), num_q)
+
+    scorer = create_scorer(
+        path=tmp_path / "scores",
+        data=dataset,
+        score_cfg=ScoreConfig(query_path=str(q_path), score="nearest"),
+        preprocess_cfg=PreprocessConfig(),
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+        attribute_tokens=True,
+    )
+    assert scorer.writer.num_scores == 1
+
+    num_token_grads = compute_num_token_grads(dataset)
+    total = int(num_token_grads.sum())
+    batch = {m: torch.randn(total, s, generator=rng) for m, s in grad_sizes.items()}
+
+    scorer(list(range(len(dataset))), {k: v.clone() for k, v in batch.items()})
+    scorer.writer.flush()
+
+    expected = (batch["mod_a"] @ raw["mod_a"].T).max(dim=-1).values
+    got = torch.from_numpy(np.asarray(scorer.writer.scores["score_0"]).copy())
+    torch.testing.assert_close(got, expected, atol=1e-4, rtol=1e-4)
