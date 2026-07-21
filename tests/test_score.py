@@ -1,7 +1,6 @@
 import json
 import math
 import subprocess
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -47,6 +46,8 @@ from bergson.utils.utils import (
     tensor_to_numpy,
 )
 
+from .cli_command import bergson_cmd, bergson_env
+
 
 def _h_inv(path, device, power):
     """The dense inverse-Hessian matrices for a saved processor at ``path``."""
@@ -77,10 +78,7 @@ def test_large_gradients_query(tmp_path: Path, dataset):
     )
 
     result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "bergson",
+        bergson_cmd(
             "score",
             "test_score_e2e",
             "--projection_dim",
@@ -96,8 +94,9 @@ def test_large_gradients_query(tmp_path: Path, dataset):
             "--truncation",
             "--token_batch_size",
             "256",
-        ],
+        ),
         cwd=tmp_path,
+        env=bergson_env(),
         capture_output=True,
         text=True,
     )

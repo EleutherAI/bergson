@@ -4,6 +4,8 @@ import subprocess
 
 import pytest
 
+from .cli_command import bergson_cmd, bergson_env
+
 SUBCOMMANDS = [
     "build",
     "ekfac",
@@ -26,10 +28,11 @@ def help_results() -> dict[str, subprocess.CompletedProcess]:
     """
     procs = {
         cmd: subprocess.Popen(
-            ["bergson", cmd, "--help"],
+            bergson_cmd(cmd, "--help"),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            env=bergson_env(),
         )
         for cmd in SUBCOMMANDS
     }

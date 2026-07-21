@@ -13,6 +13,8 @@ from datasets import Dataset
 
 from bergson.data import load_gradients
 
+from .cli_command import bergson_cmd, bergson_env
+
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 @pytest.mark.parametrize("batch_size_a,batch_size_b", [(100, 100), (50, 150)])
@@ -53,8 +55,7 @@ def test_gradient_scale_invariance(tmp_path, batch_size_a, batch_size_b):
 
     def start_bergson_build(index_name: str, dataset_path: str):
         index_path = index_dir / index_name
-        cmd = [
-            "bergson",
+        cmd = bergson_cmd(
             "build",
             str(index_path),
             "--model",
@@ -69,9 +70,13 @@ def test_gradient_scale_invariance(tmp_path, batch_size_a, batch_size_b):
             "1000",
             "--nproc_per_node",
             "1",
-        ]
+        )
         proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=bergson_env(),
         )
         return index_path, proc
 

@@ -17,14 +17,13 @@ from bergson.build import build
 from bergson.data import load_gradient_dataset
 from bergson.hessians.autocorrelation import AutocorrelationCollector
 
+from .cli_command import bergson_cmd, bergson_env
+
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_reduce_cli(tmp_path: Path):
     result = subprocess.run(
-        [
-            "python",
-            "-m",
-            "bergson",
+        bergson_cmd(
             "reduce",
             "test_reduce_e2e",
             "--model",
@@ -39,8 +38,9 @@ def test_reduce_cli(tmp_path: Path):
             "--unit_normalize",
             "--token_batch_size",
             "1024",
-        ],
+        ),
         cwd=tmp_path,
+        env=bergson_env(),
         capture_output=True,
         # Get strings instead of bytes
         text=True,

@@ -12,7 +12,6 @@ breaks the per-node NCCL handshake, or only one node's data ever reaches disk),
 this test either times out or fails the gradient-count assertion.
 """
 
-import os
 import socket
 import subprocess
 from pathlib import Path
@@ -21,6 +20,8 @@ import pytest
 import torch
 
 from bergson.data import load_gradients
+
+from .cli_command import bergson_cmd, bergson_env
 
 
 def free_port() -> int:
@@ -38,8 +39,7 @@ def test_multinode_build_two_nodes_one_gpu_each(tmp_path: Path):
     n_examples = 32
     port = free_port()
 
-    common_args = [
-        "bergson",
+    common_args = bergson_cmd(
         "build",
         str(run_path),
         "--model",
@@ -58,10 +58,10 @@ def test_multinode_build_two_nodes_one_gpu_each(tmp_path: Path):
         "--nproc_per_node",
         "1",
         "--overwrite",
-    ]
+    )
 
     base_env = {
-        **os.environ,
+        **bergson_env(),
         "MASTER_ADDR": "localhost",
         "MASTER_PORT": str(port),
     }

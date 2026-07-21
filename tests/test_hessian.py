@@ -8,6 +8,8 @@ from bergson import GradientProcessor
 from bergson.config import HessianConfig, IndexConfig
 from bergson.hessians.hessian_approximations import approximate_hessians
 
+from .cli_command import bergson_cmd, bergson_env
+
 
 def test_ekfac_rejects_nonzero_projection_dim(tmp_path: Path):
     """EK-FAC fitting doesn't support gradient projection, so a nonzero
@@ -22,10 +24,7 @@ def test_ekfac_rejects_nonzero_projection_dim(tmp_path: Path):
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_autocorrelation_hessian_e2e(tmp_path: Path):
     result = subprocess.run(
-        [
-            "python",
-            "-m",
-            "bergson",
+        bergson_cmd(
             "hessian",
             "test_e2e",
             "--model",
@@ -43,8 +42,9 @@ def test_autocorrelation_hessian_e2e(tmp_path: Path):
             "bf16",
             "--method",
             "autocorrelation",
-        ],
+        ),
         cwd=tmp_path,
+        env=bergson_env(),
         capture_output=True,
         text=True,
     )
