@@ -82,9 +82,16 @@ def weighted_causal_lm_ce(
         row_loss = (tok_loss * w).sum(dim=1) / row_counts  # [B]
         return row_loss.sum()
 
+    # Mean over every valid token in the batch, matching the unweighted branch's
+    # F.cross_entropy(reduction="mean"). The count runs over the whole [B, T-1]
+    # block.
     # The mask's last column is always False, so no [:, :-1] slice is needed.
-    denom = shift_loss_mask.sum() if shift_loss_mask is not None else T - 1
-    return (tok_loss * w).sum() / denom
+    denom = (
+        shift_loss_mask.sum()
+        if shift_loss_mask is not None
+        else (shift_labels != ignore_index).sum()
+    )
+    return (tok_loss * w).sum() / denom.clamp_min(1)
 
 
 def reshape_to_nearest_square(a: Tensor) -> Tensor:

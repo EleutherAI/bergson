@@ -113,9 +113,11 @@ def test_weighted_ce_sum_of_means_reduction():
     )
     torch.testing.assert_close(ss, ((tok * w[:, None]).sum(1) / counts).sum())
 
-    # Default mean reduction path is unchanged.
+    # Default mean reduction divides by the batch's valid-token count, so it
+    # agrees with F.cross_entropy(reduction="mean") when the weights are ones.
     tm = weighted_causal_lm_ce(logits, labels, example_weight=w)
-    torch.testing.assert_close(tm, (tok * w[:, None]).sum() / (T - 1))
+    valid = (labels[:, 1:] != -100).sum()
+    torch.testing.assert_close(tm, (tok * w[:, None]).sum() / valid)
 
 
 def test_metasmoothness_score():
