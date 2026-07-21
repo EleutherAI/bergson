@@ -19,7 +19,12 @@ from bergson import (
 from bergson.builder import Builder
 from bergson.collector.gradient_collectors import GradientCollector
 from bergson.config import IndexConfig, PreprocessConfig
-from bergson.data import compute_num_token_grads, create_token_index, load_scores
+from bergson.data import (
+    allocate_batches,
+    compute_num_token_grads,
+    create_token_index,
+    load_scores,
+)
 from bergson.score.score_writer import MemmapTokenScoreWriter
 from bergson.score.scorer import Scorer
 from bergson.utils.utils import get_gradient_dtype
@@ -66,9 +71,62 @@ def test_compute_num_token_grads_all_masked():
     np.testing.assert_array_equal(sl, [2])
 
 
+def test_compute_num_token_grads_short_documents():
+    """Documents with < 2 tokens contribute zero rows.
+
+    ``_allocate_batches_world`` drops them from the forward pass (no valid
+    next-token label), so allocating rows for them would leave holes. An
+    empty document used to give ``length - 1 == -1``, which made the
+    cumulative offsets non-monotonic and overlapped its neighbours' rows.
+    """
+    ds = Dataset.from_dict(
+        {
+            "input_ids": [[1] * 6, [], [1], [1] * 4],
+            "length": [6, 0, 1, 4],
+        }
+    )
+    sl = compute_num_token_grads(ds)
+    np.testing.assert_array_equal(sl, [5, 0, 0, 3])
+    assert (sl >= 0).all()
+
+
 # ---------------------------------------------------------------------------
 # create_token_index / load_token_gradients / TokenGradients
 # ---------------------------------------------------------------------------
+
+
+def test_token_index_with_empty_document(tmp_path: Path):
+    """An empty document must not corrupt the index layout.
+
+    Regression test: with ``num_token_grads = length - 1`` the empty document
+    contributed -1 rows, giving offsets ``[0, 5, 4, 8, 11]`` (non-monotonic,
+    doc 0's last row aliased by doc 2) and ``info["num_grads"] == 11``
+    instead of 12.
+    """
+    ds = Dataset.from_dict(
+        {
+            "input_ids": [[1] * 6, [], [1] * 5, [1] * 4],
+            "length": [6, 0, 5, 4],
+        }
+    )
+    num_token_grads = compute_num_token_grads(ds)
+    mmap, offsets = create_token_index(tmp_path, num_token_grads, {"m": 2}, np.float32)
+
+    np.testing.assert_array_equal(offsets, [0, 5, 5, 9, 12])
+    assert (np.diff(offsets) >= 0).all(), "offsets must be non-decreasing"
+    assert mmap.shape[0] == 12
+
+    with (tmp_path / "info.json").open() as f:
+        info = json.load(f)
+    assert info["num_grads"] == 12
+
+    # Writing each document's rows must not clobber another's.
+    for i in range(len(ds)):
+        mmap[offsets[i] : offsets[i + 1]] = i + 1
+    tg = TokenGradients(tmp_path)
+    np.testing.assert_array_equal(tg.num_token_grads, [5, 0, 4, 3])
+    for i in range(len(ds)):
+        assert (tg[i] == i + 1).all()
 
 
 def test_create_and_load_token_index(tmp_path: Path):
@@ -319,6 +377,69 @@ def test_token_build_with_labels(tmp_path: Path, model):
 
     assert tg.num_token_grads[1] == 4
     assert tg[1].shape[0] == 4
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_token_build_with_empty_document(tmp_path: Path, model):
+    """An empty document in the corpus must not shift other documents' rows.
+
+    ``tokenizer("")`` returns ``[]`` and only ``tokenize_and_chunk`` filters
+    empty text, so unchunked datasets can carry zero-length rows. The forward
+    pass skips them (``< 2`` tokens), so their row count must be 0 too --
+    otherwise the index and the collector disagree and rows overlap.
+    """
+    model = model.float()
+    # No projection: keeps the two builds bit-comparable.
+    lengths = [6, 0, 5, 4]
+    full = Dataset.from_dict(
+        {
+            "input_ids": [list(range(1, n + 1)) for n in lengths],
+            "length": lengths,
+        }
+    )
+    # Reference corpus: identical, minus the empty document.
+    ref_lengths = [n for n in lengths if n > 0]
+    reference = Dataset.from_dict(
+        {
+            "input_ids": [list(range(1, n + 1)) for n in ref_lengths],
+            "length": ref_lengths,
+        }
+    )
+
+    def build(data, path):
+        cfg = IndexConfig(
+            run_path=str(path), token_batch_size=1024, attribute_tokens=True
+        )
+        # Same batching the real build path uses: docs with < 2 tokens are
+        # dropped from the forward pass here.
+        batches = allocate_batches(data["length"][:], cfg.token_batch_size)
+        collect_gradients(
+            model=model,
+            data=data,
+            processor=GradientProcessor(),
+            cfg=cfg,
+            batches=batches,
+        )
+        return cfg.partial_run_path
+
+    full_path = build(full, tmp_path / "full")
+    ref_path = build(reference, tmp_path / "ref")
+
+    tg = TokenGradients(full_path)
+    np.testing.assert_array_equal(tg.num_token_grads, [5, 0, 4, 3])
+
+    _, offsets = load_token_gradients(full_path)[1:]
+    np.testing.assert_array_equal(offsets, [0, 5, 5, 9, 12])
+    with (full_path / "info.json").open() as f:
+        assert json.load(f)["num_grads"] == 12
+
+    ref = TokenGradients(ref_path)
+    for full_i, ref_i in [(0, 0), (2, 1), (3, 2)]:
+        got = tg[full_i].astype(np.float32)
+        want = ref[ref_i].astype(np.float32)
+        assert got.shape == want.shape
+        rel = np.abs(got - want).max() / max(float(np.abs(want).max()), 1e-12)
+        assert rel < 1e-4, f"doc {full_i} differs from reference: rel diff {rel:.3e}"
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
