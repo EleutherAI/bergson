@@ -14,6 +14,7 @@ this test either times out or fails the gradient-count assertion.
 
 import socket
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -66,32 +67,52 @@ def test_multinode_build_two_nodes_one_gpu_each(tmp_path: Path):
         "MASTER_PORT": str(port),
     }
 
+    # Capture each node to its own file rather than a pipe. Both nodes must run
+    # concurrently to meet at the collective, but communicate() drains one pipe
+    # at a time: the other node fills its 64 KiB buffer (these emit ~80 KiB of
+    # progress bars), blocks on write, never reaches the rendezvous, and both
+    # nodes deadlock until the timeout.
     procs = []
+    log_paths = []
+    handles = []
     for node_rank, gpu in [(1, "1"), (0, "0")]:
         env = {**base_env, "CUDA_VISIBLE_DEVICES": gpu}
+        log_path = tmp_path / f"node_{node_rank}.log"
+        handle = log_path.open("w")
+        log_paths.append(log_path)
+        handles.append(handle)
         procs.append(
             subprocess.Popen(
                 common_args + ["--node_rank", str(node_rank)],
                 env=env,
-                stdout=subprocess.PIPE,
+                stdout=handle,
                 stderr=subprocess.STDOUT,
                 text=True,
             )
         )
 
-    outputs = []
+    def read_logs() -> list[str]:
+        return [p.read_text(errors="replace") if p.exists() else "" for p in log_paths]
+
     try:
+        deadline = time.monotonic() + 600
         for proc in procs:
-            out, _ = proc.communicate(timeout=600)
-            outputs.append(out)
+            proc.wait(timeout=max(1.0, deadline - time.monotonic()))
     except subprocess.TimeoutExpired:
         for proc in procs:
             proc.kill()
+        for proc in procs:
+            proc.wait()
         pytest.fail(
             "Multi-node simulation timed out — likely a cross-node "
             "rendezvous hang. Outputs so far:\n"
-            + "\n---\n".join(o or "<no output>" for o in outputs)
+            + "\n---\n".join(o or "<no output>" for o in read_logs())
         )
+    finally:
+        for handle in handles:
+            handle.close()
+
+    outputs = read_logs()
 
     for i, proc in enumerate(procs):
         assert proc.returncode == 0, (
