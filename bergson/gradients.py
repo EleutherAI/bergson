@@ -327,8 +327,8 @@ class AdafactorNormalizer(Normalizer):
         b = c.rsqrt_()
 
         # Implicitly do the Hadamard product
-        grad *= a[:, None]  # [N, O] * [O] → [N, O]
-        grad *= b[None, :]
+        grad *= a[:, None]  # [O, I] * [O, 1] → [O, I]
+        grad *= b[None, :]  # [O, I] * [1, I] → [O, I]
 
         return grad
 

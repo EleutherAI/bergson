@@ -226,6 +226,69 @@ def test_load_from_gpt2_conv1d_base_relative_keys(tmp_path):
         assert norm.weight_avg_sq.shape == (out_f, in_f)
 
 
+def _create_fake_factored_optimizer_state(model, lr=1e-3):
+    """An Adafactor-style state: 2D params factored into row/col means.
+
+    Adafactor reduces over the parameter *as stored*, so for a Conv1D whose
+    weight is ``[in, out]`` the row means are indexed by in-features.
+    """
+    state = {}
+    param_groups = [{"lr": lr, "params": []}]
+
+    for idx, (_, param) in enumerate(model.named_parameters()):
+        param_groups[0]["params"].append(idx)
+        sq = torch.rand_like(param) * 0.01 + 1e-4
+        if param.ndim == 2:
+            state[idx] = {
+                "step": torch.tensor(100),
+                "exp_avg_sq_row": sq.mean(dim=-1),
+                "exp_avg_sq_col": sq.mean(dim=0),
+            }
+        else:
+            state[idx] = {"step": torch.tensor(100), "exp_avg_sq": sq}
+
+    return {"state": state, "param_groups": param_groups}
+
+
+def test_load_factored_gpt2_conv1d_orientation(tmp_path):
+    """Factored (Adafactor) states need the same Conv1D orientation fix as Adam.
+
+    GPT-2's Conv1D stores ``[in, out]``, so Adafactor's row means are indexed by
+    in-features while AdafactorNormalizer expects ``row`` over out-features.
+    Without reorienting, non-square layers raise on the Hadamard product and
+    square ones are silently normalized by the transposed statistics.
+    """
+    from transformers.pytorch_utils import Conv1D
+
+    model = AutoModelForCausalLM.from_pretrained("sshleifer/tiny-gpt2")
+    opt_state = _create_fake_factored_optimizer_state(model)
+    opt_path = tmp_path / "optimizer.pt"
+    torch.save(opt_state, opt_path)
+
+    base = model.base_model
+    conv_names = sorted(n for n, m in base.named_modules() if isinstance(m, Conv1D))
+    assert conv_names, "expected Conv1D layers in GPT-2"
+    subset = set(conv_names[:2])
+
+    normalizers = load_from_optimizer(model, str(opt_path), target_modules=subset)
+
+    assert set(normalizers.keys()) == subset
+    for name, norm in normalizers.items():
+        assert isinstance(norm, AdafactorNormalizer)
+        module = base.get_submodule(name)
+        out_f = module.nf  # Conv1D output features
+        in_f = module.weight.shape[0]  # Conv1D param is [in, out]
+
+        # row indexes out-features and col in-features, matching the
+        # collector's [out, in] gradient layout.
+        assert norm.row.shape == (out_f,), f"{name}: row must be over out-features"
+        assert norm.col.shape == (in_f,), f"{name}: col must be over in-features"
+
+        # The normalizer must accept a [out, in] gradient without broadcasting
+        # against the wrong axis.
+        norm.normalize_weight(torch.randn(out_f, in_f))
+
+
 def test_missing_optimizer_file(tmp_path):
     """Error when directory has no optimizer.pt."""
     model = _create_model()

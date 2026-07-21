@@ -154,6 +154,28 @@ def _orient_weight_second_moment(exp_avg_sq, model, layer_name):
     return exp_avg_sq if oriented is None else oriented
 
 
+def _orient_factored_second_moment(row, col, model, layer_name):
+    """Return ``(row, col)`` in the collector's ``[out, in]`` orientation.
+
+    A factored optimizer reduces over the parameter *as stored*, so a module
+    storing ``[in, out]`` (HF Conv1D) yields a ``row`` indexed by in-features
+    and a ``col`` indexed by out-features — the transpose of what
+    :class:`AdafactorNormalizer` expects. Shapes cannot settle this on their
+    own for square weights, so the module's storage convention decides.
+    Unknown modules pass through unchanged.
+    """
+    try:
+        module = model.get_submodule(layer_name)
+    except (AttributeError, ValueError):
+        return row, col  # unknown module; leave as-is
+
+    if isinstance(module, LayerAdapter.supported_modules) and (
+        LayerAdapter.weight_transposed(module)
+    ):
+        return col, row
+    return row, col
+
+
 def get_normalizers(
     optimizer_state,
     target_param_index_to_name,
@@ -220,6 +242,10 @@ def get_normalizers(
             col = state.get("exp_avg_sq_col")
             if row.ndim != 1 or col is None:
                 continue
+            if model is not None:
+                row, col = _orient_factored_second_moment(
+                    row, col, model, layer_name
+                )
             normalizers[module_name] = AdafactorNormalizer(
                 row=row.to(device),
                 col=col.to(device),
