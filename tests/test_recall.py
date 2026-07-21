@@ -2,7 +2,15 @@ import numpy as np
 import pytest
 from datasets import Dataset, load_from_disk
 
-from bergson.config.config import RecallConfig, RecallDataConfig
+from bergson.cli.commands import Score
+from bergson.config.config import (
+    IndexConfig,
+    PreprocessConfig,
+    RecallConfig,
+    RecallDataConfig,
+    ScoreConfig,
+)
+from bergson.config.config_io import save_run_config
 from bergson.recall import recall as recall_mod
 from bergson.recall.generate import (
     NUM_FIELDS,
@@ -169,6 +177,83 @@ def test_run_recall_higher_is_better_false_flips_sign(tmp_path, monkeypatch):
 
     assert metrics["mrr"] == pytest.approx(1.0)
     assert metrics["recall_at_2"] == pytest.approx(1.0)
+
+
+def _write_score_dir(tmp_path, higher_is_better: bool) -> str:
+    """A score directory whose ``config.yaml`` records ``higher_is_better``."""
+    score_dir = tmp_path / "scores"
+    score_dir.mkdir()
+    save_run_config(
+        Score(
+            ScoreConfig(query_path="q", higher_is_better=higher_is_better),
+            IndexConfig(run_path=str(score_dir)),
+            PreprocessConfig(),
+        ),
+        score_dir,
+    )
+    return str(score_dir)
+
+
+def test_run_recall_reads_higher_is_better_from_score_dir(tmp_path, monkeypatch):
+    """Regression: recall must honour the orientation the scoring run recorded.
+
+    SOURCE (approx unrolling) writes ``score_cfg.higher_is_better=False``. With
+    ``RecallConfig.higher_is_better`` left unset, recall used to default to
+    True and rank the true proponent last.
+    """
+    s_path, q_path = _write_datasets(tmp_path)
+    # Loss-diff convention: the most negative score is the best proponent.
+    matrix = np.array(
+        [
+            [-1.0, 0.0],  # gold Q0
+            [-0.9, 0.0],  # gold Q0
+            [0.0, -1.0],  # gold Q1
+            [0.0, -0.9],  # gold Q1
+        ]
+    )
+    _patch_io(monkeypatch, s_path, q_path, matrix)
+
+    cfg = _cfg(tmp_path)
+    cfg.scores = _write_score_dir(tmp_path, higher_is_better=False)
+    # cfg.higher_is_better is left at its default: the score dir decides.
+
+    metrics = run_recall(cfg)
+
+    assert metrics["mrr"] == pytest.approx(1.0)
+    assert metrics["recall_at_2"] == pytest.approx(1.0)
+
+
+def test_run_recall_explicit_higher_is_better_overrides_score_dir(
+    tmp_path, monkeypatch
+):
+    """An explicitly set config value still wins over the saved score_cfg."""
+    s_path, q_path = _write_datasets(tmp_path)
+    matrix = np.array(
+        [
+            [-1.0, 0.0],
+            [-0.9, 0.0],
+            [0.0, -1.0],
+            [0.0, -0.9],
+        ]
+    )
+    _patch_io(monkeypatch, s_path, q_path, matrix)
+
+    cfg = _cfg(tmp_path)
+    cfg.scores = _write_score_dir(tmp_path, higher_is_better=False)
+    cfg.higher_is_better = True  # explicit: do not negate
+
+    metrics = run_recall(cfg)
+
+    # Gold rows are the most negative, so ranking descending puts them last:
+    # Q0 gold ranks 3 and 4, Q1 gold ranks 3 and 4 -> no hits at k=2.
+    assert metrics["recall_at_2"] == pytest.approx(0.0)
+
+
+def test_resolve_higher_is_better_defaults_true_without_score_cfg(tmp_path):
+    """No score directory / no saved score_cfg -> default True."""
+    resolve = recall_mod.resolve_higher_is_better
+    assert resolve(str(tmp_path / "missing"), None) is True
+    assert resolve("", None) is True
 
 
 def test_run_recall_statement_count_mismatch_raises(tmp_path, monkeypatch):

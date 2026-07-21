@@ -469,9 +469,12 @@ class RecallConfig(Serializable):
     k: int = 10
     """Cutoff for Recall@k."""
 
-    higher_is_better: bool = True
+    higher_is_better: bool | None = None
     """True when a higher score means a stronger proponent of the query
-    (e.g. influence functions). False for unrolled differentiation."""
+    (e.g. influence functions). False for unrolled differentiation.
+
+    ``None`` reads the orientation from the ``score_cfg`` saved in the
+    ``scores`` directory."""
 
 
 @dataclass
@@ -678,6 +681,11 @@ class PreprocessConfig(Serializable):
 
     hessian_path: str | None = None
     """Path to a precomputed gradient processor. Set to apply Hessian approx."""
+
+    ev_correction: bool = False
+    """Use the corrected eigenvalues of a factored (EK-FAC) Hessian at
+    ``hessian_path``, which must have been fit with
+    ``HessianConfig.ev_correction=True``."""
 
     inversion_cfg: InversionConfig = field(default_factory=InversionConfig)
     """How to invert the (dense autocorrelation) Hessian at ``hessian_path``."""

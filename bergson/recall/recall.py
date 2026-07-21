@@ -13,7 +13,8 @@ from pathlib import Path
 import numpy as np
 from datasets import Dataset, load_from_disk
 
-from bergson.config.config import RecallConfig
+from bergson.config.config import RecallConfig, ScoreConfig
+from bergson.config.config_io import load_subconfig
 from bergson.data import load_scores
 from bergson.recall.generate import ensure_recall_datasets
 from bergson.utils.csv_writer import CSVWriter
@@ -30,6 +31,30 @@ def gold_ranks(scores_col: np.ndarray, gold_idx: np.ndarray) -> np.ndarray:
         ranks[j] = higher + tied_before + 1
 
     return ranks
+
+
+def resolve_higher_is_better(scores_path: str, explicit: bool | None) -> bool:
+    """Score orientation to use when ranking ``scores_path``.
+
+    ``explicit`` wins when set. Otherwise use the ``score_cfg.higher_is_better``
+    recorded in the score directory.
+    """
+    if explicit is not None:
+        return explicit
+
+    score_cfg = (
+        load_subconfig(scores_path, "score_cfg", ScoreConfig)
+        if scores_path and os.path.isdir(scores_path)
+        else None
+    )
+    if score_cfg is None:
+        return True
+
+    print(
+        f"Using higher_is_better={score_cfg.higher_is_better} recorded in "
+        f"{scores_path}; set recall_cfg.higher_is_better to override."
+    )
+    return score_cfg.higher_is_better
 
 
 def run_recall(recall_cfg: RecallConfig) -> dict[str, float]:
@@ -67,6 +92,10 @@ def run_recall(recall_cfg: RecallConfig) -> dict[str, float]:
     ):
         gold[(identifier, fact_field)].append(i)
 
+    higher_is_better = resolve_higher_is_better(
+        recall_cfg.scores, recall_cfg.higher_is_better
+    )
+
     k = recall_cfg.k
     os.makedirs(recall_cfg.run_path, exist_ok=True)
     recall_csv_path = os.path.join(recall_cfg.run_path, "recall.csv")
@@ -94,7 +123,7 @@ def run_recall(recall_cfg: RecallConfig) -> dict[str, float]:
     strict_recalls = []
     for q_idx in range(len(questions)):
         col = np.asarray(scores.get(slice(None), q_idx), dtype=np.float64)
-        if not recall_cfg.higher_is_better:
+        if not higher_is_better:
             col = -col
 
         gold_idx = np.asarray(gold[(identifiers[q_idx], fields[q_idx])])

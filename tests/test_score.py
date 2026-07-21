@@ -526,12 +526,18 @@ def _write_factored_hessian(
     ``[I, I]``), ``eigen_gradient_sharded`` (Q_G ``[O, O]``), and
     ``eigenvalue_sharded`` (λ grid ``[O, I]``), plus the ``factor_eig_a``/
     ``factor_eig_g`` vectors used by factored-Tikhonov.
+
+    Also writes ``eigenvalue_correction_sharded``, the EK-FAC-corrected grid a
+    Hessian fit with ``HessianConfig.ev_correction=True`` carries. It is
+    deliberately different from the K-FAC grid so tests can tell which one a
+    preconditioner actually used.
     """
     g = torch.Generator().manual_seed(seed)
     subdirs = [
         "eigen_activation_sharded",
         "eigen_gradient_sharded",
         "eigenvalue_sharded",
+        "eigenvalue_correction_sharded",
         "factor_eig_a",
         "factor_eig_g",
     ]
@@ -544,12 +550,17 @@ def _write_factored_hessian(
         lam_a = torch.rand(i, generator=g) + 0.1
         lam_g = torch.rand(o, generator=g) + 0.1
         grid = torch.outer(lam_g, lam_a)  # [O, I]
+        # Corrected (EK-FAC) eigenvalues: a distinct positive grid.
+        corrected = grid * (1.0 + 4.0 * torch.rand(o, i, generator=g))
         for r in range(num_shards):
             ia, ib = shard_bounds(i, r, num_shards)
             oa, ob = shard_bounds(o, r, num_shards)
             per_shard["eigen_activation_sharded"][r][name] = q_a[ia:ib].contiguous()
             per_shard["eigen_gradient_sharded"][r][name] = q_g[oa:ob].contiguous()
             per_shard["eigenvalue_sharded"][r][name] = grid[oa:ob].contiguous()
+            per_shard["eigenvalue_correction_sharded"][r][name] = corrected[
+                oa:ob
+            ].contiguous()
             per_shard["factor_eig_g"][r][name] = lam_g[oa:ob].contiguous()
             per_shard["factor_eig_a"][r][name] = lam_a.contiguous()  # replicated
 
@@ -666,6 +677,66 @@ def test_score_factored_hessian_query_preconditioning(tmp_path: Path, dataset):
     assert torch.allclose(
         from_reduce, from_score, atol=1e-4, rtol=1e-4
     ), "reduce-time vs score-time factored preconditioning differ"
+
+
+def test_score_uses_ev_correction(tmp_path: Path, dataset):
+    """Regression: ``score`` must honour ``PreprocessConfig.ev_correction``.
+
+    ``score.create_scorer`` used to call ``load_preconditioner`` without
+    ``ev_correction``, so an EK-FAC Hessian fit with corrected eigenvalues was
+    silently scored with the plain K-FAC eigenvalues.
+    """
+    device = torch.device("cpu")
+    dtype = torch.float32
+    modules = {"mod_a": (4, 6), "mod_b": (5, 3)}  # (O, I)
+    grad_sizes = {m: o * i for m, (o, i) in modules.items()}
+    num_q = 3
+
+    hessian_path = str(tmp_path / "hessian")
+    _write_factored_hessian(Path(hessian_path), modules)
+
+    rng = torch.Generator().manual_seed(2)
+    raw = {m: torch.randn(num_q, s, generator=rng) for m, s in grad_sizes.items()}
+    q_raw = _write_query_index(tmp_path / "q_raw", raw, PreprocessConfig(), num_q)
+
+    def scored_query_grads(tag: str, ev_correction: bool) -> torch.Tensor:
+        scorer = create_scorer(
+            path=tmp_path / f"scores_{tag}",
+            data=dataset,
+            score_cfg=ScoreConfig(query_path=str(q_raw)),
+            preprocess_cfg=PreprocessConfig(
+                hessian_path=hessian_path, ev_correction=ev_correction
+            ),
+            device=device,
+            dtype=dtype,
+        )
+        return torch.cat([scorer.query_grads_t[m] for m in scorer.modules], dim=0)
+
+    corrected = scored_query_grads("corrected", True)
+    uncorrected = scored_query_grads("uncorrected", False)
+
+    # The two eigenvalue grids differ, so the preconditioned queries must too —
+    # otherwise the check below would be vacuous.
+    assert not torch.allclose(corrected, uncorrected, atol=1e-4), (
+        "corrected and uncorrected eigenvalues give the same result; "
+        "the synthetic Hessian makes this test vacuous"
+    )
+
+    # ev_correction=True must match the corrected preconditioner exactly.
+    ref_pre = FactoredPreconditioner.from_path(
+        hessian_path,
+        inversion_cfg=InversionConfig(),
+        power=-1.0,
+        ev_correction=True,
+        device="cpu",
+    )
+    ref = ref_pre.apply({k: v.clone() for k, v in raw.items()})
+    expected = torch.cat(
+        [ref[m].T.contiguous() for m in sorted(grad_sizes)], dim=0
+    ).float()
+    assert torch.allclose(
+        corrected, expected, atol=1e-4, rtol=1e-4
+    ), "score ignored ev_correction: plain K-FAC eigenvalues were used"
 
 
 def test_score_factored_hessian_index_transform(tmp_path: Path, dataset):

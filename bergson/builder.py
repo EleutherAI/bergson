@@ -79,6 +79,7 @@ class Builder:
             preprocess_cfg.hessian_path,
             inversion_cfg=preprocess_cfg.inversion_cfg,
             power=-0.5 if preprocess_cfg.unit_normalize else -1.0,
+            ev_correction=preprocess_cfg.ev_correction,
             device=device,
         )
 
