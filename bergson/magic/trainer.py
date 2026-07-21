@@ -107,6 +107,33 @@ class SaveFuture:
         return result
 
 
+def next_save_index(current: int, n: int, save_mode: MagicSaveMode) -> int:
+    """Index of the checkpoint following the one saved at step `current`.
+
+    `n` is the total number of training steps. The result is always strictly
+    greater than `current`, so iterating this function enumerates the full
+    checkpoint schedule for a run of `n` steps starting from step 0.
+    """
+    match save_mode:
+        case "all":
+            # Save every step
+            return current + 1
+        case "sqrt":
+            chunk_size = math.isqrt(n)
+
+            # If we're in the last chunk, save every step
+            if current >= n - chunk_size:
+                return current + 1
+
+            # Otherwise, save sqrt(n) steps from now
+            return current + chunk_size
+        case "log":
+            # Cut the remaining steps in half to get to the next save point
+            return max(1, (n - current) // 2) + current
+        case other:
+            raise ValueError(f"Unsupported save mode: {other}")
+
+
 @dataclass
 class BackwardState:
     param_grads: dict[str, torch.Tensor]
@@ -135,17 +162,43 @@ class TrainerState:
             self.params[k].copy_(other.params[k])
         for k in self.buffers.keys():
             self.buffers[k].copy_(other.buffers[k])
+
+        # `opt_state` is a PyTree; copy it leaf by leaf into the existing tensors
+        # to keep this method in-place. Non-tensor leaves are taken from `other`.
+        def _copy_leaf(dst, src):
+            if isinstance(dst, torch.Tensor):
+                assert isinstance(src, torch.Tensor), "opt_state structure mismatch"
+                dst.copy_(src)
+                return dst
+
+            return src
+
+        self.opt_state = tree_map(_copy_leaf, self.opt_state, other.opt_state)
+
         self.batch_index = other.batch_index
         self.cuda_rng_state.copy_(other.cuda_rng_state)
         self.cpu_rng_state.copy_(other.cpu_rng_state)
 
     def to(self, device: torch.device | str) -> "TrainerState":
-        params = {k: p.to(device) for k, p in self.params.items()}
-        buffers = {k: b.to(device) for k, b in self.buffers.items()}
+        """Snapshot this state onto `device`.
+
+        Uses copy=True to enforce copy for CPU-to-CPU transfers, so stashed
+        checkpoints survive in-place training steps.
+        """
+        params = {k: p.to(device, copy=True) for k, p in self.params.items()}
+        buffers = {k: b.to(device, copy=True) for k, b in self.buffers.items()}
         opt_state = tree_map(
-            lambda t: t.to(device) if isinstance(t, torch.Tensor) else t, self.opt_state
+            lambda t: t.to(device, copy=True) if isinstance(t, torch.Tensor) else t,
+            self.opt_state,
         )
-        return TrainerState(params, opt_state, buffers, self.batch_index)
+        return TrainerState(
+            params,
+            opt_state,
+            buffers,
+            self.batch_index,
+            self.cuda_rng_state.clone(),
+            self.cpu_rng_state.clone(),
+        )
 
     def load(self, path: str):
         """Load state from a checkpoint file."""
@@ -486,6 +539,10 @@ class Trainer:
             state = self.resume(state, save_dir)
             start = state.batch_index
 
+            # Fast-forward the checkpoint schedule to where we're resuming from.
+            while next_save < start:
+                next_save = next_save_index(next_save, n, save_mode)
+
         pending_save: SaveFuture | None = None
 
         main = not dist.is_initialized() or dist.get_rank() == 0
@@ -504,25 +561,7 @@ class Trainer:
                 p = os.path.join(save_dir, f"step_{i}.ckpt")
                 pending_save = state.save(p, debug_pbar=pbar if debug else None)
 
-                match save_mode:
-                    case "all":
-                        # Save next step
-                        next_save += 1
-                    case "sqrt":
-                        chunk_size = math.isqrt(n)
-
-                        # If we're in the last chunk, save every step
-                        if i >= n - chunk_size:
-                            next_save += 1
-
-                        # Otherwise, save sqrt(n) steps from now
-                        else:
-                            next_save += chunk_size
-                    case "log":
-                        # Cut the remaining steps in half to get to the next save point
-                        next_save = max(1, (n - next_save) // 2) + next_save
-                    case other:
-                        raise ValueError(f"Unsupported save mode: {other}")
+                next_save = next_save_index(next_save, n, save_mode)
 
             x = data[i]
             state = self.step(

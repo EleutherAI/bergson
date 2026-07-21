@@ -639,6 +639,231 @@ def test_magic_packed_cli_aggregation_with_shuffle(model_name):
     torch.testing.assert_close(agg, per_doc.to(torch.float64), atol=1e-5, rtol=1e-4)
 
 
+TINY_MODEL = "trl-internal-testing/tiny-Phi3ForCausalLM"
+
+
+def _multi_step_stream(n_steps: int, device: str = "cpu") -> DataStream:
+    """A dataset of `n_steps` single-row batches, so training takes `n_steps` steps."""
+    from datasets import Dataset
+
+    ds = Dataset.from_dict(
+        {
+            "input_ids": [[1 + 5 * i + j for j in range(5)] for i in range(n_steps)],
+            "labels": [[1 + 5 * i + j for j in range(5)] for i in range(n_steps)],
+            "attention_mask": [[1] * 5] * n_steps,
+        }
+    )
+    return DataStream(ds, batch_size=1, device=device)
+
+
+def _fresh_trainer(seed: int = 42):
+    """Build a fresh model/trainer/state, as a new process would."""
+    torch.manual_seed(seed)
+    config = AutoConfig.from_pretrained(TINY_MODEL)
+    model = AutoModelForCausalLM.from_config(
+        config, torch_dtype=torch.float32, attn_implementation="eager"
+    )
+    model.loss_function = weighted_causal_lm_ce
+    model.requires_grad_(True)
+
+    optimizer = torchopt.adamw(1e-4, betas=(0.95, 0.975), eps_root=1e-2)
+    trainer, fwd_state = Trainer.initialize(model, optimizer)
+    return trainer, fwd_state, model
+
+
+def _magic_scores(trainer, model, fwd_state, stream, ckpt_dir) -> torch.Tensor:
+    """Query gradients on batch 0, then MAGIC backward through the trajectory."""
+    with fwd_state.activate(model) as params:
+        batch = stream[0]
+        del batch["example_weight"]
+        loss = model(**batch).loss
+        query_grads = {
+            k: g.detach().clone() for k, g in grad_tree(loss, params).items()
+        }
+        opt_grads = [
+            torch.zeros_like(buf)
+            for buf in tree_iter(fwd_state.opt_state)
+            if isinstance(buf, torch.Tensor) and buf.is_floating_point()
+        ]
+        bwd_state = BackwardState(
+            query_grads, opt_grads, torch.zeros_like(stream.weights)
+        )
+
+    stream.requires_grad = True
+    bwd_state = trainer.backward(
+        ckpt_dir,
+        stream,
+        bwd_state,
+        fwd_state,
+        inplace=True,
+        cleanup=True,
+    )
+    return bwd_state.weight_grads.detach().cpu()
+
+
+def _saved_steps(ckpt_dir: str) -> list[int]:
+    from bergson.data import sorted_checkpoints
+
+    return [idx for idx, _ in sorted_checkpoints(ckpt_dir)]
+
+
+def test_trainer_state_in_memory_checkpoint_roundtrip():
+    """`state.to(...)` then `copy_` must round-trip the *whole* state.
+
+    This is the in-RAM checkpoint path in `Trainer.backward`. Two ways it used
+    to lose information: `copy_` ignored `opt_state` entirely, and `to("cpu")`
+    was a no-op for a state already on the CPU, so the snapshot aliased the live
+    tensors and was clobbered by the next in-place step.
+    """
+    trainer, state, _ = _fresh_trainer()
+    stream = _multi_step_stream(2)
+
+    snapshot = state.to("cpu").detach_()
+    before = [t.clone() for t in tree_iter(snapshot.opt_state)]
+
+    # Two in-place steps: the snapshot must survive them untouched...
+    for _ in range(2):
+        state = trainer.step(state, stream[state.batch_index], inplace=True)
+
+    for saved, now in zip(before, tree_iter(snapshot.opt_state)):
+        assert torch.equal(saved, now), "in-memory checkpoint aliased the live state"
+
+    moved = [t for t in tree_iter(state.opt_state)]
+    assert any(
+        not torch.equal(a, b) for a, b in zip(before, moved)
+    ), "optimizer state didn't change; test is degenerate"
+
+    # ...and copying it back must restore the optimizer state, not just params.
+    state.detach_()
+    state.copy_(snapshot)
+    for saved, now in zip(before, tree_iter(state.opt_state)):
+        assert torch.equal(saved, now), "copy_ dropped part of the optimizer state"
+
+
+@pytest.mark.parametrize("save_mode", ["sqrt", "log"])
+def test_magic_backward_matches_across_save_modes(save_mode, monkeypatch):
+    """Sparse checkpointing must not change MAGIC scores.
+
+    With save_mode != "all" the backward pass rematerializes intermediate states
+    and stashes them in RAM as `TrainerState`s, restoring them via
+    `TrainerState.copy_`. `copy_` used to copy the parameters but *not* the
+    optimizer state, so every traced step at or below the first in-RAM checkpoint
+    was differentiated against Adam moments belonging to a *later* step.
+    Regression guard: scores must be identical to the dense ("all") schedule.
+    """
+    import types
+
+    from bergson.magic import trainer as trainer_mod
+
+    n = 9
+
+    # Force the in-RAM checkpoint branch so the test doesn't depend on how much
+    # memory psutil happens to report on the machine running it.
+    monkeypatch.setattr(
+        trainer_mod.psutil,
+        "virtual_memory",
+        lambda: types.SimpleNamespace(available=1 << 60),
+    )
+
+    # Spy on copy_ to assert the in-RAM checkpoint path was actually taken.
+    copy_calls = []
+    orig_copy = trainer_mod.TrainerState.copy_
+
+    def spy_copy(self, other):
+        copy_calls.append(other.batch_index)
+        return orig_copy(self, other)
+
+    monkeypatch.setattr(trainer_mod.TrainerState, "copy_", spy_copy)
+
+    scores = {}
+    for mode in ("all", save_mode):
+        trainer, fwd_state, model = _fresh_trainer()
+        stream = _multi_step_stream(n)
+        assert len(stream) == n
+
+        with tempfile.TemporaryDirectory() as ckpt_dir:
+            fwd_state = trainer.train(
+                fwd_state, stream, inplace=True, save_dir=ckpt_dir, save_mode=mode
+            )
+            scores[mode] = _magic_scores(trainer, model, fwd_state, stream, ckpt_dir)
+
+    assert copy_calls, "no in-RAM checkpoints were used; test is degenerate"
+    assert scores["all"].abs().sum() > 0, "scores are all zero; test is degenerate"
+
+    torch.testing.assert_close(scores[save_mode], scores["all"], atol=1e-12, rtol=1e-6)
+
+
+@pytest.mark.parametrize("save_mode", ["all", "sqrt", "log"])
+def test_magic_resume_preserves_checkpoint_schedule(save_mode):
+    """A resumed forward run must keep saving checkpoints on schedule.
+
+    `next_save` was initialized to 0 before the resume branch set `start =
+    state.batch_index`, so with `start > 0` the `i == next_save` condition never
+    fired again and a resumed run saved nothing. Final parameters still matched a
+    fresh run exactly, so the damage only showed up in the backward pass, which
+    started from the last surviving checkpoint and emitted zero scores for every
+    step past it.
+    """
+    n = 9
+    crash_at = 5
+
+    # Reference: an uninterrupted run.
+    trainer, fwd_state, model = _fresh_trainer()
+    stream = _multi_step_stream(n)
+    with tempfile.TemporaryDirectory() as ckpt_dir:
+        fwd_state = trainer.train(
+            fwd_state, stream, inplace=True, save_dir=ckpt_dir, save_mode=save_mode
+        )
+        fresh_steps = _saved_steps(ckpt_dir)
+        fresh_params = {k: v.detach().clone() for k, v in fwd_state.params.items()}
+        fresh_scores = _magic_scores(trainer, model, fwd_state, stream, ckpt_dir)
+
+    with tempfile.TemporaryDirectory() as ckpt_dir:
+        # Interrupted run: blow up partway through training.
+        def boom(i, loss):
+            if i == crash_at:
+                raise RuntimeError("simulated crash")
+
+        trainer, fwd_state, model = _fresh_trainer()
+        stream = _multi_step_stream(n)
+        with pytest.raises(RuntimeError, match="simulated crash"):
+            trainer.train(
+                fwd_state,
+                stream,
+                inplace=True,
+                save_dir=ckpt_dir,
+                save_mode=save_mode,
+                log_fn=boom,
+            )
+
+        # Resume in a fresh process-like context.
+        trainer, fwd_state, model = _fresh_trainer()
+        stream = _multi_step_stream(n)
+        fwd_state = trainer.train(
+            fwd_state,
+            stream,
+            inplace=True,
+            save_dir=ckpt_dir,
+            save_mode=save_mode,
+            resume=True,
+        )
+        resumed_steps = _saved_steps(ckpt_dir)
+        # Capture before the backward pass, which walks `fwd_state` back down
+        # the trajectory in place.
+        resumed_params = {k: v.detach().clone() for k, v in fwd_state.params.items()}
+        resumed_scores = _magic_scores(trainer, model, fwd_state, stream, ckpt_dir)
+
+    assert resumed_steps == fresh_steps, (
+        f"resumed run saved checkpoints {resumed_steps}, "
+        f"uninterrupted run saved {fresh_steps}"
+    )
+    for k, v in fresh_params.items():
+        torch.testing.assert_close(resumed_params[k], v)
+
+    assert fresh_scores.abs().sum() > 0, "scores are all zero; test is degenerate"
+    torch.testing.assert_close(resumed_scores, fresh_scores, atol=1e-12, rtol=1e-6)
+
+
 def test_magic_resume(dataset):
     """Resume from a checkpoint mid-training and verify identical final state."""
     device = "cpu"
