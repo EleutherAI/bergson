@@ -243,9 +243,7 @@ def get_normalizers(
             if row.ndim != 1 or col is None:
                 continue
             if model is not None:
-                row, col = _orient_factored_second_moment(
-                    row, col, model, layer_name
-                )
+                row, col = _orient_factored_second_moment(row, col, model, layer_name)
             normalizers[module_name] = AdafactorNormalizer(
                 row=row.to(device),
                 col=col.to(device),
