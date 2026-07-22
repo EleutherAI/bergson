@@ -87,9 +87,9 @@ def test_projection_entry_variance_is_one_over_output_dim(projection_type):
 
     # E[AᵀA] = I: the diagonal is what carries the inner-product scale.
     gram_diag = (A.T @ A).diagonal().mean().item()
-    assert gram_diag == pytest.approx(1.0, rel=0.1), (
-        f"mean diag(AᵀA) = {gram_diag:.4f}, expected 1.0"
-    )
+    assert gram_diag == pytest.approx(
+        1.0, rel=0.1
+    ), f"mean diag(AᵀA) = {gram_diag:.4f}, expected 1.0"
 
 
 def test_single_sided_projection_is_unbiased():
@@ -110,9 +110,7 @@ def test_single_sided_projection_is_unbiased():
     for t in range(TRIALS):
         total = 0.0
         for k, d in enumerate(dims):
-            R = create_projection_matrix(
-                f"g{k}_{t}", p, d, dtype, device, "rademacher"
-            )
+            R = create_projection_matrix(f"g{k}_{t}", p, d, dtype, device, "rademacher")
             total += float(((xs[k] @ R.T) * (ys[k] @ R.T)).sum())
         acc += total
 
