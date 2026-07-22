@@ -205,6 +205,11 @@ class HookCollectorBase(ContextDecorator, ABC):
             orig_name = module._name
             orig_out = getattr(module, LayerAdapter.out_attr(module))
 
+            assert num_heads * head_size == orig_out, (
+                f"{name}: num_heads * head_size = {num_heads * head_size} does "
+                f"not cover the module's {orig_out} output features"
+            )
+
             setattr(module, LayerAdapter.out_attr(module), head_size)
 
             for h in range(num_heads):
@@ -226,6 +231,52 @@ class HookCollectorBase(ContextDecorator, ABC):
             setattr(module, LayerAdapter.out_attr(module), orig_out)
 
         return wrapper
+
+    @staticmethod
+    def split_head_name(name: str) -> tuple[str, int] | None:
+        """Split ``"<module>.head_<i>"`` into ``("<module>", i)``, else None."""
+        base, sep, suffix = name.rpartition(".head_")
+        if not sep or not suffix.isdigit():
+            return None
+        return base, int(suffix)
+
+    def normalizer_for(self, name: str):
+        """The normalizer for module `name`.
+
+        Normalizers are keyed by the unsplit module name, so a split attention
+        head looks up its parent and takes the slice of the output dimension it
+        covers.
+        """
+        normalizer = self.processor.normalizers.get(name)
+        if normalizer is not None:
+            return normalizer
+
+        split = self.split_head_name(name)
+        if split is None:
+            return None
+
+        base, head_idx = split
+        normalizer = self.processor.normalizers.get(base)
+        if normalizer is None or base not in self.attention_cfgs:
+            return normalizer
+
+        head_size = self.attention_cfgs[base].head_size
+        lo, hi = head_idx * head_size, (head_idx + 1) * head_size
+
+        if isinstance(normalizer, AdamNormalizer):
+            bias = normalizer.bias_avg_sq
+            return AdamNormalizer(
+                normalizer.weight_avg_sq[lo:hi],
+                bias[lo:hi] if bias is not None else None,
+            )
+        if isinstance(normalizer, AdafactorNormalizer):
+            bias = normalizer.bias_avg_sq
+            return AdafactorNormalizer(
+                normalizer.row[lo:hi],
+                normalizer.col,
+                bias[lo:hi] if bias is not None else None,
+            )
+        return normalizer
 
     @property
     def per_module_projection_dim(self) -> int | None:
@@ -473,7 +524,7 @@ class HookCollectorBase(ContextDecorator, ABC):
         p = self.per_module_projection_dim
         name = assert_type(str, module._name)
         i = getattr(module, LayerAdapter.in_attr(module))
-        normalizer = self.processor.normalizers.get(name)
+        normalizer = self.normalizer_for(name)
 
         if isinstance(normalizer, AdamNormalizer):
             module._inputs = a
@@ -553,7 +604,7 @@ class HookCollectorBase(ContextDecorator, ABC):
         p = self.per_module_projection_dim
         i = getattr(module, LayerAdapter.in_attr(module))
         o = getattr(module, LayerAdapter.out_attr(module))
-        normalizer = self.processor.normalizers.get(name)
+        normalizer = self.normalizer_for(name)
 
         if isinstance(normalizer, AdamNormalizer):
             # Gate on the per-module flag, as shapes(), discover_targets() and
