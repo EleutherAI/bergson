@@ -324,7 +324,7 @@ def worker(
     )
 
     multi_query = False
-    if not score_path:
+    if do_metagradient:
         # Sanity check
         if not isinstance(run_cfg, MagicConfig):
             raise RuntimeError("run_cfg must be a MagicConfig to compute scores")
@@ -375,6 +375,19 @@ def worker(
             score_path = os.path.join(run_cfg.run_path, "scores.pt")
             torch.save(scores, score_path)
             print(f"Saved attribution scores to {score_path}")
+    elif not score_path:
+        # skip_metagradient: no MAGIC scores; build the bank with dummy zeros.
+        scores = torch.zeros_like(stream.weights).cpu()
+        if pad_count:
+            scores = (
+                scores[:-weight_pad_count] if scores.ndim == 1 else scores[:-pad_count]
+            )
+        if global_rank == 0:
+            print(f"Baseline loss: {baseline}")
+            print(
+                "skip_metagradient: skipped MAGIC backward; using dummy zero "
+                "scores (bank build only)."
+            )
     elif os.path.isdir(score_path) or score_path.endswith(".npy"):
         scores, multi_query = load_attribution_scores(score_path)
     else:
