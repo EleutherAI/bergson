@@ -157,7 +157,7 @@ def approx_unrolling_pipeline(
         n_segments=n_segments,
         per_segment=n_ckpts // n_segments,
         distributed=index_cfg.distributed,
-        resume=index_cfg.overwrite,
+        resume=not index_cfg.overwrite,
     )
 
     # ── Step 3: Per-checkpoint lambda in segment eigenbasis
@@ -169,7 +169,7 @@ def approx_unrolling_pipeline(
         index_cfg,
         hessian_cfg,
         approx_unrolling_cfg,
-        resume=index_cfg.overwrite,
+        resume=not index_cfg.overwrite,
     )
 
     # ── Step 4: Per-segment lambda aggregation
@@ -183,7 +183,7 @@ def approx_unrolling_pipeline(
         n_segments=n_segments,
         per_segment=n_ckpts // n_segments,
         distributed=index_cfg.distributed,
-        resume=index_cfg.overwrite,
+        resume=not index_cfg.overwrite,
     )
 
     # ── Step 5: Mean query gradient at the final checkpoint
@@ -192,7 +192,7 @@ def approx_unrolling_pipeline(
         f"Building mean query gradient at the final checkpoint..."
     )
     query_path = Path(index_cfg.run_path) / "query"
-    if index_cfg.overwrite and query_path.exists():
+    if not index_cfg.overwrite and query_path.exists():
         logger.info(f"  skip — exists at {query_path}")
     else:
         if query_path.exists():
