@@ -107,8 +107,10 @@ def test_gradient_scale_invariance(tmp_path, batch_size_a, batch_size_b):
     std_b_sep = grads_b.std()
     std_b_comb = grads_b_in_combined.std()
 
-    torch.testing.assert_close(std_a_sep, std_a_comb)
-    torch.testing.assert_close(std_b_sep, std_b_comb)
+    # atol=0: the invariant is scale-free, so the check must not depend on the
+    # gradients' magnitude.
+    torch.testing.assert_close(std_a_sep, std_a_comb, rtol=1e-4, atol=0.0)
+    torch.testing.assert_close(std_b_sep, std_b_comb, rtol=1e-4, atol=0.0)
 
     # Also check that cosine similarity is high (gradients point in the same direction)
     a_norm = grads_a / grads_a.norm(dim=1, keepdim=True)

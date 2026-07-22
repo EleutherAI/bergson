@@ -1,19 +1,12 @@
 """Random projections must preserve inner products, for every module shape.
 
-``docs/preprocessing.rst`` promises Johnson-Lindenstrauss behaviour: projecting
-two gradients and taking their inner product should, in expectation, return the
-unprojected inner product. That requires projection entries with variance
-``1/m`` (m = the projected dimension), so that ``E[AᵀA] = I``.
+Projecting two gradients and taking their inner product should, in expectation,
+return the unprojected inner product, which requires entries with variance
+``1/m`` so that ``E[AᵀA] = I``.
 
-The subtle failure mode this pins is not the overall scale — a constant factor
-would cancel out of any ranking — but a factor that *depends on the module's
-shape*. A score sums ``⟨g_m, q_m⟩`` over modules, so a shape-dependent factor
-silently reweights modules against each other. Attention (``d×d``) and MLP
+A shape-dependent factor matters because a score sums ``⟨g_m, q_m⟩`` over
+modules, so it reweights modules against each other. Attention (``d×d``) and MLP
 (``d×4d``) blocks differ by 4×.
-
-The existing projection tests compare the collector against ``L @ G @ Rᵀ`` using
-the *same* matrices, so they are invariant to how those matrices are scaled;
-nothing pinned projected against unprojected until this file.
 """
 
 import math
@@ -24,8 +17,7 @@ import torch
 from bergson.collector.collector import create_projection_matrix
 
 TRIALS = 2000
-# Tolerance for a TRIALS-sample Monte Carlo mean. Loose enough not to flake,
-# far tighter than the p²/(o·i) factors (0.0625, 0.25) this is guarding against.
+# Tolerance for a TRIALS-sample Monte Carlo mean.
 RTOL = 0.05
 
 
@@ -56,18 +48,16 @@ def test_projection_preserves_inner_products(o, i, p, projection_type):
     got = _mean_projected_inner_product(o, i, p, projection_type)
     assert got == pytest.approx(1.0, rel=RTOL), (
         f"{o}x{i} p={p} {projection_type}: projected inner product is "
-        f"{got:.4f}x the true one; expected ~1.0. A factor of "
-        f"{p * p / (o * i):.4f} would mean entries are scaled by 1/sqrt(n) "
-        "(row-normalized) rather than 1/sqrt(p)."
+        f"{got:.4f}x the true one; expected ~1.0. "
+        f"A factor of {p * p / (o * i):.4f} indicates 1/sqrt(n) row normalization."
     )
 
 
 @pytest.mark.parametrize("projection_type", ["rademacher", "normal"])
 def test_projection_scale_does_not_depend_on_module_shape(projection_type):
-    """The key property: differently-shaped modules keep their relative weight.
+    """Differently-shaped modules keep their relative weight.
 
-    A constant scale error is harmless — it cancels from any ranking. A
-    shape-dependent one is not: modules are summed into a single score, so it
+    Modules are summed into a single score, so a shape-dependent scale
     reweights attention against MLP.
     """
     square = _mean_projected_inner_product(64, 64, 32, projection_type)
@@ -75,8 +65,7 @@ def test_projection_scale_does_not_depend_on_module_shape(projection_type):
 
     assert square == pytest.approx(wide, rel=2 * RTOL), (
         f"scale depends on module shape: 64x64 -> {square:.4f}, "
-        f"64x256 -> {wide:.4f}. Modules are summed into one score, so this "
-        "silently reweights them against each other."
+        f"64x256 -> {wide:.4f}"
     )
 
 
@@ -91,8 +80,8 @@ def test_projection_entry_variance_is_one_over_output_dim(projection_type):
 
     var = A.pow(2).mean().item()
     assert var == pytest.approx(1.0 / p, rel=0.1), (
-        f"entry variance {var:.3e}, expected {1.0 / p:.3e} (=1/p). "
-        f"{1.0 / n:.3e} (=1/n) would mean rows were normalized instead."
+        f"entry variance {var:.3e}, expected {1.0 / p:.3e} (=1/p); "
+        f"{1.0 / n:.3e} indicates 1/n row normalization"
     )
 
     # E[AᵀA] = I: the diagonal is what carries the inner-product scale.
@@ -106,8 +95,7 @@ def test_single_sided_projection_is_unbiased():
     """The global-projection path applies one matrix per module and sums.
 
     Each module draws an independent matrix, so cross terms vanish in
-    expectation and the sum must reproduce the full inner product — which is
-    what makes per-module-and-sum equivalent to one global matrix.
+    expectation and the sum reproduces the full inner product.
     """
     dims = [64, 256]  # deliberately different, to catch a per-module factor
     p = 32

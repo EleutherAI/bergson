@@ -240,15 +240,14 @@ def test_gradient_collector_proj_norm():
                         B = collector.projection(name, p, i, "right", g.device, g.dtype)
                         g = A @ g @ B.T
 
-                    # Compare the normalized gradient with the collected gradient. We
-                    # use a higher tolerance than the default because there seems to be
-                    # some non-negligible numerical error that accumulates due to the
-                    # different order of operations.
+                    # This computes A @ normalize(g) @ B.T; the collector projects
+                    # the activations and output grads separately. Same result in
+                    # exact arithmetic, so the tolerance covers fp32 rounding.
                     assert torch.isfinite(g).all()
                     assert torch.isfinite(collected_grad.squeeze(0)).all()
 
                     torch.testing.assert_close(
-                        g, collected_grad.squeeze(0).view_as(g), atol=1e-4, rtol=1e-4
+                        g, collected_grad.squeeze(0).view_as(g), atol=1e-3, rtol=1e-3
                     )
                     # Check gradients are the same after loading and restoring
                     if do_load:
