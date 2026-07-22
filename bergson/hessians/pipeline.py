@@ -1,7 +1,6 @@
 import time
 from contextlib import contextmanager
 from copy import deepcopy
-from pathlib import Path
 
 from ..build import build
 from ..cli.commands import Build, Score
@@ -15,19 +14,21 @@ from ..config.config import (
 from ..config.config_io import save_run_config
 from ..distributed import launch_distributed_run
 from ..score.score import score_dataset
+from ..utils.step_state import prepare_step
 from ..utils.worker_utils import validate_run_path
 from .apply_hessian import EkfacConfig, apply_worker
 from .hessian_approximations import approximate_hessians
 
 
 def _step_complete(path: str, resume: bool) -> bool:
-    """Check if a step's output already exists and should be skipped."""
-    if not resume:
+    """Whether the step writing to `path` is already done and can be skipped.
+
+    Clears any interrupted ``.part`` output so the step restarts cleanly.
+    """
+    if prepare_step(path, resume=resume):
         return False
-    if Path(path).exists():
-        print(f"  Skipping (output exists at {path})")
-        return True
-    return False
+    print(f"  Skipping (already complete at {path})")
+    return True
 
 
 @contextmanager
