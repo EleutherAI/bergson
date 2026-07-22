@@ -7,7 +7,7 @@ from pathlib import Path
 
 import torch
 import torch.distributed as dist
-from datasets import Dataset
+from datasets import Dataset, concatenate_datasets
 from scipy.stats import describe
 from simple_parsing import ArgumentParser
 from torch.distributed._functional_collectives import (
@@ -143,6 +143,18 @@ def attach_doc_ids_if_missing(dataset: Dataset) -> Dataset:
     )
 
 
+def shuffled_epochs(dataset: Dataset, seed: int, num_epochs: int) -> Dataset:
+    """Concatenate `num_epochs` independently shuffled copies of `dataset`.
+
+    Each epoch is seeded off `seed`, so the full sequence is reproducible:
+    MAGIC's backward pass replays these exact steps.
+    """
+    assert num_epochs >= 1, f"num_epochs must be >= 1, got {num_epochs}"
+    return concatenate_datasets(
+        [dataset.shuffle(seed=seed + epoch) for epoch in range(num_epochs)]
+    )
+
+
 def worker(
     global_rank: int,  # global
     rank: int,  # local
@@ -172,9 +184,6 @@ def worker(
             rank=global_rank,
             world_size=world_size,
         )
-
-    if run_cfg.num_epochs > 1:
-        train_dataset = train_dataset.repeat(run_cfg.num_epochs)
 
     # Ensure total effective batch size is divisible by world size
     assert run_cfg.batch_size % world_size == 0
@@ -418,8 +427,7 @@ def run_magic(run_cfg: TrainingConfig, *, score_path: str = ""):
     train_ds, train_n = setup_data_pipeline(run_cfg)
     train_ds = attach_doc_ids_if_missing(train_ds)
 
-    # Shuffle the train_ds with the seed.
-    train_ds = train_ds.shuffle(seed=run_cfg.seed)
+    train_ds = shuffled_epochs(train_ds, run_cfg.seed, max(1, run_cfg.num_epochs))
 
     if isinstance(run_cfg, ValidationConfig):
         query_ds, query_n = setup_data_pipeline(run_cfg, run_cfg.query)
