@@ -115,6 +115,9 @@ class GradientProcessor:
     """
 
     projection_target: Literal["per_module", "global"] = "per_module"
+
+    projection_scale: Literal["jl", "row_norm"] = "jl"
+    """Scaling of the random projection entries. See ``IndexConfig``."""
     """
     Projection target. ``per_module`` does a double-sided random projection of each
     module's gradient independently. ``global`` does an independent
@@ -163,6 +166,8 @@ class GradientProcessor:
             cfg["projection_type"] = "normal"
         if "include_bias" not in cfg:
             cfg["include_bias"] = False
+        if "projection_scale" not in cfg:
+            cfg["projection_scale"] = "row_norm"
         # Defensive: rename any legacy preconditioner* keys that may appear in
         # configs saved by older versions of this code.
         for legacy_key in list(cfg.keys()):

@@ -293,7 +293,13 @@ class HookCollectorBase(ContextDecorator, ABC):
         identifier = f"{name}/{role}"
 
         A = create_projection_matrix(
-            identifier, m, n, dtype, device, self.processor.projection_type
+            identifier,
+            m,
+            n,
+            dtype,
+            device,
+            self.processor.projection_type,
+            self.processor.projection_scale,
         )
         self.processor._projection_matrices[key] = A
         return A
@@ -927,6 +933,7 @@ def create_projection_matrix(
     dtype: torch.dtype,
     device: torch.device,
     projection_type: Literal["normal", "rademacher"] = "normal",
+    projection_scale: Literal["jl", "row_norm"] = "jl",
 ) -> Tensor:
     """Create a projection matrix deterministically based on identifier."""
     # Seed the PRNG deterministically from the identifier string
@@ -947,7 +954,10 @@ def create_projection_matrix(
     else:
         raise ValueError(f"Unknown projection type: {projection_type}")
 
-    # divide by sqrt(m) to achieve variance of 1/m:
-    # https://arxiv.org/html/2410.17413v1#A1.SS1.SSS2
-    A /= math.sqrt(m)
+    if projection_scale == "row_norm":
+        A /= A.norm(dim=1, keepdim=True)
+    else:
+        # divide by sqrt(m) to achieve variance of 1/m:
+        # https://arxiv.org/html/2410.17413v1#A1.SS1.SSS2
+        A /= math.sqrt(m)
     return A

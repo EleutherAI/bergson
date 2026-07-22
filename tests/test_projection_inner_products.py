@@ -13,6 +13,7 @@ import math
 
 import pytest
 import torch
+import yaml
 
 from bergson.collector.collector import create_projection_matrix
 
@@ -128,3 +129,31 @@ def test_projection_matrix_is_deterministic_in_identifier():
     assert torch.equal(a, b), "same identifier must give the same matrix"
     assert not torch.equal(a, c), "different identifiers must differ"
     assert math.isclose(a.pow(2).mean().item(), 1.0 / 16, rel_tol=0.1)
+
+
+def test_row_norm_scale_reproduces_legacy_matrices():
+    """``row_norm`` gives row-normalized matrices with entry variance 1/n."""
+    args = (32, 64, torch.float32, torch.device("cpu"))
+    legacy = create_projection_matrix("m", *args, "rademacher", "row_norm")
+    jl = create_projection_matrix("m", *args, "rademacher", "jl")
+
+    torch.testing.assert_close(
+        legacy, legacy / legacy.norm(dim=1, keepdim=True), rtol=1e-6, atol=1e-6
+    )
+    assert legacy.pow(2).mean().item() == pytest.approx(1.0 / 64, rel=0.1)
+    assert jl.pow(2).mean().item() == pytest.approx(1.0 / 32, rel=0.1)
+
+
+def test_processor_config_without_projection_scale_loads_as_row_norm(tmp_path):
+    """A config with no ``projection_scale`` key loads as ``row_norm``."""
+    from bergson.gradients import GradientProcessor
+
+    GradientProcessor(projection_dim=8).save(tmp_path)
+    cfg_path = tmp_path / "processor_config.yaml"
+    cfg = yaml.safe_load(cfg_path.read_text())
+    assert cfg["projection_scale"] == "jl"
+
+    del cfg["projection_scale"]
+    cfg_path.write_text(yaml.safe_dump(cfg))
+
+    assert GradientProcessor.load(tmp_path).projection_scale == "row_norm"

@@ -34,6 +34,9 @@ class EkfacConfig:
     """When set, compress each module's IVHP output to a ``[p, p]`` Kronecker
     random projection (``P_S @ (H^-1 G) @ P_A^T``)."""
     projection_type: Literal["normal", "rademacher"] = "rademacher"
+
+    projection_scale: Literal["jl", "row_norm"] = "jl"
+    """Must match the index being scored. See ``IndexConfig``."""
     debug: bool = False
 
 
@@ -159,6 +162,7 @@ class EkfacApplicator:
                         g.dtype,
                         g.device,
                         self.cfg.projection_type,
+                        self.cfg.projection_scale,
                     )
                     P_r = create_projection_matrix(
                         f"{name}/right",
@@ -167,6 +171,7 @@ class EkfacApplicator:
                         g.dtype,
                         g.device,
                         self.cfg.projection_type,
+                        self.cfg.projection_scale,
                     )
                     transformed[name] = torch.einsum("ps,nsa,ra->npr", P_l, g, P_r)
                 self.logger.debug("Compressed IVHP output to [p, p] per module")

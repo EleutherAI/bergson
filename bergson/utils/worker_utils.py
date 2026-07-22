@@ -87,6 +87,7 @@ def create_processor(
         projection_dim=cfg.projection_dim or None,
         reshape_to_square=cfg.reshape_to_square,
         projection_type=cfg.projection_type,
+        projection_scale=cfg.projection_scale,
         projection_target=cfg.projection_target,
         include_bias=cfg.include_bias,
     )

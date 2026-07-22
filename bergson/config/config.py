@@ -504,6 +504,14 @@ class IndexConfig(AttributionConfig, Serializable):
     projection_type: Literal["normal", "rademacher"] = "rademacher"
     """Type of random projections to use for the gradients."""
 
+    # TODO Lucia Quirke: remove row_norm option in October 2026
+    projection_scale: Literal["jl", "row_norm"] = "jl"
+    """Scaling of the random projection entries.
+
+    ``jl`` gives variance ``1/projection_dim``. ``row_norm`` normalizes each row
+    over its input dimension; use it to score against an index built that way.
+    Recorded in ``processor_config.yaml``."""
+
     projection_target: Literal["per_module", "global"] = "per_module"
     """Projection target. ``per_module`` does a double-sided random projection of
     each module gradient. ``global`` projects each module's flattened gradient with
