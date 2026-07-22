@@ -430,7 +430,8 @@ def setup_data_pipeline(
     # Remove extraneous columns
     keep = {"length", "input_ids", "labels"}
     remove_columns -= keep
-    remove_columns &= set(ds.column_names)
+    # An IterableDataset with no inferred features reports column_names as None.
+    remove_columns &= set(ds.column_names or ())
     if remove_columns:
         ds = ds.remove_columns(list(remove_columns))
 

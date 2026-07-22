@@ -108,13 +108,22 @@ def build_worker(
             nonlocal buf, shard_id
             if not buf:
                 return
+            # Each collect_gradients call creates the index sized to its own
+            # shard at the same path, so a second shard would overwrite the
+            # first rather than append to it.
+            assert shard_id == 0, (
+                "Streaming datasets are limited to a single shard: "
+                f"{len(buf)} rows overflowed stream_shard_size="
+                f"{index_cfg.stream_shard_size}. Raise stream_shard_size above "
+                "the dataset size, or load the dataset without streaming."
+            )
             ds_shard = assert_type(Dataset, Dataset.from_list(buf))
             batches = allocate_batches(
                 ds_shard["length"][:],
                 index_cfg.token_batch_size,
                 max_batch_size=index_cfg.max_batch_size,
             )
-            kwargs["ds"] = ds_shard
+            kwargs["data"] = ds_shard
             kwargs["batches"] = batches
             collect_gradients(**kwargs)
 
