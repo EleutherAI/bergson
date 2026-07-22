@@ -396,17 +396,13 @@ class TestGradientCollectorCallback:
 
             # Get raw state from optimizer
             weight_state = optimizer.state[layer.weight]
-            lr = optimizer.param_groups[0]["lr"]
-
-            lr_sq = lr**2
 
             if optimizer_name == "adam":
                 # Check normalizer type
                 assert isinstance(norm, AdamNormalizer)
 
-                # Ground truth: Adam stores full exp_avg_sq, scaled by 1/lr²
-                raw_exp_avg_sq = weight_state["exp_avg_sq"]
-                expected_avg_sq = raw_exp_avg_sq / lr_sq
+                # Ground truth: Adam stores the full exp_avg_sq
+                expected_avg_sq = weight_state["exp_avg_sq"]
 
                 torch.testing.assert_close(norm.weight_avg_sq, expected_avg_sq)
 
@@ -414,12 +410,9 @@ class TestGradientCollectorCallback:
                 # Check normalizer type
                 assert isinstance(norm, AdafactorNormalizer)
 
-                # Ground truth: Adafactor row/col, scaled by 1/lr²
-                raw_row = weight_state["exp_avg_sq_row"]
-                raw_col = weight_state["exp_avg_sq_col"]
-
-                expected_row = raw_row / lr_sq
-                expected_col = raw_col / lr_sq
+                # Ground truth: Adafactor row/col
+                expected_row = weight_state["exp_avg_sq_row"]
+                expected_col = weight_state["exp_avg_sq_col"]
 
                 torch.testing.assert_close(norm.row, expected_row)
                 torch.testing.assert_close(norm.col, expected_col)
@@ -427,8 +420,7 @@ class TestGradientCollectorCallback:
             # Verify bias handling
             if include_bias and layer.bias is not None:
                 bias_state = optimizer.state[layer.bias]  # type: ignore
-                raw_bias_exp_avg_sq = bias_state["exp_avg_sq"]
-                expected_bias = raw_bias_exp_avg_sq / lr_sq
+                expected_bias = bias_state["exp_avg_sq"]
 
                 assert (
                     norm.bias_avg_sq is not None
@@ -438,3 +430,96 @@ class TestGradientCollectorCallback:
                 assert (
                     norm.bias_avg_sq is None
                 ), f"Unexpected bias_avg_sq for {layer_name}"
+
+
+@pytest.mark.parametrize(
+    "model_name",
+    ["trl-internal-testing/tiny-Phi3ForCausalLM", "sshleifer/tiny-gpt2"],
+)
+def test_callback_with_optimizer_state_trains(tmp_path: Path, model_name: str):
+    """``use_optimizer_state=True`` (the default) must work on a real CausalLM.
+
+    The optimizer owns every parameter, including ``lm_head.weight``, which
+    lives outside ``base_model`` for both tied and untied models.
+    """
+    model = AutoModelForCausalLM.from_pretrained(model_name, dtype=torch.float32)
+    data = {"input_ids": [[1, 2, 3, 4, 5]] * 4}
+    data["labels"] = data["input_ids"]
+    dataset = Dataset.from_dict(data)
+
+    training_args = TrainingArguments(
+        output_dir=str(tmp_path / "output"),
+        num_train_epochs=1,
+        per_device_train_batch_size=2,
+        save_strategy="no",
+        logging_strategy="no",
+        remove_unused_columns=False,
+        report_to=[],
+    )
+    callback = GradientCollectorCallback(path=tmp_path / "gradients")
+    assert callback.use_optimizer_state, "this test is about the default"
+
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=dataset,
+        callbacks=[callback],
+    )
+    trainer = prepare_for_gradient_collection(trainer)
+    trainer.train()
+
+    assert callback.collector is not None
+    assert callback.collector.processor.normalizers, "no normalizers were built"
+
+
+def test_callback_normalizers_match_offline_orientation(tmp_path: Path):
+    """Live-callback normalizers use the same ``[out, in]`` orientation as
+    ``load_from_optimizer``, which matters for HF ``Conv1D`` (stored
+    ``[in, out]``)."""
+    from transformers.pytorch_utils import Conv1D
+
+    model = AutoModelForCausalLM.from_pretrained(
+        "sshleifer/tiny-gpt2", dtype=torch.float32
+    )
+    data = {"input_ids": [[1, 2, 3, 4, 5]] * 4}
+    data["labels"] = data["input_ids"]
+    dataset = Dataset.from_dict(data)
+
+    training_args = TrainingArguments(
+        output_dir=str(tmp_path / "output"),
+        num_train_epochs=1,
+        per_device_train_batch_size=2,
+        save_strategy="no",
+        logging_strategy="no",
+        remove_unused_columns=False,
+        report_to=[],
+    )
+    callback = GradientCollectorCallback(path=tmp_path / "gradients")
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=dataset,
+        callbacks=[callback],
+    )
+    trainer = prepare_for_gradient_collection(trainer)
+    trainer.train()
+
+    assert callback.collector is not None
+    base = model.base_model
+    checked = 0
+    for name, norm in callback.collector.processor.normalizers.items():
+        module = base.get_submodule(name)
+        if not isinstance(module, Conv1D):
+            continue
+        out_f, in_f = module.nf, module.weight.shape[0]
+        assert isinstance(norm, AdamNormalizer)
+        assert norm.weight_avg_sq.shape == (out_f, in_f), (
+            f"{name}: normalizer is {tuple(norm.weight_avg_sq.shape)}, "
+            f"expected {(out_f, in_f)}"
+        )
+        # The normalizer must accept a gradient in the collector's layout.
+        dev = norm.weight_avg_sq.device
+        norm.normalize_weight(torch.randn(out_f, in_f, device=dev))
+        checked += 1
+
+    assert checked, "no Conv1D normalizers were produced"
