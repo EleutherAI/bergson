@@ -41,6 +41,7 @@ class GradientCollectorCallback(TrainerCallback):
         dtype: np.dtype = np.dtype(np.float16),
         accumulate_grads: bool = False,
         use_optimizer_state: bool = True,
+        scale_by_lr: bool = True,
         track_order: bool = False,
     ):
         """
@@ -55,6 +56,11 @@ class GradientCollectorCallback(TrainerCallback):
             use_optimizer_state: Whether to use the optimizer state to
                 normalize the gradients. If `False`, no normalization is
                 applied.
+            scale_by_lr: Scale the normalizer so the stored gradient is the
+                update the optimizer applied, ``lr * g / sqrt(v)``. Each example
+                is captured at the step it was trained on, so this weights it by
+                that step's learning rate. Set False for ``g / sqrt(v)``, which
+                matches ``load_from_optimizer``.
             track_order: Whether to record the shuffled order of training data.
         attention_cfgs: Information used to split matrix-valued parameters into
             per-head matrices before down projection.
@@ -72,6 +78,7 @@ class GradientCollectorCallback(TrainerCallback):
         self.projection_dim = projection_dim
         self.include_bias = include_bias
         self.use_optimizer_state = use_optimizer_state
+        self.scale_by_lr = scale_by_lr
         self.order: list[dict] | None = [] if track_order else None
 
         self.mod_grads = {}
@@ -264,6 +271,8 @@ class GradientCollectorCallback(TrainerCallback):
         layer_second_moments: dict[str, dict[str, Tensor]] = {}
 
         for group in optimizer.param_groups:
+            group_lr = group["lr"]
+
             for param in group["params"]:
                 # The optimizer owns the full model's parameters; anything
                 # outside base_model (e.g. lm_head) is never a target module.
@@ -288,7 +297,7 @@ class GradientCollectorCallback(TrainerCallback):
 
                 # Initialize layer dict if needed, storing this group's learning rate
                 if layer_name not in layer_second_moments:
-                    layer_second_moments[layer_name] = {}
+                    layer_second_moments[layer_name] = {"lr": group_lr}
 
                 # Check for Adafactor FIRST (more specific than Adam)
                 # Adafactor-like optimizer: weights have factorized moments
@@ -309,12 +318,18 @@ class GradientCollectorCallback(TrainerCallback):
 
         # Build normalizers from collected second moments
         for layer_name, moments in layer_second_moments.items():
+            # Dividing the second moment by lr^2 makes normalize_weight compute
+            # lr * g / sqrt(v), the update the optimizer applied.
+            scale = moments["lr"] ** 2 if self.scale_by_lr else 1.0
+
             # Adam-like: has weight exp_avg_sq
             if "weight" in moments:
                 weight_eas = _orient_weight_second_moment(
                     moments["weight"], model, layer_name
                 )
+                weight_eas = weight_eas / scale
                 bias_eas = moments.get("bias")
+                bias_eas = bias_eas / scale if bias_eas is not None else None
 
                 norm = AdamNormalizer(weight_eas, bias_eas)
 
@@ -323,7 +338,9 @@ class GradientCollectorCallback(TrainerCallback):
                 row, col = _orient_factored_second_moment(
                     moments["row"], moments["col"], model, layer_name
                 )
+                row, col = row / scale, col / scale
                 bias_eas = moments.get("bias")
+                bias_eas = bias_eas / scale if bias_eas is not None else None
 
                 norm = AdafactorNormalizer(row, col, bias_eas)
             else:

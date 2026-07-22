@@ -396,13 +396,17 @@ class TestGradientCollectorCallback:
 
             # Get raw state from optimizer
             weight_state = optimizer.state[layer.weight]
+            lr = optimizer.param_groups[0]["lr"]
+
+            lr_sq = lr**2
 
             if optimizer_name == "adam":
                 # Check normalizer type
                 assert isinstance(norm, AdamNormalizer)
 
-                # Ground truth: Adam stores the full exp_avg_sq
-                expected_avg_sq = weight_state["exp_avg_sq"]
+                # Ground truth: Adam stores full exp_avg_sq, scaled by 1/lr²
+                raw_exp_avg_sq = weight_state["exp_avg_sq"]
+                expected_avg_sq = raw_exp_avg_sq / lr_sq
 
                 torch.testing.assert_close(norm.weight_avg_sq, expected_avg_sq)
 
@@ -410,9 +414,12 @@ class TestGradientCollectorCallback:
                 # Check normalizer type
                 assert isinstance(norm, AdafactorNormalizer)
 
-                # Ground truth: Adafactor row/col
-                expected_row = weight_state["exp_avg_sq_row"]
-                expected_col = weight_state["exp_avg_sq_col"]
+                # Ground truth: Adafactor row/col, scaled by 1/lr²
+                raw_row = weight_state["exp_avg_sq_row"]
+                raw_col = weight_state["exp_avg_sq_col"]
+
+                expected_row = raw_row / lr_sq
+                expected_col = raw_col / lr_sq
 
                 torch.testing.assert_close(norm.row, expected_row)
                 torch.testing.assert_close(norm.col, expected_col)
@@ -420,7 +427,8 @@ class TestGradientCollectorCallback:
             # Verify bias handling
             if include_bias and layer.bias is not None:
                 bias_state = optimizer.state[layer.bias]  # type: ignore
-                expected_bias = bias_state["exp_avg_sq"]
+                raw_bias_exp_avg_sq = bias_state["exp_avg_sq"]
+                expected_bias = raw_bias_exp_avg_sq / lr_sq
 
                 assert (
                     norm.bias_avg_sq is not None
@@ -432,6 +440,7 @@ class TestGradientCollectorCallback:
                 ), f"Unexpected bias_avg_sq for {layer_name}"
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 @pytest.mark.parametrize(
     "model_name",
     ["trl-internal-testing/tiny-Phi3ForCausalLM", "sshleifer/tiny-gpt2"],
@@ -472,6 +481,7 @@ def test_callback_with_optimizer_state_trains(tmp_path: Path, model_name: str):
     assert callback.collector.processor.normalizers, "no normalizers were built"
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_callback_normalizers_match_offline_orientation(tmp_path: Path):
     """Live-callback normalizers use the same ``[out, in]`` orientation as
     ``load_from_optimizer``, which matters for HF ``Conv1D`` (stored
@@ -523,3 +533,52 @@ def test_callback_normalizers_match_offline_orientation(tmp_path: Path):
         checked += 1
 
     assert checked, "no Conv1D normalizers were produced"
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_scale_by_lr_matches_adam_update(tmp_path: Path):
+    """``scale_by_lr`` makes the normalizer produce ``lr * g / sqrt(v)``."""
+    model = AutoModelForCausalLM.from_pretrained(
+        "sshleifer/tiny-gpt2", dtype=torch.float32
+    )
+    data = {"input_ids": [[1, 2, 3, 4, 5]] * 4}
+    data["labels"] = data["input_ids"]
+    dataset = Dataset.from_dict(data)
+
+    def run(scale_by_lr: bool):
+        torch.manual_seed(0)
+        m = AutoModelForCausalLM.from_pretrained(
+            "sshleifer/tiny-gpt2", dtype=torch.float32
+        )
+        args = TrainingArguments(
+            output_dir=str(tmp_path / f"out_{scale_by_lr}"),
+            num_train_epochs=1,
+            per_device_train_batch_size=2,
+            save_strategy="no",
+            logging_strategy="no",
+            remove_unused_columns=False,
+            report_to=[],
+            lr_scheduler_type="constant",
+        )
+        cb = GradientCollectorCallback(
+            path=tmp_path / f"grads_{scale_by_lr}", scale_by_lr=scale_by_lr
+        )
+        trainer = Trainer(model=m, args=args, train_dataset=dataset, callbacks=[cb])
+        trainer = prepare_for_gradient_collection(trainer)
+        trainer.train()
+        assert cb.collector is not None
+        lr = trainer.optimizer.param_groups[0]["lr"]
+        return cb.collector.processor.normalizers, lr
+
+    plain, _ = run(False)
+    scaled, lr = run(True)
+
+    assert plain and scaled
+    for name, norm in scaled.items():
+        assert isinstance(norm, AdamNormalizer)
+        # second moment divided by lr^2 -> normalize_weight multiplies by lr
+        torch.testing.assert_close(
+            norm.weight_avg_sq * lr**2,
+            assert_type(AdamNormalizer, plain[name]).weight_avg_sq,
+        )
+    del model
