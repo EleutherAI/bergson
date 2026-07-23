@@ -203,7 +203,7 @@ def convert_dtype_to_torch(dtype: np.dtype) -> torch.dtype:
 
 
 def convert_precision_to_torch(
-    precision: Literal["auto", "bf16", "fp16", "fp32"],
+    precision: Literal["auto", "bf16", "fp16", "fp32", "fp64"],
 ) -> torch.dtype:
     """Convert a precision string to the corresponding torch dtype."""
     match precision:
@@ -217,6 +217,8 @@ def convert_precision_to_torch(
             return torch.float16
         case "fp32":
             return torch.float32
+        case "fp64":
+            return torch.float64
 
 
 def get_device_index(rank: int = 0) -> int:

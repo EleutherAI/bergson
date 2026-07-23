@@ -252,6 +252,7 @@ def collect_hessians(
         "path": str(index_cfg.partial_run_path),
         "filter_modules": index_cfg.filter_modules,
         "processor": GradientProcessor(include_bias=index_cfg.include_bias),
+        "dtype": hessian_dtype,
     }
     desc = f"Approximating Hessians with {hessian_cfg.method}"
     if ev_correction:
@@ -262,7 +263,6 @@ def collect_hessians(
         )
         desc += " (eigenvalue correction)"
     else:
-        collector_args["dtype"] = hessian_dtype
         collector = HESSIAN_APPROXIMATIONS[hessian_cfg.method](**collector_args)
 
     computer = CollectorComputer(

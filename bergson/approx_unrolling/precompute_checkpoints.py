@@ -18,6 +18,7 @@ from bergson.distributed import init_dist, launch_distributed_run
 from bergson.hessians.eigenvectors import LambdaCollector
 from bergson.hessians.hessian_approximations import approximate_hessians
 from bergson.utils.logger import get_logger
+from bergson.utils.utils import convert_precision_to_torch
 from bergson.utils.worker_utils import (
     setup_data_pipeline,
     setup_model_and_peft,
@@ -118,6 +119,7 @@ def _lambda_worker(
         eigen_path=str(eigen_path),
         output_subdir=output_subdir,
         filter_modules=index_cfg.filter_modules,
+        dtype=convert_precision_to_torch(hessian_cfg.hessian_dtype),
     )
 
     computer = CollectorComputer(

@@ -85,6 +85,11 @@ class LambdaCollector(HookCollectorBase):
     output_subdir: str = "eigenvalue_correction_sharded"
     """Subdir under ``self.path`` to write lambda shards into."""
 
+    dtype: torch.dtype = torch.float32
+    """Accumulation dtype for the eigenvalue corrections. Activations,
+    gradients, and eigenvectors are cast to this before the rotation and
+    squared accumulation, and shards are saved in it."""
+
     def setup(self) -> None:
         """Load eigenvectors and initialize storage."""
         self.shard_computer = ShardedMul()
@@ -106,6 +111,10 @@ class LambdaCollector(HookCollectorBase):
             device=self.device,
         )
 
+        # Cast eigenvectors once so the rotations run in the accumulation dtype.
+        self.eigen_a = {k: v.to(self.dtype) for k, v in self.eigen_a.items()}
+        self.eigen_g = {k: v.to(self.dtype) for k, v in self.eigen_g.items()}
+
         # Initialize accumulators
         self.eigenvalue_corrections = {}
         self.transformed_a_cache = {}
@@ -122,7 +131,7 @@ class LambdaCollector(HookCollectorBase):
 
         # Transform: a @ eigen_a
         transformed = self.shard_computer._matmul(
-            vector_nsa=a, matrix_cb=self.eigen_a[name]
+            vector_nsa=a.to(self.dtype), matrix_cb=self.eigen_a[name]
         )  # shape [N, S, I]
 
         # Cache for use in backward pass
@@ -135,7 +144,7 @@ class LambdaCollector(HookCollectorBase):
 
         # Transform: g @ eigen_g
         transformed_g = self.shard_computer._matmul(
-            vector_nsa=g, matrix_cb=self.eigen_g[name]
+            vector_nsa=g.to(self.dtype), matrix_cb=self.eigen_g[name]
         )  # shape [N, S, O]
 
         # Compute outer product: sum_n (transformed_a_n^T @ transformed_g_n)

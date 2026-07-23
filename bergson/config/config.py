@@ -796,8 +796,11 @@ class HessianConfig(Serializable):
     ev_correction: bool = False
     """Whether to additionally compute eigenvalue correction."""
 
-    hessian_dtype: Literal["bf16", "fp16", "fp32"] = "fp32"
-    """Precision (dtype) to use for the Hessian approximation."""
+    hessian_dtype: Literal["bf16", "fp16", "fp32", "fp64"] = "fp32"
+    """Precision (dtype) for Hessian-approximation accumulation: the covariance
+    collectors and the EK-FAC eigenvalue-correction (lambda) collector both
+    accumulate in this dtype. Eigendecomposition always runs internally in
+    fp64 and stores results in this dtype."""
 
     use_dataset_labels: bool = False
     """Whether to use dataset labels for Hessian (empirical Fisher) approximation.
