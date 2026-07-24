@@ -1001,3 +1001,124 @@ def test_magic_backward_matches_across_save_modes_with_dropout(monkeypatch):
 
     assert scores["all"].abs().sum() > 0, "scores are all zero; test is degenerate"
     torch.testing.assert_close(scores["log"], scores["all"], atol=1e-12, rtol=1e-6)
+
+
+def test_metagrad_step_matches_single_shot_under_dropout(dataset):
+    """The micro-batched VJP must reproduce the single-shot one, dropout included.
+
+    ``metagrad_step`` runs the model once per micro-batch in stage 0 and again
+    in stage B, against a forward pass that ran it once per micro-batch too.
+    All three must draw the same dropout masks, which only holds if the replay
+    rewinds the RNG the way ``Trainer.step`` does. With dropout off every draw
+    is a no-op and the bug is invisible, so this test turns it up high.
+    """
+    device = "cpu"
+    torch.manual_seed(42)
+
+    config = AutoConfig.from_pretrained("EleutherAI/pythia-14m")
+    config.hidden_dropout = 0.5
+    config.attention_dropout = 0.5
+    model = AutoModelForCausalLM.from_config(
+        config, torch_dtype=torch.float32, attn_implementation="eager"
+    )
+    model.loss_function = weighted_causal_lm_ce
+    model.requires_grad_(True)
+    model.train()  # dropout is a no-op in eval mode
+
+    optimizer = torchopt.adamw(1e-4, betas=(0.95, 0.975), eps_root=1e-2)
+    trainer, fwd_state = Trainer.initialize(model, optimizer)
+
+    stream = DataStream(dataset, batch_size=len(dataset), device=device)
+    stream.requires_grad = True
+    # Two independent views of the same batch: each carries its own
+    # ``example_weight`` graph back to ``stream.weights``, so the first path's
+    # VJP doesn't free the buffers the second one needs.
+    batch, batch_mb = stream[0], stream[0]
+
+    fwd_state.detach_()
+    fwd_state.requires_grad = True
+
+    # Fixed incoming cotangents, shared by both paths.
+    torch.manual_seed(7)
+    param_cot = {k: torch.randn_like(v) for k, v in fwd_state.params.items()}
+    opt_cot = [
+        torch.zeros_like(t)
+        for t in tree_iter(fwd_state.opt_state)
+        if isinstance(t, torch.Tensor) and t.is_floating_point()
+    ]
+    bwd_state = BackwardState(param_cot, opt_cot, torch.zeros_like(stream.weights))
+
+    # Reference: one traced step holding every micro-graph at once, then a
+    # single VJP -- what metagrad_step decomposes without the memory cost.
+    flat_i = fwd_state.differentiable_tensors()
+    state_f = trainer.step(fwd_state, batch, trace=True, grad_accum_steps=2)
+    ref = torch.autograd.grad(
+        state_f.differentiable_tensors(),
+        flat_i + [stream.weights],
+        grad_outputs=list(param_cot.values()) + opt_cot,
+        allow_unused=True,
+    )
+    ref_params = dict(zip(param_cot.keys(), ref))
+    ref_weights = ref[-1]
+    assert ref_weights is not None and ref_weights.abs().sum() > 0
+
+    out = trainer.metagrad_step(
+        fwd_state, batch_mb, bwd_state, stream.weights, grad_accum_steps=2
+    )
+
+    for k, expected in ref_params.items():
+        if expected is None:
+            continue
+        torch.testing.assert_close(
+            out.param_grads[k],
+            expected,
+            msg=lambda m, k=k: f"param cotangent mismatch for {k}\n{m}",
+        )
+    torch.testing.assert_close(out.weight_grads, ref_weights)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_step_replay_is_deterministic_under_cuda_dropout(dataset):
+    """Re-running a step from the same state must reproduce it bit for bit.
+
+    The whole backward pass rests on this: it replays the forward trajectory
+    from checkpoints, so a step re-run later — with arbitrary RNG consumption
+    in between — has to land on the same next state. ``TrainerState`` records
+    both generators for exactly this reason, and CUDA dropout draws from the
+    CUDA one, so rewinding only the CPU generator silently breaks the replay
+    on GPU while looking fine on CPU.
+    """
+    device = "cuda"
+    torch.manual_seed(42)
+
+    config = AutoConfig.from_pretrained("EleutherAI/pythia-14m")
+    config.hidden_dropout = 0.5
+    config.attention_dropout = 0.5
+    model = AutoModelForCausalLM.from_config(
+        config, torch_dtype=torch.float32, attn_implementation="eager"
+    ).to(device)
+    model.loss_function = weighted_causal_lm_ce
+    model.requires_grad_(True)
+    model.train()  # dropout is a no-op in eval mode
+
+    optimizer = torchopt.adamw(1e-4, betas=(0.95, 0.975), eps_root=1e-2)
+    trainer, fwd_state = Trainer.initialize(model, optimizer)
+
+    stream = DataStream(dataset, batch_size=len(dataset), device=device)
+    batch = stream[0]
+
+    first = trainer.step(fwd_state, batch, inplace=False)
+
+    # Advance both generators, standing in for everything the backward pass
+    # does between the original step and its replay.
+    torch.rand(1024)
+    torch.rand(1024, device=device)
+
+    replay = trainer.step(fwd_state, batch, inplace=False)
+
+    for k, p in first.params.items():
+        torch.testing.assert_close(
+            replay.params[k],
+            p,
+            msg=lambda m, k=k: f"replayed step diverged for {k}\n{m}",
+        )

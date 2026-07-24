@@ -82,6 +82,18 @@ def _maybe_set_cuda_rng_state(rng_state: torch.Tensor) -> None:
         torch.cuda.set_rng_state(rng_state)
 
 
+def _rng_snapshot() -> tuple[torch.Tensor, torch.Tensor]:
+    """Capture both generators, for rewinding with :func:`_rng_restore`."""
+    return torch.random.get_rng_state(), _maybe_get_cuda_rng_state()
+
+
+def _rng_restore(snapshot: tuple[torch.Tensor, torch.Tensor]) -> None:
+    """Rewind both generators to a :func:`_rng_snapshot`."""
+    cpu, cuda = snapshot
+    torch.random.set_rng_state(cpu)
+    _maybe_set_cuda_rng_state(cuda)
+
+
 @dataclass
 class SaveFuture:
     """Wraps a DCP async_save future, destroying the gloo process group in result().
@@ -280,17 +292,14 @@ class TrainerState:
 
     @contextmanager
     def activate(self, model: nn.Module):
-        cpu_state = torch.random.get_rng_state()
-        cuda_state = _maybe_get_cuda_rng_state()
-        torch.random.set_rng_state(self.cpu_rng_state)
-        _maybe_set_cuda_rng_state(self.cuda_rng_state)
+        ambient = _rng_snapshot()
+        _rng_restore((self.cpu_rng_state, self.cuda_rng_state))
 
         try:
             with swap_parameters(model, self.params, self.buffers, strict=True) as p:
                 yield p
         finally:
-            torch.random.set_rng_state(cpu_state)
-            _maybe_set_cuda_rng_state(cuda_state)
+            _rng_restore(ambient)
 
     def state_dict(self) -> dict:
         # Convert to dict manually because dataclasses.asdict does a deep copy
@@ -357,18 +366,30 @@ def _split_batch(inputs: dict, n: int) -> list[dict]:
 
 
 def _accumulate_grads(
-    model, params, inputs: dict, grad_accum_steps: int, *, create_graph: bool
+    model,
+    params,
+    inputs: dict,
+    grad_accum_steps: int,
+    *,
+    create_graph: bool,
+    rng_snapshots: list | None = None,
 ) -> tuple[dict, float]:
     """Sum normalized per-micro-batch gradients into the full-batch gradient.
 
     Each micro-batch's loss is normalized by its own token count; scaling by
     ``denom_i / D`` (D = full-batch token count) makes the sum identical to the
     full-batch gradient up to float associativity. Returns ``(grads, loss)``.
+
+    The caller seeds the RNG; the micro-batch forwards draw from it in order.
+    Pass ``rng_snapshots`` to record each micro-batch's pre-forward RNG state
+    so a later pass can replay the same draws (see ``Trainer.metagrad_step``).
     """
     total_denom = _loss_denom(inputs)
     grads: dict | None = None
     last_loss = 0.0
     for mb in _split_batch(inputs, grad_accum_steps):
+        if rng_snapshots is not None:
+            rng_snapshots.append(_rng_snapshot())
         outputs = model(**mb)
         loss_i = outputs.loss if hasattr(outputs, "loss") else outputs
         assert isinstance(loss_i, torch.Tensor), "Loss must be a Tensor"
@@ -460,7 +481,9 @@ class Trainer:
                 disables clipping.
             grad_accum_steps: Split the batch into this many micro-batches and
                 sum their normalized gradients before the single optimizer
-                update; the full-batch gradient is reproduced exactly.
+                update. Matches the full-batch gradient up to float
+                associativity (and RNG consumption order, under dropout); the
+                backward replay stays faithful to whichever the forward ran.
         """
         torch.random.set_rng_state(state.cpu_rng_state)
         _maybe_set_cuda_rng_state(state.cuda_rng_state)
@@ -590,6 +613,10 @@ class Trainer:
              incoming params/opt-state.
           B. Per micro-batch, recompute its gradient graph, VJP it against
              ``g_bar``, and free it before the next micro-batch.
+
+        Both stages run the model, so both rewind the RNG the way :meth:`step`
+        does — otherwise the stages see different dropout masks and the
+        metagradient is silently wrong.
         """
         params = fwd_state.params
         buffers = fwd_state.buffers
@@ -602,9 +629,18 @@ class Trainer:
         n_i = len(flat_i)
 
         # Stage 0: combined gradient values (no graph) to drive the update.
+        # Rewind as in Trainer.step and record where each micro-batch started.
+        torch.random.set_rng_state(fwd_state.cpu_rng_state)
+        _maybe_set_cuda_rng_state(fwd_state.cuda_rng_state)
+        rng_snapshots: list[tuple[torch.Tensor, torch.Tensor]] = []
         with swap_parameters(self.model, params, buffers, preserve_graph=False) as ps:
             grads_detached, _ = _accumulate_grads(
-                self.model, ps, inputs, grad_accum_steps, create_graph=False
+                self.model,
+                ps,
+                inputs,
+                grad_accum_steps,
+                create_graph=False,
+                rng_snapshots=rng_snapshots,
             )
         grads_var = {
             k: v.detach().clone().requires_grad_(True)
@@ -650,10 +686,13 @@ class Trainer:
 
         # Stage B: per micro-batch through-gradient VJP, one graph at a time.
         total_denom = _loss_denom(inputs)
-        for mb in _split_batch(inputs, grad_accum_steps):
+        micro = _split_batch(inputs, grad_accum_steps)
+        assert len(micro) == len(rng_snapshots)
+        for mb, rng in zip(micro, rng_snapshots):
             with swap_parameters(
                 self.model, params, buffers, preserve_graph=True
             ) as ps:
+                _rng_restore(rng)
                 outputs = self.model(**mb)
                 loss_i = outputs.loss if hasattr(outputs, "loss") else outputs
                 coef = _loss_denom(mb) / total_denom
@@ -685,6 +724,12 @@ class Trainer:
                 )
                 if dw is not None:
                     weight_cot = weight_cot + dw
+
+        if dist.is_initialized() and not fsdp:
+            # Same 1/world_size correction as the single-shot path in
+            # `backward`: a document only contributes to 1/world_size of the
+            # averaged gradient the all-reduce produces.
+            weight_cot = weight_cot / dist.get_world_size()
 
         param_grads = {k: param_cot[i] for i, k in enumerate(p_keys)}
         return BackwardState(param_grads, opt_cot, weight_cot + w_grads)
@@ -753,6 +798,8 @@ class Trainer:
                 wrapped with FSDP.
             max_grad_norm: Clip gradients to this global norm before each optimizer
                 step. Passed through to `Trainer.step`.
+            grad_accum_steps: Number of micro-batches to accumulate gradients over
+                per optimizer step. Passed through to `Trainer.step`.
 
         Returns:
             The final trainer state after training.
