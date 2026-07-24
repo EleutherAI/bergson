@@ -60,13 +60,13 @@ def rng_restore(snapshot: tuple[torch.Tensor, torch.Tensor]) -> None:
 def loss_denom(batch: dict) -> float:
     """The loss denominator ``weighted_causal_lm_ce`` uses for ``batch``.
 
-    Weighted CE normalizes by the number of valid (non-ignored) label tokens
-    (``valid_mask[:, :-1].sum()``), falling back to ``T-1`` when no mask is
-    present. Micro-batch accumulation must rescale by this to stay exact.
+    Weighted CE normalizes by ``shift_loss_mask.sum()`` — the number of valid
+    label tokens — falling back to ``T-1`` when no mask is present.
+    Micro-batch accumulation must rescale by this to stay exact.
     """
-    vm = batch.get("valid_mask")
-    if vm is not None:
-        return float(vm[:, :-1].sum())
+    mask = batch.get("shift_loss_mask")
+    if mask is not None:
+        return float(mask.sum())
     return float(batch["input_ids"].shape[1] - 1)
 
 
@@ -93,6 +93,11 @@ def split_batch(inputs: dict, n: int) -> list[dict]:
     return micro
 
 
+def nonempty_microbatches(inputs: dict, n: int) -> list[dict]:
+    """:func:`split_batch`, dropping micro-batches with no valid label tokens."""
+    return [mb for mb in split_batch(inputs, n) if loss_denom(mb) > 0]
+
+
 def accumulate_grads(
     model,
     params,
@@ -113,9 +118,13 @@ def accumulate_grads(
     so a later pass can replay the same draws (see :func:`microbatch_step_vjp`).
     """
     total_denom = loss_denom(inputs)
+    assert total_denom > 0, "Batch has no valid label tokens"
     grads: dict | None = None
     last_loss = 0.0
-    for mb in split_batch(inputs, grad_accum_steps):
+    # Skip micro-batches with no valid tokens: they contribute zero gradient,
+    # and their loss is 0/0. Filtering is deterministic, so the VJP replay
+    # (which filters identically) stays aligned with the recorded snapshots.
+    for mb in nonempty_microbatches(inputs, grad_accum_steps):
         if rng_snapshots is not None:
             rng_snapshots.append(rng_snapshot())
         outputs = model(**mb)
@@ -236,7 +245,7 @@ def microbatch_step_vjp(
 
     # Stage B: per micro-batch through-gradient VJP, one graph at a time.
     total_denom = loss_denom(inputs)
-    micro = split_batch(inputs, grad_accum_steps)
+    micro = nonempty_microbatches(inputs, grad_accum_steps)
     assert len(micro) == len(rng_snapshots)
     for mb, rng in zip(micro, rng_snapshots):
         with swap_parameters(model, params, buffers, preserve_graph=True) as ps:

@@ -10,6 +10,7 @@ from transformers import AutoConfig, AutoModelForCausalLM
 
 from bergson.distributed import grad_tree
 from bergson.magic import BackwardState, DataStream, Trainer
+from bergson.magic.grad_accum import accumulate_grads
 from bergson.utils.math import weighted_causal_lm_ce
 
 MODEL_CONFIGS = [
@@ -1122,3 +1123,51 @@ def test_step_replay_is_deterministic_under_cuda_dropout(dataset):
             p,
             msg=lambda m, k=k: f"replayed step diverged for {k}\n{m}",
         )
+
+
+@pytest.mark.parametrize(
+    "valid_lens",
+    [
+        [31, 4, 27, 2, 31, 9, 31, 5],  # uneven valid-token counts
+        [31, 4, 27, 2, 0, 0, 0, 0],  # second micro-batch entirely empty
+    ],
+)
+def test_accumulate_grads_matches_full_batch(valid_lens):
+    """Micro-batch accumulation must reproduce the full-batch gradient.
+
+    weighted_causal_lm_ce normalizes by the batch's valid-token count
+    (``shift_loss_mask.sum()``), so each micro-gradient must be rescaled by
+    its share of it — a bug there is invisible to tests that compare the two
+    accumulation code paths against each other. Uneven masks make a wrong
+    rescale show up as O(1) gradient error; the all-empty case checks that
+    zero-denominator micro-batches are skipped instead of poisoning the sum
+    with 0/0 NaNs.
+    """
+    torch.manual_seed(0)
+    config = AutoConfig.from_pretrained("EleutherAI/pythia-14m")
+    model = AutoModelForCausalLM.from_config(config).double().eval()
+    model.loss_function = weighted_causal_lm_ce
+    params = {k: v for k, v in model.named_parameters() if v.requires_grad}
+
+    B, T = len(valid_lens), 32
+    input_ids = torch.randint(0, config.vocab_size, (B, T))
+    labels = input_ids.clone()
+    for i, n in enumerate(valid_lens):
+        labels[i, n + 1 :] = -100
+    shift_loss_mask = torch.zeros(B, T, dtype=torch.bool)
+    shift_loss_mask[:, :-1] = labels[:, 1:] != -100
+    batch = {
+        "input_ids": input_ids,
+        "labels": labels,
+        "shift_loss_mask": shift_loss_mask,
+        "example_weight": torch.ones(B, dtype=torch.float64),
+    }
+
+    g_full = grad_tree(model(**batch).loss, params, create_graph=False)
+    g_accum, _ = accumulate_grads(model, params, batch, 2, create_graph=False)
+
+    num = sum((g_accum[k] - g_full[k]).pow(2).sum() for k in g_full).sqrt()
+    den = sum(g_full[k].pow(2).sum() for k in g_full).sqrt()
+    # The loss casts logits to fp32 internally, so fp32-level associativity
+    # noise is the floor even for a float64 model.
+    assert num / den < 1e-6, f"accumulated gradient off by {num / den:.3e}"
