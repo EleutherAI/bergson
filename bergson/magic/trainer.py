@@ -22,13 +22,20 @@ from tqdm.auto import tqdm
 
 from ..config.config import TrainingConfig
 from ..data import sorted_checkpoints
-from ..distributed import grad_tree
 from ..utils.utils import get_device
 from ..utils.worker_utils import setup_model_and_peft
 from .config import MagicSaveMode
 from .data_stream import DataStream
 from .dtensor_patch import apply_dtensor_patch
 from .fsdp import shallow_copy, simple_fsdp
+from .grad_accum import (
+    accumulate_grads,
+    maybe_get_cuda_rng_state,
+    maybe_set_cuda_rng_state,
+    microbatch_step_vjp,
+    rng_restore,
+    rng_snapshot,
+)
 from .optim import muon
 from .rtl_tqdm import RtlTqdm
 from .swap import swap_parameters
@@ -65,33 +72,6 @@ class _ReplicatedAllReduceSum(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output: torch.Tensor):  # type: ignore[override]
         return _ReplicatedAllReduceSum.apply(grad_output, ctx.group), None
-
-
-def _maybe_get_cuda_rng_state() -> torch.Tensor:
-    """Get the CUDA RNG state, or a zeros placeholder when CUDA is uninitialized."""
-    if torch.cuda.is_initialized():
-        return torch.cuda.random.get_rng_state()
-
-    # This corresponds to a manual seed of 0
-    return torch.zeros(16, dtype=torch.uint8)
-
-
-def _maybe_set_cuda_rng_state(rng_state: torch.Tensor) -> None:
-    """Restore a CUDA RNG state, or no-op when CUDA is uninitialized."""
-    if torch.cuda.is_initialized():
-        torch.cuda.set_rng_state(rng_state)
-
-
-def _rng_snapshot() -> tuple[torch.Tensor, torch.Tensor]:
-    """Capture both generators, for rewinding with :func:`_rng_restore`."""
-    return torch.random.get_rng_state(), _maybe_get_cuda_rng_state()
-
-
-def _rng_restore(snapshot: tuple[torch.Tensor, torch.Tensor]) -> None:
-    """Rewind both generators to a :func:`_rng_snapshot`."""
-    cpu, cuda = snapshot
-    torch.random.set_rng_state(cpu)
-    _maybe_set_cuda_rng_state(cuda)
 
 
 @dataclass
@@ -172,7 +152,7 @@ class TrainerState:
     # Non-differentiable state
     buffers: dict[str, torch.Tensor]
     batch_index: int = 0
-    cuda_rng_state: torch.Tensor = field(default_factory=_maybe_get_cuda_rng_state)
+    cuda_rng_state: torch.Tensor = field(default_factory=maybe_get_cuda_rng_state)
     cpu_rng_state: torch.Tensor = field(default_factory=torch.random.get_rng_state)
 
     def copy_(self, other: "TrainerState"):
@@ -292,14 +272,14 @@ class TrainerState:
 
     @contextmanager
     def activate(self, model: nn.Module):
-        ambient = _rng_snapshot()
-        _rng_restore((self.cpu_rng_state, self.cuda_rng_state))
+        ambient = rng_snapshot()
+        rng_restore((self.cpu_rng_state, self.cuda_rng_state))
 
         try:
             with swap_parameters(model, self.params, self.buffers, strict=True) as p:
                 yield p
         finally:
-            _rng_restore(ambient)
+            rng_restore(ambient)
 
     def state_dict(self) -> dict:
         # Convert to dict manually because dataclasses.asdict does a deep copy
@@ -327,83 +307,6 @@ class TrainerState:
             t.numel() * t.element_size() if isinstance(t, torch.Tensor) else 0
             for t in state.values()
         )
-
-
-def _loss_denom(batch: dict) -> float:
-    """The loss denominator ``weighted_causal_lm_ce`` uses for ``batch``.
-
-    Weighted CE normalizes by the number of valid (non-ignored) label tokens
-    (``valid_mask[:, :-1].sum()``), falling back to ``T-1`` when no mask is
-    present. Micro-batch accumulation must rescale by this to stay exact.
-    """
-    vm = batch.get("valid_mask")
-    if vm is not None:
-        return float(vm[:, :-1].sum())
-    return float(batch["input_ids"].shape[1] - 1)
-
-
-def _split_batch(inputs: dict, n: int) -> list[dict]:
-    """Split a collated batch dict into up to ``n`` micro-batches along dim 0.
-    Tensors whose leading dim equals the batch size are sliced; everything
-    else is shared by reference."""
-    tensors = [
-        v for v in inputs.values() if isinstance(v, torch.Tensor) and v.ndim >= 1
-    ]
-    batch_size = tensors[0].shape[0]
-    n = max(1, min(n, batch_size))
-    sizes = [batch_size // n + (1 if i < batch_size % n else 0) for i in range(n)]
-    micro, off = [], 0
-    for s in sizes:
-        mb = {}
-        for k, v in inputs.items():
-            if isinstance(v, torch.Tensor) and v.ndim >= 1 and v.shape[0] == batch_size:
-                mb[k] = v[off : off + s]
-            else:
-                mb[k] = v
-        micro.append(mb)
-        off += s
-    return micro
-
-
-def _accumulate_grads(
-    model,
-    params,
-    inputs: dict,
-    grad_accum_steps: int,
-    *,
-    create_graph: bool,
-    rng_snapshots: list | None = None,
-) -> tuple[dict, float]:
-    """Sum normalized per-micro-batch gradients into the full-batch gradient.
-
-    Each micro-batch's loss is normalized by its own token count; scaling by
-    ``denom_i / D`` (D = full-batch token count) makes the sum identical to the
-    full-batch gradient up to float associativity. Returns ``(grads, loss)``.
-
-    The caller seeds the RNG; the micro-batch forwards draw from it in order.
-    Pass ``rng_snapshots`` to record each micro-batch's pre-forward RNG state
-    so a later pass can replay the same draws (see ``Trainer.metagrad_step``).
-    """
-    total_denom = _loss_denom(inputs)
-    grads: dict | None = None
-    last_loss = 0.0
-    for mb in _split_batch(inputs, grad_accum_steps):
-        if rng_snapshots is not None:
-            rng_snapshots.append(_rng_snapshot())
-        outputs = model(**mb)
-        loss_i = outputs.loss if hasattr(outputs, "loss") else outputs
-        assert isinstance(loss_i, torch.Tensor), "Loss must be a Tensor"
-        coef = _loss_denom(mb) / total_denom
-        last_loss += float(loss_i.detach()) * coef
-        g_i = grad_tree(loss_i * coef, params, create_graph=create_graph)
-        if grads is None:
-            grads = {k: v for k, v in g_i.items()}
-        else:
-            for k in grads:
-                if g_i[k] is not None:
-                    grads[k] = grads[k] + g_i[k] if grads[k] is not None else g_i[k]
-    assert grads is not None
-    return grads, last_loss
 
 
 class Trainer:
@@ -486,7 +389,7 @@ class Trainer:
                 backward replay stays faithful to whichever the forward ran.
         """
         torch.random.set_rng_state(state.cpu_rng_state)
-        _maybe_set_cuda_rng_state(state.cuda_rng_state)
+        maybe_set_cuda_rng_state(state.cuda_rng_state)
 
         # Trainable params live on the meta device and are swapped in from state.
         # Frozen params remain on-device in the model and are left untouched.
@@ -496,26 +399,12 @@ class Trainer:
             state.buffers,
             preserve_graph=trace,
         ) as params:
-            if grad_accum_steps <= 1:
-                outputs = self.model(**inputs)
-
-                # Two output types are supported: HuggingFace (a dict/dataclass
-                # with a "loss" field) and "raw loss" (a scalar loss Tensor).
-                if hasattr(outputs, "loss"):
-                    loss = outputs.loss
-                else:
-                    loss = outputs
-
-                assert isinstance(loss, torch.Tensor), "Loss must be a Tensor"
-                self._last_loss = loss.detach().item()
-                grads = grad_tree(loss, params, create_graph=trace)
-            else:
-                # With ``trace`` every micro-graph would stay alive for the
-                # outer VJP, so the metagradient backward uses ``metagrad_step``
-                # instead, which frees them one at a time.
-                grads, self._last_loss = _accumulate_grads(
-                    self.model, params, inputs, grad_accum_steps, create_graph=trace
-                )
+            # A single-shot step is just the one-micro-batch case. Tracing with
+            # grad_accum_steps > 1 keeps every micro-graph alive, so the
+            # metagradient backward uses ``metagrad_step`` instead.
+            grads, self._last_loss = accumulate_grads(
+                self.model, params, inputs, grad_accum_steps, create_graph=trace
+            )
 
         return self._apply_update(
             state,
@@ -602,137 +491,26 @@ class Trainer:
         """Micro-batched VJP through one training step (metagradient replay).
 
         Equivalent to the single-shot ``step(trace=True)`` + ``autograd.grad``
-        in :meth:`backward`, with peak memory bounded to one micro-batch.
+        in :meth:`backward`, with peak memory bounded to one micro-batch — see
+        :func:`bergson.magic.grad_accum.microbatch_step_vjp` for how.
         ``fwd_state`` must be detached and marked ``requires_grad``;
         ``data_weights`` must require grad.
-
-        Two stages, exploiting ``grads = Σ_i c_i · grad_tree(L_i)``:
-          A. VJP from the next state's cotangents through only the
-             all-reduce/clip/update graph, yielding a cotangent ``g_bar`` on
-             the combined gradient plus the direct-path cotangents on the
-             incoming params/opt-state.
-          B. Per micro-batch, recompute its gradient graph, VJP it against
-             ``g_bar``, and free it before the next micro-batch.
-
-        Both stages run the model, so both rewind the RNG the way :meth:`step`
-        does — otherwise the stages see different dropout masks and the
-        metagradient is silently wrong.
         """
-        params = fwd_state.params
-        buffers = fwd_state.buffers
-        flat_i = fwd_state.differentiable_tensors()
-        p_keys = list(bwd_state.param_grads.keys())
-        p_grads = list(bwd_state.param_grads.values())
-        o_grads = bwd_state.opt_grads
-        w_grads = bwd_state.weight_grads
-        n_p = len(p_keys)
-        n_i = len(flat_i)
-
-        # Stage 0: combined gradient values (no graph) to drive the update.
-        # Rewind as in Trainer.step and record where each micro-batch started.
-        torch.random.set_rng_state(fwd_state.cpu_rng_state)
-        _maybe_set_cuda_rng_state(fwd_state.cuda_rng_state)
-        rng_snapshots: list[tuple[torch.Tensor, torch.Tensor]] = []
-        with swap_parameters(self.model, params, buffers, preserve_graph=False) as ps:
-            grads_detached, _ = _accumulate_grads(
-                self.model,
-                ps,
-                inputs,
-                grad_accum_steps,
-                create_graph=False,
-                rng_snapshots=rng_snapshots,
-            )
-        grads_var = {
-            k: v.detach().clone().requires_grad_(True)
-            for k, v in grads_detached.items()
-        }
-
-        # Stage A: VJP through the update only -> g_bar (on combined grad) and
-        # the direct-path cotangents on the incoming params/opt-state.
-        state_fa = self._apply_update(
+        param_grads, opt_grads, weight_cot = microbatch_step_vjp(
+            self.model,
+            self._apply_update,
             fwd_state,
-            grads_var,
-            inplace=False,
-            trace=True,
+            inputs,
+            bwd_state.param_grads,
+            bwd_state.opt_grads,
+            data_weights,
             fsdp=fsdp,
             max_grad_norm=max_grad_norm,
+            grad_accum_steps=grad_accum_steps,
         )
-        flat_fa = state_fa.differentiable_tensors()
-        res_a = list(
-            torch.autograd.grad(
-                flat_fa,
-                flat_i + list(grads_var.values()),
-                grad_outputs=p_grads + o_grads,
-                allow_unused=True,
-            )
+        return BackwardState(
+            param_grads, opt_grads, weight_cot + bwd_state.weight_grads
         )
-        direct_i, g_bar_list = res_a[:n_i], res_a[n_i:]
-        g_bar = {
-            k: (g if g is not None else torch.zeros_like(grads_var[k]))
-            for k, g in zip(grads_var.keys(), g_bar_list)
-        }
-
-        def _or_zero(c, ref):
-            return c if c is not None else torch.zeros_like(ref)
-
-        param_cot = [_or_zero(direct_i[i], flat_i[i]).clone() for i in range(n_p)]
-        opt_cot = [_or_zero(direct_i[i], flat_i[i]) for i in range(n_p, n_i)]
-
-        # ``example_weight`` is one indexing of ``data_weights`` shared by all
-        # micro-batch slices, so accumulate cotangents on it and map them back
-        # to ``data_weights`` once after the loop.
-        ew = inputs.get("example_weight")
-        ew_cot = torch.zeros_like(ew) if ew is not None else None
-
-        # Stage B: per micro-batch through-gradient VJP, one graph at a time.
-        total_denom = _loss_denom(inputs)
-        micro = _split_batch(inputs, grad_accum_steps)
-        assert len(micro) == len(rng_snapshots)
-        for mb, rng in zip(micro, rng_snapshots):
-            with swap_parameters(
-                self.model, params, buffers, preserve_graph=True
-            ) as ps:
-                _rng_restore(rng)
-                outputs = self.model(**mb)
-                loss_i = outputs.loss if hasattr(outputs, "loss") else outputs
-                coef = _loss_denom(mb) / total_denom
-                g_i = grad_tree(loss_i * coef, ps, create_graph=True)
-                keys = list(g_i.keys())
-                targets = [ps[k] for k in keys]
-                if ew is not None:
-                    targets = targets + [ew]
-                contrib = torch.autograd.grad(
-                    [g_i[k] for k in keys],
-                    targets,
-                    grad_outputs=[g_bar[k] for k in keys],
-                    allow_unused=True,
-                )
-            for j, k in enumerate(keys):
-                if contrib[j] is not None:
-                    param_cot[p_keys.index(k)] = param_cot[p_keys.index(k)] + contrib[j]
-            if ew_cot is not None and contrib[-1] is not None:
-                ew_cot = ew_cot + contrib[-1]
-            del g_i, contrib
-
-        weight_cot = torch.zeros_like(data_weights)
-        if ew is not None and ew_cot is not None and float(ew_cot.abs().sum()) > 0:
-            if ew is data_weights:
-                weight_cot = weight_cot + ew_cot
-            else:
-                (dw,) = torch.autograd.grad(
-                    ew, data_weights, grad_outputs=ew_cot, allow_unused=True
-                )
-                if dw is not None:
-                    weight_cot = weight_cot + dw
-
-        if dist.is_initialized() and not fsdp:
-            # Same 1/world_size correction as the single-shot path in
-            # `backward`: a document only contributes to 1/world_size of the
-            # averaged gradient the all-reduce produces.
-            weight_cot = weight_cot / dist.get_world_size()
-
-        param_grads = {k: param_cot[i] for i, k in enumerate(p_keys)}
-        return BackwardState(param_grads, opt_cot, weight_cot + w_grads)
 
     def resume(self, state: TrainerState, save_dir: str) -> TrainerState:
         """Resume training from the most recent checkpoint in `save_dir`.
@@ -1084,6 +862,8 @@ class Trainer:
             fwd_state.requires_grad = True
             data.requires_grad = True
 
+            # Two equivalent VJP paths that must stay in sync: micro-batched
+            # (memory-bounded) when accumulating, single-shot traced otherwise.
             if grad_accum_steps > 1:
                 bwd_state = self.metagrad_step(
                     fwd_state,
