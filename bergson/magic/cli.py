@@ -234,23 +234,6 @@ def worker(
     torch.cuda.manual_seed_all(run_cfg.seed)
     trainer, fwd_state, model = prepare_trainer(run_cfg, rank, schedule)
 
-    # A metagradient runs when there is a query and no precomputed scores
-    # (bank retrains pass no query and return before the backward below).
-    do_metagradient = query_dataset is not None and not score_path
-    if do_metagradient and getattr(run_cfg, "train_mode", False):
-        raise ValueError(
-            "train_mode=True is incompatible with the MAGIC metagradient: the "
-            "backward-through-training replay needs dropout-free forwards. Unset "
-            "train_mode, or run without a query (bank retrain) / with EK-FAC or "
-            "SOURCE if you want to train the base with dropout."
-        )
-    if do_metagradient and global_rank == 0:
-        print(
-            "MAGIC metagradient run: training the base in eval() mode (dropout "
-            "disabled), required for a correct backward-through-training. Set "
-            "train_mode=True to train with dropout on non-metagradient runs."
-        )
-
     ckpts_path = os.path.join(run_cfg.run_path, "checkpoints")
     resume = run_cfg.resume
 

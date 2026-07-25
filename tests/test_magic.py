@@ -656,13 +656,16 @@ def _multi_step_stream(n_steps: int, device: str = "cpu") -> DataStream:
     return DataStream(ds, batch_size=1, device=device)
 
 
-def _fresh_trainer(seed: int = 42):
+def _fresh_trainer(seed: int = 42, dropout: float = 0.0):
     """Build a fresh model/trainer/state, as a new process would."""
     torch.manual_seed(seed)
     config = AutoConfig.from_pretrained(TINY_MODEL)
+    if dropout:
+        config.resid_pdrop = dropout
     model = AutoModelForCausalLM.from_config(
         config, torch_dtype=torch.float32, attn_implementation="eager"
     )
+    model.train() if dropout else model.eval()
     model.loss_function = weighted_causal_lm_ce
     model.requires_grad_(True)
 
@@ -947,8 +950,7 @@ def test_step_reproduces_cuda_dropout_masks():
 
 
 def test_prepare_trainer_respects_train_mode(tmp_path):
-    """train_mode drives the model's train/eval mode; default is eval (the
-    long-standing dropout-off behavior)."""
+    """train_mode drives the model's train/eval mode; default is eval."""
     from bergson.magic.config import MagicConfig
     from bergson.magic.trainer import prepare_trainer
 
@@ -965,29 +967,37 @@ def test_prepare_trainer_respects_train_mode(tmp_path):
     assert build(True) is True
 
 
-def test_backward_rejects_active_dropout(tmp_path):
-    """The metagradient backward refuses active dropout: masks in the replayed
-    forward can't be matched to the original, so it would be silently wrong.
-    Dropout-free train mode (all rates 0) is allowed."""
-    torch.manual_seed(0)
-    config = AutoConfig.from_pretrained("EleutherAI/pythia-14m")
-    config.hidden_dropout = 0.5  # make the forward stochastic
-    model = AutoModelForCausalLM.from_config(
-        config, torch_dtype=torch.float32, attn_implementation="eager"
+def test_magic_backward_matches_across_save_modes_with_dropout(monkeypatch):
+    """Sparse checkpointing must not change MAGIC scores when dropout is active.
+
+    Each save mode rematerializes a different number of steps before the traced
+    re-do, so if the replay drew fresh dropout masks instead of restoring each
+    step's saved RNG, the schedules would disagree.
+    """
+    import types
+
+    from bergson.magic import trainer as trainer_mod
+
+    monkeypatch.setattr(
+        trainer_mod.psutil,
+        "virtual_memory",
+        lambda: types.SimpleNamespace(available=1 << 60),
     )
-    model.requires_grad_(True)
-    trainer, state = Trainer.initialize(model, torchopt.adamw(1e-4))
 
-    trainer.model.train()  # dropout now active
-    with pytest.raises(ValueError, match="dropout"):
-        # The guard runs before any checkpoint/data access.
-        trainer.backward(str(tmp_path), None, None, state)
+    scores = {}
+    for mode in ("all", "log"):
+        trainer, fwd_state, model = _fresh_trainer(dropout=0.5)
+        assert any(
+            isinstance(m, torch.nn.Dropout) and m.training and m.p > 0
+            for m in model.modules()
+        ), "dropout is not active; test is degenerate"
+        stream = _multi_step_stream(9)
 
-    # Dropout-free train mode is fine: the guard does not fire (it fails later
-    # on the empty checkpoint dir instead, not with the dropout message).
-    for m in trainer.model.modules():
-        if isinstance(m, torch.nn.Dropout):
-            m.p = 0.0
-    with pytest.raises(Exception) as exc:
-        trainer.backward(str(tmp_path), None, None, state)
-    assert "dropout" not in str(exc.value)
+        with tempfile.TemporaryDirectory() as ckpt_dir:
+            fwd_state = trainer.train(
+                fwd_state, stream, inplace=True, save_dir=ckpt_dir, save_mode=mode
+            )
+            scores[mode] = _magic_scores(trainer, model, fwd_state, stream, ckpt_dir)
+
+    assert scores["all"].abs().sum() > 0, "scores are all zero; test is degenerate"
+    torch.testing.assert_close(scores["log"], scores["all"], atol=1e-12, rtol=1e-6)

@@ -350,15 +350,11 @@ class TrainingConfig(AttributionConfig, Serializable):
     optimizer that can reduce memory usage and speed up training."""
 
     train_mode: bool = False
-    """Run the model in ``.train()`` mode during training so its configured
-    dropout (and any other train-mode layers) is active — the standard HF
-    training behavior. Default ``False`` keeps the model in ``.eval()``
-    (dropout disabled), which is required for the MAGIC metagradient and is
-    what bergson has always done. Set the dropout *rate* via ``model_kwargs``
-    (e.g. ``resid_pdrop=0.1``); this flag only controls the mode. Incompatible
-    with the MAGIC metagradient (the backward-through-training replay needs
-    dropout-free forwards) — use it for leave-k-out bank retrains or the base
-    model of an EK-FAC/SOURCE run, to match an external training recipe."""
+    """Train in ``.train()`` mode so the model's configured dropout is active,
+    as HF does; ``False`` keeps it in ``.eval()``. Sets the mode only — the
+    dropout *rate* comes from ``model_kwargs`` (e.g. ``resid_pdrop=0.1``).
+    MAGIC's backward replays each step from that step's saved RNG state, so
+    dropout masks are reproduced and the metagradient stays exact."""
 
     save_optimizer_state: bool = False
     """After training, export the optimizer's second moments to
