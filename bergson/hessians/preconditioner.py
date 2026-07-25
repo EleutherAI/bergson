@@ -450,7 +450,10 @@ class DiagonalFactoredPreconditioner:
                 continue
             o = self.eigen_g[name].shape[1]
             i = self.eigen_a[name].shape[1]
-            g = flat.to(self.lambdas[name].device, torch.float32).view(-1, o, i)
+            # Copy rather than alias: the caller's gradients may be a read-only
+            # mmap, and the scale below writes through. `.to` is a no-op when
+            # they are already float32 on this device, as on a CPU-only run.
+            g = flat.to(self.lambdas[name].device, torch.float32).clone().view(-1, o, i)
             self.shard_computer.scale_rows_in_place(g, self._multiplier(name))
             self.logger.debug("%s: scaled elementwise by f(p * diag(H))", name)
             out[name] = g.reshape(flat.shape[0], -1).to(flat.dtype)

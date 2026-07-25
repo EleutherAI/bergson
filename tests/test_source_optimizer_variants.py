@@ -115,7 +115,11 @@ def test_diagonal_preconditioner_matches_dense_reference(tmp_path, fn_kind):
     )
 
     grads = {MODULE: torch.randn(3, OUT_DIM * IN_DIM)}
-    out = preconditioner.apply({k: v.clone() for k, v in grads.items()})[MODULE]
+    before = grads[MODULE].clone()
+    out = preconditioner.apply(grads)[MODULE]
+    # apply() must not write through to the caller's tensor: compute_ivhp_sharded
+    # hands it gradients aliasing a read-only mmap.
+    torch.testing.assert_close(grads[MODULE], before)
 
     sigma = precond * _reference_diag_hessian(q_a, q_g, lam)
     if fn_kind == "f_backward":
