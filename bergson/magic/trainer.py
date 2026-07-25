@@ -67,21 +67,6 @@ class _ReplicatedAllReduceSum(torch.autograd.Function):
         return _ReplicatedAllReduceSum.apply(grad_output, ctx.group), None
 
 
-def _maybe_get_cuda_rng_state() -> torch.Tensor:
-    """ "Get the CUDA RNG state if CUDA is initialized, otherwise return zeros."""
-    if torch.cuda.is_initialized():
-        return torch.cuda.random.get_rng_state()
-
-    # This corresponds to a manual seed of 0
-    return torch.zeros(16, dtype=torch.uint8)
-
-
-def _maybe_set_cuda_rng_state(rng_state: torch.Tensor) -> None:
-    """Restore a CUDA RNG state, or no-op when CUDA is uninitialized."""
-    if torch.cuda.is_initialized():
-        torch.cuda.set_rng_state(rng_state)
-
-
 @dataclass
 class SaveFuture:
     """Wraps a DCP async_save future, destroying the gloo process group in result().
@@ -160,7 +145,7 @@ class TrainerState:
     # Non-differentiable state
     buffers: dict[str, torch.Tensor]
     batch_index: int = 0
-    cuda_rng_state: torch.Tensor = field(default_factory=_maybe_get_cuda_rng_state)
+    cuda_rng_state: torch.Tensor = field(default_factory=torch.cuda.get_rng_state)
     cpu_rng_state: torch.Tensor = field(default_factory=torch.random.get_rng_state)
 
     def copy_(self, other: "TrainerState"):
@@ -281,16 +266,16 @@ class TrainerState:
     @contextmanager
     def activate(self, model: nn.Module):
         cpu_state = torch.random.get_rng_state()
-        cuda_state = _maybe_get_cuda_rng_state()
+        cuda_state = torch.cuda.get_rng_state()
         torch.random.set_rng_state(self.cpu_rng_state)
-        _maybe_set_cuda_rng_state(self.cuda_rng_state)
+        torch.cuda.set_rng_state(self.cuda_rng_state)
 
         try:
             with swap_parameters(model, self.params, self.buffers, strict=True) as p:
                 yield p
         finally:
             torch.random.set_rng_state(cpu_state)
-            _maybe_set_cuda_rng_state(cuda_state)
+            torch.cuda.set_rng_state(cuda_state)
 
     def state_dict(self) -> dict:
         # Convert to dict manually because dataclasses.asdict does a deep copy
@@ -395,7 +380,7 @@ class Trainer:
         """
         torch.random.set_rng_state(state.cpu_rng_state)
         # Also restore CUDA RNG so dropout replays identically in the backward.
-        _maybe_set_cuda_rng_state(state.cuda_rng_state)
+        torch.cuda.set_rng_state(state.cuda_rng_state)
 
         # Trainable params live on the meta device and are swapped in from state.
         # Frozen params remain on-device in the model and are left untouched.
