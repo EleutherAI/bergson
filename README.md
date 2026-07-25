@@ -1,22 +1,23 @@
 # Bergson
-Bergson is a python library which provides scalable, state-of-the-art data attribution methods for large language models, including  [EK-FAC](https://arxiv.org/abs/2308.03296) (2023), [TrackStar](https://arxiv.org/abs/2410.17413v3) (2024), and [Magic](https://arxiv.org/abs/2504.16430) (2025), alongside simple baselines such as gradient cosine similarity.
+Bergson is a python library which provides scalable, state-of-the-art data attribution methods for large language models. We support [EK-FAC](https://arxiv.org/abs/2308.03296) (2023), [TrackStar](https://arxiv.org/abs/2410.17413v3) (2024), [SOURCE](https://arxiv.org/abs/2405.12186), [MAGIC](https://arxiv.org/abs/2504.16430) (2025), and simple baselines such as gradient cosine similarity.
 
-Data attribution methods estimate the effect on a behavior of interest of removing data points from a model's training corpus. Exactly computing these effects for a corpus of N items requires 2**N retraining runs. Our most costly and powerful method, MAGIC, uses compute equivalent to 3-5 training runs to produce per-token or per-sequence scores that correlate with the effects of leave-k-out retraining at ρ>0.9 in well-behaved settings. Faster methods like EK-FAC and TrackStar use compute equivalent to ~1 training run (with more modest VRAM usage), but correlate less with leave-k-out retraining (ρ\~=0.3 with careful hyperparameter tuning).
+Data attribution methods estimate the effect on a behavior of interest of removing data points from a model's training corpus. Exactly computing these effects for a corpus of N items requires 2**N retraining runs. Our most costly and powerful method, MAGIC, uses compute equivalent to 3-5 training runs to produce per-token or per-sequence scores that correlate with the effects of leave-k-out retraining at ρ>0.9 in well-behaved settings. More efficient methods like EK-FAC and TrackStar use compute equivalent to ~1-2 training runs (with more modest VRAM usage), but correlate less with leave-k-out retraining (ρ\~=0.1 to 0.5).
+
+<!-- To get the best out of our methods, check out our tuning guide. -->
 
 ## Core features
 
-Per-token and per-sequence attribution is available everywhere. On-disk gradient stores and on-the-fly queries are supported. Almost every feature is available through both the CLI and a programmatic interface, which use a shared set of configuration dataclasses. Configuration dataclasses are always serialized to disk so commands can be reproduced in one line. To understand every available configuration option, [check out the documentation](https://bergson.readthedocs.io/en/latest/api.html#bergson.IndexConfig).
+We support per-token and per-sequence attribution, on-disk gradient stores and on-the-fly queries, and multi-GPU and multi-node runs. Every tool is available through both the CLI and programmatically, via a shared set of configuration dataclasses. Run configurations are automatically serialized for one-line reproducibility. To understand the configuration options, [check out the documentation](https://bergson.readthedocs.io/en/latest/api.html#bergson.IndexConfig).
 
 Bergson uses FSDP2 or SimpleFSDP, BitsAndBytes, and low-level performance optimizations to support large models, datasets, and clusters. Bergson integrates with HuggingFace Transformers and Datasets, and also supports on-disk datasets in a variety of formats.
 
 ### Attribute through Training
 
-Bergson provides a functional MAGIC Trainer with distributed support that enables near-optimal data attribution, by backpropagating through the training process to
-compute the gradient of a loss with respect to an implicit weighting placed on each training item. See `bergson magic`.
+Bergson provides a distributed and twice-differentiable Trainer that supports backpropagating through the training process to compute the gradient of a model behavior loss with respect to an implicit weighting placed on each training item. See `bergson magic`.
 
 Building a train‑time raw gradient store is also available through a HF Trainer callback, at a ~17% performance overhead.
 
-**Note: unrolled differentiation is highly sensitive to [metasmoothness](https://bergson.readthedocs.io/en/latest/magic.html#meta-smoothness). Untuned training hyperparameters can result in a linear datamodeling score of zero.**
+**Note: unrolled differentiation is sensitive to [metasmoothness](https://bergson.readthedocs.io/en/latest/magic.html#meta-smoothness). Untuned training hyperparameters can result in a linear datamodeling score of zero.**
 
 ### Attribute Post-Hoc
 
