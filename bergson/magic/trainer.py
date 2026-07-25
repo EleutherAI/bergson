@@ -394,7 +394,6 @@ class Trainer:
                 disables clipping.
         """
         torch.random.set_rng_state(state.cpu_rng_state)
-        # Also restore CUDA RNG so dropout replays identically in the backward.
         _maybe_set_cuda_rng_state(state.cuda_rng_state)
 
         # Trainable params live on the meta device and are swapped in from state.
