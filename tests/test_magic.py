@@ -944,3 +944,50 @@ def test_step_reproduces_cuda_dropout_masks():
     assert loss1 == loss2, (loss1, loss2)
     for k in s1.params:
         torch.testing.assert_close(s1.params[k], s2.params[k])
+
+
+def test_prepare_trainer_respects_train_mode(tmp_path):
+    """train_mode drives the model's train/eval mode; default is eval (the
+    long-standing dropout-off behavior)."""
+    from bergson.magic.config import MagicConfig
+    from bergson.magic.trainer import prepare_trainer
+
+    def build(train_mode):
+        cfg = MagicConfig(
+            run_path=str(tmp_path),
+            model="EleutherAI/pythia-14m",
+            train_mode=train_mode,
+        )
+        _, _, model = prepare_trainer(cfg, rank=0, schedule=lambda step: 1e-4)
+        return model.training
+
+    assert build(False) is False
+    assert build(True) is True
+
+
+def test_backward_rejects_active_dropout(tmp_path):
+    """The metagradient backward refuses active dropout: masks in the replayed
+    forward can't be matched to the original, so it would be silently wrong.
+    Dropout-free train mode (all rates 0) is allowed."""
+    torch.manual_seed(0)
+    config = AutoConfig.from_pretrained("EleutherAI/pythia-14m")
+    config.hidden_dropout = 0.5  # make the forward stochastic
+    model = AutoModelForCausalLM.from_config(
+        config, torch_dtype=torch.float32, attn_implementation="eager"
+    )
+    model.requires_grad_(True)
+    trainer, state = Trainer.initialize(model, torchopt.adamw(1e-4))
+
+    trainer.model.train()  # dropout now active
+    with pytest.raises(ValueError, match="dropout"):
+        # The guard runs before any checkpoint/data access.
+        trainer.backward(str(tmp_path), None, None, state)
+
+    # Dropout-free train mode is fine: the guard does not fire (it fails later
+    # on the empty checkpoint dir instead, not with the dropout message).
+    for m in trainer.model.modules():
+        if isinstance(m, torch.nn.Dropout):
+            m.p = 0.0
+    with pytest.raises(Exception) as exc:
+        trainer.backward(str(tmp_path), None, None, state)
+    assert "dropout" not in str(exc.value)

@@ -67,6 +67,16 @@ class _ReplicatedAllReduceSum(torch.autograd.Function):
         return _ReplicatedAllReduceSum.apply(grad_output, ctx.group), None
 
 
+def _has_active_dropout(model: nn.Module) -> bool:
+    """Whether any ``nn.Dropout`` in ``model`` is currently stochastic (train
+    mode with a nonzero rate). Covers the standard HF blocks (GPT-2, NeoX,
+    Phi, …), which use ``nn.Dropout`` submodules; functional dropout is not
+    detected."""
+    return any(
+        isinstance(m, nn.Dropout) and m.training and m.p > 0 for m in model.modules()
+    )
+
+
 def _maybe_get_cuda_rng_state() -> torch.Tensor:
     """Get the CUDA RNG state, or a zeros placeholder when CUDA is uninitialized."""
     if torch.cuda.is_initialized():
@@ -690,6 +700,20 @@ class Trainer:
         Returns:
             The final backward state after processing the entire trajectory.
         """
+        # The metagradient replays each step's forward to rebuild its graph.
+        # Active dropout draws fresh masks that (currently) can't be matched to
+        # the original forward, so the metagradient would be silently wrong. A
+        # model in train() mode with all dropout rates at 0 is deterministic and
+        # allowed. See TrainingConfig.train_mode.
+        if _has_active_dropout(self.model):
+            raise ValueError(
+                "The MAGIC metagradient requires dropout-free forwards, but the "
+                "model has active dropout (train() mode with a nonzero dropout "
+                "rate). Unset TrainingConfig.train_mode (or zero the dropout "
+                "rate in model_kwargs) for MAGIC runs; use train_mode only for "
+                "leave-k-out retrains or an EK-FAC/SOURCE base model."
+            )
+
         ckpts = sorted_checkpoints(ckpt_dir)
         ckpt_paths = [path for _, path in ckpts]
         preserve_paths = {ckpt_paths[-1]} if cleanup else set(ckpt_paths)
@@ -887,6 +911,15 @@ def prepare_trainer(cfg: TrainingConfig, rank: int, schedule: Callable):
         apply_fsdp=False,
     )
     model.to(get_device(rank))  # type: ignore[reportArgumentType]
+
+    # ``setup_model_and_peft`` returns the model in eval mode (the HF
+    # ``from_pretrained`` default). Only enter train mode — activating dropout
+    # per the model config — when explicitly requested; MAGIC's metagradient
+    # requires eval-mode forwards and guards against train mode in backward().
+    if getattr(cfg, "train_mode", False):
+        model.train()
+    else:
+        model.eval()
 
     if target_modules:
         # Only train the PEFT adapter parameters
