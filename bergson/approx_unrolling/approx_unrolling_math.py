@@ -146,13 +146,13 @@ def apply_eigfn_to_query(
     lr_times_steps: float,
     fn_kind: str,
     distributed: DistributedConfig,
-    precond_path: str = "",
+    preconditioner_path: str = "",
 ) -> None:
     """Apply F_segment or F_backward of one segment to a stored query gradient.
 
     ``fn_kind`` is "f_segment" or "f_backward". The segment eigenvalues are
     already checkpoint-averaged (expected eigenvalues), so the eigenfunction is
-    applied to them directly. ``precond_path`` selects the
+    applied to them directly. ``preconditioner_path`` selects the
     preconditioned-optimizer variant: the eigenfunction is evaluated on a
     diagonal approximation of P^1/2 H P^1/2 in parameter space, with
     F_segment's output additionally multiplied by P (its P^1/2 . P^1/2
@@ -162,8 +162,8 @@ def apply_eigfn_to_query(
         gradient_path=str(src_grad_path),
         run_path=str(dst_grad_path),
         ev_correction=True,
-        precond_path=precond_path,
-        precond_post_multiply=fn_kind == "f_segment",
+        preconditioner_path=preconditioner_path,
+        preconditioner_post_multiply=fn_kind == "f_segment",
     )
     launch_distributed_run(
         "apply_eigfn_to_query",
@@ -220,7 +220,7 @@ def walk_query_phase1(
             lr_times_steps=lr_times_steps_per_segment[k],
             fn_kind="f_backward",
             distributed=distributed,
-            precond_path=preconditioner_paths[k] if preconditioner_paths else "",
+            preconditioner_path=preconditioner_paths[k] if preconditioner_paths else "",
         )
         query_grad_paths[k - 1] = dst
 
@@ -257,7 +257,7 @@ def walk_query_phase2(
             lr_times_steps=lr_times_steps_per_segment[l],
             fn_kind="f_segment",
             distributed=distributed,
-            precond_path=preconditioner_paths[l] if preconditioner_paths else "",
+            preconditioner_path=preconditioner_paths[l] if preconditioner_paths else "",
         )
         query_grad_segment_paths.append(dst)
 

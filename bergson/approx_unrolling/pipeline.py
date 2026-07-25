@@ -213,18 +213,18 @@ def approx_unrolling_pipeline(
         build(query_cfg, query_preprocess_cfg)
 
     # ── Per-segment Adam preconditioners from the checkpoints' second moments
-    precond_paths: list[Path] = []
+    preconditioner_paths: list[Path] = []
     if approx_unrolling_cfg.use_adam_preconditioner:
         logger.info("Building per-segment Adam preconditioners...")
         if index_cfg.distributed._node_rank == 0:
-            precond_paths = build_segment_preconditioners(
+            preconditioner_paths = build_segment_preconditioners(
                 run_path=index_cfg.run_path,
                 method=hessian_cfg.method,
                 checkpoints=[str(c) for c in approx_unrolling_cfg.checkpoints],
                 segments=n_segments,
             )
         else:
-            precond_paths = [
+            preconditioner_paths = [
                 Path(index_cfg.run_path) / f"segment_{l}" / "preconditioner.safetensors"
                 for l in range(n_segments)
             ]
@@ -239,7 +239,7 @@ def approx_unrolling_pipeline(
     logger.info(f"  lr_times_steps per segment: {lr_times_steps_per_segment}")
     logger.info(
         f"  optimizer variant         : "
-        f"{'preconditioned (Adam/AdamW)' if precond_paths else 'sgd'}"
+        f"{'preconditioned (Adam/AdamW)' if preconditioner_paths else 'sgd'}"
         + (
             f", momentum={approx_unrolling_cfg.momentum}"
             if approx_unrolling_cfg.momentum
@@ -251,7 +251,7 @@ def approx_unrolling_pipeline(
         method=hessian_cfg.method,
         lr_times_steps_per_segment=lr_times_steps_per_segment,
         distributed=index_cfg.distributed,
-        preconditioner_paths=[str(p) for p in precond_paths] or None,
+        preconditioner_paths=[str(p) for p in preconditioner_paths] or None,
     )
 
     # ── Step 7: Phase 2 -- Get per-ckpt queries from segment queries
@@ -266,7 +266,7 @@ def approx_unrolling_pipeline(
         lr_times_steps_per_segment=lr_times_steps_per_segment,
         query_grad_paths=query_grad_paths,
         distributed=index_cfg.distributed,
-        preconditioner_paths=[str(p) for p in precond_paths] or None,
+        preconditioner_paths=[str(p) for p in preconditioner_paths] or None,
     )
 
     # ── Step 8: Phase 3 -- per-segment scoring + sum

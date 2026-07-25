@@ -3,6 +3,7 @@ momentum lr scaling and the Adam/AdamW diagonal-preconditioner eigenfunction
 path (Bae et al., 2024, Appendix C / D.2).
 """
 
+import numpy as np
 import pytest
 import torch
 from safetensors.torch import save_file
@@ -13,6 +14,8 @@ from bergson.approx_unrolling.approx_unrolling_math import (
     f_segment,
 )
 from bergson.config import ApproxUnrollingConfig
+from bergson.data import create_index, load_module_gradients
+from bergson.hessians.apply_hessian import EkfacApplicator, EkfacConfig
 from bergson.hessians.preconditioner import DiagonalFactoredPreconditioner
 
 MODULE = "lm_head"
@@ -73,9 +76,9 @@ def _write_factor_shards(tmp_path, q_a, q_g, lam, precond):
     ]:
         (tmp_path / sub).mkdir()
         save_file({MODULE: tensor}, str(tmp_path / sub / "shard_0.safetensors"))
-    precond_path = tmp_path / "precond.safetensors"
-    save_file({MODULE: precond}, str(precond_path))
-    return precond_path
+    preconditioner_path = tmp_path / "precond.safetensors"
+    save_file({MODULE: precond}, str(preconditioner_path))
+    return preconditioner_path
 
 
 def _reference_diag_hessian(q_a, q_g, lam):
@@ -98,16 +101,16 @@ def test_diagonal_preconditioner_matches_dense_reference(tmp_path, fn_kind):
     with diag(H) recovered exactly from the EKFAC factors."""
     q_a, q_g, lam = _random_factors()
     precond = torch.rand(OUT_DIM, IN_DIM) + 0.5
-    precond_path = _write_factor_shards(tmp_path, q_a, q_g, lam, precond)
+    preconditioner_path = _write_factor_shards(tmp_path, q_a, q_g, lam, precond)
 
     fn = {"f_backward": f_backward, "f_segment": f_segment}[fn_kind](LR_TIMES_STEPS)
     preconditioner = DiagonalFactoredPreconditioner.from_shards(
         tmp_path,
-        precond_path,
+        preconditioner_path,
         rank=0,
         device="cpu",
         apply_fn=fn,
-        multiply_by_precond=fn_kind == "f_segment",
+        multiply_by_preconditioner=fn_kind == "f_segment",
         ev_correction=True,
     )
 
@@ -131,15 +134,15 @@ def test_f_segment_zero_eigenvalue_limit(tmp_path):
     q_a, q_g, _ = _random_factors()
     lam = torch.zeros(OUT_DIM, IN_DIM)
     precond = torch.rand(OUT_DIM, IN_DIM) + 0.5
-    precond_path = _write_factor_shards(tmp_path, q_a, q_g, lam, precond)
+    preconditioner_path = _write_factor_shards(tmp_path, q_a, q_g, lam, precond)
 
     preconditioner = DiagonalFactoredPreconditioner.from_shards(
         tmp_path,
-        precond_path,
+        preconditioner_path,
         rank=0,
         device="cpu",
         apply_fn=f_segment(LR_TIMES_STEPS),
-        multiply_by_precond=True,
+        multiply_by_preconditioner=True,
         ev_correction=True,
     )
     grads = {MODULE: torch.ones(1, OUT_DIM * IN_DIM)}
@@ -147,14 +150,14 @@ def test_f_segment_zero_eigenvalue_limit(tmp_path):
     torch.testing.assert_close(out, LR_TIMES_STEPS * precond)
 
 
-def test_precond_shape_mismatch_raises(tmp_path):
+def test_preconditioner_shape_mismatch_raises(tmp_path):
     q_a, q_g, lam = _random_factors()
     bad_precond = torch.rand(OUT_DIM + 1, IN_DIM)
-    precond_path = _write_factor_shards(tmp_path, q_a, q_g, lam, bad_precond)
+    preconditioner_path = _write_factor_shards(tmp_path, q_a, q_g, lam, bad_precond)
     with pytest.raises(ValueError, match="shape"):
         DiagonalFactoredPreconditioner.from_shards(
             tmp_path,
-            precond_path,
+            preconditioner_path,
             rank=0,
             device="cpu",
             apply_fn=f_backward(LR_TIMES_STEPS),
@@ -162,7 +165,7 @@ def test_precond_shape_mismatch_raises(tmp_path):
         )
 
 
-def test_precond_missing_module_raises(tmp_path):
+def test_preconditioner_missing_module_raises(tmp_path):
     q_a, q_g, lam = _random_factors()
     for sub, tensor in [
         ("eigen_activation_sharded", q_a),
@@ -171,17 +174,74 @@ def test_precond_missing_module_raises(tmp_path):
     ]:
         (tmp_path / sub).mkdir()
         save_file({MODULE: tensor}, str(tmp_path / sub / "shard_0.safetensors"))
-    precond_path = tmp_path / "precond.safetensors"
-    save_file({"other_module": torch.rand(OUT_DIM, IN_DIM)}, str(precond_path))
+    preconditioner_path = tmp_path / "precond.safetensors"
+    save_file({"other_module": torch.rand(OUT_DIM, IN_DIM)}, str(preconditioner_path))
     with pytest.raises(KeyError, match=MODULE):
         DiagonalFactoredPreconditioner.from_shards(
             tmp_path,
-            precond_path,
+            preconditioner_path,
             rank=0,
             device="cpu",
             apply_fn=f_backward(LR_TIMES_STEPS),
             ev_correction=True,
         )
+
+
+@pytest.mark.parametrize("fn_kind", ["f_backward", "f_segment"])
+def test_ekfac_applicator_uses_diagonal_path(tmp_path, fn_kind):
+    """``EkfacConfig.preconditioner_path`` routes ``apply_eigfn_to_query``'s
+    applicator through the diagonal preconditioner, and
+    ``preconditioner_post_multiply`` reaches ``multiply_by_preconditioner``."""
+    q_a, q_g, lam = _random_factors()
+    precond = torch.rand(OUT_DIM, IN_DIM) + 0.5
+    preconditioner_path = _write_factor_shards(tmp_path, q_a, q_g, lam, precond)
+
+    query_path = tmp_path / "query"
+    index = create_index(
+        root=query_path,
+        num_grads=3,
+        grad_sizes={MODULE: OUT_DIM * IN_DIM},
+        dtype=np.float32,
+    )
+    index[:] = np.random.default_rng(0).standard_normal(index.shape).astype(np.float32)
+    index.flush()
+
+    cfg = EkfacConfig(
+        hessian_method_path=str(tmp_path),
+        gradient_path=str(query_path),
+        run_path=str(tmp_path / "out"),
+        ev_correction=True,
+        preconditioner_path=str(preconditioner_path),
+        preconditioner_post_multiply=fn_kind == "f_segment",
+    )
+    fn = {"f_backward": f_backward, "f_segment": f_segment}[fn_kind](LR_TIMES_STEPS)
+    EkfacApplicator(cfg, apply_fn=fn).compute_ivhp_sharded()
+    out = torch.from_numpy(
+        np.asarray(load_module_gradients(str(tmp_path / "out"))[MODULE][:])
+    )
+
+    reference = DiagonalFactoredPreconditioner.from_shards(
+        tmp_path,
+        preconditioner_path,
+        rank=0,
+        device="cpu",
+        apply_fn=fn,
+        multiply_by_preconditioner=fn_kind == "f_segment",
+        ev_correction=True,
+    ).apply({MODULE: torch.from_numpy(np.asarray(index[:])).float()})[MODULE]
+    torch.testing.assert_close(out, reference.cpu())
+
+
+def test_ekfac_applicator_preconditioner_without_apply_fn_raises(tmp_path):
+    cfg = EkfacConfig(
+        hessian_method_path=str(tmp_path),
+        gradient_path=str(tmp_path),
+        run_path=str(tmp_path / "out"),
+        ev_correction=True,
+        preconditioner_path=str(tmp_path / "precond.safetensors"),
+    )
+    with pytest.raises(ValueError, match="preconditioner_path requires apply_fn"):
+        EkfacApplicator(cfg).compute_ivhp_sharded()
 
 
 def test_build_segment_preconditioners(tmp_path):

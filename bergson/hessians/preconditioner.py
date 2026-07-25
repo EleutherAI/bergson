@@ -296,24 +296,14 @@ class FactoredPreconditioner:
 
 
 class DiagonalFactoredPreconditioner:
-    """Parameter-space diagonal eigenvalue-function preconditioner for the
-    preconditioned-optimizer (Adam/AdamW) approximate-unrolling variant
-    (Bae et al., 2024, Appendix C).
+    """Applies ``apply_fn`` elementwise in parameter space, on the diagonal of
+    ``P^1/2 H P^1/2`` for an optimizer preconditioner ``P`` — the Adam/AdamW
+    approximate-unrolling variant (Bae et al., 2024, Appendices C and D.2).
 
-    With a diagonal optimizer preconditioner ``P`` the unrolling
-    eigenfunctions act on ``M = P^1/2 H P^1/2``, whose matrix exponential is
-    intractable in the K-FAC eigenbasis, so it is evaluated with a diagonal
-    Hessian approximation (Bae et al., Appendix D.2): no eigenbasis rotation,
-    just an elementwise multiplier ``apply_fn(p * d)`` (optionally times ``p``,
-    see ``multiply_by_precond``) where ``d = diag(H)`` is recovered from the
-    EKFAC factors as ``(Q_G ∘ Q_G) Λ (Q_A ∘ Q_A)^T``.
-
-    ``apply_fn(sigma, mean)`` has the same contract as in
-    :class:`FactoredPreconditioner`: this rank's ``[c, I]`` row-shard of the
-    (here diagonal, parameter-space) eigenvalue grid plus its globally-reduced
-    mean. ``multiply_by_precond`` multiplies the result by ``p`` — the
-    ``P^1/2 F(M) P^1/2`` sandwich of the segment eigenfunction; the backward
-    eigenfunction's ``P^1/2 exp(-t M) P^-1/2`` sandwich cancels instead.
+    There is no eigenbasis rotation: the multiplier is ``apply_fn(p * d)``,
+    with ``d = diag(H) = (Q_G ∘ Q_G) Λ (Q_A ∘ Q_A)^T`` from the EKFAC factors,
+    times ``p`` when ``multiply_by_preconditioner`` is set (F_segment's
+    ``P^1/2 F(M) P^1/2`` sandwich; F_backward's cancels).
     """
 
     def __init__(
@@ -321,17 +311,17 @@ class DiagonalFactoredPreconditioner:
         eigen_a: dict[str, Tensor],
         eigen_g: dict[str, Tensor],
         lambdas: dict[str, Tensor],
-        precond: dict[str, Tensor],
+        preconditioner: dict[str, Tensor],
         *,
         apply_fn,
-        multiply_by_precond: bool = False,
+        multiply_by_preconditioner: bool = False,
     ):
         self.eigen_a = eigen_a
         self.eigen_g = eigen_g
         self.lambdas = lambdas
-        self.precond = precond
+        self.preconditioner = preconditioner
         self.apply_fn = apply_fn
-        self.multiply_by_precond = multiply_by_precond
+        self.multiply_by_preconditioner = multiply_by_preconditioner
         self.shard_computer = ShardedMul()
         self.logger = get_logger("DiagonalFactoredPreconditioner")
         self._multipliers: dict[str, Tensor] = {}
@@ -340,16 +330,16 @@ class DiagonalFactoredPreconditioner:
     def from_shards(
         cls,
         hessian_path: str | Path,
-        precond_path: str | Path,
+        preconditioner_path: str | Path,
         *,
         rank: int,
         device: str | torch.device,
         apply_fn,
-        multiply_by_precond: bool = False,
+        multiply_by_preconditioner: bool = False,
         ev_correction: bool = False,
     ) -> "DiagonalFactoredPreconditioner":
         """Load this rank's factor shards plus its row-shard of the full
-        parameter-space preconditioner grids saved at ``precond_path``."""
+        parameter-space preconditioner grids saved at ``preconditioner_path``."""
         lambda_dir = (
             "eigenvalue_correction_sharded" if ev_correction else "eigenvalue_sharded"
         )
@@ -357,17 +347,17 @@ class DiagonalFactoredPreconditioner:
         eigen_g = _load_shard(hessian_path, "eigen_gradient_sharded", rank, device)
         lambdas = _load_shard(hessian_path, lambda_dir, rank, device)
 
-        full_precond = load_file(str(precond_path), device=str(device))
+        full_grids = load_file(str(preconditioner_path), device=str(device))
         sharder = ShardedMul()
-        precond = {}
+        preconditioner = {}
         for name, q_g in eigen_g.items():
-            if name not in full_precond:
+            if name not in full_grids:
                 raise KeyError(
                     f"Module {name!r} has EKFAC factors but no preconditioner "
-                    f"grid in {precond_path}; available: "
-                    f"{sorted(full_precond.keys())}"
+                    f"grid in {preconditioner_path}; available: "
+                    f"{sorted(full_grids.keys())}"
                 )
-            p = full_precond[name].to(torch.float32)
+            p = full_grids[name].to(torch.float32)
             o, i = q_g.shape[1], eigen_a[name].shape[1]
             if p.shape != (o, i):
                 raise ValueError(
@@ -375,14 +365,14 @@ class DiagonalFactoredPreconditioner:
                     f"{tuple(p.shape)}, expected [out, in] = ({o}, {i})."
                 )
             start, end = sharder.shard_bounds(o)
-            precond[name] = p[start:end]
+            preconditioner[name] = p[start:end]
         return cls(
             eigen_a,
             eigen_g,
             lambdas,
-            precond,
+            preconditioner,
             apply_fn=apply_fn,
-            multiply_by_precond=multiply_by_precond,
+            multiply_by_preconditioner=multiply_by_preconditioner,
         )
 
     def _diag_hessian_shard(self, name: str) -> Tensor:
@@ -442,10 +432,10 @@ class DiagonalFactoredPreconditioner:
         """This rank's ``[c_o, I]`` row-shard of the elementwise multiplier,
         cached after the first batch (it is gradient-independent)."""
         if name not in self._multipliers:
-            p = self.precond[name]
+            p = self.preconditioner[name]
             sigma = p * self._diag_hessian_shard(name)
             multiplier = self.apply_fn(sigma)
-            if self.multiply_by_precond:
+            if self.multiply_by_preconditioner:
                 multiplier = multiplier * p
             self._multipliers[name] = multiplier
         return self._multipliers[name]

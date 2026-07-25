@@ -253,12 +253,17 @@ def worker(
         fsdp=run_cfg.fsdp,
         max_grad_norm=run_cfg.max_grad_norm,
         grad_accum_steps=run_cfg.grad_accum_steps,
+<<<<<<< HEAD
         optimizer_cfg=(
+=======
+        optimizer_hparams=(
+>>>>>>> 5139d31a (refactor: clarify ADAM SOURCE naming; cover the applicator wiring)
             dict(
                 betas=(run_cfg.adam_beta1, run_cfg.adam_beta2),
                 eps=run_cfg.adam_eps,
                 eps_root=run_cfg.eps_root,
             )
+<<<<<<< HEAD
             if getattr(run_cfg, "save_optimizer_state", "none") == "all"
             else None
         ),
@@ -266,13 +271,20 @@ def worker(
     # Called on every rank: FSDP moments are DTensors whose gather is a
     # collective; rank 0 writes inside.
     if getattr(run_cfg, "save_optimizer_state", "none") != "none":
+=======
+            if run_cfg.save_optimizer_state
+            else None
+        ),
+    )
+    if run_cfg.save_optimizer_state:
+>>>>>>> 5139d31a (refactor: clarify ADAM SOURCE naming; cover the applicator wiring)
         save_second_moments_as_optimizer_pt(
             model,
             fwd_state.opt_state,
             os.path.join(run_cfg.run_path, "optimizer.pt"),
         )
 
-    if getattr(run_cfg, "save_retrained_models", False) and global_rank == 0:
+    if run_cfg.save_retrained_models and global_rank == 0:
         # Persist the fully-trained (no leave-out) model alongside the per-subset
         # models, so a later evaluate_retrained run can measure the query
         # baseline from the bank itself instead of a separate base_model_dir.

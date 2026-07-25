@@ -39,15 +39,15 @@ class EkfacConfig:
     projection_type: Literal["normal", "rademacher"] = "rademacher"
     projection_scale: Literal["jl", "row_norm"] = "jl"
     """Must match the index being scored. See ``IndexConfig``."""
-    precond_path: str = ""
+    preconditioner_path: str = ""
     """Safetensors of a diagonal optimizer preconditioner (module name ->
     [out, in] grid). When set, ``apply_fn`` is evaluated elementwise on a
     diagonal approximation of P^1/2 H P^1/2 in parameter space (the
     Adam/AdamW approximate-unrolling variant) instead of on the eigenvalues
     in the EKFAC eigenbasis. Requires ``apply_fn``."""
-    precond_post_multiply: bool = False
-    """With ``precond_path``: multiply the applied function's output by the
-    preconditioner grid — the P^1/2 F(M) P^1/2 sandwich of the segment
+    preconditioner_post_multiply: bool = False
+    """With ``preconditioner_path``: multiply the applied function's output by
+    the preconditioner grid — the P^1/2 F(M) P^1/2 sandwich of the segment
     eigenfunction. Leave False for the backward eigenfunction, whose
     P^1/2 exp(-t M) P^-1/2 sandwich cancels."""
     debug: bool = False
@@ -97,16 +97,16 @@ class EkfacApplicator:
         self.device = get_device(self.rank)
 
     def compute_ivhp_sharded(self):
-        if self.cfg.precond_path:
+        if self.cfg.preconditioner_path:
             if self.apply_fn is None:
-                raise ValueError("precond_path requires apply_fn.")
+                raise ValueError("preconditioner_path requires apply_fn.")
             preconditioner = DiagonalFactoredPreconditioner.from_shards(
                 self.path,
-                self.cfg.precond_path,
+                self.cfg.preconditioner_path,
                 rank=self.rank,
                 device=self.device,
                 apply_fn=self.apply_fn,
-                multiply_by_precond=self.cfg.precond_post_multiply,
+                multiply_by_preconditioner=self.cfg.preconditioner_post_multiply,
                 ev_correction=self.cfg.ev_correction,
             )
         else:

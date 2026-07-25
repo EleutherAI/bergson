@@ -1,19 +1,15 @@
 """Per-segment Adam/AdamW diagonal preconditioners for the preconditioned
 SOURCE (approx-unrolling) variant.
 
-Loads optimizer.pt from the checkpoint dirs. You can use
-``TrainingConfig.save_optimizer_state`` to save them with the Bergson
-Trainer. They contain the second moment buffer, ``step``, and ``betas``).
-:func:`build_segment_preconditioners` bias-corrects the moments
-(v_hat = exp_avg_sq / (1 - beta2^step)), matches them to the segment's
-EKFAC factor modules, orients them to bergson's ``[out, in]`` gradient
-grids (params stored transposed, e.g. GPT-2 Conv1D, are flipped), averages
-within each segment (the same stationary-within-segment averaging used for
-the K-FAC factors), and writes the diagonal preconditioner
+:func:`build_segment_preconditioners` reads each checkpoint dir's
+``optimizer.pt`` (written by ``TrainingConfig.save_optimizer_state``),
+bias-corrects the second moments, averages them within each segment as the
+K-FAC factors are, and writes
 
     P = 1 / (sqrt(v_hat_bar + eps_root) + eps)
 
-to ``<run>/segment_<l>/preconditioner.safetensors``.
+to ``<run>/segment_<l>/preconditioner.safetensors``, oriented to bergson's
+``[out, in]`` gradient grids.
 """
 
 from glob import glob
@@ -175,7 +171,7 @@ def build_segment_preconditioners(
 
         grids = _module_grids(base / f"segment_{seg}" / method)
         matches = _match_params(grids, list(v_hat_sum))
-        precond = {}
+        preconditioner = {}
         for module, param_name in matches.items():
             try:
                 layer = reference_model.get_submodule(
@@ -185,9 +181,9 @@ def build_segment_preconditioners(
                 layer = None
             v_hat_bar = v_hat_sum[param_name] / len(seg_ckpts)
             p = 1.0 / ((v_hat_bar + eps_root).sqrt() + eps)
-            precond[module] = _orient(p, grids[module], module, layer)
+            preconditioner[module] = _orient(p, grids[module], module, layer)
 
         out_path = base / f"segment_{seg}" / "preconditioner.safetensors"
-        save_file(precond, str(out_path))
+        save_file(preconditioner, str(out_path))
         out_paths.append(out_path)
     return out_paths
