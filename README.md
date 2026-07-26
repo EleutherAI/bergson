@@ -262,13 +262,24 @@ Not all models are affected — run `bergson test_model_configuration` before en
 
 See `benchmarks/` for scripts to reproduce and generate benchmarks on your own hardware.
 
-# Known limitations
+# Mixture-of-Experts models
 
-## MoE fused-parameter experts are not attributed
+Bergson tracks `nn.Linear`, HF `Conv1D`, and `nn.Conv{1,2,3}d` modules directly. In modern MoE models (gpt-oss, Mixtral, Qwen-MoE, OLMoE, DeepSeek-V3, ... in `transformers` 5.x) the experts are a fused 3D `nn.Parameter` and the router a bare 2D `nn.Parameter`, so neither is an `nn.Linear`.
 
-Bergson only tracks `nn.Linear`, HF `Conv1D`, and `nn.Conv{1,2,3}d` modules. In modern MoE models (e.g. gpt-oss, Mixtral, Qwen-MoE, OLMoE in `transformers` 5.x), the experts and router are fused bare `nn.Parameter`s rather than `nn.Linear` layers, so they are silently skipped — only attention projections and `lm_head` are tracked (~1-2% of the model's parameters).
+These are tracked anyway: each expert projection is exposed as its own module (`model.layers.0.mlp.experts.expert_3.gate_up_proj`) and the router is tracked in place, with each expert's routed tokens gathered so per-example gradients respect top-k routing sparsity. Detection keys off the shared contract of `transformers`' `use_experts_implementation` decorator, so all 47 model families that use it are covered, present and future. Legacy MoE layouts that implement each expert as a separate `nn.Linear` continue to be tracked as ordinary linear layers.
 
-Legacy MoE layouts that implement each expert as a separate `nn.Linear` are fully tracked.
+Because every expert projection is a separate module, the tracked-module count grows with `layers × experts × 2` — from ~50 to ~1,600 on gpt-oss-20b — and so does the index under the default `--projection_target per_module`. Two ways to control that:
+
+- `--projection_target global` sums every module's projected gradient into one vector per example, so expert tracking costs nothing extra in the index.
+- `--filter_modules '*.experts.*'` excludes the experts (or a glob subset of them).
+
+`--track_moe_experts false` restores the previous behaviour, where experts and routers are skipped and only attention and `lm_head` are attributed (1-2% of an MoE model's parameters).
+
+## Known limitations
+
+`llama4` and `longcat_flash` store fused expert parameters without adopting the `use_experts_implementation` contract, so their experts are still skipped; every other fused-parameter family is covered.
+
+`--attribute_tokens` is not supported together with fused MoE experts: under top-k routing a token contributes to several experts, so its gradient rows cannot be aligned one-to-one with token positions. Use `--track_moe_experts false` or exclude the experts with `--filter_modules`.
 
 # Development
 

@@ -586,6 +586,19 @@ class IndexConfig(AttributionConfig, Serializable):
     """Whether to compute per-token gradients instead of per-example.
     Incompatible with reduce mode."""
 
+    track_moe_experts: bool = True
+    """Track MoE layers whose experts and router are fused bare
+    ``nn.Parameter``s rather than ``nn.Linear`` layers (gpt-oss, Mixtral,
+    Qwen-MoE, OLMoE, DeepSeek-V3, ... in transformers 5.x). Without this only
+    attention and ``lm_head`` are attributed on such models, roughly one to two
+    percent of their parameters.
+
+    Each expert projection becomes its own tracked module, so per-module index
+    size grows with ``layers * experts * 2``. ``--projection_target global``
+    absorbs that growth at no index cost, and ``--filter_modules`` subsets it.
+    A no-op on models without fused MoE parameters. Incompatible with
+    ``attribute_tokens``."""
+
     modules: list[str] = field(default_factory=list)
     """Modules to use for the query. If empty, all modules will be used."""
 
