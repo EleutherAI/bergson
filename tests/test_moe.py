@@ -37,6 +37,10 @@ from bergson.moe import ExpertLinear, expand_moe, is_bare_linear, restore_moe
 from bergson.utils.load_from_optimizer import get_normalizers
 
 FAMILIES = ("gpt_oss", "mixtral")
+BIAS_CASES = [("gpt_oss", False), ("gpt_oss", True), ("mixtral", False)]
+"""``(family, include_bias)`` worth running: every one of gpt-oss's tracked
+modules carries a bias, while Mixtral has none at all, so ``include_bias=True``
+on Mixtral would re-run the ``False`` case."""
 NUM_EXPERTS = 4
 TOP_K = 2
 SEQ_LEN = 7
@@ -75,18 +79,22 @@ def moe_module_names(target_info) -> list[str]:
     ]
 
 
-def make_collector(model, *, projection_dim=None, include_bias=False, **kwargs):
+def make_collector(model, *, processor=None, track_moe_experts=True, **cfg_kwargs):
     """A ``GradientCollector`` over ``model.base_model``, as collection builds it."""
-    tokens = [[1] * SEQ_LEN]
     return GradientCollector(
         model=model.base_model,
-        cfg=IndexConfig(run_path="/tmp/bergson-moe-test", **kwargs),
-        data=Dataset.from_dict({"input_ids": tokens}),
-        processor=GradientProcessor(
-            projection_dim=projection_dim, include_bias=include_bias
-        ),
+        cfg=IndexConfig(run_path="/tmp/bergson-moe-test", **cfg_kwargs),
+        data=Dataset.from_dict({"input_ids": [[1] * SEQ_LEN]}),
+        processor=processor or GradientProcessor(),
         skip_index=True,
+        track_moe_experts=track_moe_experts,
     )
+
+
+def backward_pass(model, x: torch.Tensor) -> None:
+    """Populate gradients from a scalar loss, as the collectors expect."""
+    model.zero_grad()
+    (model(input_ids=x).logits ** 2).sum().backward()
 
 
 def autograd_gradient(base, name: str, include_bias: bool) -> torch.Tensor:
@@ -115,30 +123,31 @@ def autograd_gradient(base, name: str, include_bias: bool) -> torch.Tensor:
     return grad.flatten()
 
 
-def collect_and_compare(model, batch_size: int, include_bias: bool):
-    """Collect per-example MoE gradients and check them against autograd."""
-    model.requires_grad_(True)
-    base = model.base_model
-    x = torch.randint(0, 64, (batch_size, SEQ_LEN))
+def assert_matches_autograd(
+    base,
+    names,
+    collected,
+    run_example,
+    *,
+    include_bias: bool = False,
+    normalizers: dict | None = None,
+):
+    """Check each collected per-example gradient against a per-sample backward.
 
-    collector = make_collector(model, include_bias=include_bias)
-    names = moe_module_names(collector.target_info)
-    assert names, "no fused MoE experts or routers were discovered"
-
-    with collector:
-        model.zero_grad()
-        (model(input_ids=x).logits ** 2).sum().backward()
-    collected = {name: grad.clone() for name, grad in collector.mod_grads.items()}
-
-    # Builder concatenates every module in shapes(), so none may be missing —
-    # including experts that happened to receive no tokens.
-    assert set(collected) == set(collector.shapes())
-
-    for example in range(batch_size):
-        model.zero_grad()
-        (model(input_ids=x[example : example + 1]).logits ** 2).sum().backward()
+    ``run_example(i)`` must leave the model's gradients holding example ``i``'s
+    alone. When ``normalizers`` is given the reference is normalized the same
+    way the collector would, which is what catches an expert being paired with
+    the wrong normalizer or orientation.
+    """
+    for example in range(len(next(iter(collected.values())))):
+        run_example(example)
         for name in names:
             expected = autograd_gradient(base, name, include_bias)
+            if normalizers is not None:
+                normalizer = normalizers[name]
+                expected = normalizer.normalize_weight(
+                    expected.view(normalizer.weight_avg_sq.shape).clone()
+                ).flatten()
             torch.testing.assert_close(
                 collected[name][example],
                 expected,
@@ -151,17 +160,77 @@ def collect_and_compare(model, batch_size: int, include_bias: bool):
     assert max(grad.abs().max() for grad in collected.values()) > 0
 
 
-@pytest.mark.parametrize("family", FAMILIES)
+def collect_and_compare(model, batch_size: int, include_bias: bool):
+    """Collect per-example MoE gradients and check them against autograd."""
+    model.requires_grad_(True)
+    x = torch.randint(0, 64, (batch_size, SEQ_LEN))
+
+    collector = make_collector(
+        model, processor=GradientProcessor(include_bias=include_bias)
+    )
+    names = moe_module_names(collector.target_info)
+    assert names, "no fused MoE experts or routers were discovered"
+
+    with collector:
+        backward_pass(model, x)
+    collected = {name: grad.clone() for name, grad in collector.mod_grads.items()}
+
+    # Builder concatenates every module in shapes(), so none may be missing —
+    # including experts that happened to receive no tokens.
+    assert set(collected) == set(collector.shapes())
+
+    assert_matches_autograd(
+        model.base_model,
+        names,
+        collected,
+        lambda i: backward_pass(model, x[i : i + 1]),
+        include_bias=include_bias,
+    )
+
+
 @pytest.mark.parametrize("batch_size", [1, 3])
-@pytest.mark.parametrize("include_bias", [False, True])
+@pytest.mark.parametrize("family,include_bias", BIAS_CASES)
 def test_per_example_gradients_match_autograd(family, batch_size, include_bias):
     """Per-example expert and router gradients equal per-sample autograd."""
     collect_and_compare(build_model(family), batch_size, include_bias)
 
 
-def _other_family_config(family: str):
-    """Configs for families whose router or block differs from the two above."""
-    shared = dict(
+# Families whose router or MoE block differs from the two reference layouts.
+# DeepSeek-V3 brings a sigmoid grouped-top-k router with a score-correction bias
+# and a shared expert; the other two vary the block wiring.
+OTHER_FAMILY_CONFIGS = {
+    "deepseek_v3": lambda **shared: DeepseekV3Config(
+        intermediate_size=32,
+        moe_intermediate_size=16,
+        n_routed_experts=NUM_EXPERTS,
+        n_group=1,
+        topk_group=1,
+        first_k_dense_replace=0,
+        n_shared_experts=1,
+        qk_rope_head_dim=8,
+        qk_nope_head_dim=8,
+        v_head_dim=8,
+        kv_lora_rank=8,
+        q_lora_rank=8,
+        **{**shared, "num_key_value_heads": 4},
+    ),
+    "qwen3_moe": lambda **shared: Qwen3MoeConfig(
+        intermediate_size=32,
+        moe_intermediate_size=16,
+        num_experts=NUM_EXPERTS,
+        head_dim=8,
+        **shared,
+    ),
+    "olmoe": lambda **shared: OlmoeConfig(
+        intermediate_size=16, num_experts=NUM_EXPERTS, **shared
+    ),
+}
+
+
+@pytest.mark.parametrize("family", sorted(OTHER_FAMILY_CONFIGS))
+def test_other_families_match_autograd(family):
+    """Capability-based detection generalizes past the two reference families."""
+    config = OTHER_FAMILY_CONFIGS[family](
         hidden_size=32,
         num_hidden_layers=2,
         num_attention_heads=4,
@@ -170,43 +239,8 @@ def _other_family_config(family: str):
         max_position_embeddings=64,
         num_experts_per_tok=TOP_K,
     )
-    if family == "deepseek_v3":
-        # Sigmoid + grouped top-k router with a score-correction bias, plus a
-        # shared expert alongside the routed ones.
-        return DeepseekV3Config(
-            intermediate_size=32,
-            moe_intermediate_size=16,
-            n_routed_experts=NUM_EXPERTS,
-            n_group=1,
-            topk_group=1,
-            first_k_dense_replace=0,
-            n_shared_experts=1,
-            qk_rope_head_dim=8,
-            qk_nope_head_dim=8,
-            v_head_dim=8,
-            kv_lora_rank=8,
-            q_lora_rank=8,
-            num_key_value_heads=4,
-            **{k: v for k, v in shared.items() if k != "num_key_value_heads"},
-        )
-    if family == "qwen3_moe":
-        return Qwen3MoeConfig(
-            intermediate_size=32,
-            moe_intermediate_size=16,
-            num_experts=NUM_EXPERTS,
-            head_dim=8,
-            **shared,
-        )
-    return OlmoeConfig(intermediate_size=16, num_experts=NUM_EXPERTS, **shared)
-
-
-@pytest.mark.parametrize("family", ["deepseek_v3", "qwen3_moe", "olmoe"])
-def test_other_families_match_autograd(family):
-    """Capability-based detection generalizes past the two reference families."""
     torch.manual_seed(0)
-    model = AutoModelForCausalLM.from_config(
-        _other_family_config(family), dtype=torch.float32
-    )
+    model = AutoModelForCausalLM.from_config(config, dtype=torch.float32)
     model.eval()
     collect_and_compare(model, batch_size=2, include_bias=False)
 
@@ -275,28 +309,20 @@ def test_expansion_is_transparent_and_reversible(family):
         torch.testing.assert_close(model(input_ids=x).logits, reference)
 
 
-@pytest.mark.parametrize("family", FAMILIES)
-def test_track_moe_experts_false_skips_expansion(family):
+def test_track_moe_experts_false_skips_expansion():
     """The opt-out restores the previous, expert-blind behaviour.
 
     Authoritative even when something has already expanded the model, so the
-    flag means the same thing wherever it is read.
+    flag means the same thing wherever it is read. The restore path does not
+    depend on the family's storage layout, so one family covers it.
     """
-    model = build_model(family)
+    model = build_model("gpt_oss")
     expand_moe(model.base_model)
-    collector = GradientCollector(
-        model=model.base_model,
-        cfg=IndexConfig(run_path="/tmp/bergson-moe-test"),
-        data=Dataset.from_dict({"input_ids": [[1] * SEQ_LEN]}),
-        processor=GradientProcessor(),
-        skip_index=True,
-        track_moe_experts=False,
-    )
+    collector = make_collector(model, track_moe_experts=False)
     assert moe_module_names(collector.target_info) == []
 
 
-@pytest.mark.parametrize("family", FAMILIES)
-@pytest.mark.parametrize("include_bias", [False, True])
+@pytest.mark.parametrize("family,include_bias", BIAS_CASES)
 def test_projection_shapes_and_determinism(family, include_bias):
     """With projection, every MoE module yields a deterministic [N, p*p] block."""
     model = build_model(family)
@@ -304,15 +330,17 @@ def test_projection_shapes_and_determinism(family, include_bias):
     x = torch.randint(0, 64, (2, SEQ_LEN))
 
     collector = make_collector(
-        model, projection_dim=projection_dim, include_bias=include_bias
+        model,
+        processor=GradientProcessor(
+            projection_dim=projection_dim, include_bias=include_bias
+        ),
     )
     names = moe_module_names(collector.target_info)
 
     grads = []
     for _ in range(2):
         with collector:
-            model.zero_grad()
-            (model(input_ids=x).logits ** 2).sum().backward()
+            backward_pass(model, x)
         grads.append({name: collector.mod_grads[name].clone() for name in names})
 
     shapes = collector.shapes()
@@ -323,58 +351,53 @@ def test_projection_shapes_and_determinism(family, include_bias):
     assert max(g.abs().max() for g in grads[0].values()) > 0
 
 
-@pytest.mark.parametrize("family", FAMILIES)
-def test_global_projection_absorbs_experts(family):
+def test_global_projection_absorbs_experts():
     """``projection_target='global'`` keeps expert tracking free in the index.
 
     Every module's projected gradient sums into one vector per example, so the
     index does not grow with the expert count — the mitigation the README points
-    users at.
+    users at. The sum is over modules, so one family covers it.
     """
-    model = build_model(family)
+    model = build_model("gpt_oss")
     projection_dim = 16
-    collector = GradientCollector(
-        model=model.base_model,
-        cfg=IndexConfig(run_path="/tmp/bergson-moe-test"),
-        data=Dataset.from_dict({"input_ids": [[1] * SEQ_LEN]}),
+    collector = make_collector(
+        model,
         processor=GradientProcessor(
             projection_dim=projection_dim, projection_target="global"
         ),
-        skip_index=True,
     )
     assert moe_module_names(collector.target_info)
     assert collector.shapes() == {"gradients": torch.Size((projection_dim,))}
 
     with collector:
-        model.zero_grad()
-        (
-            model(input_ids=torch.randint(0, 64, (3, SEQ_LEN))).logits ** 2
-        ).sum().backward()
+        backward_pass(model, torch.randint(0, 64, (3, SEQ_LEN)))
 
     grads = collector.mod_grads["gradients"]
     assert grads.shape == (3, projection_dim)
     assert torch.isfinite(grads).all() and grads.abs().max() > 0
 
 
-@pytest.mark.parametrize("family", FAMILIES)
-def test_shapes_match_collected_widths(family):
-    """``shapes()`` is the contract Builder sizes the index from."""
-    model = build_model(family)
-    collector = make_collector(model, include_bias=True)
+def test_shapes_match_collected_widths():
+    """``shapes()`` is the contract Builder sizes the index from.
+
+    Run on gpt-oss, the family where a bias column widens every gradient and so
+    the width is easiest to get wrong.
+    """
+    model = build_model("gpt_oss")
+    collector = make_collector(model, processor=GradientProcessor(include_bias=True))
     with collector:
-        model.zero_grad()
-        (
-            model(input_ids=torch.randint(0, 64, (2, SEQ_LEN))).logits ** 2
-        ).sum().backward()
+        backward_pass(model, torch.randint(0, 64, (2, SEQ_LEN)))
 
     for name, shape in collector.shapes().items():
         assert collector.mod_grads[name].shape == (2, math.prod(shape)), name
 
 
-@pytest.mark.parametrize("family", FAMILIES)
-def test_attribute_tokens_rejected(family):
-    """Per-token attribution cannot be aligned with top-k expert routing."""
-    model = build_model(family)
+def test_attribute_tokens_rejected():
+    """Per-token attribution cannot be aligned with top-k expert routing.
+
+    The guard keys on the module type, so one family covers it.
+    """
+    model = build_model("gpt_oss")
     collector = make_collector(model, attribute_tokens=True)
     with pytest.raises(ValueError, match="attribute_tokens is incompatible"):
         collector.__enter__()
@@ -395,8 +418,7 @@ def test_ekfac_covariance_over_experts(family, tmp_path):
 
     mask = torch.ones(x.shape, dtype=torch.bool)
     with collector.with_batch(mask):
-        model.zero_grad()
-        (model(input_ids=x).logits ** 2).sum().backward()
+        backward_pass(model, x)
 
     for name in names:
         layer = model.base_model.get_submodule(name)
@@ -404,6 +426,22 @@ def test_ekfac_covariance_over_experts(family, tmp_path):
         o = getattr(layer, LayerAdapter.out_attr(layer))
         assert collector.A_cov_dict[name].shape[-1] == i, name
         assert collector.S_cov_dict[name].shape[-1] == o, name
+
+
+def fake_optimizer_state(model, factored: bool) -> tuple[dict, dict]:
+    """An ``optimizer.pt``-shaped second-moment state for every 2D and 3D param."""
+    state, index_to_name = {}, {}
+    for idx, (name, param) in enumerate(model.named_parameters()):
+        index_to_name[idx] = name
+        if param.ndim not in (2, 3):
+            continue
+        moments = torch.rand_like(param) + 0.1
+        state[idx] = (
+            {"exp_avg_sq_row": moments.mean(-1), "exp_avg_sq_col": moments.mean(-2)}
+            if factored and param.ndim == 3
+            else {"exp_avg_sq": moments}
+        )
+    return state, index_to_name
 
 
 @pytest.mark.parametrize("family", FAMILIES)
@@ -417,22 +455,7 @@ def test_normalizers_from_fused_optimizer_state(family, factored):
     """
     model = build_model(family)
     expand_moe(model)
-
-    state, index_to_name = {}, {}
-    for idx, (name, param) in enumerate(model.named_parameters()):
-        index_to_name[idx] = name
-        if param.ndim == 3:
-            moments = torch.rand_like(param) + 0.1
-            state[idx] = (
-                {
-                    "exp_avg_sq_row": moments.mean(-1),
-                    "exp_avg_sq_col": moments.mean(-2),
-                }
-                if factored
-                else {"exp_avg_sq": moments}
-            )
-        elif param.ndim == 2:
-            state[idx] = {"exp_avg_sq": torch.rand_like(param) + 0.1}
+    state, index_to_name = fake_optimizer_state(model, factored)
 
     normalizers = get_normalizers(
         {"state": state},
@@ -445,23 +468,25 @@ def test_normalizers_from_fused_optimizer_state(family, factored):
         model=model,
     )
 
-    experts = model.base_model.layers[0].mlp.experts
     expected_type = AdafactorNormalizer if factored else AdamNormalizer
-    for expert_idx in range(NUM_EXPERTS):
-        for leaf in ("gate_up_proj", "down_proj"):
-            name = f"layers.0.mlp.experts.expert_{expert_idx}.{leaf}"
-            normalizer = normalizers[name]
-            assert isinstance(normalizer, expected_type), name
+    shims = {
+        name: module
+        for name, module in model.base_model.named_modules()
+        if isinstance(module, ExpertLinear)
+    }
+    assert len(shims) == 2 * 2 * NUM_EXPERTS  # two projections, per expert, per layer
 
-            shim = getattr(getattr(experts, f"expert_{expert_idx}"), leaf)
-            if factored:
-                assert normalizer.row.shape == (shim.out_features,), name
-                assert normalizer.col.shape == (shim.in_features,), name
-            else:
-                assert normalizer.weight_avg_sq.shape == (
-                    shim.out_features,
-                    shim.in_features,
-                ), name
+    for name, shim in shims.items():
+        normalizer = normalizers[name]
+        assert isinstance(normalizer, expected_type), name
+        if factored:
+            assert normalizer.row.shape == (shim.out_features,), name
+            assert normalizer.col.shape == (shim.in_features,), name
+        else:
+            assert normalizer.weight_avg_sq.shape == (
+                shim.out_features,
+                shim.in_features,
+            ), name
 
     # The router's 2D weight keeps going through the ordinary path.
     router = "layers.0.mlp." + ("router" if family == "gpt_oss" else "gate")
@@ -526,13 +551,13 @@ def test_non_gated_experts_gradients_match_autograd():
     """The ``up_proj`` path is collected as correctly as the gated one."""
     torch.manual_seed(0)
     block = _NonGatedMoEBlock()
-    batch, seq = 3, SEQ_LEN
-    x = torch.randn(batch, seq, block.hidden)
+    batch = 3
+    x = torch.randn(batch, SEQ_LEN, block.hidden)
 
     collector = GradientCollector(
         model=block,
         cfg=IndexConfig(run_path="/tmp/bergson-moe-test"),
-        data=Dataset.from_dict({"input_ids": [[1] * seq] * batch}),
+        data=Dataset.from_dict({"input_ids": [[1] * SEQ_LEN] * batch}),
         processor=GradientProcessor(),
         skip_index=True,
     )
@@ -544,23 +569,16 @@ def test_non_gated_experts_gradients_match_autograd():
         if n.endswith("up_proj")
     )
 
+    def run(example: int) -> None:
+        block.zero_grad()
+        (block(x[example : example + 1]) ** 2).sum().backward()
+
     with collector:
         block.zero_grad()
         (block(x) ** 2).sum().backward()
     collected = {name: grad.clone() for name, grad in collector.mod_grads.items()}
 
-    for example in range(batch):
-        block.zero_grad()
-        (block(x[example : example + 1]) ** 2).sum().backward()
-        for name in names:
-            torch.testing.assert_close(
-                collected[name][example],
-                autograd_gradient(block, name, include_bias=False),
-                atol=1e-5,
-                rtol=1e-4,
-                msg=f"{name}, example {example}",
-            )
-    assert max(grad.abs().max() for grad in collected.values()) > 0
+    assert_matches_autograd(block, names, collected, run)
 
 
 @pytest.mark.parametrize("family", FAMILIES)
@@ -575,36 +593,24 @@ def test_normalized_gradients_match_autograd(family):
     names = moe_module_names(collector.target_info)
 
     torch.manual_seed(1)
-    shapes = {}
+    normalizers = {}
     for name in names:
         layer = base.get_submodule(name)
-        shapes[name] = (
+        shape = (
             getattr(layer, LayerAdapter.out_attr(layer)),
             getattr(layer, LayerAdapter.in_attr(layer)),
         )
-    normalizers = {
-        name: AdamNormalizer(torch.rand(s) + 0.1) for name, s in shapes.items()
-    }
+        normalizers[name] = AdamNormalizer(torch.rand(shape) + 0.1)
     collector.processor = GradientProcessor(normalizers=normalizers)
 
     with collector:
-        model.zero_grad()
-        (model(input_ids=x).logits ** 2).sum().backward()
+        backward_pass(model, x)
     collected = {name: grad.clone() for name, grad in collector.mod_grads.items()}
 
-    for example in range(x.shape[0]):
-        model.zero_grad()
-        (model(input_ids=x[example : example + 1]).logits ** 2).sum().backward()
-        for name in names:
-            expected = autograd_gradient(base, name, include_bias=False)
-            # normalize_weight mutates its argument, so hand it a fresh view.
-            expected = normalizers[name].normalize_weight(
-                expected.view(shapes[name]).clone()
-            )
-            torch.testing.assert_close(
-                collected[name][example],
-                expected.flatten(),
-                atol=1e-5,
-                rtol=1e-4,
-                msg=f"{name}, example {example}",
-            )
+    assert_matches_autograd(
+        base,
+        names,
+        collected,
+        lambda i: backward_pass(model, x[i : i + 1]),
+        normalizers=normalizers,
+    )
