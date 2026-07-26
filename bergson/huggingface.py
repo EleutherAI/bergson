@@ -43,6 +43,7 @@ class GradientCollectorCallback(TrainerCallback):
         use_optimizer_state: bool = True,
         scale_by_lr: bool = True,
         track_order: bool = False,
+        track_moe_experts: bool = False,
     ):
         """
         Args:
@@ -62,6 +63,11 @@ class GradientCollectorCallback(TrainerCallback):
                 that step's learning rate. Set False for ``g / sqrt(v)``, which
                 matches ``load_from_optimizer``.
             track_order: Whether to record the shuffled order of training data.
+            track_moe_experts: Track fused-parameter MoE experts and routers
+                (see ``bergson.moe.expand_moe``). Off by default, matching
+                ``build``. Enabling it replaces the experts' forward for the
+                whole training run: numerically equivalent, but it forgoes the
+                fused grouped-matmul kernels, so training throughput drops.
         attention_cfgs: Information used to split matrix-valued parameters into
             per-head matrices before down projection.
         """
@@ -80,6 +86,7 @@ class GradientCollectorCallback(TrainerCallback):
         self.use_optimizer_state = use_optimizer_state
         self.scale_by_lr = scale_by_lr
         self.order: list[dict] | None = [] if track_order else None
+        self.track_moe_experts = track_moe_experts
 
         self.mod_grads = {}
         self.batch_indices: Tensor | None = None
@@ -127,6 +134,7 @@ class GradientCollectorCallback(TrainerCallback):
             target_modules=target_modules,
             attention_cfgs=self.attention_cfgs,
             dtype=self.torch_dtype,
+            track_moe_experts=self.track_moe_experts,
         )
         self.grad_sizes = {
             name: math.prod(s) for name, s in self.collector.shapes().items()

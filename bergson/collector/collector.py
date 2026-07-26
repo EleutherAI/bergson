@@ -2,6 +2,7 @@ import functools
 import hashlib
 import math
 import os
+import warnings
 from abc import ABC, abstractmethod
 from contextlib import ContextDecorator, nullcontext
 from dataclasses import astuple, dataclass, field
@@ -35,6 +36,14 @@ from bergson.gradients import (
     AdamNormalizer,
     GradientProcessor,
     LayerAdapter,
+)
+from bergson.moe import (
+    ExpertLinear,
+    batch_layout,
+    expand_moe,
+    is_bare_linear,
+    is_fused_experts,
+    restore_moe,
 )
 from bergson.utils.logger import get_logger
 from bergson.utils.peft import set_peft_enabled
@@ -100,6 +109,12 @@ class HookCollectorBase(ContextDecorator, ABC):
     save_dtype: torch.dtype = torch.float32
     """Dtype gradients are cast to on the way out. Set in subclass ``setup()``."""
 
+    track_moe_experts: bool = False
+    """Expose fused-parameter MoE experts and routers to collection (see
+    :func:`bergson.moe.expand_moe`). Off by default because tracking replaces
+    the experts' forward, costing 3-11x on collection. A no-op on models
+    without fused MoE parameters."""
+
     logger = get_logger("HookCollectorBase", level="INFO")
 
     def __post_init__(
@@ -111,6 +126,16 @@ class HookCollectorBase(ContextDecorator, ABC):
 
         self._fwd_hooks: list[RemovableHandle] = []
         self._bwd_hooks: list[RemovableHandle] = []
+
+        # Must precede discovery: expansion is what makes the experts and router
+        # of a fused MoE layer visible as trackable modules at all. The flag is
+        # authoritative either way, so that turning it off still opts out on a
+        # model something else already expanded.
+        if self.track_moe_experts:
+            expand_moe(self.model)
+        else:
+            restore_moe(self.model)
+            self._warn_if_moe_untracked()
 
         # Discover target modules using the static method
         self.target_info = self.discover_targets(
@@ -129,6 +154,24 @@ class HookCollectorBase(ContextDecorator, ABC):
 
         # Allow subclasses to perform custom initialization
         self.setup()
+
+    def _warn_if_moe_untracked(self) -> None:
+        """Say so when a model's experts are being skipped.
+
+        Skipping fused experts leaves only attention and ``lm_head`` attributed
+        — a few percent of an MoE model — and the old failure mode was that
+        nothing said so.
+        """
+        untracked = sum(1 for m in self.model.modules() if is_fused_experts(m))
+        if untracked:
+            warnings.warn(
+                f"{untracked} fused MoE expert modules are not being attributed, "
+                f"leaving only attention and lm_head tracked (a few percent of "
+                f"an MoE model's parameters). Pass --track_moe_experts to "
+                f"include the experts and router; collection then runs several "
+                f"times slower, see the README's Mixture-of-Experts section.",
+                stacklevel=2,
+            )
 
     @staticmethod
     def discover_targets(
@@ -158,7 +201,7 @@ class HookCollectorBase(ContextDecorator, ABC):
         """
         target_info = {}
         for name, layer in model.named_modules():
-            if not isinstance(layer, LayerAdapter.supported_modules):
+            if not LayerAdapter.is_supported(layer):
                 continue
 
             if target_modules is not None and name not in target_modules:
@@ -432,8 +475,42 @@ class HookCollectorBase(ContextDecorator, ABC):
         self._current_collection_mask = collection_mask
         return self
 
+    def collection_mask(self, module: nn.Module) -> Tensor | None:
+        """The mask selecting ``module``'s gradient-carrying positions.
+
+        A fused MoE expert sees a ``[N, L]`` grid of routed tokens rather than
+        the batch's ``[N, S]`` positions, so each expert carries its own row
+        mask.
+        """
+        row_mask = getattr(module, "_row_mask", None)
+        return self._current_collection_mask if row_mask is None else row_mask
+
+    def _reshape_flat(self, module: nn.Module, x: Tensor) -> Tensor:
+        """Restore the ``[N, S, D]`` layout of a tensor a module flattened to
+        ``[N*S, D]`` (MoE routers see hidden states pre-flattened)."""
+        if x.ndim != 2:
+            return x
+        layout = batch_layout(module)
+        assert layout is not None, (
+            f"{module._name} received a 2D [tokens, D] tensor but has no MoE "
+            f"batch layout; per-example gradients need the batch size."
+        )
+        return x.view(layout.num_examples, -1, x.shape[-1])
+
     def __enter__(self):
         """Register forward and backward hooks on all target modules."""
+        if self.attribute_tokens and any(
+            isinstance(self.model.get_submodule(name), ExpertLinear)
+            for name in self.target_info
+        ):
+            raise ValueError(
+                "attribute_tokens is incompatible with fused MoE experts: under "
+                "top-k routing a token contributes to several experts, so its "
+                "gradient rows cannot be aligned with token positions. Pass "
+                "--track_moe_experts false, or exclude the experts with "
+                "--filter_modules '*.experts.*'."
+            )
+
         for name in self.target_info:
             layer = self.model.get_submodule(name)
 
@@ -442,30 +519,65 @@ class HookCollectorBase(ContextDecorator, ABC):
             layer._collect_bias = self.target_info[name][2]  # type: ignore[attr-defined]
 
             # Register hooks
-            fwd_hook = layer.register_forward_hook(self._process_input)
+            if is_bare_linear(layer):
+                fwd_hook = layer.register_forward_hook(self._process_tapped_output)
+            else:
+                fwd_hook = layer.register_forward_hook(self._process_input)
+                bwd_hook = layer.register_full_backward_hook(self._process_grad)
+                self._bwd_hooks.append(bwd_hook)
             self._fwd_hooks.append(fwd_hook)
-
-            bwd_hook = layer.register_full_backward_hook(self._process_grad)
-            self._bwd_hooks.append(bwd_hook)
 
         return self
 
     def _process_input(self, module: nn.Module, inp: tuple, _):
         """Internal forward hook that extracts input and delegates to subclass."""
-        x = inp[0].detach()
+        x = self._reshape_flat(module, inp[0].detach())
         assert x.ndim == 3, f"Expected input of shape [N, S, I], got {x.shape}"
 
         self.forward_hook(module, x)
 
+    def _process_tapped_output(self, module: nn.Module, inp: tuple, out):
+        """Forward hook for bare-parameter linear modules (MoE routers).
+
+        A router scores its linear output *inside* its own forward, so a module
+        backward hook — which only sees gradients arriving from consumers of the
+        router's return values — misses the internal scoring path and often
+        reports no gradient at all. Tap the output tensor itself instead.
+        """
+        self._process_input(module, inp, out)
+
+        outputs = out if isinstance(out, tuple) else (out,)
+        o = getattr(module, LayerAdapter.out_attr(module))
+        tapped = [
+            t
+            for t in outputs
+            if isinstance(t, Tensor) and t.requires_grad and t.shape[-1] == o
+        ]
+        assert tapped, (
+            f"{module._name} returned no differentiable [..., {o}] tensor to read "
+            f"the gradient of its {o}-way linear output from."
+        )
+        tapped[0].register_hook(lambda g: self._dispatch_grad(module, g))
+
     def _process_grad(self, module: nn.Module, _, grad_out):
         """Internal backward hook that extracts gradient and delegates to subclass."""
         # Sanity checks
-        assert isinstance(module, LayerAdapter.supported_modules), (
-            f"Expected a module of type {LayerAdapter.supported_modules}, "
-            f"got {type(module)}"
+        assert LayerAdapter.is_supported(module), (
+            f"Expected a module of type {LayerAdapter.supported_modules} or an "
+            f"annotated bare-parameter linear, got {type(module)}"
         )
 
-        g = grad_out[0].detach()  # [N, S, O]
+        self._dispatch_grad(module, grad_out[0])
+
+    def _dispatch_grad(self, module: nn.Module, grad: Tensor):
+        """Hand an output gradient to the subclass in ``[N, S, O]`` layout."""
+        g = self._reshape_flat(module, grad.detach())
+
+        # Some routers upcast before their linear (DeepSeek-V3, GLM4-MoE), so the
+        # tapped gradient can be wider than the activation the module received.
+        a = getattr(module, "_inputs", None)
+        if is_bare_linear(module) and isinstance(a, Tensor) and a.dtype != g.dtype:
+            g = g.to(a.dtype)
 
         self.backward_hook(module, g)
         if hasattr(module, "_inputs"):
@@ -475,10 +587,9 @@ class HookCollectorBase(ContextDecorator, ABC):
         """Clean up hooks and allow subclass cleanup."""
         # Clean up temporary attributes
         for layer in self.model.modules():
-            if hasattr(layer, "_inputs"):
-                del layer._inputs
-            if hasattr(layer, "_name"):
-                del layer._name
+            for attr in ("_inputs", "_name", "_row_mask"):
+                if hasattr(layer, attr):
+                    delattr(layer, attr)
 
         # Remove all registered hooks
         for h in self._fwd_hooks:
@@ -631,7 +742,7 @@ class HookCollectorBase(ContextDecorator, ABC):
                     P = self.double_sided_projection(name, P, g, p, o, i)
 
                 P = P.flatten(2)  # [N, S, grad_dim]
-                P = P[self._current_collection_mask]  # [total_valid, grad_dim]
+                P = P[self.collection_mask(module)]  # [total_valid, grad_dim]
             else:
                 P = g.mT @ a  # [N,O,S] @ [N,S,I] → [N,O,I]
 
@@ -680,7 +791,7 @@ class HookCollectorBase(ContextDecorator, ABC):
                     # [N, S, O/p, 1] * [N, S, 1, I/q] → [N, S, O/p, I/q]
                     P = g.unsqueeze(-1) * a.unsqueeze(-2)
                 P = P.flatten(2)  # [N, S, grad_dim]
-                P = P[self._current_collection_mask]  # [total_valid, grad_dim]
+                P = P[self.collection_mask(module)]  # [total_valid, grad_dim]
             else:
                 if bias_grad is not None and p is not None:
                     P = self.double_sided_projection_with_bias(
@@ -717,7 +828,7 @@ class HookCollectorBase(ContextDecorator, ABC):
                 )
                 if self.attribute_tokens:
                     P = P.flatten(2)  # [N, S, grad_dim]
-                    P = P[self._current_collection_mask]  # [total_valid, grad_dim]
+                    P = P[self.collection_mask(module)]  # [total_valid, grad_dim]
             else:
                 # a was already projected in forward if p is set;
                 # project g individually
@@ -733,7 +844,7 @@ class HookCollectorBase(ContextDecorator, ABC):
                     if bias_grad is not None:
                         P = torch.cat([P, bias_grad.unsqueeze(-1)], dim=-1)
                     P = P.flatten(2)  # [N, S, grad_dim]
-                    P = P[self._current_collection_mask]  # [total_valid, grad_dim]
+                    P = P[self.collection_mask(module)]  # [total_valid, grad_dim]
                 else:
                     P = g.mT @ a  # [N, O/p, I/p]
                     if bias_grad is not None:

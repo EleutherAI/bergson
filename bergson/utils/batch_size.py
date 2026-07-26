@@ -109,6 +109,7 @@ def maybe_auto_batch_size(
                 target_modules=target_modules,
                 data=ds,  # type: ignore
                 skip_index=True,
+                track_moe_experts=cfg.track_moe_experts,
             ),
             starting_batch_size=cfg.token_batch_size,
         )

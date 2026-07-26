@@ -164,6 +164,7 @@ def hessian_worker(
             target_modules=target_modules,
             attention_cfgs=attention_cfgs,
             filter_modules=index_cfg.filter_modules,
+            track_moe_experts=index_cfg.track_moe_experts,
         )
         computer = CollectorComputer(
             model=model,  # type: ignore
@@ -253,6 +254,7 @@ def collect_hessians(
         "filter_modules": index_cfg.filter_modules,
         "processor": GradientProcessor(include_bias=index_cfg.include_bias),
         "dtype": hessian_dtype,
+        "track_moe_experts": index_cfg.track_moe_experts,
     }
     desc = f"Approximating Hessians with {hessian_cfg.method}"
     if ev_correction:

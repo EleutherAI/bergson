@@ -17,6 +17,7 @@ from bergson.gradients import (
     LayerAdapter,
     Normalizer,
 )
+from bergson.moe import EXPERT_PREFIX, is_fused_experts, weight_names
 
 
 def load_optimizer(optimizer_state: str) -> dict:
@@ -198,6 +199,30 @@ def get_normalizers(
         if param_name is None:
             continue
 
+        optimizer_format = get_optimizer_state_format(state)
+        if optimizer_format is None:
+            print("Unrecognized format, skipping normalizer for param_idx", param_idx)
+            continue
+
+        # A fused MoE expert parameter is one tensor covering every expert, and
+        # is named after the projection ("...experts.gate_up_proj") rather than
+        # "...weight", so it needs its own naming and per-expert slicing.
+        expert_normalizers = _fused_expert_normalizers(
+            param_name,
+            state,
+            optimizer_format,
+            optimizer_state,
+            target_param_index_to_name,
+            target_modules,
+            include_bias,
+            device,
+            model,
+            base_prefix,
+        )
+        if expert_normalizers is not None:
+            normalizers.update(expert_normalizers)
+            continue
+
         if not param_name.endswith(".weight"):
             continue
 
@@ -212,12 +237,6 @@ def get_normalizers(
         module_name = module_name + adapter_suffix
 
         if target_modules is not None and module_name not in target_modules:
-            continue
-
-        optimizer_format = get_optimizer_state_format(state)
-
-        if optimizer_format is None:
-            print("Unrecognized format, skipping normalizer for param_idx", param_idx)
             continue
 
         bias_exp_avg_sq = _get_bias_second_moment(
@@ -510,6 +529,30 @@ def save_second_moments_as_optimizer_pt(
     return len(state)
 
 
+def _find_unfactored_second_moment(
+    param_name: str,
+    param_index_to_name: dict[int, str],
+    optimizer_state: dict,
+) -> torch.Tensor | None:
+    """Look up the unfactored second moment of the parameter named
+    ``param_name``, or ``None`` when it is absent or factored."""
+    # Prefer entries that record their param_name (see get_normalizers).
+    for state in optimizer_state["state"].values():
+        if isinstance(state, dict) and state.get("param_name") == param_name:
+            if get_optimizer_state_format(state) == OptimizerStateFormat.UNFACTORED:
+                return get_unfactored_second_moment(state)
+            return None
+
+    for idx, name in param_index_to_name.items():
+        if name == param_name:
+            state = optimizer_state["state"].get(idx)
+            if get_optimizer_state_format(state) == OptimizerStateFormat.UNFACTORED:
+                return get_unfactored_second_moment(state)
+            return None
+
+    return None
+
+
 def _get_bias_second_moment(
     layer_name: str,
     param_index_to_name: dict[int, str],
@@ -520,23 +563,85 @@ def _get_bias_second_moment(
     if not include_bias:
         return None
 
-    bias_name = layer_name + ".bias"
-    # Prefer entries that record their param_name (see get_normalizers).
-    for bias_state in optimizer_state["state"].values():
-        if isinstance(bias_state, dict) and bias_state.get("param_name") == bias_name:
-            if (
-                get_optimizer_state_format(bias_state)
-                == OptimizerStateFormat.UNFACTORED
-            ):
-                return get_unfactored_second_moment(bias_state)
+    return _find_unfactored_second_moment(
+        layer_name + ".bias", param_index_to_name, optimizer_state
+    )
+
+
+def _fused_expert_normalizers(
+    param_name: str,
+    state: dict,
+    optimizer_format: OptimizerStateFormat,
+    optimizer_state: dict,
+    param_index_to_name: dict[int, str],
+    target_modules: set[str] | None,
+    include_bias: bool,
+    device,
+    model,
+    base_prefix: str,
+) -> dict[str, Normalizer] | None:
+    """Split a fused MoE expert second moment into one normalizer per expert.
+
+    A fused expert parameter carries every expert's second moments in a single
+    ``[num_experts, ...]`` tensor, which :func:`get_normalizers` would drop for
+    not being 2D. Returns ``None`` when ``param_name`` is not such a parameter,
+    so the caller can fall through to its ordinary handling.
+    """
+    parent_name, _, leaf = param_name.rpartition(".")
+    if not parent_name or model is None:
+        return None
+
+    relative_parent = parent_name.removeprefix("base_model.").removeprefix(base_prefix)
+    try:
+        experts = model.get_submodule(parent_name)
+    except AttributeError:
+        return None
+    if not is_fused_experts(experts) or leaf not in weight_names(experts):
+        return None
+
+    # Bias moments live under "<leaf>_bias", not "<layer>.bias".
+    bias_avg_sq = (
+        _find_unfactored_second_moment(
+            f"{parent_name}.{leaf}_bias", param_index_to_name, optimizer_state
+        )
+        if include_bias
+        else None
+    )
+
+    # Validate the moment layout before building anything, so an unexpected
+    # shape falls through to the ordinary path rather than yielding a
+    # half-populated set of experts.
+    if optimizer_format == OptimizerStateFormat.UNFACTORED:
+        avg_sq = get_unfactored_second_moment(state)
+        if avg_sq.ndim != 3:
             return None
 
-    for idx, name in param_index_to_name.items():
-        if name == bias_name:
-            bias_state = optimizer_state["state"].get(idx)
-            optimizer_format = get_optimizer_state_format(bias_state)
-            if optimizer_format == OptimizerStateFormat.UNFACTORED:
-                return get_unfactored_second_moment(bias_state)
+        def one_expert(idx: int, bias: torch.Tensor | None) -> Normalizer:
+            # AdamNormalizer expects [out, in]; the fused slice is [in, out]
+            # under is_transposed (see LayerAdapter.weight_transposed).
+            moment = avg_sq[idx].T if experts.is_transposed else avg_sq[idx]
+            return AdamNormalizer(moment.contiguous().to(device), bias)
+
+    else:
+        row, col = state["exp_avg_sq_row"], state.get("exp_avg_sq_col")
+        if col is None or row.ndim != 2:
             return None
 
-    return None
+        def one_expert(idx: int, bias: torch.Tensor | None) -> Normalizer:
+            # Adafactor factors the two trailing dims, so row and col are
+            # indexed by the stored orientation and swap under is_transposed.
+            r, c = (
+                (col[idx], row[idx]) if experts.is_transposed else (row[idx], col[idx])
+            )
+            return AdafactorNormalizer(r.to(device), c.to(device), bias)
+
+    normalizers: dict[str, Normalizer] = {}
+    for expert_idx in range(experts.num_experts):
+        module_name = f"{relative_parent}.{EXPERT_PREFIX}{expert_idx}.{leaf}"
+        if target_modules is not None and module_name not in target_modules:
+            continue
+
+        bias = None if bias_avg_sq is None else bias_avg_sq[expert_idx].to(device)
+        normalizers[module_name] = one_expert(expert_idx, bias)
+
+    return normalizers

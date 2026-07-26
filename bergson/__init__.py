@@ -24,6 +24,7 @@ from .data import (
     load_token_gradients,
 )
 from .gradients import GradientProcessor
+from .moe import expand_moe, restore_moe
 from .process_grads import mix_autocorrelation_matrices
 from .query.attributor import Attributor
 from .query.faiss_index import FaissConfig
@@ -59,4 +60,6 @@ __all__ = [
     "ScoreConfig",
     "QueryConfig",
     "mix_autocorrelation_matrices",
+    "expand_moe",
+    "restore_moe",
 ]
