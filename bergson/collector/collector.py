@@ -2,6 +2,7 @@ import functools
 import hashlib
 import math
 import os
+import warnings
 from abc import ABC, abstractmethod
 from contextlib import ContextDecorator, nullcontext
 from dataclasses import astuple, dataclass, field
@@ -41,6 +42,7 @@ from bergson.moe import (
     batch_layout,
     expand_moe,
     is_bare_linear,
+    is_fused_experts,
     restore_moe,
 )
 from bergson.utils.logger import get_logger
@@ -107,9 +109,11 @@ class HookCollectorBase(ContextDecorator, ABC):
     save_dtype: torch.dtype = torch.float32
     """Dtype gradients are cast to on the way out. Set in subclass ``setup()``."""
 
-    track_moe_experts: bool = True
+    track_moe_experts: bool = False
     """Expose fused-parameter MoE experts and routers to collection (see
-    :func:`bergson.moe.expand_moe`). A no-op on models without them."""
+    :func:`bergson.moe.expand_moe`). Off by default because tracking replaces
+    the experts' forward, costing 3-11x on collection. A no-op on models
+    without fused MoE parameters."""
 
     logger = get_logger("HookCollectorBase", level="INFO")
 
@@ -131,6 +135,7 @@ class HookCollectorBase(ContextDecorator, ABC):
             expand_moe(self.model)
         else:
             restore_moe(self.model)
+            self._warn_if_moe_untracked()
 
         # Discover target modules using the static method
         self.target_info = self.discover_targets(
@@ -149,6 +154,24 @@ class HookCollectorBase(ContextDecorator, ABC):
 
         # Allow subclasses to perform custom initialization
         self.setup()
+
+    def _warn_if_moe_untracked(self) -> None:
+        """Say so when a model's experts are being skipped.
+
+        Skipping fused experts leaves only attention and ``lm_head`` attributed
+        — a few percent of an MoE model — and the old failure mode was that
+        nothing said so.
+        """
+        untracked = sum(1 for m in self.model.modules() if is_fused_experts(m))
+        if untracked:
+            warnings.warn(
+                f"{untracked} fused MoE expert modules are not being attributed, "
+                f"leaving only attention and lm_head tracked (a few percent of "
+                f"an MoE model's parameters). Pass --track_moe_experts to "
+                f"include the experts and router; collection then runs several "
+                f"times slower, see the README's Mixture-of-Experts section.",
+                stacklevel=2,
+            )
 
     @staticmethod
     def discover_targets(

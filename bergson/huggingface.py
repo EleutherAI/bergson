@@ -43,7 +43,7 @@ class GradientCollectorCallback(TrainerCallback):
         use_optimizer_state: bool = True,
         scale_by_lr: bool = True,
         track_order: bool = False,
-        track_moe_experts: bool = True,
+        track_moe_experts: bool = False,
     ):
         """
         Args:
@@ -64,12 +64,10 @@ class GradientCollectorCallback(TrainerCallback):
                 matches ``load_from_optimizer``.
             track_order: Whether to record the shuffled order of training data.
             track_moe_experts: Track fused-parameter MoE experts and routers
-                (see ``bergson.moe.expand_moe``). Matches ``build``'s default so
-                an index collected during training covers the same modules. Note
-                that this replaces the experts' forward for the whole training
-                run: numerically equivalent, but it cannot use the fused
-                grouped-matmul kernels, so set it False if training throughput
-                matters more than attributing the experts.
+                (see ``bergson.moe.expand_moe``). Off by default, matching
+                ``build``. Enabling it replaces the experts' forward for the
+                whole training run: numerically equivalent, but it forgoes the
+                fused grouped-matmul kernels, so training throughput drops.
         attention_cfgs: Information used to split matrix-valued parameters into
             per-head matrices before down projection.
         """

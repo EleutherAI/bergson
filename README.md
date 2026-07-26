@@ -266,7 +266,7 @@ See `benchmarks/` for scripts to reproduce and generate benchmarks on your own h
 
 Bergson tracks `nn.Linear`, HF `Conv1D`, and `nn.Conv{1,2,3}d` modules directly. In modern MoE models (gpt-oss, Mixtral, Qwen-MoE, OLMoE, DeepSeek-V3, ... in `transformers` 5.x) the experts are a fused 3D `nn.Parameter` and the router a bare 2D `nn.Parameter`, so neither the experts nor the router is an `nn.Linear`.
 
-Bergson tracks the fused experts and the router anyway. Each expert projection is exposed as its own module (`model.layers.0.mlp.experts.expert_3.gate_up_proj`); the router is tracked in place; and each expert's routed tokens are gathered before the gradient is computed, so per-example gradients respect top-k routing sparsity. Legacy MoE layouts that implement each expert as a separate `nn.Linear` continue to be tracked as ordinary linear layers.
+Bergson can track the fused experts and the router, behind `--track_moe_experts`. Each expert projection is exposed as its own module (`model.layers.0.mlp.experts.expert_3.gate_up_proj`); the router is tracked in place; and each expert's routed tokens are gathered before the gradient is computed, so per-example gradients respect top-k routing sparsity. Legacy MoE layouts that implement each expert as a separate `nn.Linear` continue to be tracked as ordinary linear layers.
 
 Detection keys off the contract of `transformers`' `use_experts_implementation` decorator rather than a class allowlist, so it should apply to the 47 model families that adopt the decorator. **Five are covered by tests** — gpt-oss, Mixtral, Qwen3-MoE, OLMoE and DeepSeek-V3, chosen to span both weight orientations, gated and non-gated experts, and both router styles. The rest are expected to work, not verified; please report a family that does not.
 
@@ -296,7 +296,7 @@ Because every expert projection is a separate module, the tracked-module count g
 - `--projection_target global` sums every module's projected gradient into one vector per example, so expert tracking costs nothing extra in the index.
 - `--filter_modules '*.experts.*'` excludes the expert modules, or a glob subset of the expert modules.
 
-`--track_moe_experts false` restores the previous behaviour, where experts and routers are skipped and only attention and `lm_head` are attributed. Measured with `scripts/moe_proof.py`, attention and `lm_head` alone cover 5.8% of gpt-oss-20b's parameters, 3.2% of Mixtral-8x7B's, 4.0% of Qwen3-30B-A3B's and 5.4% of OLMoE-1B-7B's; tracking the experts takes all four models above 97%.
+Tracking is **off by default**, because the cost above falls on every collection run. Without the flag, bergson attributes attention and `lm_head` only — 5.8% of gpt-oss-20b's parameters, 3.2% of Mixtral-8x7B's, 4.0% of Qwen3-30B-A3B's, 5.4% of OLMoE-1B-7B's — and warns that the experts are being skipped. `--track_moe_experts` takes all four models above 97%.
 
 ## Known limitations
 

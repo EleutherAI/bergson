@@ -586,12 +586,17 @@ class IndexConfig(AttributionConfig, Serializable):
     """Whether to compute per-token gradients instead of per-example.
     Incompatible with reduce mode."""
 
-    track_moe_experts: bool = True
+    track_moe_experts: bool = False
     """Track MoE layers whose experts and router are fused bare
     ``nn.Parameter``s rather than ``nn.Linear`` layers (gpt-oss, Mixtral,
     Qwen-MoE, OLMoE, DeepSeek-V3, ... in transformers 5.x). Without this only
     attention and ``lm_head`` are attributed on such models: 5.8 percent of
     gpt-oss-20b's parameters, 3.2 percent of Mixtral-8x7B's.
+
+    Off by default: tracking replaces the experts' forward with a per-expert
+    loop, which measured 3-11x slower on collection (see
+    ``benchmarks/moe_padding_overhead.py``). Without tracking, bergson warns
+    that a model's experts are being skipped.
 
     Each expert projection becomes its own tracked module, so per-module index
     size grows with ``layers * experts * 2``. ``--projection_target global``

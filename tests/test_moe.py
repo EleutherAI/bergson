@@ -309,12 +309,29 @@ def test_expansion_is_transparent_and_reversible(family):
         torch.testing.assert_close(model(input_ids=x).logits, reference)
 
 
-def test_track_moe_experts_false_skips_expansion():
-    """The opt-out restores the previous, expert-blind behaviour.
+def test_experts_are_untracked_by_default_and_warn():
+    """Tracking is opt-in, and skipping the experts is announced.
 
-    Authoritative even when something has already expanded the model, so the
-    flag means the same thing wherever it is read. The restore path does not
-    depend on the family's storage layout, so one family covers it.
+    Skipping leaves only attention and ``lm_head`` attributed. The old failure
+    mode was that nothing said so, so the warning is part of the contract.
+    """
+    model = build_model("gpt_oss")
+    with pytest.warns(UserWarning, match="fused MoE expert modules are not"):
+        collector = GradientCollector(
+            model=model.base_model,
+            cfg=IndexConfig(run_path="/tmp/bergson-moe-test"),
+            data=Dataset.from_dict({"input_ids": [[1] * SEQ_LEN]}),
+            processor=GradientProcessor(),
+            skip_index=True,
+        )
+    assert moe_module_names(collector.target_info) == []
+
+
+def test_opt_out_is_authoritative_over_an_expanded_model():
+    """``track_moe_experts=False`` un-expands, wherever the expansion came from.
+
+    The restore path does not depend on the family's storage layout, so one
+    family covers it.
     """
     model = build_model("gpt_oss")
     expand_moe(model.base_model)
@@ -413,8 +430,10 @@ def test_ekfac_covariance_over_experts(family, tmp_path):
         processor=GradientProcessor(),
         dtype=torch.float32,
         path=str(tmp_path),
+        track_moe_experts=True,
     )
     names = moe_module_names(collector.target_info)
+    assert names, "no MoE modules discovered, the checks below would be vacuous"
 
     mask = torch.ones(x.shape, dtype=torch.bool)
     with collector.with_batch(mask):
@@ -560,6 +579,7 @@ def test_non_gated_experts_gradients_match_autograd():
         data=Dataset.from_dict({"input_ids": [[1] * SEQ_LEN] * batch}),
         processor=GradientProcessor(),
         skip_index=True,
+        track_moe_experts=True,
     )
     names = moe_module_names(collector.target_info)
     assert len(names) == 2 * NUM_EXPERTS + 1
