@@ -264,22 +264,22 @@ See `benchmarks/` for scripts to reproduce and generate benchmarks on your own h
 
 # Mixture-of-Experts models
 
-Bergson tracks `nn.Linear`, HF `Conv1D`, and `nn.Conv{1,2,3}d` modules directly. In modern MoE models (gpt-oss, Mixtral, Qwen-MoE, OLMoE, DeepSeek-V3, ... in `transformers` 5.x) the experts are a fused 3D `nn.Parameter` and the router a bare 2D `nn.Parameter`, so neither is an `nn.Linear`.
+Bergson tracks `nn.Linear`, HF `Conv1D`, and `nn.Conv{1,2,3}d` modules directly. In modern MoE models (gpt-oss, Mixtral, Qwen-MoE, OLMoE, DeepSeek-V3, ... in `transformers` 5.x) the experts are a fused 3D `nn.Parameter` and the router a bare 2D `nn.Parameter`, so neither the experts nor the router is an `nn.Linear`.
 
-These are tracked anyway: each expert projection is exposed as its own module (`model.layers.0.mlp.experts.expert_3.gate_up_proj`) and the router is tracked in place, with each expert's routed tokens gathered so per-example gradients respect top-k routing sparsity. Detection keys off the shared contract of `transformers`' `use_experts_implementation` decorator, so all 47 model families that use it are covered, present and future. Legacy MoE layouts that implement each expert as a separate `nn.Linear` continue to be tracked as ordinary linear layers.
+Bergson tracks the fused experts and the router anyway. Each expert projection is exposed as its own module (`model.layers.0.mlp.experts.expert_3.gate_up_proj`); the router is tracked in place; and each expert's routed tokens are gathered before the gradient is computed, so per-example gradients respect top-k routing sparsity. Detection keys off the shared contract of `transformers`' `use_experts_implementation` decorator, so all 47 model families that adopt the decorator are covered, present and future. Legacy MoE layouts that implement each expert as a separate `nn.Linear` continue to be tracked as ordinary linear layers.
 
-Because every expert projection is a separate module, the tracked-module count grows with `layers × experts × 2` — from ~50 to ~1,600 on gpt-oss-20b — and so does the index under the default `--projection_target per_module`. Two ways to control that:
+Because every expert projection is a separate module, the tracked-module count grows with `layers × experts × 2` — from ~50 to ~1,600 on gpt-oss-20b — and the index grows with the module count under the default `--projection_target per_module`. Two ways to control the index size:
 
 - `--projection_target global` sums every module's projected gradient into one vector per example, so expert tracking costs nothing extra in the index.
-- `--filter_modules '*.experts.*'` excludes the experts (or a glob subset of them).
+- `--filter_modules '*.experts.*'` excludes the expert modules, or a glob subset of the expert modules.
 
-`--track_moe_experts false` restores the previous behaviour, where experts and routers are skipped and only attention and `lm_head` are attributed. Measured with `scripts/moe_proof.py`, that is 5.8% of gpt-oss-20b, 3.2% of Mixtral-8x7B, 4.0% of Qwen3-30B-A3B and 5.4% of OLMoE-1B-7B; tracking the experts takes each above 97%.
+`--track_moe_experts false` restores the previous behaviour, where experts and routers are skipped and only attention and `lm_head` are attributed. Measured with `scripts/moe_proof.py`, attention and `lm_head` alone cover 5.8% of gpt-oss-20b's parameters, 3.2% of Mixtral-8x7B's, 4.0% of Qwen3-30B-A3B's and 5.4% of OLMoE-1B-7B's; tracking the experts takes all four models above 97%.
 
 ## Known limitations
 
-`llama4` and `longcat_flash` store fused expert parameters without adopting the `use_experts_implementation` contract, so their experts are still skipped; every other fused-parameter family is covered.
+`llama4` and `longcat_flash` store fused expert parameters without adopting the `use_experts_implementation` contract, so the experts of those two families are still skipped. Every other fused-parameter family is covered.
 
-`--attribute_tokens` is not supported together with fused MoE experts: under top-k routing a token contributes to several experts, so its gradient rows cannot be aligned one-to-one with token positions. Use `--track_moe_experts false` or exclude the experts with `--filter_modules`.
+`--attribute_tokens` is not supported together with fused MoE experts: under top-k routing one token contributes to several experts, so that token's gradient rows cannot be aligned one-to-one with token positions. Use `--track_moe_experts false`, or exclude the expert modules with `--filter_modules`.
 
 # Development
 

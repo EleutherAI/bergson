@@ -456,7 +456,8 @@ class HookCollectorBase(ContextDecorator, ABC):
         """The mask selecting ``module``'s gradient-carrying positions.
 
         A fused MoE expert sees a ``[N, L]`` grid of routed tokens rather than
-        the batch's ``[N, S]`` positions, so it carries its own row mask.
+        the batch's ``[N, S]`` positions, so each expert carries its own row
+        mask.
         """
         row_mask = getattr(module, "_row_mask", None)
         return self._current_collection_mask if row_mask is None else row_mask
@@ -517,8 +518,8 @@ class HookCollectorBase(ContextDecorator, ABC):
 
         A router scores its linear output *inside* its own forward, so a module
         backward hook — which only sees gradients arriving from consumers of the
-        return values — misses that path and often reports no gradient at all.
-        Tap the output tensor itself instead.
+        router's return values — misses the internal scoring path and often
+        reports no gradient at all. Tap the output tensor itself instead.
         """
         self._process_input(module, inp, out)
 

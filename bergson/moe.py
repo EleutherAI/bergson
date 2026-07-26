@@ -4,22 +4,23 @@
 ``transformers`` 5.x stores every MoE family's experts as 3D parameters
 (``[num_experts, ...]``) behind the ``use_experts_implementation`` decorator, and
 its router as a 2D ``[num_experts, hidden]`` parameter applied with ``F.linear``.
-Neither is an ``nn.Linear``, so the hook collectors silently skip both — on
-gpt-oss that leaves only attention and ``lm_head`` tracked.
+Neither the experts nor the router is an ``nn.Linear``, so the hook collectors
+silently skip the experts and the router alike — on gpt-oss that leaves only
+attention and ``lm_head`` tracked.
 
 :func:`expand_moe` closes the gap by attaching one :class:`ExpertLinear`
 submodule per expert projection and swapping in :func:`bergson_experts_forward`,
-which routes each expert's tokens through those submodules in a zero-padded
-``[N, L, ·]`` layout (``L`` = the most rows any one example sends to that
-expert). The collector's existing ``[N, S, ·]`` hooks then yield per-example
+which routes each expert's tokens through those ``ExpertLinear`` submodules in a
+zero-padded ``[N, L, ·]`` layout (``L`` = the most rows any one example sends to
+that expert). The collector's existing ``[N, S, ·]`` hooks then yield per-example
 gradients with no changes to gradient computation: padding rows carry zero
-activations and receive zero output gradient, so they contribute nothing to the
-weight gradient, the bias gradient, or any Hessian factor.
+activations and receive zero output gradient, so the padding rows contribute
+nothing to the weight gradient, the bias gradient, or any Hessian factor.
 
 Detection is a capability check rather than a class allowlist, so the 47 model
-families sharing the decorator — and future ones — are covered on arrival.
-``llama4`` and ``longcat_flash`` hold fused expert parameters without adopting
-the contract and would need their own adapter.
+families sharing the decorator — and families added later — are covered on
+arrival. ``llama4`` and ``longcat_flash`` hold fused expert parameters without
+adopting the decorator's contract, and would each need a separate adapter.
 """
 
 import types
@@ -49,9 +50,10 @@ class BatchLayout:
     """Number of examples in the batch currently flowing through a MoE block.
 
     A fused experts module only ever sees ``[N*S, hidden]``, so the example a
-    token belongs to cannot be recovered from its own arguments. A forward
-    pre-hook on the enclosing MoE block — whose input is still ``[N, S, hidden]``
-    — records it here, shared by the block's experts and router.
+    token belongs to cannot be recovered from the experts module's own
+    arguments. A forward pre-hook on the enclosing MoE block — whose input is
+    still ``[N, S, hidden]`` — records the batch size here, and the block's
+    experts and router both read the batch size from this object.
     """
 
     num_examples: int = 1
@@ -130,8 +132,9 @@ def is_fused_router(module: nn.Module, num_experts: int) -> bool:
     Keyed on the weight's shape rather than on attribute names, which differ
     across families (``num_experts`` vs ``n_routed_experts``). A router that
     already presents linear-layer metadata is a real linear module (Llama4's
-    router subclasses ``nn.Linear``), so it is left alone — it is discoverable
-    without help, and annotating it would clobber its own attributes.
+    router subclasses ``nn.Linear``), so such a router is left alone: a real
+    linear module is already discoverable, and annotating one would clobber the
+    module's own ``in_features`` / ``out_features``.
     """
     weight = getattr(module, "weight", None)
     return (
@@ -152,9 +155,10 @@ def _pad_rows(
 ) -> tuple[Tensor, Tensor, int]:
     """Map flat token indices to ``(example, slot)`` coordinates in a padded grid.
 
-    ``token_idx`` is non-decreasing (it comes from a row-major ``torch.where``),
-    so a row's slot is its offset from the start of its example's run. Returns
-    the example ids, the slots, and the grid width ``L``.
+    ``token_idx`` is non-decreasing, coming from a row-major ``torch.where``, so
+    each row's slot is the offset of that row within the run of rows belonging
+    to the same example. Returns the example ids, the slots, and the grid width
+    ``L``.
     """
     example = token_idx // seq_len
     counts = torch.bincount(example, minlength=num_examples)
@@ -176,7 +180,7 @@ def bergson_experts_forward(
 
     Numerically equivalent to transformers' own experts implementations, but each
     expert's tokens are gathered into a zero-padded ``[N, L, ·]`` slab so the
-    collector's hooks see the ``[N, S, ·]`` layout they need for per-example
+    collector's hooks see the ``[N, S, ·]`` layout the hooks need for per-example
     gradients. Experts with no routed tokens still run (on an all-zero slab).
     """
     num_tokens, hidden_dim = hidden_states.shape

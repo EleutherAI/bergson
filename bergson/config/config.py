@@ -595,9 +595,9 @@ class IndexConfig(AttributionConfig, Serializable):
 
     Each expert projection becomes its own tracked module, so per-module index
     size grows with ``layers * experts * 2``. ``--projection_target global``
-    absorbs that growth at no index cost, and ``--filter_modules`` subsets it.
-    A no-op on models without fused MoE parameters. Incompatible with
-    ``attribute_tokens``."""
+    absorbs that growth at no index cost, and ``--filter_modules`` narrows the
+    set of tracked modules. Tracking is a no-op on models without fused MoE
+    parameters, and is incompatible with ``attribute_tokens``."""
 
     modules: list[str] = field(default_factory=list)
     """Modules to use for the query. If empty, all modules will be used."""
