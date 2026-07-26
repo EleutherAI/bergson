@@ -266,7 +266,30 @@ See `benchmarks/` for scripts to reproduce and generate benchmarks on your own h
 
 Bergson tracks `nn.Linear`, HF `Conv1D`, and `nn.Conv{1,2,3}d` modules directly. In modern MoE models (gpt-oss, Mixtral, Qwen-MoE, OLMoE, DeepSeek-V3, ... in `transformers` 5.x) the experts are a fused 3D `nn.Parameter` and the router a bare 2D `nn.Parameter`, so neither the experts nor the router is an `nn.Linear`.
 
-Bergson tracks the fused experts and the router anyway. Each expert projection is exposed as its own module (`model.layers.0.mlp.experts.expert_3.gate_up_proj`); the router is tracked in place; and each expert's routed tokens are gathered before the gradient is computed, so per-example gradients respect top-k routing sparsity. Detection keys off the shared contract of `transformers`' `use_experts_implementation` decorator, so all 47 model families that adopt the decorator are covered, present and future. Legacy MoE layouts that implement each expert as a separate `nn.Linear` continue to be tracked as ordinary linear layers.
+Bergson tracks the fused experts and the router anyway. Each expert projection is exposed as its own module (`model.layers.0.mlp.experts.expert_3.gate_up_proj`); the router is tracked in place; and each expert's routed tokens are gathered before the gradient is computed, so per-example gradients respect top-k routing sparsity. Legacy MoE layouts that implement each expert as a separate `nn.Linear` continue to be tracked as ordinary linear layers.
+
+Detection keys off the contract of `transformers`' `use_experts_implementation` decorator rather than a class allowlist, so it should apply to the 47 model families that adopt the decorator. **Five are covered by tests** — gpt-oss, Mixtral, Qwen3-MoE, OLMoE and DeepSeek-V3, chosen to span both weight orientations, gated and non-gated experts, and both router styles. The rest are expected to work, not verified; please report a family that does not.
+
+## Cost
+
+Replacing the experts' forward is not free. Tracking pads each expert's routed tokens into a rectangular grid, which multiplies more rows than routing requires, and it forgoes the fused grouped-matmul kernel the model would otherwise dispatch to on GPU.
+
+Measured by `benchmarks/moe_padding_overhead.py` (wall clock is a small Mixtral, CPU, eager):
+
+| batch (32 experts, top-4) | padded rows / routed rows | forward+backward |
+| --- | --- | --- |
+| 1 x 2048 | 1.00x | 3.07x |
+| 4 x 512 | 1.11x | 3.04x |
+| 16 x 128 | 1.43x | 8.48x |
+| 64 x 32 | 2.21x | 11.46x |
+
+Padding is the smaller term. Most of the wall clock is the per-expert Python
+loop standing in for one batched kernel call, which is why the gap widens as the
+batch holds more, shorter documents. **GPU wall clock is not yet measured**, and
+is where the loss of the fused grouped-matmul kernel will show up most.
+
+Both costs fall on gradient collection only. Expansion is reversible and leaves
+`state_dict()` untouched, so a model is unaffected once collection finishes.
 
 Because every expert projection is a separate module, the tracked-module count grows with `layers × experts × 2` — from ~50 to ~1,600 on gpt-oss-20b — and the index grows with the module count under the default `--projection_target per_module`. Two ways to control the index size:
 

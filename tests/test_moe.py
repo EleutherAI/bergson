@@ -291,7 +291,7 @@ def test_expansion_is_transparent_and_reversible(family):
     added = expand_moe(model)
     # Two projections per expert per layer, plus one router per layer.
     assert len(added) == 2 * (2 * NUM_EXPERTS + 1)
-    assert expand_moe(model) == [], "expansion should be idempotent"
+    assert expand_moe(model) == added, "expansion should be idempotent"
 
     with torch.no_grad():
         torch.testing.assert_close(model(input_ids=x).logits, reference)
@@ -614,3 +614,89 @@ def test_normalized_gradients_match_autograd(family):
         lambda i: backward_pass(model, x[i : i + 1]),
         normalizers=normalizers,
     )
+
+
+@pytest.mark.parametrize("family", FAMILIES)
+def test_expansion_state_is_root_independent(family):
+    """Expanding and restoring work from any root containing the experts.
+
+    Collection runs on ``model.base_model`` while callers hold ``model``, so
+    undo state keyed to one root would leave the other believing nothing was
+    expanded — and ``--track_moe_experts false`` would silently keep tracking.
+    """
+    model = build_model(family)
+    for expand_root, restore_root in (
+        (model, model.base_model),
+        (model.base_model, model),
+    ):
+        added = expand_moe(expand_root)
+        assert any(isinstance(m, ExpertLinear) for m in model.modules())
+
+        # Expanding again from the other root must not double-attach. Names come
+        # back relative to the root asked, so compare counts, not strings.
+        assert len(expand_moe(restore_root)) == len(added)
+        assert len(expand_moe(expand_root)) == len(added)
+
+        restore_moe(restore_root)
+        assert not any(isinstance(m, ExpertLinear) for m in model.modules())
+        assert not any(is_bare_linear(m) for m in model.modules())
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.parametrize("family", FAMILIES)
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+def test_gpu_low_precision_gradients_match_autograd(family, dtype):
+    """Per-example gradients survive the GPU low-precision path.
+
+    The padded grid, the scatter into it and the ``index_add`` accumulation all
+    run in the model's dtype, so reduced precision is where a dtype or
+    accumulation mistake would surface.
+    """
+    model = build_model(family).to(device="cuda", dtype=dtype)
+    model.requires_grad_(True)
+    base = model.base_model
+    x = torch.randint(0, 64, (3, SEQ_LEN), device="cuda")
+
+    collector = make_collector(model)
+    names = moe_module_names(collector.target_info)
+    assert names
+
+    with collector:
+        backward_pass(model, x)
+    collected = {name: grad.clone() for name, grad in collector.mod_grads.items()}
+    assert all(torch.isfinite(g).all() for g in collected.values())
+
+    for example in range(x.shape[0]):
+        backward_pass(model, x[example : example + 1])
+        for name in names:
+            expected = autograd_gradient(base, name, include_bias=False)
+            # Loose bounds: bf16 carries ~3 decimal digits, and the collector
+            # reassociates the sum differently from a per-sample backward.
+            torch.testing.assert_close(
+                collected[name][example].float(),
+                expected.float(),
+                atol=5e-2,
+                rtol=5e-2,
+                msg=f"{name}, example {example}, {dtype}",
+            )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.parametrize("family", FAMILIES)
+def test_gpu_expansion_is_transparent_in_bf16(family):
+    """Replacing the experts' forward must not move the model's own outputs.
+
+    On GPU the unexpanded model dispatches to a fused grouped-matmul kernel, so
+    this is the check that the replacement stays faithful to the kernel it
+    displaces, not merely to the eager reference.
+    """
+    model = build_model(family).to(device="cuda", dtype=torch.bfloat16)
+    x = torch.randint(0, 64, (3, SEQ_LEN), device="cuda")
+
+    with torch.no_grad():
+        reference = model(input_ids=x).logits.clone()
+    expand_moe(model)
+    with torch.no_grad():
+        expanded = model(input_ids=x).logits
+
+    torch.testing.assert_close(expanded, reference, atol=5e-2, rtol=5e-2)

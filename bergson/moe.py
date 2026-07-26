@@ -15,10 +15,17 @@ rows any one example sends to that expert). The collector's existing
 gradient computation, because padding rows carry zero activations and receive
 zero output gradient.
 
-Detection is a capability check rather than a class allowlist, so the 47 model
-families sharing the decorator are covered, as are families added later.
-``llama4`` and ``longcat_flash`` hold fused expert parameters without adopting
-the decorator's contract, and would each need a separate adapter.
+Detection is a capability check rather than a class allowlist, so it should
+apply to the 47 model families sharing the decorator and to families added
+later; five are covered by tests (gpt-oss, Mixtral, Qwen3-MoE, OLMoE,
+DeepSeek-V3), spanning both weight orientations, gated and non-gated experts,
+and both router styles. ``llama4`` and ``longcat_flash`` hold fused expert
+parameters without adopting the decorator's contract, and would each need a
+separate adapter.
+
+Replacing the experts' forward has a cost: the padded grid multiplies more rows
+than routing requires (see ``benchmarks/moe_padding_overhead.py``), and it
+forgoes the fused grouped-matmul kernel the model would otherwise use on GPU.
 """
 
 import types
@@ -40,7 +47,7 @@ EXPERT_PREFIX = "expert_"
 
 _LAYOUT_ATTR = "_bergson_layout"
 _BARE_LINEAR_ATTR = "_bergson_bare_linear"
-_RESTORE_ATTR = "_bergson_moe_restore"
+_EXPANSION_ATTR = "_bergson_expansion"
 _ROUTER_ANNOTATIONS = ("out_features", "in_features", _LAYOUT_ATTR, _BARE_LINEAR_ATTR)
 
 
@@ -257,11 +264,16 @@ def bergson_experts_forward(
 
 @dataclass
 class _Expansion:
-    """What :func:`expand_moe` added to one MoE block, so it can be undone."""
+    """What :func:`expand_moe` added to one MoE block, so it can be undone.
 
-    experts: nn.Module
+    Held on the experts module rather than on the root it was expanded from, so
+    a model and its ``base_model`` see the same state: collection runs on
+    ``model.base_model`` while callers may hold ``model``, and undo state keyed
+    to one root leaves the other believing nothing was expanded.
+    """
+
     containers: list[str]
-    """Names of the per-expert child modules added to ``experts``."""
+    """Names of the per-expert child modules added to the experts module."""
     routers: list[nn.Module]
     hook: RemovableHandle
     """The enclosing block's batch-layout pre-hook."""
@@ -325,17 +337,13 @@ def _annotate_router(router: nn.Module, layout: BatchLayout) -> None:
 def expand_moe(model: nn.Module) -> list[str]:
     """Expose fused MoE experts and routers to gradient collection, in place.
 
-    Idempotent, including when called with two different roots over the same
-    layers (a model and its ``base_model``). Returns the names of the newly
-    trackable modules, relative to ``model``. Reverse with :func:`restore_moe`.
+    Idempotent, and root-independent: expanding a model and expanding its
+    ``base_model`` do the same work once. Returns every MoE module now
+    trackable under ``model``. Reverse with :func:`restore_moe`.
     """
-    if getattr(model, _RESTORE_ATTR, None) is not None:
-        return []
-
-    expansions: list[_Expansion] = []
     for block, experts in _fused_experts_blocks(model):
-        if batch_layout(experts) is not None:
-            continue  # already expanded under another root
+        if getattr(experts, _EXPANSION_ATTR, None) is not None:
+            continue  # already expanded, under this root or another
 
         layout = BatchLayout()
         containers = _attach_expert_shims(experts)
@@ -350,16 +358,16 @@ def expand_moe(model: nn.Module) -> list[str]:
         for router in routers:
             _annotate_router(router, layout)
 
-        expansions.append(
+        setattr(
+            experts,
+            _EXPANSION_ATTR,
             _Expansion(
-                experts=experts,
                 containers=containers,
                 routers=routers,
                 hook=block.register_forward_pre_hook(_record_layout(layout)),
-            )
+            ),
         )
 
-    setattr(model, _RESTORE_ATTR, expansions)
     return [
         name
         for name, module in model.named_modules()
@@ -368,19 +376,22 @@ def expand_moe(model: nn.Module) -> list[str]:
 
 
 def restore_moe(model: nn.Module) -> None:
-    """Undo :func:`expand_moe`, leaving ``model`` exactly as it was found."""
-    expansions: list[_Expansion] | None = getattr(model, _RESTORE_ATTR, None)
-    if expansions is None:
-        return
+    """Undo :func:`expand_moe`, leaving ``model`` exactly as it was found.
 
-    for expansion in expansions:
+    Finds expansions by walking the module tree, so undoing works from any root
+    that contains the experts — not only the root that expanded them.
+    """
+    for experts in list(model.modules()):
+        expansion: _Expansion | None = getattr(experts, _EXPANSION_ATTR, None)
+        if expansion is None:
+            continue
+
         expansion.hook.remove()
         for container in expansion.containers:
-            delattr(expansion.experts, container)
-        del expansion.experts.forward
-        delattr(expansion.experts, _LAYOUT_ATTR)
+            delattr(experts, container)
+        del experts.forward
+        delattr(experts, _LAYOUT_ATTR)
+        delattr(experts, _EXPANSION_ATTR)
         for router in expansion.routers:
             for attr in _ROUTER_ANNOTATIONS:
                 delattr(router, attr)
-
-    delattr(model, _RESTORE_ATTR)
