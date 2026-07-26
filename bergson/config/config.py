@@ -590,8 +590,8 @@ class IndexConfig(AttributionConfig, Serializable):
     """Track MoE layers whose experts and router are fused bare
     ``nn.Parameter``s rather than ``nn.Linear`` layers (gpt-oss, Mixtral,
     Qwen-MoE, OLMoE, DeepSeek-V3, ... in transformers 5.x). Without this only
-    attention and ``lm_head`` are attributed on such models, roughly one to two
-    percent of their parameters.
+    attention and ``lm_head`` are attributed on such models: 5.8 percent of
+    gpt-oss-20b's parameters, 3.2 percent of Mixtral-8x7B's.
 
     Each expert projection becomes its own tracked module, so per-module index
     size grows with ``layers * experts * 2``. ``--projection_target global``

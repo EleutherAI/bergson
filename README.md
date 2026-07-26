@@ -273,7 +273,7 @@ Because every expert projection is a separate module, the tracked-module count g
 - `--projection_target global` sums every module's projected gradient into one vector per example, so expert tracking costs nothing extra in the index.
 - `--filter_modules '*.experts.*'` excludes the experts (or a glob subset of them).
 
-`--track_moe_experts false` restores the previous behaviour, where experts and routers are skipped and only attention and `lm_head` are attributed (1-2% of an MoE model's parameters).
+`--track_moe_experts false` restores the previous behaviour, where experts and routers are skipped and only attention and `lm_head` are attributed. Measured with `scripts/moe_proof.py`, that is 5.8% of gpt-oss-20b, 3.2% of Mixtral-8x7B, 4.0% of Qwen3-30B-A3B and 5.4% of OLMoE-1B-7B; tracking the experts takes each above 97%.
 
 ## Known limitations
 
