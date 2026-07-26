@@ -7,6 +7,7 @@ constructed in-process so the suite stays offline.
 """
 
 import math
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -22,6 +23,7 @@ from transformers import (
 )
 from transformers.integrations import use_experts_implementation
 
+from bergson.collector.collector import HookCollectorBase
 from bergson.collector.gradient_collectors import GradientCollector
 from bergson.config import IndexConfig
 from bergson.gradients import (
@@ -207,6 +209,37 @@ def test_other_families_match_autograd(family):
     )
     model.eval()
     collect_and_compare(model, batch_size=2, include_bias=False)
+
+
+@pytest.mark.parametrize("family", FAMILIES)
+def test_expansion_covers_every_fused_parameter(family):
+    """Expansion adds exactly the fused expert and router weights to the
+    trackable set — the parameters that were silently unreachable before."""
+    model = build_model(family)
+    base = model.base_model
+
+    def tracked_weights() -> int:
+        total = 0
+        for name in HookCollectorBase.discover_targets(base):
+            layer = base.get_submodule(name)
+            total += getattr(layer, LayerAdapter.in_attr(layer)) * getattr(
+                layer, LayerAdapter.out_attr(layer)
+            )
+        return total
+
+    before = tracked_weights()
+    expand_moe(base)
+    after = tracked_weights()
+
+    fused_experts = sum(p.numel() for p in base.parameters() if p.ndim == 3)
+    routers = sum(m.weight.numel() for m in base.modules() if is_bare_linear(m))
+    assert fused_experts and routers
+    assert after - before == fused_experts + routers
+
+    # The fused parameters dominate an MoE model, so the tracked share should
+    # go from a small minority to nearly all of it.
+    model_total = sum(p.numel() for p in base.parameters())
+    assert before / model_total < 0.5 < after / model_total
 
 
 @pytest.mark.parametrize("family", FAMILIES)
@@ -436,20 +469,15 @@ def test_normalizers_from_fused_optimizer_state(family, factored):
     assert isinstance(normalizers[router], AdamNormalizer)
 
 
-class _NonGatedConfig:
-    """Minimal stand-in for the config the experts decorator reads."""
-
-    _experts_implementation = "eager"
-
-
 @use_experts_implementation(has_gate=False)
 class _NonGatedExperts(nn.Module):
     """A non-gated fused experts module, as ``nemotron_h`` declares one.
 
     ``has_gate=False`` swaps ``gate_up_proj`` for ``up_proj`` and the gating
     mechanism for a plain activation. No released model small enough to build
-    offline exercises it, so it is reproduced here from the same decorator the
-    real ones use.
+    offline exercises that pair, so it is declared here with the same decorator
+    the real ones use. No ``forward``: the collector always substitutes
+    ``bergson_experts_forward``, which is the path under test.
     """
 
     def __init__(self, config, hidden: int, intermediate: int):
@@ -463,18 +491,6 @@ class _NonGatedExperts(nn.Module):
         )
         self.act_fn = nn.GELU()
 
-    def forward(self, hidden_states, top_k_index, top_k_weights):
-        out = torch.zeros_like(hidden_states)
-        for expert in range(self.num_experts):
-            token_idx, slot = torch.where(top_k_index == expert)
-            state = hidden_states[token_idx]
-            state = self.act_fn(nn.functional.linear(state, self.up_proj[expert]))
-            state = nn.functional.linear(state, self.down_proj[expert])
-            out = out.index_add(
-                0, token_idx, state * top_k_weights[token_idx, slot, None]
-            )
-        return out
-
 
 class _NonGatedMoEBlock(nn.Module):
     """Router plus non-gated experts, wired like a transformers MoE block."""
@@ -486,7 +502,9 @@ class _NonGatedMoEBlock(nn.Module):
         self.gate.num_experts = NUM_EXPERTS
         self.gate.weight = nn.Parameter(torch.randn(NUM_EXPERTS, hidden) * 0.1)
         self.gate.forward = self._route  # type: ignore[method-assign]
-        self.experts = _NonGatedExperts(_NonGatedConfig(), hidden, intermediate)
+        self.experts = _NonGatedExperts(
+            SimpleNamespace(_experts_implementation="eager"), hidden, intermediate
+        )
 
     @property
     def device(self):

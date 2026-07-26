@@ -1,36 +1,34 @@
 """Gradient tracking for MoE layers whose experts and router are fused bare
 ``nn.Parameter``s rather than ``nn.Linear`` layers.
 
-``transformers`` 5.x stores every MoE family's experts as 3D parameters
-(``[num_experts, ...]``) behind the ``use_experts_implementation`` decorator, and
-its router as a 2D ``[num_experts, hidden]`` parameter applied with ``F.linear``.
-Neither the experts nor the router is an ``nn.Linear``, so the hook collectors
-silently skip the experts and the router alike — on gpt-oss that leaves only
-attention and ``lm_head`` tracked.
+``transformers`` 5.x stores every MoE family's experts as 3D parameters behind
+the ``use_experts_implementation`` decorator, and its router as a 2D
+``[num_experts, hidden]`` parameter applied with ``F.linear``. Neither the
+experts nor the router is an ``nn.Linear``, so the hook collectors skip both —
+on gpt-oss that leaves only attention and ``lm_head`` tracked.
 
-:func:`expand_moe` closes the gap by attaching one :class:`ExpertLinear`
-submodule per expert projection and swapping in :func:`bergson_experts_forward`,
-which routes each expert's tokens through those ``ExpertLinear`` submodules in a
-zero-padded ``[N, L, ·]`` layout (``L`` = the most rows any one example sends to
-that expert). The collector's existing ``[N, S, ·]`` hooks then yield per-example
-gradients with no changes to gradient computation: padding rows carry zero
-activations and receive zero output gradient, so the padding rows contribute
-nothing to the weight gradient, the bias gradient, or any Hessian factor.
+:func:`expand_moe` attaches one :class:`ExpertLinear` per expert projection and
+swaps in :func:`bergson_experts_forward`, which routes each expert's tokens
+through those submodules in a zero-padded ``[N, L, ·]`` grid (``L`` = the most
+rows any one example sends to that expert). The collector's existing
+``[N, S, ·]`` hooks then produce per-example gradients with no change to
+gradient computation, because padding rows carry zero activations and receive
+zero output gradient.
 
 Detection is a capability check rather than a class allowlist, so the 47 model
-families sharing the decorator — and families added later — are covered on
-arrival. ``llama4`` and ``longcat_flash`` hold fused expert parameters without
-adopting the decorator's contract, and would each need a separate adapter.
+families sharing the decorator are covered, as are families added later.
+``llama4`` and ``longcat_flash`` hold fused expert parameters without adopting
+the decorator's contract, and would each need a separate adapter.
 """
 
 import types
-from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Iterator
 
 import torch
 import torch.nn as nn
 from torch import Tensor
+from torch.utils.hooks import RemovableHandle
 
 from bergson.utils.utils import assert_type
 
@@ -43,17 +41,16 @@ EXPERT_PREFIX = "expert_"
 _LAYOUT_ATTR = "_bergson_layout"
 _BARE_LINEAR_ATTR = "_bergson_bare_linear"
 _RESTORE_ATTR = "_bergson_moe_restore"
+_ROUTER_ANNOTATIONS = ("out_features", "in_features", _LAYOUT_ATTR, _BARE_LINEAR_ATTR)
 
 
 @dataclass
 class BatchLayout:
-    """Number of examples in the batch currently flowing through a MoE block.
+    """Batch size of the block currently flowing through a MoE layer.
 
-    A fused experts module only ever sees ``[N*S, hidden]``, so the example a
-    token belongs to cannot be recovered from the experts module's own
-    arguments. A forward pre-hook on the enclosing MoE block — whose input is
-    still ``[N, S, hidden]`` — records the batch size here, and the block's
-    experts and router both read the batch size from this object.
+    A fused experts module only ever sees ``[N*S, hidden]``, so which example a
+    token came from is not recoverable from the experts module's own arguments.
+    A pre-hook on the enclosing block records the batch size here.
     """
 
     num_examples: int = 1
@@ -65,8 +62,8 @@ class ExpertLinear(nn.Module):
     ``weight`` and ``bias`` are *views* of the parent's fused parameter and are
     deliberately not registered, so ``named_parameters()``, ``state_dict()`` and
     parameter counts are unchanged by expansion — only ``named_modules()`` gains
-    entries. ``weight`` is returned in the parent's storage orientation and
-    described by :meth:`LayerAdapter.weight_transposed`, as for HF ``Conv1D``.
+    entries. ``weight`` keeps the parent's storage orientation, reported by
+    :meth:`LayerAdapter.weight_transposed` as for HF ``Conv1D``.
     """
 
     def __init__(self, experts: nn.Module, weight_name: str, expert_idx: int):
@@ -105,15 +102,7 @@ class ExpertLinear(nn.Module):
         )
 
 
-def is_bare_linear(module: nn.Module) -> bool:
-    """Whether ``module`` is a bare-``nn.Parameter`` linear op (a MoE router)
-    that :func:`expand_moe` has annotated for in-place tracking."""
-    return getattr(module, _BARE_LINEAR_ATTR, False)
-
-
-def batch_layout(module: nn.Module) -> BatchLayout | None:
-    """The MoE batch layout attached to ``module``, if any."""
-    return getattr(module, _LAYOUT_ATTR, None)
+# ── Detection ────────────────────────────────────────────────────────────────
 
 
 def is_fused_experts(module: nn.Module) -> bool:
@@ -132,9 +121,8 @@ def is_fused_router(module: nn.Module, num_experts: int) -> bool:
     Keyed on the weight's shape rather than on attribute names, which differ
     across families (``num_experts`` vs ``n_routed_experts``). A router that
     already presents linear-layer metadata is a real linear module (Llama4's
-    router subclasses ``nn.Linear``), so such a router is left alone: a real
-    linear module is already discoverable, and annotating one would clobber the
-    module's own ``in_features`` / ``out_features``.
+    router subclasses ``nn.Linear``) and is left alone: a real linear module is
+    already discoverable, and annotating one would clobber its own attributes.
     """
     weight = getattr(module, "weight", None)
     return (
@@ -145,29 +133,75 @@ def is_fused_router(module: nn.Module, num_experts: int) -> bool:
     )
 
 
+def is_bare_linear(module: nn.Module) -> bool:
+    """Whether ``module`` is a router :func:`expand_moe` annotated for tracking."""
+    return getattr(module, _BARE_LINEAR_ATTR, False)
+
+
+def batch_layout(module: nn.Module) -> BatchLayout | None:
+    """The MoE batch layout attached to ``module``, if any."""
+    return getattr(module, _LAYOUT_ATTR, None)
+
+
 def weight_names(experts: nn.Module) -> tuple[str, str]:
     """The up- and down-projection parameter names of a fused experts module."""
     return ("gate_up_proj" if experts.has_gate else "up_proj", "down_proj")  # type: ignore[attr-defined]
 
 
-def _pad_rows(
-    token_idx: Tensor, num_examples: int, seq_len: int
-) -> tuple[Tensor, Tensor, int]:
-    """Map flat token indices to ``(example, slot)`` coordinates in a padded grid.
+# ── Forward ──────────────────────────────────────────────────────────────────
 
-    ``token_idx`` is non-decreasing, coming from a row-major ``torch.where``, so
-    each row's slot is the offset of that row within the run of rows belonging
-    to the same example. Returns the example ids, the slots, and the grid width
-    ``L``.
+
+@dataclass
+class _Grid:
+    """Where one expert's routed tokens sit in a padded ``[N, L]`` grid.
+
+    Rows routed to an expert are ragged across examples; placing them in a
+    rectangular grid is what lets the collector's ``[N, S, ·]`` machinery run
+    unchanged. Padding cells stay zero and so contribute no gradient.
     """
-    example = token_idx // seq_len
-    counts = torch.bincount(example, minlength=num_examples)
-    starts = counts.cumsum(0) - counts
-    slot = torch.arange(token_idx.numel(), device=token_idx.device) - starts[example]
-    # Keep L >= 1 so the shim's backward hook still fires (and contributes a
-    # zero gradient) for an expert that received no tokens this batch: Builder
-    # concatenates every module in shapes() and a missing key is a hard failure.
-    return example, slot, max(int(counts.max()), 1)
+
+    example: Tensor
+    """Row -> example id, shape ``[num_rows]``."""
+
+    slot: Tensor
+    """Row -> column within its example, shape ``[num_rows]``."""
+
+    width: int
+    """``L``, the widest example's row count."""
+
+    mask: Tensor
+    """``[N, L]``, true where a real routed token sits."""
+
+    @classmethod
+    def build(cls, token_idx: Tensor, num_examples: int, seq_len: int) -> "_Grid":
+        """Place the rows named by ``token_idx`` (non-decreasing, from a
+        row-major ``torch.where``) into a grid."""
+        example = token_idx // seq_len
+        counts = torch.bincount(example, minlength=num_examples)
+        starts = counts.cumsum(0) - counts
+        arange = torch.arange(token_idx.numel(), device=token_idx.device)
+        # Width >= 1 so the shim's backward hook still fires, contributing a
+        # zero gradient, for an expert that received no tokens this batch:
+        # Builder concatenates every module in shapes() and a missing key is a
+        # hard failure.
+        width = max(int(counts.max()), 1)
+
+        slot = arange - starts[example]
+        mask = torch.zeros(
+            num_examples, width, dtype=torch.bool, device=token_idx.device
+        )
+        mask[example, slot] = True
+        return cls(example=example, slot=slot, width=width, mask=mask)
+
+    def scatter(self, rows: Tensor) -> Tensor:
+        """``[num_rows, ...]`` -> a zero-padded ``[N, L, ...]`` grid."""
+        grid = rows.new_zeros(*self.mask.shape, *rows.shape[1:])
+        grid[self.example, self.slot] = rows
+        return grid
+
+    def gather(self, grid: Tensor) -> Tensor:
+        """``[N, L, ...]`` -> the ``[num_rows, ...]`` cells holding real tokens."""
+        return grid[self.example, self.slot]
 
 
 def bergson_experts_forward(
@@ -178,12 +212,12 @@ def bergson_experts_forward(
 ) -> Tensor:
     """Per-expert MoE forward that exposes each expert as a linear submodule.
 
-    Numerically equivalent to transformers' own experts implementations, but each
-    expert's tokens are gathered into a zero-padded ``[N, L, ·]`` slab so the
-    collector's hooks see the ``[N, S, ·]`` layout the hooks need for per-example
-    gradients. Experts with no routed tokens still run (on an all-zero slab).
+    Numerically equivalent to transformers' own experts implementations, but
+    each expert's tokens are gathered into a padded grid so the collector's
+    hooks see the ``[N, S, ·]`` layout they need. Experts with no routed tokens
+    still run, on an all-zero grid.
     """
-    num_tokens, hidden_dim = hidden_states.shape
+    num_tokens = hidden_states.shape[0]
     num_examples = getattr(self, _LAYOUT_ATTR).num_examples
     assert num_tokens % num_examples == 0, (
         f"{num_tokens} tokens do not divide into {num_examples} examples; the "
@@ -197,35 +231,40 @@ def bergson_experts_forward(
     out = torch.zeros_like(hidden_states)
 
     for expert_idx in range(self.num_experts):  # type: ignore[attr-defined]
-        shims = getattr(self, f"{EXPERT_PREFIX}{expert_idx}")
         # Expert-parallel sentinels (index == num_experts) never match, which is
         # exactly right: their routing weight is zero.
         token_idx, k_slot = torch.where(top_k_index == expert_idx)
-        example, slot, width = _pad_rows(token_idx, num_examples, seq_len)
+        grid = _Grid.build(token_idx, num_examples, seq_len)
 
-        a = hidden_states.new_zeros(num_examples, width, hidden_dim)
-        a[example, slot] = hidden_states[token_idx]
-        weights = top_k_weights.new_zeros(num_examples, width)
-        weights[example, slot] = top_k_weights[token_idx, k_slot]
-
-        # Which grid cells hold a real routed token, for collectors that select
-        # gradient-carrying positions (the EK-FAC covariance factors).
-        row_mask = torch.zeros(
-            num_examples, width, dtype=torch.bool, device=hidden_states.device
-        )
-        row_mask[example, slot] = True
-
+        shims = getattr(self, f"{EXPERT_PREFIX}{expert_idx}")
         for shim in shims.children():
-            shim._row_mask = row_mask
+            # Collectors that select gradient-carrying positions (the EK-FAC
+            # covariance factors) need this expert's rows, not the batch's.
+            shim._row_mask = grid.mask
 
-        h = getattr(shims, up_name)(a)
+        h = getattr(shims, up_name)(grid.scatter(hidden_states[token_idx]))
         h = self._apply_gate(h) if self.has_gate else self.act_fn(h)  # type: ignore[attr-defined]
         h = getattr(shims, down_name)(h)
-        h = h * weights.unsqueeze(-1)
+        h = h * grid.scatter(top_k_weights[token_idx, k_slot]).unsqueeze(-1)
 
-        out = out.index_add(0, token_idx, h[example, slot].to(out.dtype))
+        out = out.index_add(0, token_idx, grid.gather(h).to(out.dtype))
 
     return out
+
+
+# ── Expansion ────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class _Expansion:
+    """What :func:`expand_moe` added to one MoE block, so it can be undone."""
+
+    experts: nn.Module
+    containers: list[str]
+    """Names of the per-expert child modules added to ``experts``."""
+    routers: list[nn.Module]
+    hook: RemovableHandle
+    """The enclosing block's batch-layout pre-hook."""
 
 
 def _record_layout(layout: BatchLayout):
@@ -248,10 +287,39 @@ def _record_layout(layout: BatchLayout):
 def _fused_experts_blocks(model: nn.Module) -> Iterator[tuple[nn.Module, nn.Module]]:
     """Yield ``(block, experts)`` for every fused-parameter MoE layer."""
     for name, module in model.named_modules():
-        if not is_fused_experts(module):
-            continue
-        parent_name = name.rpartition(".")[0]
-        yield model.get_submodule(parent_name), module
+        if is_fused_experts(module):
+            yield model.get_submodule(name.rpartition(".")[0]), module
+
+
+def _attach_expert_shims(experts: nn.Module) -> list[str]:
+    """Add one :class:`ExpertLinear` per projection per expert.
+
+    Returns the names of the containers added to ``experts``, which give the
+    shims readable paths like ``experts.expert_3.gate_up_proj``.
+    """
+    names = []
+    for expert_idx in range(experts.num_experts):  # type: ignore[attr-defined]
+        container = nn.Module()
+        for weight_name in weight_names(experts):
+            container.add_module(
+                weight_name, ExpertLinear(experts, weight_name, expert_idx)
+            )
+        name = f"{EXPERT_PREFIX}{expert_idx}"
+        experts.add_module(name, container)
+        names.append(name)
+    return names
+
+
+def _annotate_router(router: nn.Module, layout: BatchLayout) -> None:
+    """Give a bare-parameter router the metadata ``LayerAdapter`` reads.
+
+    The router's ``F.linear`` is left untouched; the router is tracked in place.
+    """
+    out_features, in_features = assert_type(Tensor, router.weight).shape
+    setattr(router, "out_features", int(out_features))
+    setattr(router, "in_features", int(in_features))
+    setattr(router, _LAYOUT_ATTR, layout)
+    setattr(router, _BARE_LINEAR_ATTR, True)
 
 
 def expand_moe(model: nn.Module) -> list[str]:
@@ -264,87 +332,55 @@ def expand_moe(model: nn.Module) -> list[str]:
     if getattr(model, _RESTORE_ATTR, None) is not None:
         return []
 
-    restore: list = []
+    expansions: list[_Expansion] = []
     for block, experts in _fused_experts_blocks(model):
         if batch_layout(experts) is not None:
             continue  # already expanded under another root
+
         layout = BatchLayout()
-        up_name, down_name = weight_names(experts)
-
-        containers = []
-        for expert_idx in range(experts.num_experts):  # type: ignore[attr-defined]
-            container = nn.Module()
-            for weight_name in (up_name, down_name):
-                container.add_module(
-                    weight_name, ExpertLinear(experts, weight_name, expert_idx)
-                )
-            child = f"{EXPERT_PREFIX}{expert_idx}"
-            experts.add_module(child, container)
-            containers.append(child)
-
+        containers = _attach_expert_shims(experts)
         setattr(experts, _LAYOUT_ATTR, layout)
         experts.forward = types.MethodType(bergson_experts_forward, experts)
-        handle = block.register_forward_pre_hook(_record_layout(layout))
 
         routers = [
-            router
-            for router in block.children()
-            if is_fused_router(router, experts.num_experts)  # type: ignore[attr-defined]
+            child
+            for child in block.children()
+            if is_fused_router(child, experts.num_experts)  # type: ignore[attr-defined]
         ]
         for router in routers:
-            # The router's F.linear stays untouched; it is tracked in place, so
-            # it only needs the metadata LayerAdapter reads off a linear layer.
-            out_features, in_features = assert_type(Tensor, router.weight).shape
-            setattr(router, "out_features", int(out_features))
-            setattr(router, "in_features", int(in_features))
-            setattr(router, _LAYOUT_ATTR, layout)
-            setattr(router, _BARE_LINEAR_ATTR, True)
+            _annotate_router(router, layout)
 
-        restore.append((block, experts, containers, handle, routers))
+        expansions.append(
+            _Expansion(
+                experts=experts,
+                containers=containers,
+                routers=routers,
+                hook=block.register_forward_pre_hook(_record_layout(layout)),
+            )
+        )
 
-    setattr(model, _RESTORE_ATTR, restore)
+    setattr(model, _RESTORE_ATTR, expansions)
     return [
         name
         for name, module in model.named_modules()
-        if isinstance(module, ExpertLinear) or getattr(module, _BARE_LINEAR_ATTR, False)
+        if isinstance(module, ExpertLinear) or is_bare_linear(module)
     ]
 
 
 def restore_moe(model: nn.Module) -> None:
     """Undo :func:`expand_moe`, leaving ``model`` exactly as it was found."""
-    restore = getattr(model, _RESTORE_ATTR, None)
-    if restore is None:
+    expansions: list[_Expansion] | None = getattr(model, _RESTORE_ATTR, None)
+    if expansions is None:
         return
 
-    for _block, experts, containers, handle, routers in restore:
-        handle.remove()
-        for child in containers:
-            delattr(experts, child)
-        del experts.forward
-        delattr(experts, _LAYOUT_ATTR)
-        for router in routers:
-            for attr in (
-                "out_features",
-                "in_features",
-                _LAYOUT_ATTR,
-                _BARE_LINEAR_ATTR,
-            ):
+    for expansion in expansions:
+        expansion.hook.remove()
+        for container in expansion.containers:
+            delattr(expansion.experts, container)
+        del expansion.experts.forward
+        delattr(expansion.experts, _LAYOUT_ATTR)
+        for router in expansion.routers:
+            for attr in _ROUTER_ANNOTATIONS:
                 delattr(router, attr)
 
     delattr(model, _RESTORE_ATTR)
-
-
-@contextmanager
-def moe_expanded(model: nn.Module, enabled: bool = True):
-    """Scope :func:`expand_moe` to a block, restoring the model on exit.
-
-    Only restores what this call expanded, so nesting does not tear an outer
-    scope's expansion down early.
-    """
-    owned = enabled and getattr(model, _RESTORE_ATTR, None) is None
-    names = expand_moe(model) if enabled else []
-    try:
-        yield names
-    finally:
-        if owned:
-            restore_moe(model)
