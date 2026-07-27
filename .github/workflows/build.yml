@@ -21,10 +21,9 @@ jobs:
           pip install -e ".[dev,faiss]"
       - name: Run tests
         run: pytest
-  # torch.compile is unavailable on Python 3.14 (torch <= 2.9). bergson applies
-  # it at import time, so an unguarded decorator makes the package unimportable
-  # there. This job catches import-time regressions on the newest interpreter.
-  # Only the compile-fallback tests run here; the full suite runs on 3.10 above.
+  # torch.compile raises at decoration time on Python 3.14 (torch <= 2.9), so
+  # an import-time @torch.compile makes the package unimportable there. This
+  # job catches any such import-time regression on the newest interpreter.
   import-py314:
     runs-on: ubuntu-latest
     steps:
@@ -35,11 +34,9 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e . pytest
+          pip install -e .
       - name: Import bergson
         run: python -c "import bergson; print(bergson.__version__)"
-      - name: Run compile-fallback tests
-        run: pytest tests/test_compile_fallback.py -v
   typecheck:
     runs-on: ubuntu-latest
     steps:
