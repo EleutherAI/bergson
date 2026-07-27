@@ -1,7 +1,7 @@
 Bergson Documentation
 =====================
 
-Bergson is a library for gradient-based data attribution of transformers. Data attribution methods estimate the effect on a behavior of interest of removing data points from a model's training corpus, and enable data filtering, re-weighting, and interpretability. 
+Bergson is a library for gradient-based data attribution of transformers. Data attribution methods estimate the effect on a behavior of interest of removing data points from a model's training corpus, and enable data filtering, re-weighting, and interpretability.
 
 Naively computing leave-one-out effects for a corpus of N items requires 2**N retraining runs. Our most costly and powerful method, MAGIC, uses compute equivalent to 3-5 training runs to produce per-token or per-sequence scores that correlate with the effects of leave-k-out retraining at ρ>0.9 in well-behaved settings. More efficient methods like EK-FAC and TrackStar use compute equivalent to ~1-2 training runs (with more modest VRAM usage), but correlate less with leave-k-out retraining (ρ\~=0.1 to 0.5).
 
