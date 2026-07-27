@@ -14,6 +14,13 @@ We provide options for analyzing models and datasets at any scale or level of gr
 * Load gradients with or without their module-wise structure.
 * Split attention module gradients by head.
 
+.. TODO: Remove above, What data attribution is, cost/fidelity tradeoffs between methods,
+   and a "what do you have?" decision guide:
+
+   * one trained checkpoint → influence functions / TrackStar
+   * several checkpoints from a run → SOURCE
+   * ability to (re)run training → MAGIC
+
 Installation
 ------------
 
@@ -39,67 +46,44 @@ Load the gradients:
 
    gradients = load_gradients(Path("runs/quickstart"))
 
-Benchmarks
-----------
-
 .. toctree::
    :maxdepth: 2
+   :caption: Methods
 
-   benchmarks/index
-
-Preprocessing
--------------
-
-.. toctree::
-   :maxdepth: 2
-
-   preprocessing
-
-Experiments
------------
-
-.. toctree::
-   :maxdepth: 2
-
-   experiments
+   influence-functions
+   trackstar
+   source
    magic
 
-API Reference
---------------
-
-.. toctree::
-   :maxdepth: 4
-
-   cli
-
 .. toctree::
    :maxdepth: 2
+   :caption: Pipeline & Tools
 
    pipeline
-   trackstar
+   gradient-collection
+   preprocessing
+   training
+   evaluation
+   numerical-stability
 
 .. toctree::
    :maxdepth: 2
+   :caption: Reference
 
+   cli
    api
-   utils
-
-Experiments
------------
+   benchmarks/index
+   limitations
 
 .. toctree::
    :maxdepth: 2
+   :caption: Experiments
 
    experiments
-   magic
-
 
 Content Index
-------------------
+-------------
 
 * :ref:`genindex`
-
-
-Documentation by Lucia Quirke.
 
 If you have suggestions, questions, or would like to collaborate, please email lucia@eleuther.ai or drop us a line in the #data-attribution channel of the EleutherAI Discord!

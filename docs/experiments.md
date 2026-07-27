@@ -101,7 +101,7 @@ The experiment compares multiple strategies for suppressing style and recovering
 
 Without preconditioning, similarity is computed as cosine similarity of gradients:
 
-```python
+```text
 score(q, t) = cos(g_q, g_t)
            = (g_q · g_t) / (||g_q|| ||g_t||)
 ```
@@ -110,7 +110,7 @@ where `g_q` is the eval gradient and `g_t` is a training gradient (row vectors).
 
 With a hessian matrix `H`, we transform the eval gradient before computing similarity:
 
-```python
+```text
 H_inv = (H + λI)^(-1)           # damped inverse
 g_eval_hess = g_eval @ H_inv
 g_eval_norm = g_eval_hess / ||g_eval_hess||

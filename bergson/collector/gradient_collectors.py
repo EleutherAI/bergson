@@ -21,8 +21,8 @@ class GradientCollector(HookCollectorBase):
     """
     Collects per-sample gradients from model layers and writes them to disk.
 
-    - For each forward/backward hook, we compute the the gradient or a low-rank
-    approximation via random projections, if cfg.projection_dim is set.
+    - For each forward/backward hook, we compute the gradient or a low-rank
+      approximation via random projections, if cfg.projection_dim is set.
     - Supports normalization via Adam or Adafactor normalizers.
     """
 

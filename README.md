@@ -1,5 +1,5 @@
 # Bergson
-Bergson is a python library which provides scalable, state-of-the-art data attribution methods for large language models. Data attribution methods estimate the effect on a behavior of interest of removing data points from a model's training corpus. We support [EK-FAC](https://arxiv.org/abs/2308.03296) (2023), [TrackStar](https://arxiv.org/abs/2410.17413v3) (2024), [SOURCE](https://arxiv.org/abs/2405.12186), [MAGIC](https://arxiv.org/abs/2504.16430) (2025), and simple baselines such as gradient cosine similarity. 
+Bergson is a python library which provides scalable, state-of-the-art data attribution methods for large language models. Data attribution methods estimate the effect on a behavior of interest of removing data points from a model's training corpus. We support [EK-FAC](https://arxiv.org/abs/2308.03296) (2023), [TrackStar](https://arxiv.org/abs/2410.17413v3) (2024), [SOURCE](https://arxiv.org/abs/2405.12186), [MAGIC](https://arxiv.org/abs/2504.16430) (2025), and simple baselines such as gradient cosine similarity.
 
 We try to make research and application straightforward. You can reproduce any of your runs with a single line, use a few CLI flags to save and re-use useful intermediate artifacts, do everything using just the CLI or just code, train models here or use existing ones, tune and evaluate your methods, and scale them up to multi-node runs with 70B+ parameters. More information is available in the [Bergson](https://bergson.readthedocs.io/en/latest/api.html#bergson.IndexConfig) docs.
 
@@ -34,9 +34,9 @@ pip install -e .
 
 `bergson magic` runs a powerful attribution method that backpropagates through the training process to compute the gradient of a model behavior loss with respect to a weighting placed on each training item. It is powered by our twice-differentiable trainer, which can also be called directly using `bergson train`.
 
-**Note: unrolled differentiation efficacy is proportional to [metasmoothness](https://bergson.readthedocs.io/en/latest/magic.html#meta-smoothness). Untuned training hyperparameters can result in disappointing linear datamodeling scores. Check your run's estimated metasmoothness with `bergson metasmooth`.**
+**Note: unrolled differentiation efficacy is proportional to [metasmoothness](https://bergson.readthedocs.io/en/latest/magic.html#meta-smoothness). Untuned training hyperparameters can result in disappointing linear datamodeling scores. Check your run's estimated metasmoothness with `bergson metasmoothness`.**
 
-`bergson approx_unrolling` is an approximation of `bergson magic` that uses a handful of training checkpoints to run the multi-step SOURCE attribution pipeline. This is roughly equivalent to an influence function averaged over several checkpoints.
+`bergson approxunrolling` is an approximation of `bergson magic` that uses a handful of training checkpoints to run the multi-step SOURCE attribution pipeline. This is roughly equivalent to an influence function averaged over several checkpoints.
 
 To build a train‑time gradient store, use our HF Trainer callback. This will incur a ~17% performance overhead.
 

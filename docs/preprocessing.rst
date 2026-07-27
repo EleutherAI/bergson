@@ -117,7 +117,7 @@ Unlike cosine similarity, inner product preserves gradient magnitude, so trainin
 **Inner product vs cosine similarity:** Use inner product when gradient magnitude carries information (larger gradients indicate stronger relevance). Use cosine similarity to compare direction independently of magnitude, which is more robust when examples differ systematically in gradient norm (e.g., due to different sequence lengths or loss scales).
 
 Randomly projected gradients and gradient autocorrelation matrix hessians
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 **Goal:** Select training examples most similar to a query set using random projection, keeping preconditioning tractable for large models.
 
