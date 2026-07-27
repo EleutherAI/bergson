@@ -73,7 +73,7 @@ For experiments using raw training gradients, use the HF Trainer callback (``Gra
 
 .. code-block:: python
 
-   from bergson import GradientCollectorCallback, prepare_for_gradient_collection
+   from bergson.huggingface import GradientCollectorCallback, prepare_for_gradient_collection
 
    callback = GradientCollectorCallback(
        path="runs/example",
@@ -96,7 +96,7 @@ By default Bergson collects gradients for named parameter matrices, but per-atte
 
 .. code-block:: python
 
-   from bergson import AttentionConfig, IndexConfig, DataConfig
+   from bergson import AttentionConfig, IndexConfig, collect_gradients
    from transformers import AutoModelForCausalLM
 
    model = AutoModelForCausalLM.from_pretrained("RonenEldan/TinyStories-1M", trust_remote_code=True, use_safetensors=True)
@@ -105,7 +105,7 @@ By default Bergson collects gradients for named parameter matrices, but per-atte
        model=model,
        data=data,
        processor=processor,
-       path="runs/split_attention",
+       cfg=IndexConfig(run_path="runs/split_attention"),
        attention_cfgs={
            # Head configuration for the TinyStories-1M transformer
            "h.0.attn.attention.out_proj": AttentionConfig(num_heads=16, head_size=4, head_dim=2),

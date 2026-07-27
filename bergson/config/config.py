@@ -307,7 +307,7 @@ class AttributionConfig(ModelConfig, ABC):
 
 @dataclass
 class TrainingConfig(AttributionConfig, Serializable):
-    """Configuration for the MAGIC trainer."""
+    """Configuration for the Bergson trainer."""
 
     lr_schedule: LRScheduleConfig = field(default_factory=LRScheduleConfig)
     """Learning rate schedule configuration."""

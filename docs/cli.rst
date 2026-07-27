@@ -64,8 +64,7 @@ Building Blocks
        --truncation \
        --aggregation mean \
        --unit_normalize \
-       --projection_dim 0 \
-       --skip_hessians
+       --projection_dim 0
 
 .. autoclass:: bergson.__main__.Score
    :members:

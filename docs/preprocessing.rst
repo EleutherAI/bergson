@@ -65,8 +65,7 @@ The normalizer is applied during gradient collection, so the same ``--optimizer_
        --truncation \
        --projection_dim 0 \
        --optimizer_state <path> \
-       --aggregation mean \
-       --skip_hessians
+       --aggregation mean
 
 
    # Score: collect training gradients with the same optimizer buffer, unit normalize for cosine similarity
@@ -77,9 +76,7 @@ The normalizer is applied during gradient collection, so the same ``--optimizer_
        --truncation \
        --projection_dim 0 \
        --optimizer_state <path> \
-       --processor_path runs/query \
-       --unit_normalize \
-       --skip_hessians
+       --unit_normalize
 
 Both commands use ``--projection_dim 0`` to preserve the full gradient, and the same ``--optimizer_state`` to ensure consistent per-parameter scaling. The ``score`` command applies unit normalization to both the loaded query gradient and each training gradient, giving cosine similarity in the optimizer-normalized space.
 
@@ -101,8 +98,7 @@ Unlike cosine similarity, inner product preserves gradient magnitude, so trainin
        --truncation \
        --projection_dim 0 \
        --optimizer_state <path> \
-       --aggregation mean \
-       --skip_hessians
+       --aggregation mean
 
    # Score: inner product (no --unit_normalize)
    bergson score runs/scores \
@@ -111,8 +107,7 @@ Unlike cosine similarity, inner product preserves gradient magnitude, so trainin
        --dataset NeelNanda/pile-10k \
        --truncation \
        --projection_dim 0 \
-       --optimizer_state <path> \
-       --skip_hessians
+       --optimizer_state <path>
 
 **Inner product vs cosine similarity:** Use inner product when gradient magnitude carries information (larger gradients indicate stronger relevance). Use cosine similarity to compare direction independently of magnitude, which is more robust when examples differ systematically in gradient norm (e.g., due to different sequence lengths or loss scales).
 
@@ -141,7 +136,6 @@ Random projections approximately preserve inner products and cosine similarities
       --truncation \
       --projection_dim 32 \
       --aggregation mean \
-      --processor_path runs/hessians \
       --hessian_path runs/hessians
 
   # Score training data against the reduced query
@@ -151,7 +145,6 @@ Random projections approximately preserve inner products and cosine similarities
       --dataset NeelNanda/pile-10k \
       --truncation \
       --projection_dim 32 \
-      --processor_path runs/hessians \
       --hessian_path runs/hessians
 
 All commands must use the same ``--projection_dim`` and identical model configuration so that both sides are projected into the same random subspace. The random projection matrix is derived deterministically from the model architecture and the projection dimension.
@@ -191,9 +184,7 @@ This is cosine similarity in the :math:`H^{-1}`-weighted inner product space —
        --model EleutherAI/pythia-14m \
        --dataset NeelNanda/pile-10k \
        --truncation \
-       --projection_dim 16 \
-       --processor_path runs/hess \
-       --skip_hessians
+       --projection_dim 16
 
    # Step 3: Score training data against query
    # H^(-1/2) is applied to both query and index gradients, then unit normalized
@@ -203,8 +194,6 @@ This is cosine similarity in the :math:`H^{-1}`-weighted inner product space —
        --dataset NeelNanda/pile-10k \
        --truncation \
        --projection_dim 16 \
-       --processor_path runs/hess \
-       --skip_hessians \
        --unit_normalize \
        --hessian_path runs/hess
 

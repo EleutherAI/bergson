@@ -13,8 +13,8 @@ A directory at ``run_path`` with the following subdirectories:
 - ``value_hessian/`` — hessian fitted on the value (training) dataset.
 - ``query_hessian/`` — hessian fitted on the query dataset.
 - ``mixed_hessian/`` — mixed hessian combining value and query statistics.
-  Contains ``mix_config.json``, ``normalizers.pth``, ``hessians.pth``,
-  ``hessians_eigen.pth``, and ``processor_config.json``.
+  Contains ``config.yaml``, ``normalizers.pth``, ``hessians.pth``,
+  ``hessians_eigen.pth``, and ``processor_config.yaml``.
 - ``query/`` — gradient index built on the query dataset (same artifacts as ``build``).
 - ``scores/`` — scores for the value dataset (same artifacts as ``score``).
 

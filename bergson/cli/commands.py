@@ -244,7 +244,7 @@ class Trackstar(Serializable):
 
 @dataclass
 class Train(TrainingConfig):
-    """Train a model with the MAGIC trainer, but don't actually run MAGIC."""
+    """Train a model."""
 
     def execute(self):
         """Train the model."""

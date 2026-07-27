@@ -22,9 +22,10 @@ The difference between them is **what they do with the collected gradients**:
 - ``score`` **computes similarity scores** by comparing gradients from one dataset against a pre-built query.
 
 The supporting command ``hessian`` computes Hessian approximations
-(``autocorrelation`` — the gradient second-moment and the default — or ``kfac``,
-``tkfac``, ``shampoo``) without collecting per-example gradients. Non-autocorrelation
-methods are stored as sharded covariance matrices.
+(``autocorrelation`` — the gradient second-moment — ``kfac``, ``tkfac``, or
+``shampoo``, selected with the required ``--method`` flag) without collecting
+per-example gradients. Non-autocorrelation methods are stored as sharded
+covariance matrices.
 
 .. _build-command:
 
@@ -53,11 +54,12 @@ A directory at ``run_path`` containing:
 - ``gradients.bin`` — a memory-mapped binary file of per-example gradients.
 - ``info.json`` — metadata (num_grads, dtype structure, grad_sizes).
 - ``data.hf/`` — a HuggingFace dataset with per-example metadata and losses.
-- ``index_config.json`` — configuration snapshot.
-- ``processor_config.json`` — gradient processor configuration.
+- ``config.yaml`` — the run's config, replayable with ``bergson <path>``.
+- ``processor_config.yaml`` — gradient processor configuration.
 - ``normalizers.pth`` — normalizer state dicts.
 - ``hessians.pth`` — fitted hessian matrices.
 - ``hessians_eigen.pth`` — eigendecompositions of hessians.
+- ``total_processed.pt`` — total number of samples processed.
 
 **Example**
 
@@ -106,11 +108,12 @@ A directory at ``run_path`` containing:
 - ``gradients.bin`` — a single aggregated gradient vector (one row).
 - ``info.json`` — metadata (num_grads=1, dtype structure, grad_sizes).
 - ``data.hf/`` — a HuggingFace dataset (single row with query index).
-- ``index_config.json`` — configuration snapshot.
-- ``processor_config.json`` — gradient processor configuration.
-- ``normalizers.pth`` —  normalizer state dicts.
+- ``config.yaml`` — the run's config, replayable with ``bergson <path>``.
+- ``processor_config.yaml`` — gradient processor configuration.
+- ``normalizers.pth`` — normalizer state dicts.
 - ``hessians.pth`` — fitted hessian matrices.
 - ``hessians_eigen.pth`` — eigendecompositions of hessians.
+- ``total_processed.pt`` — total number of samples processed.
 
 **Key options**
 
@@ -163,12 +166,13 @@ A directory at ``run_path`` containing:
 
 - ``scores.bin`` — a memory-mapped structured array of scores (one entry per example,
   with per-query score fields).
-- ``score_config.json`` — scoring configuration (query_path, modules, score method).
 - ``info.json`` — metadata (num_items, num_scores, dtype structure).
 - ``data.hf/`` — a HuggingFace dataset with per-example metadata.
-- ``index_config.json`` — configuration snapshot.
-- ``processor_config.json``, ``normalizers.pth``, ``hessians.pth``,
+- ``config.yaml`` — the run's config (including scoring options), replayable
+  with ``bergson <path>``.
+- ``processor_config.yaml``, ``normalizers.pth``, ``hessians.pth``,
   ``hessians_eigen.pth`` — gradient processor artifacts.
+- ``total_processed.pt`` — total number of samples processed.
 
 **Scoring modes** (``--score``)
 
@@ -203,9 +207,10 @@ A directory at ``run_path`` containing:
 ---------------------------------------------
 
 ``hessian`` computes Hessian approximations on a dataset without collecting or
-storing per-example gradients. The estimator is selected with ``--method``:
+storing per-example gradients. The estimator is selected with the required
+``--method`` flag:
 
-- ``autocorrelation`` (default) — gradient second-moment, saved as a
+- ``autocorrelation`` — gradient second-moment, saved as a
   ``GradientProcessor`` (normalizers + per-module hessian matrices).
 - ``kfac``, ``tkfac``, ``shampoo`` — factorised approximations, saved as sharded
   activation/gradient covariance matrices.
@@ -214,25 +219,25 @@ storing per-example gradients. The estimator is selected with ``--method``:
 
 A directory at ``run_path``. With ``--method autocorrelation``:
 
-- ``index_config.json`` — configuration snapshot.
-- ``processor_config.json`` — gradient processor configuration.
+- ``config.yaml`` — the run's config, replayable with ``bergson <path>``.
+- ``processor_config.yaml`` — gradient processor configuration.
 - ``normalizers.pth`` — normalizer state dicts.
 - ``hessians.pth`` — fitted per-module hessian matrices.
 - ``hessians_eigen.pth`` — eigendecompositions of hessians.
+- ``total_processed.pt`` — total number of samples processed.
 
 With ``--method kfac`` / ``tkfac`` / ``shampoo``:
 
-- ``index_config.json`` — configuration snapshot.
-- ``hessian_config.json`` — Hessian-specific configuration (method, dtype, ev_correction).
+- ``config.yaml`` — the run's config, replayable with ``bergson <path>``.
 - ``total_processed.pt`` — total number of samples processed.
 - ``activation_sharded/shard_*.safetensors`` — sharded activation covariance matrices (one per GPU).
 - ``gradient_sharded/shard_*.safetensors`` — sharded gradient covariance matrices (one per GPU).
-- ``eigen_activation_sharded/shard_*.safetensors`` — eigendecompositions of activation covariances (if computed).
-- ``eigen_gradient_sharded/shard_*.safetensors`` — eigendecompositions of gradient covariances (if computed).
+- ``eigen_activation_sharded/`` and ``eigen_gradient_sharded/`` — eigendecompositions of the activation/gradient covariances.
+- ``eigenvalue_sharded/``, ``factor_eig_a/``, ``factor_eig_g/`` — sharded eigenvalues and Kronecker-factor eigenvectors.
 
 **Key options**
 
-- ``--method autocorrelation`` (default), ``kfac``, ``tkfac``, or ``shampoo``: Hessian approximation method.
+- ``--method autocorrelation``, ``kfac``, ``tkfac``, or ``shampoo`` (required): Hessian approximation method.
 - ``--ev_correction``: additionally compute eigenvalue correction (KFAC family).
 - ``--hessian_dtype``: precision for the Hessian computation.
 

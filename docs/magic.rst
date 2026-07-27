@@ -88,7 +88,7 @@ Core components
 
 .. code-block:: python
 
-   from bergson.trainer import Trainer, DataStream, BackwardState, TrainerState
+   from bergson.magic import BackwardState, DataStream, Trainer, TrainerState
    import torchopt
 
    # Initialize
@@ -96,11 +96,11 @@ Core components
    trainer, state = Trainer.initialize(model, opt)
 
    # Forward training with checkpoints
-   stream = DataStream(dataset, tokenizer, batch_size=4, device="cuda")
+   stream = DataStream(dataset, batch_size=4, device="cuda")
    state = trainer.train(state, stream, save_dir="checkpoints/")
 
    # Compute eval gradients, then backward through training
-   bwd_state = trainer.backward("checkpoints/", stream, bwd_state)
+   bwd_state = trainer.backward("checkpoints/", stream, bwd_state, state)
    scores = bwd_state.weight_grads  # attribution scores
 
 **DataStream**: Wraps a dataset with differentiable per-example (or per-token) weights that receive gradients during the backward pass.
@@ -108,10 +108,10 @@ Core components
 .. code-block:: python
 
    # Per-example attribution
-   stream = DataStream(dataset, tokenizer, batch_size=4, device="cuda")
+   stream = DataStream(dataset, batch_size=4, device="cuda")
 
    # Per-token attribution
-   stream = DataStream(dataset, tokenizer, batch_size=4, device="cuda", weight_shape=(len(dataset), max_length))
+   stream = DataStream(dataset, batch_size=4, device="cuda", weight_shape=(len(dataset), max_length))
 
 **DTensor patch**: For multi-GPU runs with FSDP, apply the DTensor patch before any distributed operations:
 

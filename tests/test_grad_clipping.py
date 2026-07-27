@@ -1,4 +1,4 @@
-"""Tests for global-norm gradient clipping (``max_grad_norm``) in the MAGIC trainer.
+"""Tests for global-norm gradient clipping (``max_grad_norm``) in the Bergson trainer.
 
 Clipping must (a) match the standard clip-by-global-norm formula, (b) be a true
 no-op when disabled or when the threshold doesn't bite, and (c) stay inside the
