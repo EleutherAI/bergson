@@ -11,10 +11,24 @@ This will create a directory at ``<output_path>`` containing the gradients for e
 
 You can also use the library programmatically to build an index. The ``collect_gradients`` function is just a bit lower level than the CLI tool, and allows you to specify the model and dataset directly as arguments. The result is a HuggingFace dataset which contains a handful of new columns, including ``gradients``, which contains the gradients for each training sample. You can then use this dataset to compute attributions.
 
-At the lowest level of abstraction, the ``GradientCollector`` context manager allows you to efficiently collect gradients for *each individual example* in a batch during a backward pass, simultaneously randomly projecting the gradients to a lower-dimensional space to save memory. If you use Adafactor normalization we will do this in a very compute-efficient way which avoids computing the full gradient for each example before projecting it to the lower dimension. There are two main ways you can use ``GradientCollector``:
+At the lowest level of abstraction, the ``GradientCollector`` context manager allows you to efficiently collect gradients for *each individual example* in a batch during a backward pass, simultaneously randomly projecting the gradients to a lower-dimensional space to save memory. If you use Adafactor normalization we will do this in a very compute-efficient way which avoids computing the full gradient for each example before projecting it to the lower dimension. There are three main ways to consume the collected gradients:
 
-1. Using a ``closure`` argument, which enables you to make use of the per-example gradients immediately after they are computed, during the backward pass. If you're computing summary statistics or other per-example metrics, this is the most efficient way to do it.
-2. Without a ``closure`` argument, in which case the gradients are collected and returned as a dictionary mapping module names to batches of gradients. This is the simplest and most flexible approach but is a bit more memory-intensive.
+1. With a ``builder``, which streams each batch of per-example gradients to an on-disk index. This is what ``bergson build`` uses.
+2. With a ``scorer``, which scores each per-example gradient against precomputed query gradients on the fly and discards it. This is what ``bergson score`` uses.
+3. With ``skip_index=True``, which accumulates gradients in the collector's ``mod_grads`` dictionary (keyed by module name) for direct inspection. This is the simplest and most flexible approach but is more memory-intensive.
+
+To instead consume each module's gradients mid-backward — e.g. for per-example summary statistics, without holding a full batch of gradients — subclass ``GradientCollector`` and override ``backward_hook``, then run your forward/backward inside the collector's context manager:
+
+.. code-block:: python
+
+   @dataclass(kw_only=True)
+   class SummaryStatsCollector(GradientCollector):
+       stats: dict = field(default_factory=dict)
+
+       @HookCollectorBase.split_attention_heads  # keep attention_cfgs working
+       def backward_hook(self, module, g):
+           P = self._compute_gradient(module, g)  # normalized + projected, [N, ...]
+           self.stats.setdefault(module._name, []).append(P.flatten(1).norm(dim=1).cpu())
 
 Score a Dataset
 ---------------

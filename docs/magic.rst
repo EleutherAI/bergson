@@ -1,7 +1,7 @@
 MAGIC (Unrolling)
 =================
 
-`MAGIC <https://arxiv.org/abs/2504.16430>`_ attributes evaluation loss to individual training examples by backpropagating through the entire training process. Unlike influence functions which use a local approximation, MAGIC computes exact counterfactual attribution by differentiating through checkpointed training steps.
+`MAGIC <https://arxiv.org/abs/2504.16430>`_ attributes evaluation loss to individual training examples by backpropagating through the entire training trajectory.
 
 We provide a `Trainer` class that takes differentiable training steps and handles all three phases of MAGIC attribution. We support FSDP training using the `bergson.magic.dtensor_patch` runtime patch, which makes PyTorch's DTensor redistribution twice-differentiable (`pytorch/pytorch#160509 <https://github.com/pytorch/pytorch/pull/160509>`_). The patch is applied in memory, so no torch source files are modified.
 
@@ -62,7 +62,7 @@ After a run completes, ``run_cfg.run_path`` contains:
   past the row's actual length carry zero MAGIC score and contribute
   nothing to the scatter-add.
 
-* ``run_config.yaml`` — serialized ``MagicConfig`` used for the run.
+* ``config.yaml`` — serialized ``MagicConfig`` used for the run.
 * ``validation.csv`` — leave-subset-out validation results (if validation
   was run).
 
@@ -138,6 +138,6 @@ Key implementation details
 --------------------------
 
 - **Functional optimization**: ``torchopt.adam`` (or similar) provides a pure-function optimizer whose state is a pytree of tensors. This allows ``torch.autograd.grad`` to differentiate through optimizer updates.
-- **Checkpoint strategy**: By default, checkpoints are saved at ``sqrt(N)`` intervals, giving ``O(sqrt(N))`` memory and ``O(N * sqrt(N))`` recomputation cost.
+- **Checkpoint strategy**: By default, checkpoints are saved at ``sqrt(N)`` intervals, giving ``O(sqrt(N))`` memory and ``O(N)`` recomputation cost. ``save_mode`` also supports ``all`` (``O(N)`` space) and the original MAGIC paper's ``log`` (``O(log N)`` space, ``O(N log N)`` time).
 - **FSDP compatibility**: The DTensor runtime patch adds a ``NestedRedistribute`` autograd function that makes the FSDP all-gather/reduce-scatter differentiable through second-order backward passes.
 - **Loss weighting**: ``weighted_causal_lm_ce`` multiplies per-token cross-entropy by the DataStream weights before averaging. During backward-through-training, autograd accumulates gradients into these weights, yielding the attribution scores.
