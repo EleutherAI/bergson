@@ -1,3 +1,4 @@
+import gc
 import json
 import os
 import shutil
@@ -107,6 +108,133 @@ def compute_query_gradients(
         loss_accum = loss_tensor.item()
 
     return grad_accum, float(loss_accum)
+
+
+def compute_per_query_magic_scores(
+    trainer,
+    ckpts_path: str,
+    stream: DataStream,
+    fwd_state: TrainerState,
+    model: torch.nn.Module,
+    query_dataset: Dataset,
+    num_query_docs: int,
+    run_cfg: "MagicConfig",
+    world_size: int,
+    global_rank: int,
+    pad_count: int,
+    weight_pad_count: int,
+) -> torch.Tensor:
+    """Per-query MAGIC scores: one backward per query, sharing the forward.
+
+    ``run_magic`` reduces the queries to one gradient before the backward, so it
+    yields a single aggregate-query score. This scores each query separately:
+    for each query document it takes that document's gradient at the final model
+    as the backward cotangent and runs ``Trainer.backward`` over the saved
+    trajectory, producing a ``[num_train_docs, num_query_docs]`` matrix (the
+    layout ``validate_scores`` consumes: rows are leave-out docs, columns
+    queries).
+
+    The backward is linear in the cotangent, so this is exact; the forward runs
+    once and every query reuses its checkpoints (``cleanup=False``). Per-query
+    scores are written incrementally to ``<run_path>/per_query/q{i}.pt`` so a
+    crash or preemption only loses the in-flight query (resume redoes the
+    forward but skips finished queries), and the final state is restored before
+    each query since the backward walks it back down the trajectory.
+    """
+    main = global_rank == 0
+    device = stream.weights.device
+    scores_dir = os.path.join(run_cfg.run_path, "per_query")
+    if main:
+        os.makedirs(scores_dir, exist_ok=True)
+
+    # Snapshot the final state (CPU) to restore before each query's backward, and
+    # the forward's checkpoint files so per-query temp checkpoints can be cleaned.
+    final_state = fwd_state.to("cpu").detach_()
+    orig_ckpts = set(os.listdir(ckpts_path)) if os.path.isdir(ckpts_path) else set()
+    opt_grads_zero = [
+        torch.zeros_like(buf)
+        for buf in tree_iter(fwd_state.opt_state)
+        if isinstance(buf, torch.Tensor) and buf.is_floating_point()
+    ]
+
+    per_query = []
+    for qi in range(num_query_docs):
+        qpath = os.path.join(scores_dir, f"q{qi}.pt")
+        if os.path.exists(qpath):  # resume: already scored
+            per_query.append(torch.load(qpath, map_location="cpu"))
+            continue
+
+        # Restore the final trained state (the backward walks it back down the
+        # trajectory). detach_ first: the previous iteration left params
+        # requiring grad, and copy_ is an in-place write a leaf-requiring-grad
+        # forbids. Free the GPU copy so states don't accumulate across queries.
+        fwd_state.detach_()
+        restored = final_state.to(device)
+        fwd_state.copy_(restored)
+        del restored
+
+        one = query_dataset.select([qi])
+        one, n_one, one_pad, one_wpad = pad_dataset_to_batch_size(
+            one, run_cfg.batch_size, 1, f"Query {qi}", global_rank
+        )
+        qstream = DataStream(
+            one,
+            run_cfg.batch_size,
+            device=device,
+            input_key=run_cfg.query.prompt_column,
+            weight_shape=(n_one,),
+        )
+        if one_pad:
+            qstream.weights.data[-one_wpad:] = 0.0
+        qgrads, _ = compute_query_gradients(
+            fwd_state, model, qstream, "mean", run_cfg.fsdp
+        )
+
+        fwd_state.detach_()  # clear requires_grad set by the activation above
+        stream.requires_grad = True
+        stream.weights.grad = None
+        bwd_state = BackwardState(
+            qgrads,
+            [g.clone() for g in opt_grads_zero],
+            torch.zeros_like(stream.weights),
+        )
+        bwd_state = trainer.backward(
+            ckpts_path,
+            stream,
+            bwd_state,
+            fwd_state,
+            cleanup=False,  # reuse the forward's checkpoints for every query
+            debug=run_cfg.debug,
+            inplace=True,
+            fsdp=run_cfg.fsdp,
+            save_mode=run_cfg.save_mode,
+            max_grad_norm=run_cfg.max_grad_norm,
+        )
+        if world_size > 1:
+            dist.all_reduce(bwd_state.weight_grads, op=dist.ReduceOp.SUM)
+
+        s = bwd_state.weight_grads.detach().cpu()
+        if pad_count:
+            s = s[:-weight_pad_count]
+        if main:
+            torch.save(s, qpath)
+        per_query.append(s)
+
+        # Free per-query state and any temp checkpoints the backward wrote.
+        del bwd_state, qgrads, qstream, one
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        if main and os.path.isdir(ckpts_path):
+            for name in set(os.listdir(ckpts_path)) - orig_ckpts:
+                fp = os.path.join(ckpts_path, name)
+                shutil.rmtree(fp) if os.path.isdir(fp) else os.remove(fp)
+        if main:
+            print(f"[per-query MAGIC] scored query {qi + 1}/{num_query_docs}")
+
+    # [num_train_docs, num_query_docs] — the layout validate_scores expects
+    # (rows are leave-out docs; columns are queries).
+    return torch.stack(per_query, dim=1)
 
 
 def scores_are_per_token(score_path: str) -> bool:
@@ -335,7 +463,36 @@ def worker(
     )
 
     multi_query = False
-    if not score_path:
+    if not score_path and run_cfg.query_method == "none":
+        # Per-query MAGIC: one backward per query, sharing the forward. Yields a
+        # [num_query_docs, num_train_docs] score matrix (multi_query), the unit
+        # for a per-query LDS.
+        if not isinstance(run_cfg, MagicConfig):
+            raise RuntimeError("run_cfg must be a MagicConfig to compute scores")
+        assert query_dataset is not None
+
+        scores = compute_per_query_magic_scores(
+            trainer,
+            ckpts_path,
+            stream,
+            fwd_state,
+            model,
+            query_dataset,
+            num_query_docs,
+            run_cfg,
+            world_size,
+            global_rank,
+            pad_count,
+            weight_pad_count,
+        )
+        multi_query = True
+        if global_rank == 0:
+            print(f"Baseline loss: {baseline}")
+            print(f"Score summary: {describe(scores.flatten())}")
+            score_path = os.path.join(run_cfg.run_path, "scores.pt")
+            torch.save(scores, score_path)
+            print(f"Saved per-query attribution scores to {score_path}")
+    elif not score_path:
         # Sanity check
         if not isinstance(run_cfg, MagicConfig):
             raise RuntimeError("run_cfg must be a MagicConfig to compute scores")

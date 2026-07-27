@@ -440,8 +440,16 @@ class ValidationConfig(TrainingConfig, ABC):
     """Query/eval dataset for computing attribution target gradients.
     If not specified, defaults to the training dataset."""
 
-    query_method: Literal["mean", "sum"] = "mean"
-    """Method for reducing query gradients across batches."""
+    query_method: Literal["mean", "sum", "none"] = "mean"
+    """How query gradients are combined before the MAGIC backward.
+
+    ``mean``/``sum`` reduce all queries into one gradient, giving a single
+    aggregate-query score vector. ``none`` scores each query separately (one
+    backward per query), yielding a ``[num_query_docs, num_train_docs]`` score
+    matrix — the per-query attribution needed for a per-query LDS. Per-query is
+    more expensive (a backward per query, sharing one forward) but is the
+    correct unit for evaluation; aggregate-query metrics over few subsets are
+    noisy and non-comparable to per-query numbers."""
 
     num_subsets: int = 100
     """Number of leave-k-out subsets for Spearman correlation."""
