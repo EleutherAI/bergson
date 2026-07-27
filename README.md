@@ -42,6 +42,8 @@ To build a train‑time gradient store, use our HF Trainer callback. This will i
 
 ### Attribute Post-Hoc
 
+Bergson supports on-disk gradient stores and on-the-fly queries, and per-token and per-sequence attribution.
+
 `bergson trackstar` and `bergson ekfac` both orchestrate multi-step attribution recipes over a model checkpoint.
 
 At a lower level, you can build your own gradient store for efficient serial queries using `bergson build`. Collection-time gradient compression makes the store space-efficient, and a FAISS integration enables fast KNN search over large stores - see `bergson query`, or `Attributor` in the programmatic interface. For small queries and methods that don't use gradient compression (e.g., EK-FAC), you can score a dataset in a single pass using an in-memory query index of precomputed gradients. Dataset items may be scored using max, mean, and individual scoring strategies, enabling [LESS](https://arxiv.org/pdf/2402.04333)-style data filtering. See `bergson score` and `bergson build` or `bergson reduce`.
