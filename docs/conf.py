@@ -7,12 +7,12 @@ html_logo = "_static/bergson_logo.png"
 html_favicon = "_static/favicon.ico"
 
 author = (
-    "Lucia Quirke"
+    "Lucia Quirke,"
     " Nora Belrose,"
     " Louis Jaburi,"
-    " Baber Abbasi,"
+    " David Johnston,"
     " William Li,"
-    " Stella Biderman,"
+    " Stella Biderman"
 )
 
 extensions = [

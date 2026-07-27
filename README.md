@@ -36,7 +36,7 @@ pip install -e .
 
 `bergson magic` runs a powerful attribution method that backpropagates through the training process to compute the gradient of a model behavior loss with respect to a weighting placed on each training item. It is powered by our twice-differentiable trainer, which can also be called directly using `bergson train`.
 
-**Note: unrolled differentiation efficacy is proportional to [metasmoothness](https://bergson.readthedocs.io/en/latest/magic.html#meta-smoothness). Untuned training hyperparameters can result in disappointing linear datamodeling scores. Check your run's estimated metasmoothness with `bergson metasmoothness`.**
+**Note: unrolled differentiation efficacy is proportional to [metasmoothness](https://bergson.readthedocs.io/en/latest/magic.html#metasmoothness). Untuned training hyperparameters can result in disappointing linear datamodeling scores. Check your run's estimated metasmoothness with `bergson metasmoothness`.**
 
 `bergson approxunrolling` is an approximation of `bergson magic` that uses a handful of training checkpoints to run the multi-step SOURCE attribution pipeline. This is roughly equivalent to an influence function averaged over several checkpoints.
 
