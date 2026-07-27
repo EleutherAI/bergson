@@ -1,7 +1,8 @@
+import warnings
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Literal, Mapping
+from typing import Callable, Literal, Mapping, TypeVar
 
 import torch
 import torch.nn as nn
@@ -10,6 +11,27 @@ from torch import Tensor
 from transformers.pytorch_utils import Conv1D as HFConv1D
 
 NORMALIZER_TYPES: dict[str, type["Normalizer"]] = {}
+
+F = TypeVar("F", bound=Callable)
+
+
+def compile_if_supported(fn: F) -> F:
+    """Apply ``torch.compile`` to ``fn``, falling back to the eager function
+    when compilation is unavailable.
+
+    ``torch.compile`` raises a ``RuntimeError`` at decoration time on
+    interpreters Dynamo doesn't support (e.g. Python 3.14+ with torch <= 2.9).
+    Since these decorators are applied at import time, an unguarded
+    ``@torch.compile`` would make ``bergson`` unimportable there.
+    """
+    try:
+        return torch.compile(fn)  # type: ignore[return-value]
+    except RuntimeError:
+        warnings.warn(
+            "torch.compile is unavailable on this interpreter; "
+            "bergson normalizers will run uncompiled."
+        )
+        return fn
 
 
 class Normalizer(ABC):
@@ -297,7 +319,7 @@ class AdafactorNormalizer(Normalizer):
                 self.bias_avg_sq.ndim == 1
             ), f"Expected 1D tensor for bias_avg_sq, got {self.bias_avg_sq.ndim}D"
 
-    @torch.compile
+    @compile_if_supported
     def normalize_weight(
         self,
         grad: Tensor,
@@ -337,7 +359,7 @@ class AdafactorNormalizer(Normalizer):
 
         return grad
 
-    @torch.compile
+    @compile_if_supported
     def normalize_bias(
         self,
         grad: Tensor,
@@ -379,7 +401,7 @@ class AdamNormalizer(Normalizer):
     weight_avg_sq: Tensor
     bias_avg_sq: Tensor | None = None
 
-    @torch.compile
+    @compile_if_supported
     def normalize_weight(
         self,
         grad: Tensor,
@@ -390,7 +412,7 @@ class AdamNormalizer(Normalizer):
         denom = self.weight_avg_sq.sqrt()
         return grad.div_(denom.add_(eps))
 
-    @torch.compile
+    @compile_if_supported
     def normalize_bias(
         self,
         grad: Tensor,
