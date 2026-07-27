@@ -1,7 +1,7 @@
 Influence Functions & Preconditioners
 =====================================
 
-Influence functions can be roughly conceptualized as a preconditioned gradient similarity search, with formula `(g_q H^-1 g_t^T)` where g_q is the query gradient, g_t is a training gradient, and H is a Hessian (approximation). Many Hessian approximations are used, and hyperparameters such as the inversion damping factor are also usually incorporated. In some cases, heuristics such as gradient unit normalization are also applied. 
+Influence functions can be roughly conceptualized as a preconditioned gradient similarity search, with formula :math:`g_q H^{-1} g_t^\top` where :math:`g_q` is the query gradient, :math:`g_t` is a training gradient, and :math:`H` is a Hessian (approximation). Many Hessian approximations are used, and hyperparameters such as the inversion damping factor are also usually incorporated. In some cases, heuristics such as gradient unit normalization are also applied.
 
 Preconditioners
 ---------------

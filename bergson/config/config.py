@@ -725,7 +725,7 @@ class ScoreConfig(Serializable):
     """Method for scoring the gradients with the query.
 
     ``nearest``: compute each gradient's similarity to the most similar query
-    gradient (the maximum score). 
+    gradient (the maximum score).
     ``individual``: compute a separate score for each query gradient."""
 
     batch_size: int = 1024

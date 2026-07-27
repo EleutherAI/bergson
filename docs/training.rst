@@ -1,7 +1,7 @@
 Training
 ========
 
-We provide a scalable, distributed, deterministic, and twice-differentiable Trainer. 
+We provide a scalable, distributed, deterministic, and twice-differentiable Trainer.
 
 *Twice-differentiable* implies support for the double backward pass used in MAGIC. We're not aware of any standard alternative trainers with this feature.
 

@@ -20,7 +20,7 @@ When you write a script that launches a CLI command via a subprocess, print the 
 
 ### Tests
 
-Mark tests requiring GPUs with `@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")`. 
+Mark tests requiring GPUs with `@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")`.
 
 Accelerate tests with `pytest -n 8 --dist loadgroup` or similar.
 

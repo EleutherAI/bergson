@@ -28,6 +28,10 @@ extensions = [
 
 release = metadata.version("Bergson")
 
+# Prefix auto-generated section labels with the document name so same-named
+# headings in different pages (e.g. "Quickstart") don't collide.
+autosectionlabel_prefix_document = True
+
 napoleon_google_docstring = True
 napoleon_use_param = False
 napoleon_use_ivar = True

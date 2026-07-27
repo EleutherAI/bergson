@@ -1,15 +1,9 @@
 Trackstar
 =========
 
-``trackstar`` is a high-level composed pipeline that runs hessians, build, and
-score as a single command. It computes separate hessians on the value (training)
-and query datasets, mixes them, builds a query gradient index, and scores the value
-dataset.
-
-This implements the methodology described in
+``trackstar`` is a high-level pipeline that computes and mixes hessian preconditioners, then scores queries on the fly, following the methodology described in
 `Scalable Influence and Fact Tracing for Large Language Model Pretraining <https://arxiv.org/abs/2410.17413>`_
-(Bae et al., 2024), which extends `TRAK <https://arxiv.org/abs/2303.14186>`_ with mixed
-hessians for large-scale language model attribution.
+(Bae et al., 2024). TrackStar is designed for use in large-scale language model attribution, so it's fast and efficient. It can be used as the initial recall-optimized step of a two-stage pipeline as proposed in `Efficient Retrieval of Influential LLM Training Examples <https://simons.berkeley.edu/talks/roger-grosse-university-toronto-2026-04-13>`_.
 
 What It Produces
 ----------------

@@ -1,16 +1,18 @@
 Bergson Documentation
 =====================
 
-Bergson is a library for tracing the memory of deep neural nets with gradient-based data attribution techniques. Data attribution methods estimate the effect on a behavior of interest of removing data points from a model's training corpus. Exactly computing these effects for a corpus of N items requires 2**N retraining runs. Our most costly and powerful method, MAGIC, uses compute equivalent to 3-5 training runs to produce per-token or per-sequence scores that correlate with the effects of leave-k-out retraining at ρ>0.9 in well-behaved settings. More efficient methods like EK-FAC and TrackStar use compute equivalent to ~1-2 training runs (with more modest VRAM usage), but correlate less with leave-k-out retraining (ρ\~=0.1 to 0.5).
+Bergson is a library for gradient-based data attribution of transformers. Data attribution methods estimate the effect on a behavior of interest of removing data points from a model's training corpus, and enable data filtering, re-weighting, and interpretability. 
+
+Naively computing leave-one-out effects for a corpus of N items requires 2**N retraining runs. Our most costly and powerful method, MAGIC, uses compute equivalent to 3-5 training runs to produce per-token or per-sequence scores that correlate with the effects of leave-k-out retraining at ρ>0.9 in well-behaved settings. More efficient methods like EK-FAC and TrackStar use compute equivalent to ~1-2 training runs (with more modest VRAM usage), but correlate less with leave-k-out retraining (ρ\~=0.1 to 0.5).
 
 We provide options for analyzing models and datasets at any scale or level of granularity:
 
 * Compressed or uncompressed gradients.
 * Per-token or per-sequence attribution.
-* Store gradients on-disk or process them in memory with on-the-fly queries.
-* Support for HuggingFace Transformers models and Datasets, including on-disk datasets in a variety of formats.
-* Accumulate queries following `LESS <https://arxiv.org/pdf/2402.04333>`_ and other strategies.
-* Query small gradient datasets on-GPU, and large ones using a sharded FAISS index.
+* On-disk gradient stores or on-the-fly queries.
+* HuggingFace Transformers models and Datasets, including on-disk datasets in a variety of formats.
+* Query aggregation following `LESS <https://arxiv.org/pdf/2402.04333>`_ and other strategies.
+* On-GPU gradient store queries, or sharded FAISS indexes for fast queries at scale.
 * Collect gradients during or after training.
 * Parallelize Bergson operations across multiple GPUs or nodes.
 * Load gradients with or without their module-wise structure.
@@ -30,7 +32,7 @@ Installation
 
    pip install bergson
 
-Quick Start
+Quickstart
 -----------
 
 Build an index of gradients:
