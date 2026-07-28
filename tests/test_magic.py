@@ -965,7 +965,19 @@ def test_magic_backward_matches_across_save_modes_with_dropout(monkeypatch):
     torch.testing.assert_close(scores["log"], scores["all"], atol=1e-12, rtol=1e-6)
 
 
-def test_metagrad_step_matches_single_shot_under_dropout(dataset):
+@pytest.mark.parametrize(
+    "device",
+    [
+        "cpu",
+        pytest.param(
+            "cuda",
+            marks=pytest.mark.skipif(
+                not torch.cuda.is_available(), reason="CUDA not available"
+            ),
+        ),
+    ],
+)
+def test_metagrad_step_matches_single_shot_under_dropout(dataset, device):
     """The micro-batched VJP must reproduce the single-shot one, dropout included.
 
     ``metagrad_step`` runs the model once per micro-batch in stage 0 and again
@@ -973,8 +985,10 @@ def test_metagrad_step_matches_single_shot_under_dropout(dataset):
     All three must draw the same dropout masks, which only holds if the replay
     rewinds the RNG the way ``Trainer.step`` does. With dropout off every draw
     is a no-op and the bug is invisible, so this test turns it up high.
+
+    Runs on CUDA too: dropout there draws from the CUDA generator, so rewinding
+    only the CPU one passes the CPU case while breaking the GPU one.
     """
-    device = "cpu"
     torch.manual_seed(42)
 
     config = AutoConfig.from_pretrained("EleutherAI/pythia-14m")
@@ -982,7 +996,7 @@ def test_metagrad_step_matches_single_shot_under_dropout(dataset):
     config.attention_dropout = 0.5
     model = AutoModelForCausalLM.from_config(
         config, torch_dtype=torch.float32, attn_implementation="eager"
-    )
+    ).to(device)
     model.loss_function = weighted_causal_lm_ce
     model.requires_grad_(True)
     model.train()  # dropout is a no-op in eval mode
