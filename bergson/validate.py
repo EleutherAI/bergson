@@ -570,7 +570,9 @@ def evaluate_retrained(
         else:
             per_subset = torch.zeros(len(subsets))
         for i in tqdm(range(len(subsets)), desc="Evaluating bank"):
-            model = _load_banked_model(run_cfg, str(models_root / f"subset_{i}"), device)
+            model = _load_banked_model(
+                run_cfg, str(models_root / f"subset_{i}"), device
+            )
             if multi_query:
                 per_subset[i] = query_losses_per_doc(model)
             else:
@@ -579,8 +581,10 @@ def evaluate_retrained(
         return base_scalar, base_per_doc, per_subset
 
     # Cache per-subset query losses for re-use with different attribution methods.
-    cache_path = src / "query_loss_cache" / bank_loss_cache_key(
-        run_cfg, multi_query, len(subsets)
+    cache_path = (
+        src
+        / "query_loss_cache"
+        / bank_loss_cache_key(run_cfg, multi_query, len(subsets))
     )
     if cache_path.exists():
         print(f"Reusing cached bank losses from {cache_path}")
@@ -602,9 +606,7 @@ def evaluate_retrained(
         print(f"Saved bank losses to {cache_path}")
 
     if multi_query:
-        print(
-            f"Baseline per-query losses (no leave-out): {baseline_per_doc.tolist()}"
-        )
+        print(f"Baseline per-query losses (no leave-out): {baseline_per_doc.tolist()}")
     else:
         print(f"Baseline query loss (no leave-out): {baseline}")
 
