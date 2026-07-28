@@ -911,45 +911,6 @@ def test_magic_resume(dataset):
             torch.testing.assert_close(resumed_state.params[k], final_state.params[k])
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-def test_step_reproduces_cuda_dropout_masks():
-    """``step()`` restores the CUDA RNG, so a stochastic forward (dropout)
-    replays identically. This is what makes MAGIC's backward-through-training
-    correct when the model has CUDA-side randomness. Without the CUDA restore,
-    the second replay draws fresh dropout masks and diverges.
-    """
-    device = "cuda"
-    torch.manual_seed(0)
-    config = AutoConfig.from_pretrained("EleutherAI/pythia-14m")
-    # Force dropout so the forward actually consumes CUDA randomness.
-    config.hidden_dropout = 0.5
-    model = AutoModelForCausalLM.from_config(
-        config, torch_dtype=torch.float32, attn_implementation="eager"
-    ).to(device)
-    model.requires_grad_(True)
-    model.train()  # dropout active
-
-    optimizer = torchopt.adamw(1e-4, betas=(0.95, 0.975), eps_root=1e-2)
-    trainer, state = Trainer.initialize(model, optimizer)
-
-    ids = torch.randint(0, config.vocab_size, (2, 8), device=device)
-    inputs = {
-        "input_ids": ids,
-        "labels": ids.clone(),
-        "attention_mask": torch.ones_like(ids),
-    }
-
-    # Two independent replays from the SAME state must match.
-    s1 = trainer.step(state, inputs, inplace=False)
-    loss1 = trainer._last_loss
-    s2 = trainer.step(state, inputs, inplace=False)
-    loss2 = trainer._last_loss
-
-    assert loss1 == loss2, (loss1, loss2)
-    for k in s1.params:
-        torch.testing.assert_close(s1.params[k], s2.params[k])
-
-
 def test_prepare_trainer_respects_train_mode(tmp_path):
     """train_mode drives the model's train/eval mode; default is eval."""
     from bergson.magic.config import MagicConfig

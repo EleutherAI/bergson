@@ -32,7 +32,12 @@ requires_multi_gpu = pytest.mark.skipif(
 
 
 def magic_cfg(
-    run_path: str, *, fsdp: bool, clip: bool, grad_accum: int = 1
+    run_path: str,
+    *,
+    fsdp: bool,
+    clip: bool,
+    grad_accum: int = 1,
+    dropout: float = 0.0,
 ) -> MagicConfig:
     data = DataConfig(
         dataset="Salesforce/wikitext",
@@ -53,6 +58,10 @@ def magic_cfg(
         num_subsets=2,
         max_grad_norm=MAX_GRAD_NORM if clip else None,
         grad_accum_steps=grad_accum,
+        train_mode=dropout > 0,
+        model_kwargs=(
+            f"attention_dropout={dropout},resid_pdrop={dropout}" if dropout else ""
+        ),
         distributed=DistributedConfig(nproc_per_node=min(torch.cuda.device_count(), 4)),
     )
 
@@ -169,4 +178,48 @@ def test_grad_accum_matches_full_batch(noclip_scores, tmp_path):
     assert fsdp_ddp_diff < 0.05 * scale, (
         f"FSDP and DDP scores differ with grad accumulation: {fsdp_ddp_diff:.2e} "
         f"(scale {scale:.2e}) — the micro-VJP is likely not shard-correct"
+    )
+
+
+@requires_multi_gpu
+def test_grad_accum_matches_across_fsdp_ddp_under_dropout(noclip_scores, tmp_path):
+    """Micro-batched attribution stays shard-correct when the model is stochastic.
+
+    Dropout makes every micro-batch's gradient depend on the RNG state the
+    forward left behind, so stage B of the micro-VJP only reproduces stage A's
+    masks if the replay rewinds both generators — and on GPU the masks come
+    from the CUDA one. FSDP and DDP run the same ops in the same order, so
+    they must draw the same masks and land on the same scores; a rewind that
+    misses the CUDA generator desynchronizes them.
+
+    The no-dropout run is the control that dropout is actually on: with
+    ``train_mode=False`` the model would be in eval mode and every draw a
+    no-op, leaving this test a duplicate of the deterministic one.
+    """
+    ddp_noclip = noclip_scores["ddp"]
+
+    run_magic(
+        magic_cfg(f"{tmp_path}/ddp", fsdp=False, clip=False, grad_accum=2, dropout=0.5)
+    )
+    run_magic(
+        magic_cfg(f"{tmp_path}/fsdp", fsdp=True, clip=False, grad_accum=2, dropout=0.5)
+    )
+
+    ddp_scores = torch.load(f"{tmp_path}/ddp/scores.pt", weights_only=True)
+    fsdp_scores = torch.load(f"{tmp_path}/fsdp/scores.pt", weights_only=True)
+
+    assert fsdp_scores.shape == ddp_noclip.shape
+
+    scale = ddp_noclip.abs().max()
+    dropout_effect = (ddp_scores - ddp_noclip).abs().max()
+    fsdp_ddp_diff = (fsdp_scores - ddp_scores).abs().max()
+
+    assert dropout_effect > 0.1 * scale, (
+        f"dropout barely changed the scores ({dropout_effect:.2e} vs scale "
+        f"{scale:.2e}); it is probably not active, making this test degenerate"
+    )
+    assert fsdp_ddp_diff < 0.02 * dropout_effect, (
+        f"FSDP and DDP scores differ under dropout: {fsdp_ddp_diff:.2e} "
+        f"(dropout effect {dropout_effect:.2e}) — the micro-batch replay is "
+        "likely drawing different masks per parallelism mode"
     )
