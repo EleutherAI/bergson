@@ -7,6 +7,7 @@ loss increase is correlated against the summed attribution scores of the
 left-out documents.
 """
 
+import hashlib
 import json
 import os
 import random
@@ -17,6 +18,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
+from peft import PeftModel
 from scipy.stats import pearsonr, spearmanr
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -78,6 +80,38 @@ def load_attribution_scores(score_path: str) -> tuple[torch.Tensor, bool]:
     return scores, False
 
 
+def bank_loss_cache_key(
+    run_cfg: ValidationConfig, multi_query: bool, num_subsets: int
+) -> str:
+    """Cache filename for a bank's per-subset query losses.
+
+    The losses depend on the banked models, the query set, how the models are
+    loaded, and (for the single-query token-mean) the batch grouping.
+    ``num_subsets`` and ``multi_query`` determine the shape.
+    """
+    q = run_cfg.query
+    identity = {
+        "model": run_cfg.model,
+        "model_kwargs": run_cfg.model_kwargs,
+        "query_dataset": q.dataset,
+        "query_split": q.split,
+        "query_subset": q.subset,
+        "query_prompt_column": q.prompt_column,
+        "query_completion_column": q.completion_column,
+        "query_truncation": q.truncation,
+        "query_format_template": q.format_template,
+        "query_data_kwargs": q.data_kwargs,
+        "query_chunk_length": q.chunk_length,
+        "batch_size": run_cfg.batch_size,
+        "multi_query": multi_query,
+        "num_subsets": num_subsets,
+    }
+    digest = hashlib.sha256(
+        json.dumps(identity, sort_keys=True, default=str).encode()
+    ).hexdigest()[:16]
+    return f"losses_{digest}.pt"
+
+
 def _load_banked_model(
     run_cfg: ValidationConfig, out_dir: str, device: torch.device | str
 ) -> torch.nn.Module:
@@ -85,8 +119,6 @@ def _load_banked_model(
     load_kwargs = {"dtype": torch.float32, "attn_implementation": "eager"}
     load_kwargs.update(simple_parse_kwargs_string(run_cfg.model_kwargs))
     if os.path.isfile(os.path.join(out_dir, "adapter_config.json")):
-        from peft import PeftModel
-
         base = AutoModelForCausalLM.from_pretrained(run_cfg.model, **load_kwargs)
         model = PeftModel.from_pretrained(base, out_dir)
     else:
@@ -514,23 +546,67 @@ def evaluate_retrained(
             :num_real_query_docs
         ].cpu()
 
-    # The bank's no-leave-out model (retrained/base) gives the query baseline;
-    # absent it, baseline stays 0 (correlation-safe).
-    base_dir = models_root / "base"
-    baseline = 0.0
-    baseline_per_doc = torch.zeros(num_real_query_docs)
-    if base_dir.exists():
-        base = _load_banked_model(run_cfg, str(base_dir), device)
+    def compute_bank_losses() -> tuple[float, torch.Tensor, torch.Tensor]:
+        """Evaluate every banked model, returning baseline + per-subset losses.
+
+        ``per_subset`` is ``[num_subsets, num_real_query_docs]`` for multi-query
+        or ``[num_subsets]`` for single-query. The bank's no-leave-out model
+        (``retrained/base``) gives the baseline; absent it the baseline stays 0
+        (correlation-safe).
+        """
+        base_dir = models_root / "base"
+        base_scalar = 0.0
+        base_per_doc = torch.zeros(num_real_query_docs)
+        if base_dir.exists():
+            base = _load_banked_model(run_cfg, str(base_dir), device)
+            if multi_query:
+                base_per_doc = query_losses_per_doc(base)
+            else:
+                base_scalar = query_loss(base)
+            del base
+
         if multi_query:
-            baseline_per_doc = query_losses_per_doc(base)
-            print(
-                f"Baseline per-query losses (no leave-out) from {base_dir}: "
-                f"{baseline_per_doc.tolist()}"
-            )
+            per_subset = torch.zeros(len(subsets), num_real_query_docs)
         else:
-            baseline = query_loss(base)
-            print(f"Baseline query loss (no leave-out) from {base_dir}: {baseline}")
-        del base
+            per_subset = torch.zeros(len(subsets))
+        for i in tqdm(range(len(subsets)), desc="Evaluating bank"):
+            model = _load_banked_model(run_cfg, str(models_root / f"subset_{i}"), device)
+            if multi_query:
+                per_subset[i] = query_losses_per_doc(model)
+            else:
+                per_subset[i] = query_loss(model)
+            del model
+        return base_scalar, base_per_doc, per_subset
+
+    # Cache per-subset query losses for re-use with different attribution methods.
+    cache_path = src / "query_loss_cache" / bank_loss_cache_key(
+        run_cfg, multi_query, len(subsets)
+    )
+    if cache_path.exists():
+        print(f"Reusing cached bank losses from {cache_path}")
+        blob = torch.load(cache_path, map_location="cpu")
+        baseline = float(blob["baseline"])
+        baseline_per_doc = blob["baseline_per_doc"]
+        per_subset_losses = blob["per_subset"]
+    else:
+        baseline, baseline_per_doc, per_subset_losses = compute_bank_losses()
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {
+                "baseline": baseline,
+                "baseline_per_doc": baseline_per_doc,
+                "per_subset": per_subset_losses,
+            },
+            cache_path,
+        )
+        print(f"Saved bank losses to {cache_path}")
+
+    if multi_query:
+        print(
+            f"Baseline per-query losses (no leave-out): {baseline_per_doc.tolist()}"
+        )
+    else:
+        print(f"Baseline query loss (no leave-out): {baseline}")
 
     csv_path = os.path.join(run_cfg.run_path, "validation.csv")
     val_csv_writer = CSVWriter(
@@ -542,48 +618,25 @@ def evaluate_retrained(
         ),
     )
 
+    # Combine cached losses with attribution subset scores.
     diffs = []
     score_sums = []
-    pbar = tqdm(range(len(subsets)), desc="Evaluating")
-    for i in pbar:
-        model_dir = models_root / f"subset_{i}"
-        model = _load_banked_model(run_cfg, str(model_dir), device)
+    for i in range(len(subsets)):
         if multi_query:
-            diff_vec = baseline_per_doc - query_losses_per_doc(model)
-            del model
-
+            diff_vec = baseline_per_doc - per_subset_losses[i]
             score_sum_vec = scores[subsets[i]].sum(dim=0)
             for q in range(num_real_query_docs):
                 val_csv_writer.writerow(
                     i, q, diff_vec[q].item(), score_sum_vec[q].item()
                 )
-
             diffs.append(diff_vec.tolist())
             score_sums.append(score_sum_vec.tolist())
-            if len(diffs) >= 2:
-                rhos = [
-                    spearmanr(
-                        [row[q] for row in diffs],
-                        [row[q] for row in score_sums],
-                    ).statistic
-                    for q in range(num_real_query_docs)
-                ]
-                pbar.set_postfix({"mean_rho": float(np.mean(rhos))})
-            continue
-
-        loss = query_loss(model)
-        del model
-
-        diff = baseline - loss
-        score_sum = scores[subsets[i]].sum().item()
-        val_csv_writer.writerow(i, diff, score_sum)
-
-        diffs.append(diff)
-        score_sums.append(score_sum)
-        if len(diffs) >= 2:
-            sp = spearmanr(diffs, score_sums)
-            pe = pearsonr(diffs, score_sums)
-            pbar.set_postfix({"rho": sp.statistic, "r": pe.statistic})
+        else:
+            diff = baseline - float(per_subset_losses[i])
+            score_sum = scores[subsets[i]].sum().item()
+            val_csv_writer.writerow(i, diff, score_sum)
+            diffs.append(diff)
+            score_sums.append(score_sum)
 
     val_csv_writer.close()
     print(f"Saved validation data to {csv_path}")
