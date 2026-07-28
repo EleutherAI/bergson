@@ -1,5 +1,4 @@
-# Single-step MAGIC attribution example (tiny GPT-2 / WikiText-2).
-
+# Short MAGIC fine-tune + attribute + validate example. 
 # Run with `bergson examples/magic/gpt2_wikitext_tiny.yaml`
 
 steps:
@@ -7,24 +6,30 @@ steps:
       run_path: runs/gpt2_wikitext
       model: gpt2
       overwrite: true
+      cleanup_ckpts: false
+      save_optimizer_state: false
+      save_retrained_models: false
 
       data:
-        dataset: Salesforce/wikitext
-        subset: wikitext-2-raw-v1
+        dataset: EleutherAI/bergson-wikitext-512-chunks
         split: "train[:512]"
-        chunk_length: 128
+        chunk_length: 0
 
       query:
-        dataset: Salesforce/wikitext
-        subset: wikitext-2-raw-v1
-        split: "train[:512]"
-        chunk_length: 128
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "test[0:1]"
+        chunk_length: 0
 
       distributed:
         nproc_per_node: 1
 
       batch_size: 16
       num_epochs: 1
+      weight_decay: 0.01
+      adam_eps: 1.0e-8
+      adam_beta1: 0.95
+      adam_beta2: 0.975
+      eps_root: 1.0e-6
       lr_schedule:
         lr_scheduler_type: polynomial
         lr: 0.0008

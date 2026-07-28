@@ -33,7 +33,7 @@ requires_multi_gpu = pytest.mark.skipif(
 
 def magic_cfg(run_path: str, *, fsdp: bool, clip: bool) -> MagicConfig:
     data = DataConfig(
-        dataset="Salesforce/wikitext",
+        dataset="EleutherAI/bergson-wikitext-512-chunks",
         subset="wikitext-2-raw-v1",
         split="train[:512]",
         chunk_length=32,

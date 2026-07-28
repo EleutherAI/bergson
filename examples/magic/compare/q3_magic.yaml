@@ -11,15 +11,13 @@ steps:
       overwrite: true
 
       data:
-        dataset: Salesforce/wikitext
-        subset: wikitext-2-raw-v1
+        dataset: EleutherAI/bergson-wikitext-512-chunks
         split: "train"
         chunk_length: 512
 
       query:
-        dataset: Salesforce/wikitext
-        subset: wikitext-2-raw-v1
-        split: "test[3:4]"
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "test[0:1]"
         chunk_length: 0
 
       distributed:
@@ -46,15 +44,13 @@ steps:
       scores: runs/compare/q3_random/scores.pt
 
       data:
-        dataset: Salesforce/wikitext
-        subset: wikitext-2-raw-v1
+        dataset: EleutherAI/bergson-wikitext-512-chunks
         split: "train"
         chunk_length: 512
 
       query:
-        dataset: Salesforce/wikitext
-        subset: wikitext-2-raw-v1
-        split: "test[3:4]"
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "test[0:1]"
         chunk_length: 0
 
       distributed:
@@ -81,15 +77,13 @@ steps:
       scores: runs/compare/q3_random/scores.pt
 
       data:
-        dataset: Salesforce/wikitext
-        subset: wikitext-2-raw-v1
+        dataset: EleutherAI/bergson-wikitext-512-chunks
         split: "train"
         chunk_length: 512
 
       query:
-        dataset: Salesforce/wikitext
-        subset: wikitext-2-raw-v1
-        split: "test[3:4]"
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "test[0:1]"
         chunk_length: 0
 
       distributed:
@@ -117,15 +111,13 @@ steps:
       scores: runs/compare/q3_random/scores.pt
 
       data:
-        dataset: Salesforce/wikitext
-        subset: wikitext-2-raw-v1
+        dataset: EleutherAI/bergson-wikitext-512-chunks
         split: "train"
         chunk_length: 512
 
       query:
-        dataset: Salesforce/wikitext
-        subset: wikitext-2-raw-v1
-        split: "test[3:4]"
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "test[0:1]"
         chunk_length: 0
 
       distributed:

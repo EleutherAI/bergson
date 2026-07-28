@@ -1,4 +1,4 @@
-# Replication of the GPT-2/WikiText experiment from MAGIC (arXiv 2504.16430,
+# Single-query replication of the GPT-2/WikiText experiment from MAGIC (arXiv 2504.16430,
 # App. A).
 
 # Hyperparameters are inferred from the MAGIC paper, the metagradients
@@ -13,15 +13,8 @@ steps:
       model: gpt2
       overwrite: true
       cleanup_ckpts: false
-      weight_decay: 0.01
-      adam_eps: 1.0e-8
-      # Chosen experimentally
-      eps_root: 1.0e-6
-      # The metagradients paper documents sum_of_means for Gemma-IFT, but the
-      # MAGIC paper's Fig. 5 GPT-2 panel shows 1%-drop retrains moving true
-      # loss by only ~0.006 — matching our mean-reduction banks (0.007-0.009)
-      # and excluding sum_of_means (0.2, nearly batch-size-invariant).
-      loss_reduction: mean
+      save_optimizer_state: True
+      save_retrained_models: True
 
       data:
         dataset: EleutherAI/bergson-wikitext-512-chunks
@@ -40,6 +33,16 @@ steps:
       # Original batch size lost
       batch_size: 64
       num_epochs: 4
+      weight_decay: 0.01
+      adam_eps: 1.0e-8
+      adam_beta1: 0.95
+      adam_beta2: 0.975
+      # Chosen experimentally
+      eps_root: 1.0e-6
+      # The metagradients paper documents sum_of_means for Gemma-IFT, but the
+      # MAGIC paper's Fig. 5 GPT-2 panel shows 1%-drop retrains moving true
+      # loss by only ~0.006, matching mean-reduction results.
+      loss_reduction: mean
       lr_schedule:
         lr_scheduler_type: polynomial
         lr: 0.0008
@@ -48,5 +51,3 @@ steps:
         warmup_steps: 0.25
 
       wandb_project: magic
-      save_optimizer_state: True
-      save_retrained_models: True

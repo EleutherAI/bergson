@@ -1,5 +1,5 @@
 # Compute TrackStar attribution scores for a model generated
-# using q3_magic.yaml using test[3:4] as the query, then run leave-k-out
+# using q3_magic.yaml using test[0:1] as the query, then run leave-k-out
 # validation on those scores.
 
 # Run with `bergson examples/magic/compare/q3_trackstar.yaml`
@@ -12,7 +12,7 @@ steps:
         run_path: runs/compare/q3_trackstar
         model: runs/compare/q3_random/hf_model
         overwrite: true
-        # GPT-2's max context length is 1024
+        # GPT-2's max context length
         token_batch_size: 1024
         # GPT-2 uses an nn.Linear for its LM head.
         filter_modules: "lm_head"
@@ -20,8 +20,7 @@ steps:
           nproc_per_node: 4
           nnode: 4
         data:
-          dataset: Salesforce/wikitext
-          subset: wikitext-2-raw-v1
+          dataset: EleutherAI/bergson-wikitext-512-chunks
           split: "train"
           chunk_length: 0
           truncation: true
@@ -29,9 +28,8 @@ steps:
       trackstar_cfg:
         stats_sample_size: 10000
         query:
-          dataset: Salesforce/wikitext
-          subset: wikitext-2-raw-v1
-          split: "test[3:4]"
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "test[0:1]"
           chunk_length: 0
           truncation: true
         preprocess_cfg:
@@ -48,15 +46,13 @@ steps:
       scores: runs/compare/q3_trackstar/scores
 
       data:
-        dataset: Salesforce/wikitext
-        subset: wikitext-2-raw-v1
+        dataset: EleutherAI/bergson-wikitext-512-chunks
         split: "train"
         chunk_length: 512
 
       query:
-        dataset: Salesforce/wikitext
-        subset: wikitext-2-raw-v1
-        split: "test[3:4]"
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "test[0:1]"
         chunk_length: 0
 
       distributed:
@@ -83,15 +79,13 @@ steps:
       scores: runs/compare/q3_trackstar/scores
 
       data:
-        dataset: Salesforce/wikitext
-        subset: wikitext-2-raw-v1
+        dataset: EleutherAI/bergson-wikitext-512-chunks
         split: "train"
         chunk_length: 512
 
       query:
-        dataset: Salesforce/wikitext
-        subset: wikitext-2-raw-v1
-        split: "test[3:4]"
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "test[0:1]"
         chunk_length: 0
 
       distributed:
@@ -118,15 +112,13 @@ steps:
       scores: runs/compare/q3_trackstar/scores
 
       data:
-        dataset: Salesforce/wikitext
-        subset: wikitext-2-raw-v1
+        dataset: EleutherAI/bergson-wikitext-512-chunks
         split: "train"
-        chunk_length: 512
+        chunk_length: 0
 
       query:
-        dataset: Salesforce/wikitext
-        subset: wikitext-2-raw-v1
-        split: "test[3:4]"
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "test[0:1]"
         chunk_length: 0
 
       distributed:
@@ -154,15 +146,13 @@ steps:
       scores: runs/compare/q3_trackstar/scores
 
       data:
-        dataset: Salesforce/wikitext
-        subset: wikitext-2-raw-v1
+        dataset: EleutherAI/bergson-wikitext-512-chunks
         split: "train"
         chunk_length: 512
 
       query:
-        dataset: Salesforce/wikitext
-        subset: wikitext-2-raw-v1
-        split: "test[3:4]"
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "test[0:1]"
         chunk_length: 0
 
       distributed:

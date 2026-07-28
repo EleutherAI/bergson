@@ -180,7 +180,7 @@ def main():
     torch.cuda.set_device(rank)
 
     tokenizer = AutoTokenizer.from_pretrained("gpt2")
-    raw_ds = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="train")
+    raw_ds = load_dataset("EleutherAI/bergson-wikitext-512-chunks", "wikitext-2-raw-v1", split="train")
 
     n_train = 100
     batch_size = 8

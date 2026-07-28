@@ -1,5 +1,5 @@
 # Pipeline: compute EK-FAC scores for the magic-trained model from q3_random
-# against test[3:4], then run leave-k-out validation on those scores.
+# against test[0:1], then run leave-k-out validation on those scores.
 
 # Run with `bergson examples/magic/compare/q3_ekfac.yaml`
 
@@ -22,8 +22,7 @@ steps:
           nproc_per_node: 4
           nnode: 4
         data:
-          dataset: Salesforce/wikitext
-          subset: wikitext-2-raw-v1
+          dataset: EleutherAI/bergson-wikitext-512-chunks
           split: "train"
           truncation: true
 
@@ -39,9 +38,8 @@ steps:
 
       hessian_pipeline_cfg:
         query:
-          dataset: Salesforce/wikitext
-          subset: wikitext-2-raw-v1
-          split: "test[3:4]"
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "test[0:1]"
           chunk_length: 0
         inversion_cfg:
           damping_factor: 0.1
@@ -54,15 +52,13 @@ steps:
       scores: runs/compare/q3_ekfac/scores
 
       data:
-        dataset: Salesforce/wikitext
-        subset: wikitext-2-raw-v1
+        dataset: EleutherAI/bergson-wikitext-512-chunks
         split: "train"
         chunk_length: 512
 
       query:
-        dataset: Salesforce/wikitext
-        subset: wikitext-2-raw-v1
-        split: "test[3:4]"
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "test[0:1]"
         chunk_length: 0
 
       distributed:
@@ -89,15 +85,13 @@ steps:
       scores: runs/compare/q3_ekfac/scores
 
       data:
-        dataset: Salesforce/wikitext
-        subset: wikitext-2-raw-v1
+        dataset: EleutherAI/bergson-wikitext-512-chunks
         split: "train"
         chunk_length: 512
 
       query:
-        dataset: Salesforce/wikitext
-        subset: wikitext-2-raw-v1
-        split: "test[3:4]"
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "test[0:1]"
         chunk_length: 0
 
       distributed:
@@ -124,15 +118,13 @@ steps:
       scores: runs/compare/q3_ekfac/scores
 
       data:
-        dataset: Salesforce/wikitext
-        subset: wikitext-2-raw-v1
+        dataset: EleutherAI/bergson-wikitext-512-chunks
         split: "train"
         chunk_length: 512
 
       query:
-        dataset: Salesforce/wikitext
-        subset: wikitext-2-raw-v1
-        split: "test[3:4]"
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "test[0:1]"
         chunk_length: 0
 
       distributed:
@@ -160,15 +152,13 @@ steps:
       scores: runs/compare/q3_ekfac/scores
 
       data:
-        dataset: Salesforce/wikitext
-        subset: wikitext-2-raw-v1
+        dataset: EleutherAI/bergson-wikitext-512-chunks
         split: "train"
         chunk_length: 512
 
       query:
-        dataset: Salesforce/wikitext
-        subset: wikitext-2-raw-v1
-        split: "test[3:4]"
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "test[0:1]"
         chunk_length: 0
 
       distributed:

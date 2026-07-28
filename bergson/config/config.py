@@ -329,14 +329,13 @@ class TrainingConfig(AttributionConfig, Serializable):
     """Beta2 for AdamW optimizer."""
 
     eps_root: float = 1e-8
-    """Epsilon root for AdamW optimizer.
+    """Epsilon (inside the square root) for AdamW optimizer.
 
-    Note for TrackStar attribution: Adam normalization with a non-zero
-    eps_root is untested. We recommend setting it to zero."""
+    Optimizer-based Hessian approximations are untested with
+    a non-zero eps_root."""
 
     adam_eps: float = 1e-8
-    """Epsilon (outside the square root) for AdamW. MAGIC
-    uses 1e-6."""
+    """Epsilon (outside the square root) for AdamW."""
 
     loss_reduction: Literal["mean", "sum_of_means"] = "mean"
     """How the per-token training losses are reduced to a scalar.
