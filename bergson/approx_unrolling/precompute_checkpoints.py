@@ -120,6 +120,7 @@ def _lambda_worker(
         output_subdir=output_subdir,
         filter_modules=index_cfg.filter_modules,
         dtype=convert_precision_to_torch(hessian_cfg.hessian_dtype),
+        track_moe_experts=index_cfg.track_moe_experts,
     )
 
     computer = CollectorComputer(

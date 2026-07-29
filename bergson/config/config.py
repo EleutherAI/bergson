@@ -586,6 +586,16 @@ class IndexConfig(AttributionConfig, Serializable):
     """Whether to compute per-token gradients instead of per-example.
     Incompatible with reduce mode."""
 
+    track_moe_experts: bool = False
+    """Track MoE layers storing their experts as one fused ``nn.Parameter`` and
+    their router as a 2D one (gpt-oss, Mixtral, Qwen-MoE, OLMoE, DeepSeek-V3).
+    Without this only attention and ``lm_head`` are attributed, a few percent of
+    such a model, and bergson warns when it finds untracked experts.
+
+    Off by default: tracking replaces the experts' forward with a per-expert
+    loop, measured at 3-11x on collection, and grows the per-module index by
+    ``layers * experts * 2``. Incompatible with ``attribute_tokens``."""
+
     modules: list[str] = field(default_factory=list)
     """Modules to use for the query. If empty, all modules will be used."""
 

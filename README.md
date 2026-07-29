@@ -262,13 +262,17 @@ Not all models are affected — run `bergson test_model_configuration` before en
 
 See `benchmarks/` for scripts to reproduce and generate benchmarks on your own hardware.
 
-# Known limitations
+# Mixture-of-Experts models
 
-## MoE fused-parameter experts are not attributed
+In `transformers` 5.x an MoE layer stores its experts as one fused 3D `nn.Parameter` and its router as a 2D one, so neither is an `nn.Linear` and both are skipped. On gpt-oss-20b that leaves 5.8% of the parameters attributed.
 
-Bergson only tracks `nn.Linear`, HF `Conv1D`, and `nn.Conv{1,2,3}d` modules. In modern MoE models (e.g. gpt-oss, Mixtral, Qwen-MoE, OLMoE in `transformers` 5.x), the experts and router are fused bare `nn.Parameter`s rather than `nn.Linear` layers, so they are silently skipped — only attention projections and `lm_head` are tracked (~1-2% of the model's parameters).
+`--track_moe_experts` exposes each expert projection as its own module (`model.layers.0.mlp.experts.expert_3.gate_up_proj`) and tracks the router in place, taking gpt-oss-20b to 97.2% and Mixtral-8x7B to 99.7%. Each expert's routed tokens are gathered into a padded grid first, so per-example gradients respect top-k sparsity. Layouts with one `nn.Linear` per expert are unaffected.
 
-Legacy MoE layouts that implement each expert as a separate `nn.Linear` are fully tracked.
+Tracking is off by default: it replaces the experts' forward with a per-expert loop, which cost 3-11x on collection in CPU eager measurements (GPU is unmeasured, and is where losing the fused grouped-matmul kernel matters most). Without the flag, bergson warns that a model's experts are being skipped rather than staying silent about it.
+
+Tracked modules grow by `layers * experts * 2`, from ~50 to ~1,600 on gpt-oss-20b, and the per-module index grows with them. `--projection_target global` sums all modules into one vector per example and so absorbs the growth; `--filter_modules '*.experts.*'` drops the experts again.
+
+Not covered: `llama4` and `longcat_flash` fuse expert parameters without the `use_experts_implementation` contract detection relies on. `--attribute_tokens` is rejected alongside fused experts, since under top-k routing one token contributes to several experts and its gradient rows cannot line up with token positions.
 
 # Development
 

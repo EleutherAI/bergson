@@ -33,6 +33,7 @@ def collect_gradients(
         preprocess_cfg=preprocess_cfg or PreprocessConfig(),
         attention_cfgs=attention_cfgs or {},
         filter_modules=cfg.filter_modules,
+        track_moe_experts=cfg.track_moe_experts,
     )
 
     computer = CollectorComputer(

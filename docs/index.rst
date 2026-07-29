@@ -13,6 +13,7 @@ We provide options for analyzing models and datasets at any scale or level of gr
 * Parallelize Bergson operations across multiple GPUs or nodes.
 * Load gradients with or without their module-wise structure.
 * Split attention module gradients by head.
+* Attribute Mixture-of-Experts models whose experts and router are fused ``nn.Parameter``\ s, per expert (opt-in via ``--track_moe_experts``).
 
 Installation
 ------------
