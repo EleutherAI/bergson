@@ -390,6 +390,14 @@ class MetasmoothnessConfig(TrainingConfig):
     direction_seed: int = 0
     """Seed for the random perturbation direction ``v``."""
 
+    save_models: bool = False
+    """Persist the unperturbed run's parameters to ``<run_path>/theta_final.pt``
+    and the initialization to ``theta_init.pt`` (name -> fp32 CPU tensor,
+    ~0.65 GB each for GPT-2). The two perturbed runs are finite-difference
+    probes and are not saved. Needed to reuse the model or recompute update
+    norms after the fact -- the run otherwise keeps only
+    ``metasmoothness.json``."""
+
 
 @dataclass
 class ValidationConfig(TrainingConfig, ABC):
