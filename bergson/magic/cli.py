@@ -26,6 +26,7 @@ from transformers.utils.logging import (
     set_verbosity_error as hf_set_verbosity_error,
 )
 
+from ..approx_unrolling.trainer_run import write_lr_history
 from ..config.config import TrainingConfig, ValidationConfig
 from ..config.config_io import save_run_config
 from ..distributed import grad_tree, launch_distributed_run
@@ -236,6 +237,12 @@ def worker(
 
     ckpts_path = os.path.join(run_cfg.run_path, "checkpoints")
     resume = run_cfg.resume
+
+    # Record the realized LR schedule beside the checkpoints, in HF's
+    # log_history shape, so SOURCE can read per-step LRs off a bergson run
+    # through the same path it already uses for HF Trainer runs.
+    if global_rank == 0:
+        write_lr_history(ckpts_path, schedule, len(stream))
 
     fwd_state = trainer.train(
         fwd_state,

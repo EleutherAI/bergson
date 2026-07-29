@@ -29,7 +29,8 @@ def _checkpoint_step(p: str) -> int:
     """Extract the training step index for a checkpoint.
 
     Accepts a path whose final component is a ``checkpoint-<N>`` directory
-    (what HF Trainer writes natively) or a bare ``<N>`` step directory.
+    (what HF Trainer writes natively), a ``step_<N>[.ckpt]`` directory (what
+    the bergson trainer writes), or a bare ``<N>`` step directory.
     """
     # TODO: Inferring the step from a checkpoint name via regex is brittle.
     # For now, we raise an error
@@ -37,11 +38,15 @@ def _checkpoint_step(p: str) -> int:
     m = re.match(r"checkpoint-(\d+)$", name)
     if m:
         return int(m.group(1))
+    m = re.match(r"step_(\d+)(?:\.ckpt)?$", name)
+    if m:
+        return int(m.group(1))
     if name.isdigit():
         return int(name)
     raise ValueError(
         f"Cannot infer a training step from checkpoint {p!r}: expected a path "
-        "ending in 'checkpoint-<N>' or a bare '<N>' step directory. Set both "
+        "ending in 'checkpoint-<N>', 'step_<N>[.ckpt]', or a bare '<N>' step "
+        "directory. Set both "
         "`lr_list` and `step_size_list` on ApproxUnrollingConfig to specify "
         "the per-segment learning rate and step counts explicitly instead of "
         "inferring them from checkpoint names."
@@ -52,11 +57,25 @@ def compute_lr_times_steps_per_segment(
     approx_unrolling_cfg: ApproxUnrollingConfig,
 ) -> list[float]:
     """Per-segment lr * K. Use ``lr_list * step_size_list`` if set on config;
-    else equal-partition log_history.json into segments and sum per-step LRs."""
+    else equal-partition log_history.json into segments and sum per-step LRs.
+
+    With SGD heavy-ball ``momentum`` beta, scale by the terminal velocity
+    1/(1-beta) (Bae et al. 2024, App. D.2). ``momentum`` is taken as given when
+    set; ``None`` means it is derived from ``trainer_run`` (or 0.0 without one),
+    so checkpoints from another trainer are unaffected by the derivation.
+    """
     cfg = approx_unrolling_cfg
     L = cfg.segments
+
+    momentum = cfg.momentum if cfg.momentum is not None else 0.0
+    if not 0.0 <= momentum < 1.0:
+        raise ValueError(f"momentum must be in [0, 1), got {momentum}.")
+    momentum_scale = 1.0 / (1.0 - momentum)
+
     if cfg.lr_list and cfg.step_size_list:
-        return [lr * k for lr, k in zip(cfg.lr_list, cfg.step_size_list)]
+        return [
+            lr * k * momentum_scale for lr, k in zip(cfg.lr_list, cfg.step_size_list)
+        ]
 
     per_segment = len(cfg.checkpoints) // L
     ckpt_steps = [_checkpoint_step(p) for p in cfg.checkpoints]
@@ -75,7 +94,8 @@ def compute_lr_times_steps_per_segment(
             log_history = json.load(f)["log_history"]
     step_to_lr = {e["step"]: e["learning_rate"] for e in log_history}
     return [
-        sum(
+        momentum_scale
+        * sum(
             step_to_lr.get(s, 0.0)
             for s in range(boundaries[l] + 1, boundaries[l + 1] + 1)
         )

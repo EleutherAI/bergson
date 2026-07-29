@@ -786,6 +786,25 @@ class ApproxUnrollingConfig(Serializable):
     """Per-segment optimizer step count; length must == segments. If
     empty, inferred from per-checkpoint step counts."""
 
+    trainer_run: str = ""
+    """Directory of a bergson training run, used to fill in what this config
+    does not state explicitly: ``checkpoints``, ``model_path`` and
+    ``momentum``. Leave empty for checkpoints from another trainer (e.g. HF
+    Trainer) and set those fields by hand -- anything set explicitly always
+    wins over what is read from the run."""
+
+    momentum: float | None = None
+    """SGD heavy-ball momentum beta used during training; scales each segment's
+    lr*steps by the terminal velocity 1/(1-beta) (Bae et al. 2024, App. D.2).
+
+    ``None`` means "not set": derive it from ``trainer_run`` if one is given,
+    else fall back to ``0.0``. Set it explicitly (``0.0`` included) when
+    training happened outside bergson.
+
+    Deriving matters because bergson's SGD takes its momentum from
+    ``TrainingConfig.adam_beta1``, which defaults to ``0.95`` -- assuming 0.0
+    there understates lr*steps by 20x."""
+
     query: DataConfig = field(default_factory=DataConfig)
     """Query dataset spec; gradients computed at the final checkpoint."""
 
