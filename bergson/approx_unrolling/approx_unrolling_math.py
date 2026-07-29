@@ -24,6 +24,8 @@ from bergson.hessians.apply_hessian import EkfacApplicator, EkfacConfig
 from bergson.score.score import score_dataset
 from bergson.score.score_writer import save_sequence_scores, save_token_scores
 
+from .trainer_run import LR_HISTORY_FILENAME, lr_history_path
+
 
 def _checkpoint_step(p: str) -> int:
     """Extract the training step index for a checkpoint.
@@ -77,11 +79,11 @@ def compute_lr_times_steps_per_segment(
     per_segment = len(cfg.checkpoints) // L
     ckpt_steps = [_checkpoint_step(p) for p in cfg.checkpoints]
     boundaries = [0] + [ckpt_steps[(l + 1) * per_segment - 1] for l in range(L)]
-    # Prefer log_history.json if dumped at the parent dir; otherwise pull
-    # log_history out of the final checkpoint's trainer_state.json (what HF
-    # Trainer writes natively).
-    parent = Path(str(cfg.checkpoints[0])).parent
-    log_path = parent / "log_history.json"
+    # A bergson run's own history, else one dumped beside the checkpoints,
+    # else the final checkpoint's trainer_state.json (what HF Trainer writes).
+    log_path = lr_history_path(cfg) or (
+        Path(str(cfg.checkpoints[0])).parent / LR_HISTORY_FILENAME
+    )
     if log_path.exists():
         with open(log_path) as f:
             log_history = json.load(f)

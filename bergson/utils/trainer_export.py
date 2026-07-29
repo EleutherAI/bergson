@@ -1,7 +1,5 @@
-"""Export a run's DCP ``step_<i>.ckpt`` checkpoints to ``checkpoint-<i>/`` model
-dirs that ``from_pretrained`` can load, carrying optimizer state and LR history
-across. Offline, so a run only pays disk for trajectories being attributed.
-"""
+"""Export a run's DCP ``step_<i>.ckpt`` checkpoints to HF-compatible
+``checkpoint-<i>/`` model dirs."""
 
 import shutil
 from pathlib import Path
@@ -9,10 +7,7 @@ from pathlib import Path
 import torch
 from transformers import AutoTokenizer
 
-from ..approx_unrolling.trainer_run import (
-    LR_HISTORY_FILENAME,
-    load_training_config,
-)
+from ..approx_unrolling.trainer_run import load_training_config
 from ..config.config import TrainingConfig
 from ..magic.trainer import prepare_trainer
 from .logger import get_logger
@@ -108,12 +103,6 @@ def export_checkpoints(
 
         exported.append(dst)
         logger.info("Exported %s -> %s", ckpt.name, dst)
-
-    # The LR history sits beside the checkpoints; SOURCE looks for it beside the
-    # *exported* ones, since that is the parent of cfg.checkpoints[0].
-    history = run_path / "checkpoints" / LR_HISTORY_FILENAME
-    if history.is_file():
-        shutil.copy2(history, out_dir / LR_HISTORY_FILENAME)
 
     del trainer, state, model
     return exported

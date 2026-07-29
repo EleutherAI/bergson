@@ -284,3 +284,27 @@ def test_export_round_trips_checkpoint_weights(tmp_path):
     got = dict(reloaded.named_parameters())
     for name, ref in reference.items():
         torch.testing.assert_close(got[name], ref, atol=0, rtol=0)
+
+
+def test_lr_history_read_from_the_run_not_the_export(tmp_path):
+    """One logical location: the trainer writes it beside its own checkpoints
+    and the reader finds it there, so nothing has to be copied on export."""
+    run = _run_dir(tmp_path)
+    write_lr_history(run / "checkpoints", lambda step: 1e-3, 5)
+
+    export = tmp_path / "exported"
+    export.mkdir()
+    for step in (2, 4):
+        (export / f"checkpoint-{step}").mkdir()
+    assert not (export / LR_HISTORY_FILENAME).exists()
+
+    cfg = ApproxUnrollingConfig(
+        trainer_run=str(run),
+        checkpoints=[str(export / "checkpoint-2"), str(export / "checkpoint-4")],
+        segments=2,
+        momentum=0.0,
+    )
+    assert compute_lr_times_steps_per_segment(cfg) == [
+        pytest.approx(2e-3),
+        pytest.approx(2e-3),
+    ]
