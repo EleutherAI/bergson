@@ -1,7 +1,7 @@
 """Per-segment Adam SOURCE preconditioners.
 
 :func:`build_segment_preconditioners` reads each checkpoint dir's
-``optimizer.pt``, bias-corrects the second moments, averages them 
+``optimizer.pt``, bias-corrects the second moments, averages them
 within each segment, and writes
 
     P = 1 / (sqrt(v_hat_bar + eps_root) + eps)
@@ -23,14 +23,15 @@ from ..utils.load_from_optimizer import (
     optimizer_param_index_to_name,
     orient_second_moment,
 )
+from ..utils.optimizer_placement import OPTIMIZER_STATE_FILE
 
-OPTIMIZER_STATE_FILE = "optimizer.pt"
+__all__ = ["OPTIMIZER_STATE_FILE", "build_segment_preconditioners"]
 
 
 def _module_grids(hessian_dir: str | Path) -> dict[str, tuple[int, int]]:
     """Module name -> [out, in] for the module's weight matrix shape.
 
-    The activation eigenvectors are ``[c_i, I]`` and the gradient 
+    The activation eigenvectors are ``[c_i, I]`` and the gradient
     eigenvectors are ``[c_o, O]``, so any shard's column dimensions
     give the full weight matrix shape.
     """
@@ -129,7 +130,7 @@ def build_segment_preconditioners(
     segments: int,
 ) -> list[Path]:
     """Build ``<run>/segment_<l>/preconditioner.safetensors`` for every
-    segment from the checkpoints' ``optimizer.pt``. Returns the 
+    segment from the checkpoints' ``optimizer.pt``. Returns the
     per-segment preconditioner paths.
     """
     base = Path(run_path)
@@ -148,8 +149,9 @@ def build_segment_preconditioners(
                 raise FileNotFoundError(
                     f"use_adam_preconditioner requires "
                     f"{Path(ckpt) / OPTIMIZER_STATE_FILE}; write it during "
-                    "training with TrainingConfig.save_optimizer_state and "
-                    "copy it into the exported checkpoint dir."
+                    "training with TrainingConfig.save_optimizer_state, then "
+                    "place it with bergson.utils.optimizer_placement."
+                    "place_optimizer_states(save_dir, checkpoints)."
                 )
             optimizer_pt = load_optimizer(str(ckpt))
             beta2, eps, eps_root = _adam_hparams(optimizer_pt)

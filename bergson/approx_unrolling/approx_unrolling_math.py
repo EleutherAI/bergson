@@ -152,11 +152,11 @@ def apply_eigfn_to_query(
 
     ``fn_kind`` is "f_segment" or "f_backward". The segment eigenvalues are
     already checkpoint-averaged (expected eigenvalues), so the eigenfunction is
-    applied to them directly. ``preconditioner_path`` selects the
-    preconditioned-optimizer variant: the eigenfunction is evaluated on a
-    diagonal approximation of P^1/2 H P^1/2 in parameter space, with
-    F_segment's output additionally multiplied by P (its P^1/2 . P^1/2
-    sandwich; F_backward's sandwich cancels)."""
+    applied to them directly.
+    ``preconditioner_path`` selects the preconditioned-optimizer variant: the
+    eigenfunction is evaluated on a diagonal approximation of P^1/2 H P^1/2 in
+    parameter space, with F_segment's output additionally multiplied by P
+    (its P^1/2 . P^1/2 sandwich; F_backward's sandwich cancels)."""
     cfg = EkfacConfig(
         hessian_method_path=str(segment_dir),
         gradient_path=str(src_grad_path),

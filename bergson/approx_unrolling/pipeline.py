@@ -115,8 +115,9 @@ def approx_unrolling_pipeline(
             if not state_path.exists():
                 raise FileNotFoundError(
                     f"use_adam_preconditioner requires {state_path}; write it "
-                    "during training with TrainingConfig.save_optimizer_state "
-                    "and copy it into the exported checkpoint dir."
+                    "during training with TrainingConfig.save_optimizer_state, "
+                    "then place it with bergson.utils.optimizer_placement."
+                    "place_optimizer_states(save_dir, checkpoints)."
                 )
 
     lr_times_steps_per_segment = compute_lr_times_steps_per_segment(
