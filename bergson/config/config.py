@@ -370,7 +370,10 @@ class TrainingConfig(AttributionConfig, Serializable):
     grad_accum_steps: int = 1
     """Number of micro-batches to split each (per-rank) training batch into,
     accumulating their gradients before a single optimizer step. The effective
-    batch size is unchanged; peak memory drops to that of one micro-batch."""
+    batch size is unchanged; peak memory drops to that of one micro-batch.
+
+    Under dropout, changing this changes the shapes the masks are drawn for, so
+    trajectories are not identical across values."""
 
     resume: bool = False
     """Resume a previously interrupted run from the last checkpoint."""
