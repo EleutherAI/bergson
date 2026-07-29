@@ -416,3 +416,17 @@ def test_trainer_writes_optimizer_state_inside_each_checkpoint(tmp_path):
         recorded = entry["step"]
         assert int(recorded.item() if torch.is_tensor(recorded) else recorded) == step
         assert blob["param_groups"][0]["betas"] == (0.9, 0.999)
+
+
+def test_discovery_finds_the_default_export_destination(tmp_path):
+    """resolve() must find what export_checkpoints writes with no out_dir given."""
+    from bergson.approx_unrolling.trainer_run import EXPORT_DIRNAME
+
+    run = _run_dir(tmp_path)
+    export = run / EXPORT_DIRNAME
+    for step in (0, 10, 2):
+        (export / f"checkpoint-{step}").mkdir(parents=True)
+
+    out = resolve(ApproxUnrollingConfig(trainer_run=str(run)))
+
+    assert [p.split("-")[-1] for p in out.checkpoints] == ["0", "2", "10"]

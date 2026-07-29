@@ -15,6 +15,10 @@ from ..config.config import ApproxUnrollingConfig, TrainingConfig
 from ..config.config_io import CONFIG_FILENAME
 from ..utils.logger import get_logger
 
+EXPORT_DIRNAME = "exported"
+"""Where export_checkpoints puts ``checkpoint-<N>`` dirs by default, and so the
+first place discovery looks."""
+
 LR_HISTORY_FILENAME = "log_history.json"
 """Per-step LRs in HF's ``log_history`` shape, written beside a run's
 checkpoints -- the path the LR math already checks first."""
@@ -90,12 +94,15 @@ def discover_checkpoints(trainer_run: str | Path) -> list[str]:
     """Saved checkpoints in training order. Prefers exported ``checkpoint-<N>``
     dirs; finding only native ``step_<i>.ckpt`` raises, naming the export."""
     root = Path(trainer_run)
-    exported = sorted(
-        (p for p in root.glob("checkpoint-*") if p.is_dir()),
-        key=lambda p: int(p.name.split("-")[1]),
-    )
-    if exported:
-        return [str(p) for p in exported]
+    # The export's default destination first, then the run root for an export
+    # that was pointed there explicitly.
+    for base in (root / EXPORT_DIRNAME, root):
+        exported = sorted(
+            (p for p in base.glob("checkpoint-*") if p.is_dir()),
+            key=lambda p: int(p.name.split("-")[1]),
+        )
+        if exported:
+            return [str(p) for p in exported]
 
     ckpt_dir = root / "checkpoints"
     native = sorted(

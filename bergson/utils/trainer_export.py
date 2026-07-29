@@ -7,7 +7,7 @@ from pathlib import Path
 import torch
 from transformers import AutoTokenizer
 
-from ..approx_unrolling.trainer_run import load_training_config
+from ..approx_unrolling.trainer_run import EXPORT_DIRNAME, load_training_config
 from ..config.config import TrainingConfig
 from ..magic.trainer import prepare_trainer
 from .logger import get_logger
@@ -50,7 +50,7 @@ def export_checkpoints(
     export, since each one is a full model copy.
     """
     run_path = Path(run_path)
-    out_dir = Path(out_dir) if out_dir is not None else run_path / "exported"
+    out_dir = Path(out_dir) if out_dir is not None else run_path / EXPORT_DIRNAME
     cfg = training_cfg if training_cfg is not None else load_training_config(run_path)
 
     available = sorted_dcp_checkpoints(run_path / "checkpoints")
