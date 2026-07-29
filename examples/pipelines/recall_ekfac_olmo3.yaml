@@ -1,0 +1,63 @@
+# EK-FAC recall for the LoRA-finetuned Olmo-3-7B on the synthetic
+# factual-recall data, to compare against an existing TrackStar result.
+#
+# EK-FAC (kfac + ev_correction) scores every statement against every question
+# (query_aggregation: none -> one score column per question), then `recall`
+# ranks the gold statements per question and reports MRR / Recall@10.
+#
+# Scale is 100 people (3600 statements x 400 questions) to match the TrackStar
+# run already on disk at:
+#     runs/recall_trackstar_olmo3_100p_1gpu/eval/summary.csv
+# so the two are directly comparable. (TrackStar there: MRR 0.547, Recall@10
+# 0.812.) The model (a public LoRA adapter over allenai/Olmo-3-7B-Instruct) and
+# its base are public, so no HF token is needed.
+#
+# Prerequisites:
+#   1. A node with working multi-GPU (NCCL healthy): EK-FAC shards its KFAC
+#      factors across GPUs and OOMs on a single 48GB card for a 7B model. No
+#      `distributed:` block is set, so all GPUs on the node are used.
+#   2. The 100-person recall datasets (already present on our filesystem; if not,
+#      regenerate them deterministically):
+#        python -m bergson.recall.generate --num_people 100 --seed 0 --data_dir data
+#
+# Run with `python -m bergson examples/pipelines/recall_ekfac_olmo3.yaml`, then:
+#   cat runs/recall_ekfac_olmo3_100p/eval/summary.csv               # EK-FAC
+#   cat runs/recall_trackstar_olmo3_100p_1gpu/eval/summary.csv      # TrackStar
+#
+# For a larger comparison, regenerate both datasets at a new --num_people M,
+# rerun TrackStar at that M, and replace every `100` / `_100p_` below with M.
+
+run_path: runs/recall_ekfac_olmo3_100p
+steps:
+  - ekfac:
+      index_cfg:
+        run_path: runs/recall_ekfac_olmo3_100p/ekfac
+        model: EleutherAI/Olmo-3-7B-Instruct-recall-9000
+        precision: bf16
+        overwrite: true
+        force_math_sdp: true
+        data:
+          dataset: data/statements_100p_seed0.hf
+          prompt_column: fact
+      hessian_cfg:
+        method: kfac
+        ev_correction: true
+      score_cfg:
+        batch_size: 1024
+      preprocess_cfg: {}
+      hessian_pipeline_cfg:
+        query:
+          dataset: data/questions_100p_seed0.hf
+          prompt_column: text
+        query_aggregation: none
+        inversion_cfg:
+          inversion: damped_inverse
+          damping_factor: 0.1
+
+  - recall:
+      run_path: runs/recall_ekfac_olmo3_100p/eval
+      scores: runs/recall_ekfac_olmo3_100p/ekfac/scores
+      k: 10
+      data:
+        num_people: 100
+        seed: 0

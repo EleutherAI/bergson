@@ -276,7 +276,7 @@ class Validate(ValidationConfig):
     retrained_dir: str = ""
     """Optional: evaluate on an existing run directory of
     leave-k-out re-trained models written with
-    ``save_retrained_models=true``."""
+    ``save_models=true``."""
 
     def execute(self):
         """Run the validation."""

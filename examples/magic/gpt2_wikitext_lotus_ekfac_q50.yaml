@@ -1,0 +1,79 @@
+# EK-FAC counterpart to gpt2_wikitext_lotus_mq.yaml: computes EK-FAC
+# attribution scores for the SAME base model trained by
+# examples/magic/gpt2_wikitext_lotus.yaml (runs/lotus/retrained/base,
+# bs=64/eps_root=1e-6), against the same 50 test queries (test[1:51]),
+# then validates those scores against the existing 400-model leave-k-out
+# bank in runs/lotus/retrained -- no retraining needed, that bank is
+# already complete.
+#
+# IMPORTANT: run_path values below are meant to be unique on this shared
+# filesystem. If another run is already using them, rename before running
+# (e.g. add your hostname) -- do NOT run this against a run_path someone
+# else might be using. runs/lotus itself is read-only here and already
+# finished, so it's safe to read from concurrently.
+
+# Run with `bergson examples/magic/gpt2_wikitext_lotus_ekfac_q50.yaml`
+# from /mnt/ssd-1/lucia/bergson-damping (paths below are relative to that).
+
+steps:
+  - ekfac:
+      index_cfg:
+        run_path: runs/lotus_scores_ekfac50q
+        model: runs/lotus/retrained/base
+        overwrite: true
+        # GPT-2's max context length is 1024.
+        token_batch_size: 1024
+        # Cap batch size in docs so the bin-packer doesn't produce
+        # large batches of very few tokens (gradients aren't compressed
+        # for EK-FAC).
+        max_batch_size: 64
+        # GPT-2 uses an nn.Linear for its LM head.
+        filter_modules: "lm_head"
+        distributed:
+          nproc_per_node: 8   # <-- adjust to this node's GPU count
+          nnode: 1
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "train"
+          chunk_length: 0
+
+      hessian_cfg:
+        method: kfac
+        ev_correction: true
+
+      score_cfg:
+        batch_size: 1024
+
+      preprocess_cfg:
+        unit_normalize: false
+
+      hessian_pipeline_cfg:
+        query:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "test[1:51]"
+          chunk_length: 0
+        # One score column per query (50 total), not aggregated --
+        # required for the multi-query LDS validation below.
+        query_aggregation: none
+        inversion_cfg:
+          damping_factor: 0.1
+
+  - validate:
+      run_path: runs/lotus_scores_ekfac50q_validate
+      model: gpt2
+      overwrite: true
+
+      scores: runs/lotus_scores_ekfac50q/scores
+      retrained_dir: runs/lotus
+
+      data:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "train"
+        chunk_length: 0
+
+      query:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "test[1:51]"
+        chunk_length: 0
+
+      batch_size: 64

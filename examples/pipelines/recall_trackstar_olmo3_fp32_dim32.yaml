@@ -1,0 +1,57 @@
+# TrackStar recall in fp32 with projection_dim 32 (vs 16 in
+# recall_trackstar_olmo3_fp32.yaml, otherwise identical). Each module gradient
+# gets a double-sided 32x32 random projection instead of 16x16, i.e. 4x the
+# projected feature dims — testing whether TrackStar's gap to EK-FAC/SOURCE at
+# dim 16 (see experiments/recall_attribution_fp32/README.md) is a projection
+# bottleneck. dim 64 OOMs: the dense per-module Grams are (d^2)^2 fp32, ~30GB
+# at d=64 next to the 28GB model. d=32 keeps them at ~1.9GB.
+#
+# Run with
+# `python -m bergson examples/pipelines/recall_trackstar_olmo3_fp32_dim32.yaml`,
+# then:
+#   cat runs/recall_trackstar_olmo3_100p_fp32_dim32/eval/summary.csv
+
+run_path: runs/recall_trackstar_olmo3_100p_fp32_dim32
+steps:
+  - trackstar:
+      index_cfg:
+        run_path: runs/recall_trackstar_olmo3_100p_fp32_dim32/trackstar
+        overwrite: true
+        model: EleutherAI/Olmo-3-7B-Instruct-recall-9000
+        precision: fp32
+        distributed:
+          nnode: 1
+          nproc_per_node: 8
+        data:
+          dataset: data/statements_100p_seed0.hf
+          prompt_column: fact
+        projection_dim: 32
+        projection_type: rademacher
+        projection_target: per_module
+        # Down from 2048 in the bf16 run: the fp32 model + backward OOMs a
+        # single 48GB A40 at that token budget.
+        token_batch_size: 512
+        force_math_sdp: true
+      trackstar_cfg:
+        query:
+          dataset: data/questions_100p_seed0.hf
+          prompt_column: text
+        preprocess_cfg:
+          unit_normalize: true
+          inversion_cfg:
+            inversion: damped_inverse
+            damping_factor: 0.1
+          aggregation: none
+        score_cfg:
+          score: individual
+          batch_size: 1024
+          precision: fp32
+        target_downweight_components: 1000
+
+  - recall:
+      run_path: runs/recall_trackstar_olmo3_100p_fp32_dim32/eval
+      scores: runs/recall_trackstar_olmo3_100p_fp32_dim32/trackstar/scores
+      k: 10
+      data:
+        num_people: 100
+        seed: 0

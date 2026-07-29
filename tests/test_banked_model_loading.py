@@ -1,6 +1,6 @@
-"""Loading banked ``save_retrained_models`` checkpoints in ``evaluate_retrained``.
+"""Loading banked ``save_models`` checkpoints in ``evaluate_retrained``.
 
-``save_retrained_models`` banks whatever ``model.save_pretrained`` produces:
+``save_models`` banks whatever ``model.save_pretrained`` produces:
 a full HF checkpoint for plain fine-tunes, or an adapter-only directory when
 ``peft_init_kwargs`` is set. ``AutoModelForCausalLM.from_pretrained`` pointed
 straight at an adapter-only directory silently returns a randomly-initialised

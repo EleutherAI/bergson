@@ -1,0 +1,31 @@
+# Final true multi-query LDS check on all 50 per-query MAGIC backward
+# passes, recomputed post-fix by scratchpad/run_50_bwd_fixed.sh. No
+# retraining, no backward pass -- reuses the existing 400-model leave-k-out
+# bank at runs/lotus/retrained, scored against a stacked [4608, 50]
+# multi-query score array (runs/lotus_bwd/final_q01_50_scores.npy).
+#
+# Run with `bergson examples/magic/gpt2_wikitext_lotus_final_q01_50.yaml`
+
+steps:
+  - validate:
+      run_path: runs/lotus_final_q01_50
+      model: gpt2
+      overwrite: true
+
+      scores: runs/lotus_bwd/final_q01_50_scores.npy
+      retrained_dir: runs/lotus
+
+      distributed:
+        nproc_per_node: 1
+
+      data:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "train"
+        chunk_length: 0
+
+      query:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "test[1:51]"
+        chunk_length: 0
+
+      batch_size: 8

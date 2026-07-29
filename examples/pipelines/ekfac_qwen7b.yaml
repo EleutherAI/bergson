@@ -1,0 +1,59 @@
+# EKFAC influence pipeline for Qwen/Qwen2.5-7B-Instruct on a dummy test set.
+#
+# Fits an EK-FAC (KFAC + eigenvalue correction) Hessian over a small slice of
+# pile-10k, then scores every index document against the mean gradient of a
+# tiny 4-document query "test set". Small enough to sanity-check the pipeline
+# end-to-end; scale up the dataset splits for a real run.
+#
+# Run with `bergson examples/pipelines/ekfac_qwen7b.yaml`
+#
+# Outputs land under runs/ekfac_qwen7b/. The score memmap is at
+# runs/ekfac_qwen7b/scores/scores.bin; load it with bergson.data.load_scores.
+
+run_path: runs/ekfac_qwen7b
+steps:
+  - ekfac:
+      index_cfg:
+        run_path: runs/ekfac_qwen7b
+        model: Qwen/Qwen2.5-7B-Instruct
+        overwrite: true
+        # bf16 keeps the 7B model comfortably within a single 48GB GPU.
+        precision: bf16
+        token_batch_size: 2048
+        # EK-FAC doesn't support gradient projection at any stage, so every
+        # gradient here is the full dense weight gradient. For a
+        # multi-billion-param model that means ONE document per batch — 16
+        # docs would need hundreds of GB. Raise cautiously.
+        max_batch_size: 1
+        # Qwen2.5's LM head is a huge (152k x 3584) nn.Linear; exclude it.
+        filter_modules: "lm_head"
+        distributed:
+          nproc_per_node: 8
+          nnode: 1
+        data:
+          # Dummy index corpus: a small slice of pile-10k.
+          dataset: NeelNanda/pile-10k
+          split: "train[:128]"
+          truncation: true
+
+      hessian_cfg:
+        # KFAC + eigenvalue correction == EK-FAC.
+        method: kfac
+        ev_correction: true
+
+      score_cfg:
+        batch_size: 512
+
+      preprocess_cfg:
+        unit_normalize: false
+
+      hessian_pipeline_cfg:
+        query:
+          # Dummy query "test set": 8 held-out documents (>= nproc_per_node so
+          # every GPU is used; bergson caps workers to the dataset size).
+          dataset: NeelNanda/pile-10k
+          split: "train[128:136]"
+          truncation: true
+        query_aggregation: mean
+        inversion_cfg:
+          damping_factor: 0.1

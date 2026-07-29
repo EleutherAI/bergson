@@ -1,0 +1,57 @@
+# TrackStar recall for the LoRA-finetuned Olmo-3-7B on the synthetic
+# factual-recall data, in fp32.
+#
+# Mirrors the config saved in runs/recall_trackstar_olmo3_100p_1gpu/config.yaml
+# (bergson 0.10.0, git 989808d0) with precision fp32 instead of bf16 and an
+# _fp32 run path. Kept single-process (nproc_per_node: 1) because the cosine
+# recall variants OOM on host RAM when run multi-GPU. Compare against the fp32
+# EK-FAC run from recall_ekfac_olmo3_fp32.yaml.
+#
+# Run with `python -m bergson examples/pipelines/recall_trackstar_olmo3_fp32.yaml`,
+# then:
+#   cat runs/recall_trackstar_olmo3_100p_fp32_1gpu/eval/summary.csv
+
+run_path: runs/recall_trackstar_olmo3_100p_fp32_1gpu
+steps:
+  - trackstar:
+      index_cfg:
+        run_path: runs/recall_trackstar_olmo3_100p_fp32_1gpu/trackstar
+        overwrite: true
+        model: EleutherAI/Olmo-3-7B-Instruct-recall-9000
+        precision: fp32
+        distributed:
+          nnode: 1
+          nproc_per_node: 1
+        data:
+          dataset: data/statements_100p_seed0.hf
+          prompt_column: fact
+        projection_dim: 16
+        projection_type: rademacher
+        projection_target: per_module
+        # Down from 2048 in the bf16 run: the fp32 model + backward OOMs a
+        # single 48GB A40 at that token budget.
+        token_batch_size: 512
+        force_math_sdp: true
+      trackstar_cfg:
+        query:
+          dataset: data/questions_100p_seed0.hf
+          prompt_column: text
+        preprocess_cfg:
+          unit_normalize: true
+          inversion_cfg:
+            inversion: damped_inverse
+            damping_factor: 0.1
+          aggregation: none
+        score_cfg:
+          score: individual
+          batch_size: 1024
+          precision: fp32
+        target_downweight_components: 1000
+
+  - recall:
+      run_path: runs/recall_trackstar_olmo3_100p_fp32_1gpu/eval
+      scores: runs/recall_trackstar_olmo3_100p_fp32_1gpu/trackstar/scores
+      k: 10
+      data:
+        num_people: 100
+        seed: 0

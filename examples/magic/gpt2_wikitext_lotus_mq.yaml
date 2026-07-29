@@ -1,0 +1,70 @@
+# Multi-query LDS follow-up to the "lotus" run (examples/magic/gpt2_wikitext_lotus.yaml).
+#
+# Step 1 retrains the same bs=64/eps_root=1e-6 base model (deterministic,
+# same seed) purely to get a fresh MAGIC backward pass against 50 NEW test
+# queries (test[1:51], i.e. the 50 WikiText test docs after the one used by
+# the original lotus run) -- skip_validation stops it before any retraining.
+#
+# Step 2 reuses the 400 leave-k-out checkpoints already saved under
+# runs/lotus/retrained (no retraining) and correlates them against the new
+# per-query scores from step 1, reporting a mean Spearman LDS across the
+# 50 queries.
+
+# Run with `bergson examples/magic/gpt2_wikitext_lotus_mq.yaml`
+
+steps:
+  - magic:
+      run_path: runs/lotus_mq_scores
+      model: gpt2
+      overwrite: true
+      cleanup_ckpts: false
+
+      data:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "train"
+        chunk_length: 0
+
+      query:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "test[1:51]"
+        chunk_length: 0
+
+      distributed:
+        nproc_per_node: 8
+        nnode: 1
+
+      eps_root: 1e-6
+
+      batch_size: 64
+      num_epochs: 4
+      lr_schedule:
+        lr_scheduler_type: polynomial
+        lr: 0.0008
+        lr_start: 1e-6
+        lr_end: 0.00008
+        warmup_steps: 0.25
+
+      skip_validation: true
+      save_retrained_models: false
+      save_optimizer_state: false
+      wandb_project: magic
+
+  - validate:
+      run_path: runs/lotus_mq_eval
+      model: gpt2
+      overwrite: true
+
+      scores: runs/lotus_mq_scores/scores.pt
+      retrained_dir: runs/lotus
+
+      data:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "train"
+        chunk_length: 0
+
+      query:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "test[1:51]"
+        chunk_length: 0
+
+      batch_size: 64

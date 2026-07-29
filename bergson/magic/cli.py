@@ -284,7 +284,7 @@ def worker(
             os.path.join(run_cfg.run_path, "optimizer.pt"),
         )
 
-    if run_cfg.save_retrained_models and global_rank == 0:
+    if run_cfg.save_models and global_rank == 0:
         # Persist the fully-trained (no leave-out) model alongside the per-subset
         # models, so a later evaluate_retrained run can measure the query
         # baseline from the bank itself instead of a separate base_model_dir.
