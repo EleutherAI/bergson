@@ -238,9 +238,6 @@ def worker(
     ckpts_path = os.path.join(run_cfg.run_path, "checkpoints")
     resume = run_cfg.resume
 
-    # Record the realized LR schedule beside the checkpoints, in HF's
-    # log_history shape, so SOURCE can read per-step LRs off a bergson run
-    # through the same path it already uses for HF Trainer runs.
     if global_rank == 0:
         write_lr_history(ckpts_path, schedule, len(stream))
 

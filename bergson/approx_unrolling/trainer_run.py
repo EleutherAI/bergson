@@ -1,8 +1,5 @@
-"""Fill in SOURCE hyperparameters from a bergson run's ``config.yaml``.
-
-SOURCE was built for HF Trainer runs. Everything here is a fallback: explicit
-config fields always win, so other trainers are unaffected.
-"""
+"""Fill in unset SOURCE configuration from a bergson run's ``config.yaml``
+if present."""
 
 import json
 from pathlib import Path

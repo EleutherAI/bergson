@@ -446,3 +446,61 @@ def test_dcp_checkpoints_are_rejected_with_the_export_hint(tmp_path):
 
     with pytest.raises(ValueError, match="export_checkpoints"):
         resolve(ApproxUnrollingConfig(checkpoints=[str(ckpt)]))
+
+
+def test_export_checkpoints_end_to_end(tmp_path):
+    """The function itself: reads the run's config.yaml, builds the model via
+    prepare_trainer, and writes loadable checkpoint-<i>/ dirs with their
+    optimizer state -- the wiring the round-trip test does not cover."""
+    import torchopt
+    from datasets import Dataset
+    from transformers import AutoConfig, AutoModelForCausalLM
+
+    from bergson.approx_unrolling.trainer_run import EXPORT_DIRNAME
+    from bergson.magic.data_stream import DataStream
+    from bergson.magic.trainer import Trainer
+    from bergson.utils.load_from_optimizer import load_optimizer
+    from bergson.utils.trainer_export import (
+        OPTIMIZER_STATE_FILE,
+        export_checkpoints,
+    )
+
+    model_name = "EleutherAI/pythia-14m"
+    run = _run_dir(tmp_path, model=model_name, optimizer="adamw")
+
+    torch.manual_seed(0)
+    config = AutoConfig.from_pretrained(model_name)
+    model = AutoModelForCausalLM.from_config(
+        config, dtype=torch.float32, attn_implementation="eager"
+    )
+    model.requires_grad_(True)
+
+    n = 3
+    ds = Dataset.from_dict(
+        {"input_ids": [[1, 2, 3, 4]] * n, "labels": [[1, 2, 3, 4]] * n}
+    )
+    stream = DataStream(ds, batch_size=1, device="cpu")
+    trainer, state = Trainer.initialize(model, torchopt.adamw(lambda step: 1e-4))
+    trainer.train(
+        state,
+        stream,
+        inplace=True,
+        save_dir=str(run / "checkpoints"),
+        save_mode="all",
+        optimizer_cfg=dict(betas=(0.9, 0.999), eps=1e-8, eps_root=0.0),
+    )
+
+    exported = export_checkpoints(run, steps=[0, 2])
+
+    assert [p.name for p in exported] == ["checkpoint-0", "checkpoint-2"]
+    assert exported[0].parent == run / EXPORT_DIRNAME
+
+    for dst in exported:
+        AutoModelForCausalLM.from_pretrained(str(dst))
+        assert load_optimizer(str(dst))["state"], f"{dst} lost its optimizer state"
+        assert (dst / OPTIMIZER_STATE_FILE).is_file()
+
+    # And the exported dirs are what resolve() then picks up.
+    out = resolve(ApproxUnrollingConfig(checkpoints=[str(p) for p in exported]))
+    assert out.model_path == model_name
+    assert out.momentum == 0.0  # adamw

@@ -44,10 +44,10 @@ def export_checkpoints(
     steps: list[int] | None = None,
     overwrite: bool = False,
 ) -> list[Path]:
-    """Export ``step_<i>.ckpt`` to ``checkpoint-<i>/`` dirs, in step order.
+    """Export ``step_<i>.ckpt`` to ``checkpoint-<i>/`` HF dirs, in step order.
 
-    ``training_cfg`` defaults to the run's ``config.yaml``. ``steps`` limits the
-    export, since each one is a full model copy.
+    ``training_cfg`` defaults to the run's ``config.yaml``. ``steps`` limits which
+    checkpoints are exported.
     """
     run_path = Path(run_path)
     out_dir = Path(out_dir) if out_dir is not None else run_path / EXPORT_DIRNAME
@@ -80,8 +80,8 @@ def export_checkpoints(
             f"{[str(c) for c in clashes]} already exist; pass overwrite=True."
         )
 
-    # One model/state is built and reloaded per checkpoint, rather than one per
-    # step: the state's tensors are loaded in place by TrainerState.load.
+    # One model and state is built and reloaded per checkpoint.
+    # The state's tensors are loaded in place by TrainerState.load.
     trainer, state, model = prepare_trainer(cfg, rank=0, schedule=lambda step: 0.0)
 
     tokenizer = AutoTokenizer.from_pretrained(cfg.model)

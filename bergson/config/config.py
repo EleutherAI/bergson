@@ -353,16 +353,7 @@ class TrainingConfig(AttributionConfig, Serializable):
     """Enable ``.train()`` mode. Not certified MAGIC-safe."""
 
     save_optimizer_state: Literal["none", "last", "all"] = "none"
-    """Which checkpoints' optimizer second moments to persist. AdamW only.
-
-    - "none" (default): none.
-    - "last": the final state at ``<run_path>/optimizer.pt``, for use as an
-      attribution normalizer.
-    - "all": that, plus each checkpoint's state at ``optimizer.pt`` inside its
-      own directory -- what SOURCE's Adam variant reads. One extra file per
-      checkpoint, each the size of the trainable parameters.
-
-    Accepts the old booleans: ``true`` means "last", ``false`` means "none"."""
+    """Which checkpoints' optimizer second moments to persist. AdamW only."""
 
     weight_decay: float = 0.01
     """Weight decay coefficient for AdamW and Muon."""
@@ -391,8 +382,7 @@ class TrainingConfig(AttributionConfig, Serializable):
     def __post_init__(self):
         super().__post_init__()
 
-        # Back-compat: save_optimizer_state used to be a bool meaning
-        # "write the final state".
+        # TODO Lucia Quirke August: remove bwd-compat
         if isinstance(self.save_optimizer_state, bool):
             self.save_optimizer_state = "last" if self.save_optimizer_state else "none"
 
@@ -803,10 +793,8 @@ class ApproxUnrollingConfig(Serializable):
 
     momentum: float | None = None
     """SGD heavy-ball momentum beta; scales lr*steps by 1/(1-beta) (Bae et al.
-    2024, App. D.2). ``None`` derives it from the run the checkpoints
-    came from, else 0.0.
-    bergson's SGD uses ``adam_beta1`` (default 0.95), so assuming 0.0 there
-    understates lr*steps by 20x."""
+    2024, App. D.2). When ``None`` it's derived from the run if present or set
+    to 0.0."""
 
     query: DataConfig = field(default_factory=DataConfig)
     """Query dataset spec; gradients computed at the final checkpoint."""
