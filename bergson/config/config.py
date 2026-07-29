@@ -789,8 +789,9 @@ class ApproxUnrollingConfig(Serializable):
 
     trainer_run: str = ""
     """Bergson run directory to read ``checkpoints``, ``model_path`` and
-    ``momentum`` from. Explicit fields always win; leave empty for other
-    trainers."""
+    ``momentum`` from. Inferred from ``checkpoints`` when they came from one,
+    so it is only needed to discover the checkpoints themselves or to point at
+    a different run. Explicit fields always win."""
 
     momentum: float | None = None
     """SGD heavy-ball momentum beta; scales lr*steps by 1/(1-beta) (Bae et al.

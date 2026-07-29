@@ -430,3 +430,38 @@ def test_discovery_finds_the_default_export_destination(tmp_path):
     out = resolve(ApproxUnrollingConfig(trainer_run=str(run)))
 
     assert [p.split("-")[-1] for p in out.checkpoints] == ["0", "2", "10"]
+
+
+def test_trainer_run_inferred_from_exported_checkpoints(tmp_path):
+    """Setting checkpoints is enough; the run is found from their path."""
+    from bergson.approx_unrolling.trainer_run import EXPORT_DIRNAME
+
+    run = _run_dir(tmp_path, optimizer="sgd", adam_beta1=0.9, model="gpt2")
+    ckpt = run / EXPORT_DIRNAME / "checkpoint-3"
+    ckpt.mkdir(parents=True)
+
+    out = resolve(ApproxUnrollingConfig(checkpoints=[str(ckpt)]))
+
+    assert out.trainer_run == str(run)
+    assert out.momentum == 0.9
+    assert out.model_path == "gpt2"
+
+
+def test_trainer_run_inferred_from_run_root_checkpoints(tmp_path):
+    run = _run_dir(tmp_path, optimizer="sgd", adam_beta1=0.8)
+    ckpt = run / "checkpoint-1"
+    ckpt.mkdir()
+
+    assert resolve(ApproxUnrollingConfig(checkpoints=[str(ckpt)])).momentum == 0.8
+
+
+def test_foreign_checkpoints_infer_nothing(tmp_path):
+    """HF Trainer checkpoints must not pick up an unrelated run's config."""
+    hf = tmp_path / "hf_run" / "checkpoint-500"
+    hf.mkdir(parents=True)
+
+    out = resolve(ApproxUnrollingConfig(checkpoints=[str(hf)]))
+
+    assert out.trainer_run == ""
+    assert out.momentum == 0.0
+    assert out.model_path is None

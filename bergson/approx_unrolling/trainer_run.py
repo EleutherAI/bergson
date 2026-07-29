@@ -123,16 +123,35 @@ def discover_checkpoints(trainer_run: str | Path) -> list[str]:
     )
 
 
+def infer_trainer_run(checkpoints: list[str]) -> str:
+    """The bergson run a checkpoint came from, or "" if it did not come from one.
+
+    Only the two layouts we emit are considered -- ``<run>/exported/checkpoint-N``
+    and ``<run>/checkpoint-N`` -- so an unrelated config.yaml further up the tree
+    is never mistaken for the run that produced these checkpoints. Checkpoints
+    from other trainers simply find nothing.
+    """
+    if not checkpoints:
+        return ""
+    first = Path(checkpoints[0])
+    for candidate in (first.parent.parent, first.parent):
+        if (candidate / CONFIG_FILENAME).is_file():
+            return str(candidate)
+    return ""
+
+
 def resolve(cfg: ApproxUnrollingConfig) -> ApproxUnrollingConfig:
     """Fill unset fields from ``cfg.trainer_run``. A no-op when it is empty;
     never overwrites a field the caller set."""
-    if not cfg.trainer_run:
-        # Nothing to derive from; only normalize the momentum sentinel.
+    trainer_run = cfg.trainer_run or infer_trainer_run(cfg.checkpoints)
+    if not trainer_run:
+        # Not a bergson run; only normalize the momentum sentinel.
         if cfg.momentum is None:
             cfg.momentum = 0.0
         return cfg
+    cfg.trainer_run = trainer_run
 
-    training_cfg = load_training_config(cfg.trainer_run)
+    training_cfg = load_training_config(trainer_run)
     filled: list[str] = []
 
     if not cfg.checkpoints:
