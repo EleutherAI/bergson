@@ -14,8 +14,6 @@ steps:
         overwrite: true
         # GPT-2's max context length
         token_batch_size: 1024
-        # GPT-2 uses an nn.Linear for its LM head.
-        filter_modules: "lm_head"
         distributed:
           nproc_per_node: 4
           nnode: 4

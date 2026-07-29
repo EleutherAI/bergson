@@ -1,0 +1,161 @@
+# Muon rows — README Functionality table rows "Shampoo / Muon" and
+# "EK-FAC / Muon".
+#
+# Step 1 trains GPT-2 with Muon via `magic` and banks the leave-k-out
+# retrained models under runs/compare/q3_muon_random/retrained/ (the banked
+# validation is what writes the bank, and also yields a MAGIC/Muon LDS as a
+# byproduct — not part of the README table). Steps 2-5 score the Muon-trained
+# model with Shampoo and EK-FAC preconditioners and evaluate LDS against the
+# Muon bank without retraining.
+#
+# Run with `bergson examples/LDS_comparison/compare/q3_muon.yaml`
+
+run_path: runs/compare/q3_muon
+steps:
+  - magic:
+      run_path: runs/compare/q3_muon_random
+      model: gpt2
+      overwrite: true
+      optimizer: muon
+      save_retrained_models: true
+
+      data:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "train"
+        chunk_length: 512
+
+      query:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "test[0:1]"
+        chunk_length: 0
+
+      distributed:
+        nproc_per_node: 4
+        nnode: 4
+
+      batch_size: 256
+      num_epochs: 2
+      lr_schedule:
+        lr_scheduler_type: polynomial
+        lr: 0.0008
+        lr_start: 1e-6
+        lr_end: 0.00008
+        warmup_steps: 0.25
+
+      subset_strategy: random
+      wandb_project: magic
+
+  - ekfac:
+      index_cfg:
+        run_path: runs/compare/q3_shampoo_muon
+        # Final Muon-trained model banked by step 1.
+        model: runs/compare/q3_muon_random/retrained/base
+        overwrite: true
+        token_batch_size: 1024
+        max_batch_size: 64
+        distributed:
+          nproc_per_node: 4
+          nnode: 4
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "train"
+          truncation: true
+
+      hessian_cfg:
+        method: shampoo
+
+      score_cfg:
+        batch_size: 1024
+
+      preprocess_cfg:
+        unit_normalize: false
+
+      hessian_pipeline_cfg:
+        query:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "test[0:1]"
+          chunk_length: 0
+        inversion_cfg:
+          damping_factor: 0.1
+
+  - validate:
+      run_path: runs/compare/q3_validate_shampoo_muon
+      model: gpt2
+      overwrite: true
+
+      scores: runs/compare/q3_shampoo_muon/scores
+      # Re-use the leave-k-out models banked by step 1.
+      retrained_dir: runs/compare/q3_muon_random
+
+      data:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "train"
+        chunk_length: 512
+
+      query:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "test[0:1]"
+        chunk_length: 0
+
+      distributed:
+        nproc_per_node: 4
+        nnode: 4
+
+      batch_size: 256
+
+  - ekfac:
+      index_cfg:
+        run_path: runs/compare/q3_ekfac_muon
+        model: runs/compare/q3_muon_random/retrained/base
+        overwrite: true
+        token_batch_size: 1024
+        max_batch_size: 64
+        distributed:
+          nproc_per_node: 4
+          nnode: 4
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "train"
+          truncation: true
+
+      hessian_cfg:
+        method: kfac
+        ev_correction: true
+
+      score_cfg:
+        batch_size: 1024
+
+      preprocess_cfg:
+        unit_normalize: false
+
+      hessian_pipeline_cfg:
+        query:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "test[0:1]"
+          chunk_length: 0
+        inversion_cfg:
+          damping_factor: 0.1
+
+  - validate:
+      run_path: runs/compare/q3_validate_ekfac_muon
+      model: gpt2
+      overwrite: true
+
+      scores: runs/compare/q3_ekfac_muon/scores
+      retrained_dir: runs/compare/q3_muon_random
+
+      data:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "train"
+        chunk_length: 512
+
+      query:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "test[0:1]"
+        chunk_length: 0
+
+      distributed:
+        nproc_per_node: 4
+        nnode: 4
+
+      batch_size: 256

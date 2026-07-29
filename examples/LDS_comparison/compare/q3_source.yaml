@@ -1,0 +1,80 @@
+# SOURCE (Adam) — README Functionality table row "SOURCE / Adam".
+#
+# Runs the SOURCE (approximate unrolling) pipeline over training snapshots of
+# the Adam run, then evaluates LDS against the retrain bank saved by
+# q3_magic.yaml (no retraining happens here).
+#
+# NOTE: approxunrolling loads each checkpoint with HF from_pretrained, so the
+# `checkpoints:` entries below must be HF-format model directories
+# (config.json + weights). The DCP `step_*.ckpt` checkpoints that
+# `bergson magic` / `bergson train` write are NOT loadable here — the
+# snapshots must come from an HF-Trainer-style run (checkpoint-<N> dirs, in
+# which case per-segment LRs/step counts are inferred from trainer_state) or
+# be exported to HF format separately. When the checkpoint names are not
+# checkpoint-<N> dirs, set lr_list and step_size_list explicitly (one entry
+# per segment), as in examples/pipelines/approx_unrolling_pythia.yaml.
+#
+# Run with `bergson examples/LDS_comparison/compare/q3_source.yaml`
+
+run_path: runs/compare/q3_source
+steps:
+  - approxunrolling:
+      index_cfg:
+        run_path: runs/compare/q3_source
+        # Used to load the tokenizer.
+        model: runs/compare/q3_random/retrained/base
+        overwrite: true
+        token_batch_size: 1024
+        distributed:
+          nproc_per_node: 4
+          nnode: 4
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "train"
+          truncation: true
+
+      hessian_cfg:
+        method: kfac
+        ev_correction: true
+        hessian_dtype: fp32
+
+      approx_unrolling_cfg:
+        # HF-format training snapshots of the Adam run, evenly spaced,
+        # earliest to latest (see NOTE above).
+        checkpoints:
+          - runs/compare/q3_adam_hf_ckpts/checkpoint-1
+          - runs/compare/q3_adam_hf_ckpts/checkpoint-2
+          - runs/compare/q3_adam_hf_ckpts/checkpoint-3
+          - runs/compare/q3_adam_hf_ckpts/checkpoint-4
+          - runs/compare/q3_adam_hf_ckpts/checkpoint-5
+          - runs/compare/q3_adam_hf_ckpts/checkpoint-6
+        segments: 3
+        query:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "test[0:1]"
+          chunk_length: 0
+
+  - validate:
+      run_path: runs/compare/q3_validate_source
+      model: gpt2
+      overwrite: true
+
+      scores: runs/compare/q3_source/scores
+      # Re-use the leave-k-out models banked by q3_magic.yaml.
+      retrained_dir: runs/compare/q3_random
+
+      data:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "train"
+        chunk_length: 512
+
+      query:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "test[0:1]"
+        chunk_length: 0
+
+      distributed:
+        nproc_per_node: 4
+        nnode: 4
+
+      batch_size: 256
