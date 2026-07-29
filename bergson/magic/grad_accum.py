@@ -176,9 +176,7 @@ def microbatch_step_vjp(
       B. Per micro-batch, recompute its gradient graph, VJP it against the
          combined-gradient cotangent, and free it before the next micro-batch.
 
-    Both stages run the model, so both rewind the RNG the way ``Trainer.step``
-    does — otherwise the stages see different dropout masks and the result is
-    silently wrong.
+    Both stages run the model and so must rewind the RNG.
 
     Returns ``(param_cotangents, opt_cotangents, weight_cotangents)`` for the
     incoming state and this batch's ``data_weights``.

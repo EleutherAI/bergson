@@ -385,8 +385,8 @@ class Trainer:
             grad_accum_steps: Split the batch into this many micro-batches and
                 sum their normalized gradients before the single optimizer
                 update. Matches the full-batch gradient up to float
-                associativity (and RNG consumption order, under dropout); the
-                backward replay stays faithful to whichever the forward ran.
+                associativity unless dropout is active. The backward replay
+                stays faithful to whichever the forward ran.
         """
         torch.random.set_rng_state(state.cpu_rng_state)
         maybe_set_cuda_rng_state(state.cuda_rng_state)
