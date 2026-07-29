@@ -17,7 +17,6 @@ from bergson.approx_unrolling.approx_unrolling_math import (
 from bergson.approx_unrolling.trainer_run import (
     LR_HISTORY_FILENAME,
     derive_momentum,
-    discover_checkpoints,
     load_training_config,
     resolve,
     write_lr_history,
@@ -94,7 +93,9 @@ def test_resolve_is_noop_without_trainer_run():
 
 
 def test_resolve_fills_momentum_and_model_from_run(tmp_path):
-    run = _run_dir(tmp_path, optimizer="sgd", adam_beta1=0.9, model="EleutherAI/pythia-14m")
+    run = _run_dir(
+        tmp_path, optimizer="sgd", adam_beta1=0.9, model="EleutherAI/pythia-14m"
+    )
     cfg = ApproxUnrollingConfig(trainer_run=str(run), checkpoints=["a", "b"])
 
     out = resolve(cfg)
@@ -106,18 +107,14 @@ def test_resolve_fills_momentum_and_model_from_run(tmp_path):
 def test_explicit_momentum_wins_over_run(tmp_path):
     """A user training elsewhere must be able to override what the run says."""
     run = _run_dir(tmp_path, optimizer="sgd", adam_beta1=0.9)
-    cfg = ApproxUnrollingConfig(
-        trainer_run=str(run), checkpoints=["a"], momentum=0.5
-    )
+    cfg = ApproxUnrollingConfig(trainer_run=str(run), checkpoints=["a"], momentum=0.5)
     assert resolve(cfg).momentum == 0.5
 
 
 def test_explicit_zero_momentum_is_respected(tmp_path):
     """0.0 is a real value, not 'unset' -- it must survive derivation."""
     run = _run_dir(tmp_path, optimizer="sgd", adam_beta1=0.9)
-    cfg = ApproxUnrollingConfig(
-        trainer_run=str(run), checkpoints=["a"], momentum=0.0
-    )
+    cfg = ApproxUnrollingConfig(trainer_run=str(run), checkpoints=["a"], momentum=0.0)
     assert resolve(cfg).momentum == 0.0
 
 
