@@ -60,7 +60,6 @@ def compute_lr_times_steps_per_segment(
 ) -> list[float]:
     """Per-segment lr * K. Use ``lr_list * step_size_list`` if set on config;
     else equal-partition log_history.json into segments and sum per-step LRs.
-<<<<<<< HEAD
 
     With SGD heavy-ball ``momentum`` beta, scale by the terminal velocity
     1/(1-beta) (Bae et al. 2024, App. D.2).
@@ -72,15 +71,6 @@ def compute_lr_times_steps_per_segment(
         raise ValueError(f"momentum must be in [0, 1), got {momentum}.")
     momentum_scale = 1.0 / (1.0 - momentum)
 
-=======
-    With SGD heavy-ball ``momentum`` beta, scale by the terminal velocity
-    1/(1-beta) (Bae et al., 2024, Appendix D.2)."""
-    cfg = approx_unrolling_cfg
-    L = cfg.segments
-    if not 0.0 <= cfg.momentum < 1.0:
-        raise ValueError(f"momentum must be in [0, 1), got {cfg.momentum}.")
-    momentum_scale = 1.0 / (1.0 - cfg.momentum)
->>>>>>> 45df0de8 (feat: ADAM SOURCE and per-checkpoint optimizer saving in Trainer)
     if cfg.lr_list and cfg.step_size_list:
         return [
             lr * k * momentum_scale for lr, k in zip(cfg.lr_list, cfg.step_size_list)

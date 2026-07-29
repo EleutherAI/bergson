@@ -23,7 +23,7 @@ from ..utils.load_from_optimizer import (
     optimizer_param_index_to_name,
     orient_second_moment,
 )
-from ..utils.optimizer_placement import OPTIMIZER_STATE_FILE
+from ..utils.trainer_export import OPTIMIZER_STATE_FILE
 
 __all__ = ["OPTIMIZER_STATE_FILE", "build_segment_preconditioners"]
 
@@ -149,9 +149,8 @@ def build_segment_preconditioners(
                 raise FileNotFoundError(
                     f"use_adam_preconditioner requires "
                     f"{Path(ckpt) / OPTIMIZER_STATE_FILE}; write it during "
-                    "training with TrainingConfig.save_optimizer_state, then "
-                    "place it with bergson.utils.optimizer_placement."
-                    "place_optimizer_states(save_dir, checkpoints)."
+                    "training with save_optimizer_state='all', then export "
+                    "with bergson.utils.trainer_export.export_checkpoints."
                 )
             optimizer_pt = load_optimizer(str(ckpt))
             beta2, eps, eps_root = _adam_hparams(optimizer_pt)
