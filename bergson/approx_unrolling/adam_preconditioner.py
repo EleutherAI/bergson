@@ -1,15 +1,12 @@
-"""Per-segment Adam/AdamW diagonal preconditioners for the preconditioned
-SOURCE (approx-unrolling) variant.
+"""Per-segment Adam SOURCE preconditioners.
 
 :func:`build_segment_preconditioners` reads each checkpoint dir's
-``optimizer.pt`` (written by ``TrainingConfig.save_optimizer_state``),
-bias-corrects the second moments, averages them within each segment as the
-K-FAC factors are, and writes
+``optimizer.pt``, bias-corrects the second moments, averages them 
+within each segment, and writes
 
     P = 1 / (sqrt(v_hat_bar + eps_root) + eps)
 
-to ``<run>/segment_<l>/preconditioner.safetensors``, oriented to bergson's
-``[out, in]`` gradient grids.
+to ``<run>/segment_<l>/preconditioner.safetensors``.
 """
 
 from glob import glob
@@ -31,11 +28,11 @@ OPTIMIZER_STATE_FILE = "optimizer.pt"
 
 
 def _module_grids(hessian_dir: str | Path) -> dict[str, tuple[int, int]]:
-    """Module name -> full [out, in] grid shape, read from the factor shards.
+    """Module name -> [out, in] for the module's weight matrix shape.
 
-    The activation eigenvectors are ``[c_i, I]`` (columns = full in-dim) and
-    the gradient eigenvectors ``[c_o, O]``, so shard_0's column counts give
-    the full grid shape regardless of world size.
+    The activation eigenvectors are ``[c_i, I]`` and the gradient 
+    eigenvectors are ``[c_o, O]``, so any shard's column dimensions
+    give the full weight matrix shape.
     """
     grids: dict[str, tuple[int, int]] = {}
     a_dir = Path(hessian_dir) / "eigen_activation_sharded"
@@ -56,8 +53,7 @@ def _module_grids(hessian_dir: str | Path) -> dict[str, tuple[int, int]]:
 def _match_params(
     grids: dict[str, tuple[int, int]], param_names: list[str]
 ) -> dict[str, str]:
-    """Factor module name -> param name. Factor names are suffixes of the
-    model's param names (e.g. ``h.0.attn.c_attn`` ->
+    """Factor module name -> param name, e.g. ``h.0.attn.c_attn`` ->
     ``transformer.h.0.attn.c_attn.weight``)."""
     matches: dict[str, str] = {}
     for module in grids:
@@ -73,8 +69,7 @@ def _match_params(
 
 
 def _orient(p: torch.Tensor, grid: tuple[int, int], module: str, layer) -> torch.Tensor:
-    """Orient a param-shaped grid to bergson's [out, in] layout, raising on a
-    shape that fits neither orientation."""
+    """Orient a param-shaped grid to bergson's [out, in] layout."""
     oriented = orient_second_moment(p, *grid, layer=layer)
     if oriented is None:
         raise ValueError(
@@ -85,20 +80,17 @@ def _orient(p: torch.Tensor, grid: tuple[int, int], module: str, layer) -> torch
 
 
 def _adam_hparams(optimizer_pt: dict) -> tuple[float, float, float]:
-    """(beta2, eps, eps_root) from a standard ``optimizer.pt``'s param_groups.
+    """Get (beta2, eps, eps_root) from a standard ``optimizer.pt``.
 
     ``betas`` and ``eps`` are standard AdamW param-group keys (HF Trainer
-    checkpoints carry them); ``eps_root`` is torchopt-specific and defaults
-    to 0 (standard AdamW has no epsilon inside the sqrt)."""
+    saves them); ``eps_root`` is torchopt-specific and defaults to 0."""
     groups = optimizer_pt.get("param_groups", [])
     betas = groups[0].get("betas") if groups else None
     eps = groups[0].get("eps") if groups else None
     if betas is None or eps is None:
         raise ValueError(
-            "optimizer.pt has no param_groups betas/eps; regenerate the "
-            "snapshot exports with TrainingConfig.save_optimizer_state "
-            "(older exports lack the hyperparameters needed to build the "
-            "preconditioner)."
+            "optimizer.pt has no param_groups betas/eps; save "
+            "with TrainingConfig.save_optimizer_state "
         )
     return float(betas[1]), float(eps), float(groups[0].get("eps_root", 0.0))
 
@@ -106,8 +98,8 @@ def _adam_hparams(optimizer_pt: dict) -> tuple[float, float, float]:
 def _extract_v_hat(
     optimizer_pt: dict, index_to_name: dict[int, str], beta2: float
 ) -> dict[str, torch.Tensor]:
-    """Bias-corrected second moments keyed by param name from a standard
-    ``optimizer.pt`` dict carrying a per-entry ``step``."""
+    """Bias-corrected second moments keyed by param name from an
+    ``optimizer.pt`` with a per-entry ``step``."""
 
     v_hat: dict[str, torch.Tensor] = {}
     for idx, entry in optimizer_pt["state"].items():
@@ -119,8 +111,8 @@ def _extract_v_hat(
             continue
         if "step" not in entry:
             raise ValueError(
-                f"optimizer.pt state entry {idx} has no step; regenerate the "
-                "snapshot exports with TrainingConfig.save_optimizer_state."
+                f"optimizer.pt state entry {idx} has no step; save "
+                "with TrainingConfig.save_optimizer_state."
             )
         step = int(
             entry["step"].item() if torch.is_tensor(entry["step"]) else entry["step"]
@@ -137,10 +129,8 @@ def build_segment_preconditioners(
     segments: int,
 ) -> list[Path]:
     """Build ``<run>/segment_<l>/preconditioner.safetensors`` for every
-    segment from the checkpoints' ``optimizer.pt`` files; see module docs.
-    The Adam hyperparameters (betas/eps/eps_root) are read from the files.
-
-    Returns the per-segment preconditioner paths.
+    segment from the checkpoints' ``optimizer.pt``. Returns the 
+    per-segment preconditioner paths.
     """
     base = Path(run_path)
     per_segment = len(checkpoints) // segments
