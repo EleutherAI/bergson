@@ -308,3 +308,62 @@ def test_lr_history_read_from_the_run_not_the_export(tmp_path):
         pytest.approx(2e-3),
         pytest.approx(2e-3),
     ]
+
+
+def test_dcp_tolerates_optimizer_state_inside_the_checkpoint(tmp_path):
+    """The layout rests on this: an optimizer.pt inside step_<i>.ckpt/ must not
+    disturb DCP's own load or a resumed run, and must survive a re-save."""
+    import torchopt
+    from datasets import Dataset
+    from transformers import AutoConfig, AutoModelForCausalLM
+
+    from bergson.magic.data_stream import DataStream
+    from bergson.magic.trainer import Trainer
+    from bergson.utils.trainer_export import OPTIMIZER_STATE_FILE
+
+    config = AutoConfig.from_pretrained("EleutherAI/pythia-14m")
+
+    def fresh():
+        torch.manual_seed(0)
+        m = AutoModelForCausalLM.from_config(
+            config, dtype=torch.float32, attn_implementation="eager"
+        )
+        m.requires_grad_(True)
+        return m
+
+    n = 4
+    ds = Dataset.from_dict(
+        {"input_ids": [[1, 2, 3, 4]] * n, "labels": [[1, 2, 3, 4]] * n}
+    )
+    stream = DataStream(ds, batch_size=1, device="cpu")
+    opt = torchopt.sgd(lambda step: 1e-4, momentum=0.95)
+
+    save_dir = tmp_path / "checkpoints"
+    trainer, state = Trainer.initialize(fresh(), opt)
+    final = trainer.train(
+        state, stream, inplace=True, save_dir=str(save_dir), save_mode="all"
+    )
+
+    ckpt = save_dir / "step_2.ckpt"
+    torch.save(
+        {"state": {0: {"exp_avg_sq": torch.ones(2, 2)}}}, ckpt / OPTIMIZER_STATE_FILE
+    )
+
+    model = fresh()
+    _, loaded = Trainer.initialize(model, opt)
+    loaded.load(str(ckpt))
+
+    trainer2, state2 = Trainer.initialize(fresh(), opt)
+    resumed = trainer2.train(
+        state2,
+        stream,
+        inplace=True,
+        save_dir=str(save_dir),
+        save_mode="all",
+        resume=True,
+    )
+    for k in final.params:
+        torch.testing.assert_close(resumed.params[k], final.params[k])
+
+    blob = torch.load(ckpt / OPTIMIZER_STATE_FILE, weights_only=False)
+    assert blob["state"][0]["exp_avg_sq"].shape == (2, 2)

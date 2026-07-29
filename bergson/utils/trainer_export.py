@@ -11,7 +11,11 @@ from ..approx_unrolling.trainer_run import load_training_config
 from ..config.config import TrainingConfig
 from ..magic.trainer import prepare_trainer
 from .logger import get_logger
-from .optimizer_placement import OPTIMIZER_STATE_FILE
+
+OPTIMIZER_STATE_FILE = "optimizer.pt"
+"""Second moments, written inside the checkpoint dir they belong to -- both by
+the trainer and here, so the file travels with its checkpoint and never has to
+be matched back to one."""
 
 logger = get_logger(__name__)
 
@@ -95,11 +99,9 @@ def export_checkpoints(
             model.save_pretrained(str(dst), safe_serialization=True)
         tokenizer.save_pretrained(str(dst))
 
-        # SOURCE's Adam variant reads <checkpoint>/optimizer.pt; carry the
-        # trainer's sibling file in under the name it looks for.
-        sibling = ckpt.parent / f"step_{step}.optimizer.pt"
-        if sibling.is_file():
-            shutil.copy2(sibling, dst / OPTIMIZER_STATE_FILE)
+        state_file = ckpt / OPTIMIZER_STATE_FILE
+        if state_file.is_file():
+            shutil.copy2(state_file, dst / OPTIMIZER_STATE_FILE)
 
         exported.append(dst)
         logger.info("Exported %s -> %s", ckpt.name, dst)
