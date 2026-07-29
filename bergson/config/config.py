@@ -353,9 +353,10 @@ class TrainingConfig(AttributionConfig, Serializable):
     """Enable ``.train()`` mode. Not certified MAGIC-safe."""
 
     save_optimizer_state: bool = False
-    """After training, export the optimizer's second moments to
-    ``<run_path>/optimizer.pt`` for use as an attribution normalizer.
-    AdamW only."""
+    """Persist the optimizer's second moments: the final state at
+    ``<run_path>/optimizer.pt`` (an attribution normalizer) and each
+    checkpoint's state at ``optimizer.pt`` inside that checkpoint's own
+    directory. AdamW only."""
 
     weight_decay: float = 0.01
     """Weight decay coefficient for AdamW and Muon."""

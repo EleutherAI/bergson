@@ -256,6 +256,15 @@ def worker(
         fsdp=run_cfg.fsdp,
         max_grad_norm=run_cfg.max_grad_norm,
         grad_accum_steps=run_cfg.grad_accum_steps,
+        optimizer_cfg=(
+            dict(
+                betas=(run_cfg.adam_beta1, run_cfg.adam_beta2),
+                eps=run_cfg.adam_eps,
+                eps_root=run_cfg.eps_root,
+            )
+            if getattr(run_cfg, "save_optimizer_state", False)
+            else None
+        ),
     )
     if getattr(run_cfg, "save_optimizer_state", False) and global_rank == 0:
         save_second_moments_as_optimizer_pt(

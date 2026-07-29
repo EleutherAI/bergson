@@ -22,6 +22,7 @@ from tqdm.auto import tqdm
 
 from ..config.config import TrainingConfig
 from ..data import sorted_checkpoints
+from ..utils.load_from_optimizer import save_second_moments_as_optimizer_pt
 from ..utils.utils import get_device
 from ..utils.worker_utils import setup_model_and_peft
 from .config import MagicSaveMode
@@ -553,6 +554,7 @@ class Trainer:
         fsdp: bool = False,
         max_grad_norm: float | None = None,
         grad_accum_steps: int = 1,
+        optimizer_cfg: dict | None = None,
     ) -> TrainerState:
         """Train the model on the given data stream, starting from the given state.
 
@@ -578,6 +580,10 @@ class Trainer:
                 step. Passed through to `Trainer.step`.
             grad_accum_steps: Number of micro-batches to accumulate gradients over
                 per optimizer step. Passed through to `Trainer.step`.
+            optimizer_cfg: When set (to the optimizer's betas/eps/eps_root),
+                write each checkpoint's second moments to ``optimizer.pt``
+                *inside* that checkpoint's directory, tagged with the step and
+                these hyperparameters. AdamW only.
 
         Returns:
             The final trainer state after training.
@@ -615,6 +621,23 @@ class Trainer:
                     pending_save.result()
 
                 p = os.path.join(save_dir, f"step_{i}.ckpt")
+
+                # Written before the DCP save starts, into the directory DCP is
+                # about to populate: the state belongs to this checkpoint, so it
+                # lives inside it rather than beside it, and consumers never have
+                # to match a loose file back to a step. DCP leaves unrelated
+                # files in the directory alone (see test_source_trainer_
+                # integration.test_dcp_tolerates_optimizer_state_inside_the_checkpoint).
+                if optimizer_cfg is not None:
+                    os.makedirs(p, exist_ok=True)
+                    save_second_moments_as_optimizer_pt(
+                        self.model,
+                        state.opt_state,
+                        os.path.join(p, "optimizer.pt"),
+                        step=i,
+                        **optimizer_cfg,
+                    )
+
                 pending_save = state.save(p, debug_pbar=pbar if debug else None)
 
                 next_save = next_save_index(next_save, n, save_mode)

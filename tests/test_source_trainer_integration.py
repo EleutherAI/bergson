@@ -367,3 +367,52 @@ def test_dcp_tolerates_optimizer_state_inside_the_checkpoint(tmp_path):
 
     blob = torch.load(ckpt / OPTIMIZER_STATE_FILE, weights_only=False)
     assert blob["state"][0]["exp_avg_sq"].shape == (2, 2)
+
+
+def test_trainer_writes_optimizer_state_inside_each_checkpoint(tmp_path):
+    """optimizer_cfg puts each step's second moments in that step's own dir."""
+    import torchopt
+    from datasets import Dataset
+    from transformers import AutoConfig, AutoModelForCausalLM
+
+    from bergson.magic.data_stream import DataStream
+    from bergson.magic.trainer import Trainer
+    from bergson.utils.load_from_optimizer import load_optimizer
+    from bergson.utils.trainer_export import (
+        sorted_dcp_checkpoints,
+    )
+
+    torch.manual_seed(0)
+    config = AutoConfig.from_pretrained("EleutherAI/pythia-14m")
+    model = AutoModelForCausalLM.from_config(
+        config, dtype=torch.float32, attn_implementation="eager"
+    )
+    model.requires_grad_(True)
+
+    n = 3
+    ds = Dataset.from_dict(
+        {"input_ids": [[1, 2, 3, 4]] * n, "labels": [[1, 2, 3, 4]] * n}
+    )
+    stream = DataStream(ds, batch_size=1, device="cpu")
+    trainer, state = Trainer.initialize(model, torchopt.adamw(lambda step: 1e-4))
+
+    save_dir = tmp_path / "checkpoints"
+    trainer.train(
+        state,
+        stream,
+        inplace=True,
+        save_dir=str(save_dir),
+        save_mode="all",
+        optimizer_cfg=dict(betas=(0.9, 0.999), eps=1e-8, eps_root=0.0),
+    )
+
+    # No loose siblings: the state lives inside the checkpoint it belongs to.
+    assert not list(save_dir.glob("step_*.optimizer.pt"))
+
+    for step, ckpt in sorted_dcp_checkpoints(save_dir):
+        blob = load_optimizer(str(ckpt))
+        assert blob["state"], f"step {step} has no second moments"
+        entry = next(iter(blob["state"].values()))
+        recorded = entry["step"]
+        assert int(recorded.item() if torch.is_tensor(recorded) else recorded) == step
+        assert blob["param_groups"][0]["betas"] == (0.9, 0.999)
