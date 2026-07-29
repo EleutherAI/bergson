@@ -581,7 +581,7 @@ class Trainer:
             grad_accum_steps: Number of micro-batches to accumulate gradients over
                 per optimizer step. Passed through to `Trainer.step`.
             optimizer_cfg: When set (to the optimizer's betas/eps/eps_root),
-                write each checkpoint's second moments to ``optimizer.pt``, 
+                write each checkpoint's second moments to ``optimizer.pt``,
                 tagged with the step and these hyperparameters. AdamW only.
 
         Returns:
