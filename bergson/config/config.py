@@ -352,11 +352,17 @@ class TrainingConfig(AttributionConfig, Serializable):
     train_mode: bool = False
     """Enable ``.train()`` mode. Not certified MAGIC-safe."""
 
-    save_optimizer_state: bool = False
-    """Persist the optimizer's second moments: the final state at
-    ``<run_path>/optimizer.pt`` (an attribution normalizer) and each
-    checkpoint's state at ``optimizer.pt`` inside that checkpoint's own
-    directory. AdamW only."""
+    save_optimizer_state: Literal["none", "last", "all"] = "none"
+    """Which checkpoints' optimizer second moments to persist. AdamW only.
+
+    - "none" (default): none.
+    - "last": the final state at ``<run_path>/optimizer.pt``, for use as an
+      attribution normalizer.
+    - "all": that, plus each checkpoint's state at ``optimizer.pt`` inside its
+      own directory -- what SOURCE's Adam variant reads. One extra file per
+      checkpoint, each the size of the trainable parameters.
+
+    Accepts the old booleans: ``true`` means "last", ``false`` means "none"."""
 
     weight_decay: float = 0.01
     """Weight decay coefficient for AdamW and Muon."""
@@ -381,6 +387,14 @@ class TrainingConfig(AttributionConfig, Serializable):
 
     wandb_project: str = ""
     """Weights & Biases project name. If set, logs training loss to W&B."""
+
+    def __post_init__(self):
+        super().__post_init__()
+
+        # Back-compat: save_optimizer_state used to be a bool meaning
+        # "write the final state".
+        if isinstance(self.save_optimizer_state, bool):
+            self.save_optimizer_state = "last" if self.save_optimizer_state else "none"
 
 
 @dataclass

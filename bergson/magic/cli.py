@@ -262,11 +262,11 @@ def worker(
                 eps=run_cfg.adam_eps,
                 eps_root=run_cfg.eps_root,
             )
-            if getattr(run_cfg, "save_optimizer_state", False)
+            if getattr(run_cfg, "save_optimizer_state", "none") == "all"
             else None
         ),
     )
-    if getattr(run_cfg, "save_optimizer_state", False) and global_rank == 0:
+    if getattr(run_cfg, "save_optimizer_state", "none") != "none" and global_rank == 0:
         save_second_moments_as_optimizer_pt(
             model,  # type: ignore[reportArgumentType]
             fwd_state.opt_state,

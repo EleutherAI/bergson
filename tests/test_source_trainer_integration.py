@@ -465,3 +465,13 @@ def test_foreign_checkpoints_infer_nothing(tmp_path):
     assert out.trainer_run == ""
     assert out.momentum == 0.0
     assert out.model_path is None
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [(True, "last"), (False, "none"), ("all", "all"), ("last", "last")],
+)
+def test_save_optimizer_state_accepts_old_booleans(value, expected):
+    """`true` used to mean "write the final state"; keep that meaning."""
+    cfg = TrainingConfig(run_path="/tmp/x", save_optimizer_state=value)
+    assert cfg.save_optimizer_state == expected
