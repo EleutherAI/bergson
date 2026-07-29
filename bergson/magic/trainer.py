@@ -22,7 +22,6 @@ from tqdm.auto import tqdm
 
 from ..config.config import TrainingConfig
 from ..data import sorted_checkpoints
-from ..utils.load_from_optimizer import save_second_moments_as_optimizer_pt
 from ..utils.utils import get_device
 from ..utils.worker_utils import setup_model_and_peft
 from .config import MagicSaveMode
@@ -623,6 +622,12 @@ class Trainer:
 
                 # Write before the DCP save starts, into the same directory.
                 if optimizer_cfg is not None:
+                    # Local import: at module scope this cycles back into
+                    # magic.trainer via the package __init__.
+                    from ..utils.load_from_optimizer import (
+                        save_second_moments_as_optimizer_pt,
+                    )
+
                     os.makedirs(p, exist_ok=True)
                     save_second_moments_as_optimizer_pt(
                         self.model,
