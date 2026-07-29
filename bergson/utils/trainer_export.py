@@ -1,14 +1,6 @@
-"""Export a bergson training run's checkpoints to HF-format model directories.
-
-The trainer saves distributed checkpoints as ``<run>/checkpoints/step_<i>.ckpt``
-(torch.distributed.checkpoint), which SOURCE cannot read -- it loads each
-checkpoint with ``from_pretrained``. This turns a run's DCP checkpoints into
-``<out>/checkpoint-<i>/`` directories that ``from_pretrained`` accepts, carrying
-each step's optimizer state and the run's LR history across so the SOURCE
-pipeline finds everything where it expects it.
-
-Runs offline against a finished run rather than during training, so a run only
-pays the extra disk for the trajectories actually being attributed.
+"""Export a run's DCP ``step_<i>.ckpt`` checkpoints to ``checkpoint-<i>/`` model
+dirs that ``from_pretrained`` can load, carrying optimizer state and LR history
+across. Offline, so a run only pays disk for trajectories being attributed.
 """
 
 import shutil
@@ -53,17 +45,10 @@ def export_checkpoints(
     steps: list[int] | None = None,
     overwrite: bool = False,
 ) -> list[Path]:
-    """Export ``<run_path>/checkpoints/step_<i>.ckpt`` to ``checkpoint-<i>/`` dirs.
+    """Export ``step_<i>.ckpt`` to ``checkpoint-<i>/`` dirs, in step order.
 
-    ``training_cfg`` defaults to the run's own ``config.yaml``, so a finished run
-    needs no arguments beyond its path. Pass one explicitly to export a run whose
-    config lives elsewhere.
-
-    ``steps`` restricts the export to those step indices -- useful because SOURCE
-    needs only ``segments * per_segment`` checkpoints, and each export is a full
-    model copy.
-
-    Returns the exported directories in step order.
+    ``training_cfg`` defaults to the run's ``config.yaml``. ``steps`` limits the
+    export, since each one is a full model copy.
     """
     run_path = Path(run_path)
     out_dir = Path(out_dir) if out_dir is not None else run_path / "exported"

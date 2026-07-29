@@ -1,15 +1,7 @@
-"""Fill in SOURCE hyperparameters from a bergson training run.
+"""Fill in SOURCE hyperparameters from a bergson run's ``config.yaml``.
 
-SOURCE was built around HF Trainer runs: it infers per-step learning rates from
-``log_history.json`` / ``trainer_state.json`` and reads steps out of
-``checkpoint-<N>`` directory names. A bergson run has the same information in
-its own form -- ``config.yaml`` plus the checkpoint schedule -- so this module
-maps one onto the other.
-
-Everything here is a *fallback*. An explicitly configured field always wins, so
-checkpoints produced by any other trainer keep working exactly as before by
-setting ``lr_list``/``step_size_list``/``momentum`` by hand and leaving
-``trainer_run`` empty.
+SOURCE was built for HF Trainer runs. Everything here is a fallback: explicit
+config fields always win, so other trainers are unaffected.
 """
 
 import json
@@ -24,13 +16,8 @@ from ..config.config_io import CONFIG_FILENAME
 from ..utils.logger import get_logger
 
 LR_HISTORY_FILENAME = "log_history.json"
-"""Per-step learning rates, in HF Trainer's ``log_history`` shape.
-
-Written next to a bergson run's checkpoints so
-:func:`~bergson.approx_unrolling.approx_unrolling_math.compute_lr_times_steps_per_segment`
-picks it up through the path it already checks first, with no bergson-specific
-branch in the LR math.
-"""
+"""Per-step LRs in HF's ``log_history`` shape, written beside a run's
+checkpoints -- the path the LR math already checks first."""
 
 logger = get_logger(__name__)
 
@@ -38,11 +25,8 @@ logger = get_logger(__name__)
 def write_lr_history(
     save_dir: str | Path, schedule: Callable[[int], float], num_steps: int
 ) -> Path:
-    """Record the run's realized per-step learning rates beside its checkpoints.
-
-    ``schedule`` is the step -> lr callable the optimizer was built with, so
-    this is the exact schedule that ran rather than a reconstruction of it.
-    """
+    """Record per-step LRs beside the checkpoints, from the ``schedule`` the
+    optimizer was built with, so it is exact rather than reconstructed."""
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
     history = [
@@ -56,11 +40,8 @@ def write_lr_history(
 
 
 def load_training_config(trainer_run: str | Path) -> TrainingConfig:
-    """Load the ``TrainingConfig`` a bergson run was launched with.
-
-    ``save_run_config`` writes ``config.yaml`` as ``{command_name: {...}}``, so
-    the single value is the run's config regardless of which command wrote it.
-    """
+    """Load the ``TrainingConfig`` a run was launched with. ``save_run_config``
+    writes ``{command_name: {...}}``, so the single value is the config."""
     path = Path(trainer_run) / CONFIG_FILENAME
     if not path.is_file():
         raise FileNotFoundError(
@@ -87,13 +68,8 @@ def load_training_config(trainer_run: str | Path) -> TrainingConfig:
 
 
 def derive_momentum(training_cfg: TrainingConfig) -> float:
-    """Heavy-ball momentum beta that a bergson run actually trained with.
-
-    bergson's SGD passes ``adam_beta1`` as ``torchopt.sgd``'s momentum (see
-    ``prepare_trainer``), so the SOURCE-relevant beta is ``adam_beta1`` for SGD
-    and ``0.0`` for AdamW, whose own preconditioner already accounts for its
-    first moment.
-    """
+    """Momentum beta a run trained with. bergson's SGD passes ``adam_beta1`` to
+    ``torchopt.sgd``; AdamW's own preconditioner handles its first moment."""
     match training_cfg.optimizer:
         case "sgd":
             return float(training_cfg.adam_beta1)
@@ -111,13 +87,8 @@ def derive_momentum(training_cfg: TrainingConfig) -> float:
 
 
 def discover_checkpoints(trainer_run: str | Path) -> list[str]:
-    """The run's saved checkpoints, in training order.
-
-    Prefers exported HF-format ``checkpoint-<N>`` directories (what SOURCE can
-    actually load) and falls back to the trainer's native ``step_<i>.ckpt``, so
-    the error surfaced to the caller names the export step rather than an empty
-    list.
-    """
+    """Saved checkpoints in training order. Prefers exported ``checkpoint-<N>``
+    dirs; finding only native ``step_<i>.ckpt`` raises, naming the export."""
     root = Path(trainer_run)
     exported = sorted(
         (p for p in root.glob("checkpoint-*") if p.is_dir()),
@@ -147,12 +118,8 @@ def discover_checkpoints(trainer_run: str | Path) -> list[str]:
 
 
 def resolve(cfg: ApproxUnrollingConfig) -> ApproxUnrollingConfig:
-    """Return ``cfg`` with unset fields filled in from ``cfg.trainer_run``.
-
-    A no-op when ``trainer_run`` is empty, so configs for other trainers pass
-    through untouched. Fields already set are never overwritten -- this only
-    ever supplies a value the caller did not give.
-    """
+    """Fill unset fields from ``cfg.trainer_run``. A no-op when it is empty;
+    never overwrites a field the caller set."""
     if not cfg.trainer_run:
         # Nothing to derive from; only normalize the momentum sentinel.
         if cfg.momentum is None:

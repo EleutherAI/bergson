@@ -29,8 +29,8 @@ def _checkpoint_step(p: str) -> int:
     """Extract the training step index for a checkpoint.
 
     Accepts a path whose final component is a ``checkpoint-<N>`` directory
-    (what HF Trainer writes natively), a ``step_<N>[.ckpt]`` directory (what
-    the bergson trainer writes), or a bare ``<N>`` step directory.
+    (HF Trainer), a ``step_<N>[.ckpt]`` directory (Bergson trainer), or a
+    bare ``<N>`` step directory.
     """
     # TODO: Inferring the step from a checkpoint name via regex is brittle.
     # For now, we raise an error
@@ -46,7 +46,7 @@ def _checkpoint_step(p: str) -> int:
     raise ValueError(
         f"Cannot infer a training step from checkpoint {p!r}: expected a path "
         "ending in 'checkpoint-<N>', 'step_<N>[.ckpt]', or a bare '<N>' step "
-        "directory. Set both "
+        "directory. Set "
         "`lr_list` and `step_size_list` on ApproxUnrollingConfig to specify "
         "the per-segment learning rate and step counts explicitly instead of "
         "inferring them from checkpoint names."
@@ -54,17 +54,14 @@ def _checkpoint_step(p: str) -> int:
 
 
 def compute_lr_times_steps_per_segment(
-    approx_unrolling_cfg: ApproxUnrollingConfig,
+    cfg: ApproxUnrollingConfig,
 ) -> list[float]:
     """Per-segment lr * K. Use ``lr_list * step_size_list`` if set on config;
     else equal-partition log_history.json into segments and sum per-step LRs.
 
     With SGD heavy-ball ``momentum`` beta, scale by the terminal velocity
-    1/(1-beta) (Bae et al. 2024, App. D.2). ``momentum`` is taken as given when
-    set; ``None`` means it is derived from ``trainer_run`` (or 0.0 without one),
-    so checkpoints from another trainer are unaffected by the derivation.
+    1/(1-beta) (Bae et al. 2024, App. D.2).
     """
-    cfg = approx_unrolling_cfg
     L = cfg.segments
 
     momentum = cfg.momentum if cfg.momentum is not None else 0.0
