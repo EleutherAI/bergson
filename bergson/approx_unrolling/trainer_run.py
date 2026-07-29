@@ -5,7 +5,6 @@ config fields always win, so other trainers are unaffected.
 """
 
 import json
-import os
 from pathlib import Path
 from typing import Any, Callable
 
@@ -166,17 +165,4 @@ def lr_history_path(cfg: ApproxUnrollingConfig) -> Path | None:
     ):
         if candidate.is_file():
             return candidate
-    return None
-
-
-def _checkpoint_dir_step(path: str | os.PathLike) -> int | None:
-    """Step index named by a checkpoint dir, across the layouts we emit/accept."""
-    name = Path(path).name
-    if name.startswith("checkpoint-") and name.removeprefix("checkpoint-").isdigit():
-        return int(name.removeprefix("checkpoint-"))
-    stem = name.removesuffix(".ckpt")
-    if stem.startswith("step_") and stem.removeprefix("step_").isdigit():
-        return int(stem.removeprefix("step_"))
-    if name.isdigit():
-        return int(name)
     return None
