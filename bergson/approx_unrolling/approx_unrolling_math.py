@@ -79,9 +79,9 @@ def compute_lr_times_steps_per_segment(
     per_segment = len(cfg.checkpoints) // L
     ckpt_steps = [_checkpoint_step(p) for p in cfg.checkpoints]
     boundaries = [0] + [ckpt_steps[(l + 1) * per_segment - 1] for l in range(L)]
-    # A bergson run's own history, else one dumped beside the checkpoints,
+    # The bergson run these came from, else a history dumped beside them,
     # else the final checkpoint's trainer_state.json (what HF Trainer writes).
-    log_path = lr_history_path(cfg) or (
+    log_path = lr_history_path(cfg.checkpoints) or (
         Path(str(cfg.checkpoints[0])).parent / LR_HISTORY_FILENAME
     )
     if log_path.exists():

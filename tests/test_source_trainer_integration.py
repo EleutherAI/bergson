@@ -96,7 +96,9 @@ def test_resolve_fills_momentum_and_model_from_run(tmp_path):
     run = _run_dir(
         tmp_path, optimizer="sgd", adam_beta1=0.9, model="EleutherAI/pythia-14m"
     )
-    cfg = ApproxUnrollingConfig(trainer_run=str(run), checkpoints=["a", "b"])
+    ckpt = run / "exported" / "checkpoint-0"
+    ckpt.mkdir(parents=True)
+    cfg = ApproxUnrollingConfig(checkpoints=[str(ckpt)])
 
     out = resolve(cfg)
 
@@ -107,50 +109,27 @@ def test_resolve_fills_momentum_and_model_from_run(tmp_path):
 def test_explicit_momentum_wins_over_run(tmp_path):
     """A user training elsewhere must be able to override what the run says."""
     run = _run_dir(tmp_path, optimizer="sgd", adam_beta1=0.9)
-    cfg = ApproxUnrollingConfig(trainer_run=str(run), checkpoints=["a"], momentum=0.5)
+    ckpt = run / "checkpoint-0"
+    ckpt.mkdir()
+    cfg = ApproxUnrollingConfig(checkpoints=[str(ckpt)], momentum=0.5)
     assert resolve(cfg).momentum == 0.5
 
 
 def test_explicit_zero_momentum_is_respected(tmp_path):
     """0.0 is a real value, not 'unset' -- it must survive derivation."""
     run = _run_dir(tmp_path, optimizer="sgd", adam_beta1=0.9)
-    cfg = ApproxUnrollingConfig(trainer_run=str(run), checkpoints=["a"], momentum=0.0)
+    ckpt = run / "checkpoint-0"
+    ckpt.mkdir()
+    cfg = ApproxUnrollingConfig(checkpoints=[str(ckpt)], momentum=0.0)
     assert resolve(cfg).momentum == 0.0
 
 
 def test_explicit_model_path_wins(tmp_path):
     run = _run_dir(tmp_path, model="EleutherAI/pythia-14m")
-    cfg = ApproxUnrollingConfig(
-        trainer_run=str(run), checkpoints=["a"], model_path="gpt2"
-    )
+    ckpt = run / "checkpoint-0"
+    ckpt.mkdir()
+    cfg = ApproxUnrollingConfig(checkpoints=[str(ckpt)], model_path="gpt2")
     assert resolve(cfg).model_path == "gpt2"
-
-
-def test_explicit_checkpoints_win(tmp_path):
-    run = _run_dir(tmp_path)
-    (run / "checkpoint-0").mkdir()
-    cfg = ApproxUnrollingConfig(trainer_run=str(run), checkpoints=["mine"])
-    assert resolve(cfg).checkpoints == ["mine"]
-
-
-def test_resolve_discovers_exported_checkpoints_in_order(tmp_path):
-    run = _run_dir(tmp_path)
-    for step in (0, 10, 2):
-        (run / f"checkpoint-{step}").mkdir()
-
-    out = resolve(ApproxUnrollingConfig(trainer_run=str(run)))
-
-    assert [p.split("-")[-1] for p in out.checkpoints] == ["0", "2", "10"]
-
-
-def test_unexported_run_names_the_export_step(tmp_path):
-    """Native DCP checkpoints can't be loaded by from_pretrained; say so."""
-    run = _run_dir(tmp_path)
-    (run / "checkpoints").mkdir()
-    (run / "checkpoints" / "step_0.ckpt").mkdir()
-
-    with pytest.raises(FileNotFoundError, match="export_checkpoints"):
-        resolve(ApproxUnrollingConfig(trainer_run=str(run)))
 
 
 def test_missing_config_yaml_is_explained(tmp_path):
@@ -299,7 +278,6 @@ def test_lr_history_read_from_the_run_not_the_export(tmp_path):
     assert not (export / LR_HISTORY_FILENAME).exists()
 
     cfg = ApproxUnrollingConfig(
-        trainer_run=str(run),
         checkpoints=[str(export / "checkpoint-2"), str(export / "checkpoint-4")],
         segments=2,
         momentum=0.0,
@@ -418,20 +396,6 @@ def test_trainer_writes_optimizer_state_inside_each_checkpoint(tmp_path):
         assert blob["param_groups"][0]["betas"] == (0.9, 0.999)
 
 
-def test_discovery_finds_the_default_export_destination(tmp_path):
-    """resolve() must find what export_checkpoints writes with no out_dir given."""
-    from bergson.approx_unrolling.trainer_run import EXPORT_DIRNAME
-
-    run = _run_dir(tmp_path)
-    export = run / EXPORT_DIRNAME
-    for step in (0, 10, 2):
-        (export / f"checkpoint-{step}").mkdir(parents=True)
-
-    out = resolve(ApproxUnrollingConfig(trainer_run=str(run)))
-
-    assert [p.split("-")[-1] for p in out.checkpoints] == ["0", "2", "10"]
-
-
 def test_trainer_run_inferred_from_exported_checkpoints(tmp_path):
     """Setting checkpoints is enough; the run is found from their path."""
     from bergson.approx_unrolling.trainer_run import EXPORT_DIRNAME
@@ -442,7 +406,6 @@ def test_trainer_run_inferred_from_exported_checkpoints(tmp_path):
 
     out = resolve(ApproxUnrollingConfig(checkpoints=[str(ckpt)]))
 
-    assert out.trainer_run == str(run)
     assert out.momentum == 0.9
     assert out.model_path == "gpt2"
 
@@ -462,7 +425,6 @@ def test_foreign_checkpoints_infer_nothing(tmp_path):
 
     out = resolve(ApproxUnrollingConfig(checkpoints=[str(hf)]))
 
-    assert out.trainer_run == ""
     assert out.momentum == 0.0
     assert out.model_path is None
 
@@ -475,3 +437,12 @@ def test_save_optimizer_state_accepts_old_booleans(value, expected):
     """`true` used to mean "write the final state"; keep that meaning."""
     cfg = TrainingConfig(run_path="/tmp/x", save_optimizer_state=value)
     assert cfg.save_optimizer_state == expected
+
+
+def test_dcp_checkpoints_are_rejected_with_the_export_hint(tmp_path):
+    """Passing raw step_<i>.ckpt dirs should fail early, not inside the pipeline."""
+    ckpt = tmp_path / "checkpoints" / "step_0.ckpt"
+    ckpt.mkdir(parents=True)
+
+    with pytest.raises(ValueError, match="export_checkpoints"):
+        resolve(ApproxUnrollingConfig(checkpoints=[str(ckpt)]))

@@ -89,38 +89,16 @@ def derive_momentum(training_cfg: TrainingConfig) -> float:
             return 0.0
 
 
-def discover_checkpoints(trainer_run: str | Path) -> list[str]:
-    """Saved checkpoints in training order. Prefers exported ``checkpoint-<N>``
-    dirs; finding only native ``step_<i>.ckpt`` raises, naming the export."""
-    root = Path(trainer_run)
-    # The export's default destination first, then the run root for an export
-    # that was pointed there explicitly.
-    for base in (root / EXPORT_DIRNAME, root):
-        exported = sorted(
-            (p for p in base.glob("checkpoint-*") if p.is_dir()),
-            key=lambda p: int(p.name.split("-")[1]),
-        )
-        if exported:
-            return [str(p) for p in exported]
-
-    ckpt_dir = root / "checkpoints"
-    native = sorted(
-        (p for p in ckpt_dir.glob("step_*.ckpt") if p.is_dir()),
-        key=lambda p: int(p.name.removesuffix(".ckpt").removeprefix("step_")),
-    )
+def _reject_unexported(checkpoints: list[str]) -> None:
+    """SOURCE loads checkpoints with from_pretrained, so a raw DCP directory
+    would fail deep in the pipeline; say what to do instead."""
+    native = [c for c in checkpoints if Path(c).name.endswith(".ckpt")]
     if native:
-        raise FileNotFoundError(
-            f"{trainer_run} has {len(native)} native checkpoints under "
-            f"{ckpt_dir} but no exported checkpoint-<N> directories. SOURCE "
-            "loads models with from_pretrained, so export them first with "
-            "bergson.utils.trainer_export.export_checkpoints(run_path, out_dir)."
+        raise ValueError(
+            f"{native[:3]} are the trainer's DCP checkpoints, which "
+            "from_pretrained cannot load. Export them first with "
+            "bergson.utils.trainer_export.export_checkpoints(run_path)."
         )
-
-    raise FileNotFoundError(
-        f"No checkpoints found under {trainer_run}. Train with a save_mode "
-        "that writes them, then export with "
-        "bergson.utils.trainer_export.export_checkpoints."
-    )
 
 
 def infer_trainer_run(checkpoints: list[str]) -> str:
@@ -143,20 +121,17 @@ def infer_trainer_run(checkpoints: list[str]) -> str:
 def resolve(cfg: ApproxUnrollingConfig) -> ApproxUnrollingConfig:
     """Fill unset fields from ``cfg.trainer_run``. A no-op when it is empty;
     never overwrites a field the caller set."""
-    trainer_run = cfg.trainer_run or infer_trainer_run(cfg.checkpoints)
+    _reject_unexported(cfg.checkpoints)
+
+    trainer_run = infer_trainer_run(cfg.checkpoints)
     if not trainer_run:
         # Not a bergson run; only normalize the momentum sentinel.
         if cfg.momentum is None:
             cfg.momentum = 0.0
         return cfg
-    cfg.trainer_run = trainer_run
 
     training_cfg = load_training_config(trainer_run)
     filled: list[str] = []
-
-    if not cfg.checkpoints:
-        cfg.checkpoints = discover_checkpoints(cfg.trainer_run)
-        filled.append(f"checkpoints ({len(cfg.checkpoints)})")
 
     if cfg.model_path is None:
         cfg.model_path = training_cfg.model
@@ -167,20 +142,19 @@ def resolve(cfg: ApproxUnrollingConfig) -> ApproxUnrollingConfig:
         filled.append(f"momentum={cfg.momentum}")
 
     if filled:
-        logger.info(
-            "Filled from trainer_run %s: %s", cfg.trainer_run, ", ".join(filled)
-        )
+        logger.info("Filled from run %s: %s", trainer_run, ", ".join(filled))
 
     return cfg
 
 
-def lr_history_path(cfg: ApproxUnrollingConfig) -> Path | None:
-    """Where a bergson run's LR history lives, if this config names one."""
-    if not cfg.trainer_run:
+def lr_history_path(checkpoints: list[str]) -> Path | None:
+    """The LR history of the bergson run these checkpoints came from, if any."""
+    run = infer_trainer_run(checkpoints)
+    if not run:
         return None
     for candidate in (
-        Path(cfg.trainer_run) / LR_HISTORY_FILENAME,
-        Path(cfg.trainer_run) / "checkpoints" / LR_HISTORY_FILENAME,
+        Path(run) / LR_HISTORY_FILENAME,
+        Path(run) / "checkpoints" / LR_HISTORY_FILENAME,
     ):
         if candidate.is_file():
             return candidate

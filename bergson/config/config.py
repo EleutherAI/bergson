@@ -801,15 +801,10 @@ class ApproxUnrollingConfig(Serializable):
     """Per-segment optimizer step count; length must == segments. If
     empty, inferred from per-checkpoint step counts."""
 
-    trainer_run: str = ""
-    """Bergson run directory to read ``checkpoints``, ``model_path`` and
-    ``momentum`` from. Inferred from ``checkpoints`` when they came from one,
-    so it is only needed to discover the checkpoints themselves or to point at
-    a different run. Explicit fields always win."""
-
     momentum: float | None = None
     """SGD heavy-ball momentum beta; scales lr*steps by 1/(1-beta) (Bae et al.
-    2024, App. D.2). ``None`` derives it from ``trainer_run``, else 0.0.
+    2024, App. D.2). ``None`` derives it from the run the checkpoints
+    came from, else 0.0.
     bergson's SGD uses ``adam_beta1`` (default 0.95), so assuming 0.0 there
     understates lr*steps by 20x."""
 
