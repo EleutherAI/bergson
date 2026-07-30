@@ -1,6 +1,5 @@
 import math
 import os
-import warnings
 from abc import ABC
 from dataclasses import dataclass
 from pathlib import Path
@@ -381,24 +380,9 @@ class TrainingConfig(AttributionConfig, Serializable):
     """Weights & Biases project name. If set, logs training loss to W&B."""
 
     save_models: bool = False
-    """When True, persist the models this run trains, in the form each run
-    produces them:
-
-    - Training and validation runs save the fully-trained model (HF format,
-      weights + tokenizer) to ``<run_path>/retrained/base/``, and validation
-      additionally saves each leave-k-out model to
-      ``<run_path>/retrained/subset_<i>/`` so it can be reused for later
-      attribution queries without retraining. ~0.5 GB per model for GPT-2.
-    - Metasmoothness runs save the unperturbed run's parameters to
-      ``<run_path>/theta_final.pt`` and its initialization to ``theta_init.pt``
-      (name -> fp32 CPU tensor, ~0.65 GB each for GPT-2). The two perturbed
-      runs are finite-difference probes and are not saved."""
-
-    # TODO(Lucia Quirke): remove by 2026-10-29. Backwards compatibility for the
-    # pre-rename key; the flag moved from ValidationConfig to TrainingConfig,
-    # where "retrained" no longer describes a plain training run.
-    save_retrained_models: bool | None = None
-    """Deprecated alias for ``save_models``."""
+    """Persist the models this run trains: HF format under
+    ``<run_path>/retrained/`` for training and validation, ``theta_init.pt`` and
+    ``theta_final.pt`` for metasmoothness. ~0.5 GB per model for GPT-2."""
 
     def __post_init__(self):
         super().__post_init__()
@@ -406,21 +390,6 @@ class TrainingConfig(AttributionConfig, Serializable):
         # TODO Lucia Quirke August: remove bwd-compat
         if isinstance(self.save_optimizer_state, bool):
             self.save_optimizer_state = "last" if self.save_optimizer_state else "none"
-
-        # TODO(Lucia Quirke): remove by 2026-10-29, along with the field above.
-        if self.save_retrained_models is not None:
-            if self.save_models and self.save_models != self.save_retrained_models:
-                raise ValueError(
-                    "save_retrained_models and save_models are set to conflicting "
-                    "values; save_retrained_models is a deprecated alias, so set "
-                    "only save_models."
-                )
-            warnings.warn(
-                "save_retrained_models is deprecated; use save_models.",
-                FutureWarning,
-                stacklevel=2,
-            )
-            self.save_models = self.save_retrained_models
 
 
 @dataclass
