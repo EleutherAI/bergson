@@ -1,0 +1,71 @@
+# SOURCE on the WikiText-2 replication run, following Bae et al. 2024.
+#
+# The paper's WikiText-2/GPT-2 experiment is AdamW only (App. B.1, p. 28), so
+# this uses the preconditioned variant of App. C, with the Eq-43 hybrid from
+# App. D: "use the diagonal Hessian approximation for computing the matrix
+# exponential in Equation 39 and Equation 43. Note that we still use the EK-FAC
+# factors to compute H^-1 g in Equation 43."
+#
+# L=3 segments over C=6 checkpoints (Figure 6 uses L=3), constant lr 3e-5,
+# 582 steps per segment. Queries: all 481 validation chunks, one score column
+# each, for per-query LDS against the same ground truth as the EK-FAC config.
+#
+# adam_hybrid_damping 1e-8 keeps the chained EK-FAC inverse effectively
+# undamped, matching the reference implementation.
+#
+# fisher_normalization: document is required, not cosmetic. The eigenfunctions
+# are not scale-invariant, and Eq. 1 defines the empirical risk as a mean over
+# data points, so the segment eigenvalues must be a per-document expectation.
+# Token units put the mask argument in its dead-linear range (LDS 0.125 vs
+# 0.383 in an earlier run of this experiment).
+#
+# Run with:
+#   PYTHONPATH=$PWD python -m bergson examples/replication/wikitext_gpt2_source.yaml
+
+steps:
+  - approxunrolling:
+      index_cfg:
+        run_path: runs/wikitext_repro/source_scores
+        model: runs/wikitext_repro/train/retrained/base
+        overwrite: true
+        precision: fp32
+        token_batch_size: 1024
+        max_batch_size: 64
+        filter_modules: "lm_head"
+        distributed:
+          nproc_per_node: 8
+          nnode: 1
+        data:
+          dataset: runs/wikitext_repro/data
+          split: train
+          chunk_length: 0
+
+      hessian_cfg:
+        method: kfac
+        hessian_dtype: fp32
+        ev_correction: true
+
+      approx_unrolling_cfg:
+        checkpoints:
+          - runs/wikitext_repro/train/models/step_291
+          - runs/wikitext_repro/train/models/step_582
+          - runs/wikitext_repro/train/models/step_873
+          - runs/wikitext_repro/train/models/step_1164
+          - runs/wikitext_repro/train/models/step_1455
+          - runs/wikitext_repro/train/models/step_1746
+        segments: 3
+        lr_list: [3.0e-5, 3.0e-5, 3.0e-5]
+        step_size_list: [582, 582, 582]
+        query:
+          dataset: runs/wikitext_repro/data
+          split: validation
+          chunk_length: 0
+        query_aggregation: none
+        query_batch_size: 64
+
+        # App. C preconditioned variant + the App. D Eq-43 hybrid.
+        use_adam_preconditioner: true
+        adam_segment_hybrid: true
+        adam_hybrid_damping: 1.0e-8
+
+        fisher_normalization: document
