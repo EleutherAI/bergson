@@ -802,6 +802,15 @@ class ApproxUnrollingConfig(Serializable):
     Bae et al. 2024, Appendix C). Requires an ``optimizer.pt`` in every
     checkpoint dir; see :mod:`bergson.approx_unrolling.adam_preconditioner`."""
 
+    adam_segment_hybrid: bool = False
+    """With ``use_adam_preconditioner``: use the Eq-43 hybrid for F_segment --
+    the diagonal supplies only the matrix exponential, the EK-FAC factors supply
+    H^-1 (Bae et al. 2024, App. D: "we still use the EK-FAC factors to compute
+    H^-1 g in Equation 43")."""
+
+    adam_hybrid_damping: float = 0.1
+    """Relative damping for the hybrid's EK-FAC inverse."""
+
     fisher_normalization: Literal["document", "token", "none"] = "document"
     """Denominator for the segment EK-FAC eigenvalues, which set the scale of
     ``lr*steps * sigma`` that ``f_segment``/``f_backward`` are evaluated at.

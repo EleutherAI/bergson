@@ -253,6 +253,8 @@ def approx_unrolling_pipeline(
         lr_times_steps_per_segment=lr_times_steps_per_segment,
         distributed=index_cfg.distributed,
         preconditioner_paths=[str(p) for p in preconditioner_paths] or None,
+        preconditioner_hybrid=approx_unrolling_cfg.adam_segment_hybrid,
+        preconditioner_hybrid_damping=approx_unrolling_cfg.adam_hybrid_damping,
     )
 
     # ── Step 7: Phase 2 -- Get per-ckpt queries from segment queries
@@ -268,6 +270,8 @@ def approx_unrolling_pipeline(
         query_grad_paths=query_grad_paths,
         distributed=index_cfg.distributed,
         preconditioner_paths=[str(p) for p in preconditioner_paths] or None,
+        preconditioner_hybrid=approx_unrolling_cfg.adam_segment_hybrid,
+        preconditioner_hybrid_damping=approx_unrolling_cfg.adam_hybrid_damping,
     )
 
     # ── Step 8: Phase 3 -- per-segment scoring + sum

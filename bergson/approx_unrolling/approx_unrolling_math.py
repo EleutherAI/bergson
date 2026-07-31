@@ -129,6 +129,19 @@ def f_segment(lr_times_steps: float) -> Callable[[Tensor], Tensor]:
     return fn
 
 
+def f_one_minus_exp(lr_times_steps: float) -> Callable[[Tensor], Tensor]:
+    """x -> 1 - exp(-lr_times_steps*x), the numerator of :func:`f_segment`.
+
+    Used by the Eq-43 hybrid: the 1/x that completes f_segment is supplied by
+    the chained EK-FAC inverse rather than evaluated on the diagonal.
+    """
+
+    def fn(sigma: Tensor) -> Tensor:
+        return -torch.expm1(-lr_times_steps * sigma)
+
+    return fn
+
+
 def apply_eigfn_to_query(
     src_grad_path: Path,
     dst_grad_path: Path,
@@ -137,6 +150,8 @@ def apply_eigfn_to_query(
     fn_kind: Literal["f_segment", "f_backward"],
     distributed: DistributedConfig,
     preconditioner_path: str = "",
+    preconditioner_hybrid: bool = False,
+    preconditioner_hybrid_damping: float = 0.1,
 ) -> None:
     """Apply a segment's f_segment or f_backward operator to a stored query
     gradient. The operator scales each query element in the segment's
@@ -154,7 +169,11 @@ def apply_eigfn_to_query(
         run_path=str(dst_grad_path),
         ev_correction=True,
         preconditioner_path=preconditioner_path,
-        preconditioner_post_multiply=fn_kind == "f_segment",
+        # The hybrid's P^1/2 sandwich is absorbed by the chained EK-FAC inverse.
+        preconditioner_post_multiply=fn_kind == "f_segment"
+        and not preconditioner_hybrid,
+        preconditioner_hybrid=preconditioner_hybrid and fn_kind == "f_segment",
+        preconditioner_hybrid_damping=preconditioner_hybrid_damping,
     )
     launch_distributed_run(
         "apply_eigfn_to_query",
@@ -176,7 +195,13 @@ def _apply_eigfn_worker(
 
     # Segment eigenvalues are already checkpoint-averaged, so the eigenfunction
     # is applied to them directly (no per-example normalization).
-    fn = {"f_segment": f_segment, "f_backward": f_backward}[fn_kind](lr_times_steps)
+    if cfg.preconditioner_hybrid:
+        # 1/x comes from the chained EK-FAC inverse, so mask with the numerator.
+        fn = f_one_minus_exp(lr_times_steps)
+    else:
+        fn = {"f_segment": f_segment, "f_backward": f_backward}[fn_kind](
+            lr_times_steps
+        )
     EkfacApplicator(cfg, apply_fn=fn).compute_ivhp_sharded()
 
 
@@ -186,6 +211,8 @@ def walk_query_phase1(
     lr_times_steps_per_segment: list[float],
     distributed: DistributedConfig,
     preconditioner_paths: list[str] | None = None,
+    preconditioner_hybrid: bool = False,
+    preconditioner_hybrid_damping: float = 0.1,
 ) -> list[Path]:
     """Phase 1: build query_grad_0, ..., query_grad_{L-1} by walking F_backward.
 
@@ -212,6 +239,8 @@ def walk_query_phase1(
             fn_kind="f_backward",
             distributed=distributed,
             preconditioner_path=preconditioner_paths[k] if preconditioner_paths else "",
+            preconditioner_hybrid=preconditioner_hybrid,
+            preconditioner_hybrid_damping=preconditioner_hybrid_damping,
         )
         query_grad_paths[k - 1] = dst
 
@@ -225,6 +254,8 @@ def walk_query_phase2(
     query_grad_paths: list[Path],
     distributed: DistributedConfig,
     preconditioner_paths: list[str] | None = None,
+    preconditioner_hybrid: bool = False,
+    preconditioner_hybrid_damping: float = 0.1,
 ) -> list[Path]:
     """Phase 2: build query_grad_segment_0, ..., query_grad_segment_{L-1} via F_segment.
 
@@ -249,6 +280,8 @@ def walk_query_phase2(
             fn_kind="f_segment",
             distributed=distributed,
             preconditioner_path=preconditioner_paths[l] if preconditioner_paths else "",
+            preconditioner_hybrid=preconditioner_hybrid,
+            preconditioner_hybrid_damping=preconditioner_hybrid_damping,
         )
         query_grad_segment_paths.append(dst)
 
