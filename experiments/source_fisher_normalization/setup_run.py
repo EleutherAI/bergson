@@ -85,7 +85,11 @@ def main() -> None:
                 if not method_dir.is_dir():
                     continue
                 # kfac.part holds the token count the backfill reads.
-                names = CKPT_REUSE if not method_dir.name.endswith(".part") else ("total_processed.pt",)
+                names = (
+                    CKPT_REUSE
+                    if not method_dir.name.endswith(".part")
+                    else ("total_processed.pt",)
+                )
                 for name in names:
                     src = method_dir / name
                     if src.exists():
@@ -94,7 +98,9 @@ def main() -> None:
                         )
 
     print(f"hardlinked {total} files from {baseline} -> {target}")
-    print("not linked (regenerated): eigenvalue_correction_sharded, query_grad_*, scores")
+    print(
+        "not linked (regenerated): eigenvalue_correction_sharded, query_grad_*, scores"
+    )
 
 
 if __name__ == "__main__":

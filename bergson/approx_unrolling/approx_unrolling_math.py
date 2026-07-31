@@ -199,9 +199,7 @@ def _apply_eigfn_worker(
         # 1/x comes from the chained EK-FAC inverse, so mask with the numerator.
         fn = f_one_minus_exp(lr_times_steps)
     else:
-        fn = {"f_segment": f_segment, "f_backward": f_backward}[fn_kind](
-            lr_times_steps
-        )
+        fn = {"f_segment": f_segment, "f_backward": f_backward}[fn_kind](lr_times_steps)
     EkfacApplicator(cfg, apply_fn=fn).compute_ivhp_sharded()
 
 

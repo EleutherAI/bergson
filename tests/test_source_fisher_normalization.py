@@ -56,7 +56,7 @@ def test_denominator_reports_missing_counts(tmp_path):
 
 
 def test_denominator_ignores_missing_counts_when_unnormalized(tmp_path):
-    """"none" reproduces pre-normalization runs, which have no counts.json."""
+    """ "none" reproduces pre-normalization runs, which have no counts.json."""
     d = tmp_path / "ckpt_0"
     d.mkdir()
     assert lambda_denominator([d], "none") == 1.0

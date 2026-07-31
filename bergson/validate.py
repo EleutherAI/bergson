@@ -122,10 +122,7 @@ def lds_from_precomputed_subsets(
 
     preds = masks @ scores.double().numpy()
     per_query = np.array(
-        [
-            spearmanr(preds[:, q], losses[:, q]).statistic
-            for q in range(losses.shape[1])
-        ]
+        [spearmanr(preds[:, q], losses[:, q]).statistic for q in range(losses.shape[1])]
     )
     mean_lds = float(np.nanmean(per_query))
 
