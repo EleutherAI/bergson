@@ -3,7 +3,7 @@ import re
 import shutil
 from copy import deepcopy
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 
 import numpy as np
 import torch
@@ -134,16 +134,17 @@ def apply_eigfn_to_query(
     dst_grad_path: Path,
     segment_dir: Path,
     lr_times_steps: float,
-    fn_kind: str,
+    fn_kind: Literal["f_segment", "f_backward"],
     distributed: DistributedConfig,
     preconditioner_path: str = "",
 ) -> None:
-    """Apply F_segment or F_backward of one segment to a stored query gradient.
+    """Apply a segment's f_segment or f_backward operator to a stored query
+    gradient. The operator scales each query element in the segment's
+    eigenbasis by the function's value at the matching eigenvalue, averaged
+    over the segment's (checkpoint, document) pairs by
+    ``ApproxUnrollingConfig.fisher_normalization``.
 
-    ``fn_kind`` is "f_segment" or "f_backward". The segment eigenvalues are
-    already checkpoint-averaged (expected eigenvalues), so the eigenfunction is
-    applied to them directly.
-    ``preconditioner_path`` selects the preconditioned-optimizer variant: the
+    When ``preconditioner_path`` is set for an Adam-optimized run the
     eigenfunction is evaluated on a diagonal approximation of P^1/2 H P^1/2 in
     parameter space, with F_segment's output additionally multiplied by P
     (its P^1/2 . P^1/2 sandwich; F_backward's sandwich cancels)."""
@@ -169,7 +170,7 @@ def _apply_eigfn_worker(
     world_size: int,
     cfg: EkfacConfig,
     lr_times_steps: float,
-    fn_kind: str,
+    fn_kind: Literal["f_segment", "f_backward"],
 ) -> None:
     init_dist(rank, local_rank, world_size)
 

@@ -141,7 +141,7 @@ def approx_unrolling_pipeline(
         index_cfg,
         hessian_cfg,
         approx_unrolling_cfg,
-        overwrite=index_cfg.overwrite,
+        resume=index_cfg.overwrite,
     )
     # Encourage GC between expensive steps; matters most in single-GPU mode
     # where the worker ran in-process and may still hold model references.
@@ -185,6 +185,7 @@ def approx_unrolling_pipeline(
         per_segment=n_ckpts // n_segments,
         distributed=index_cfg.distributed,
         resume=index_cfg.overwrite,
+        normalization=approx_unrolling_cfg.fisher_normalization,
     )
 
     # ── Step 5: Mean query gradient at the final checkpoint

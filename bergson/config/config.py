@@ -802,6 +802,17 @@ class ApproxUnrollingConfig(Serializable):
     Bae et al. 2024, Appendix C). Requires an ``optimizer.pt`` in every
     checkpoint dir; see :mod:`bergson.approx_unrolling.adam_preconditioner`."""
 
+    fisher_normalization: Literal["document", "token", "none"] = "document"
+    """Denominator for the segment EK-FAC eigenvalues, which set the scale of
+    ``lr*steps * sigma`` that ``f_segment``/``f_backward`` are evaluated at.
+
+    - "document": divide by the number of documents summed over the segment's
+      checkpoints. Matches kronfluence (Bae et al.'s implementation), which
+      divides its lambda matrix by a per-sample count.
+    - "token": divide by the token count instead.
+    - "none": leave the raw sum. Pre-normalization behaviour; the resulting
+      scale grows with dataset size and checkpoints per segment."""
+
     query: DataConfig = field(default_factory=DataConfig)
     """Query dataset spec; gradients computed at the final checkpoint."""
 

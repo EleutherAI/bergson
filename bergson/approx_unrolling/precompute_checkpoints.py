@@ -2,6 +2,7 @@ import shutil
 from copy import deepcopy
 from pathlib import Path
 
+import torch
 from datasets import Dataset
 
 from bergson.collector.collector import (
@@ -23,6 +24,8 @@ from bergson.utils.worker_utils import (
     setup_data_pipeline,
     setup_model_and_peft,
 )
+
+from .segment_aggregation import LAMBDA_COUNTS_FILENAME, write_lambda_counts
 
 
 def precompute_checkpoint_averaged_lambdas(
@@ -49,7 +52,14 @@ def precompute_checkpoint_averaged_lambdas(
         eigen_path = base_run / f"segment_{seg}" / method
         out_path = ckpt_method_dir / output_subdir
 
-        if out_path.exists():
+        # A run predating `fisher_normalization` has lambdas but no counts.json;
+        # recover the counts without redoing the data pass.
+        counts_only = (
+            out_path.exists()
+            and resume
+            and not (out_path / LAMBDA_COUNTS_FILENAME).exists()
+        )
+        if out_path.exists() and not counts_only:
             if resume:
                 logger.info(
                     f"[seg {seg} ckpt {idx_in_seg}] skip — exists at {out_path}"
@@ -63,8 +73,13 @@ def precompute_checkpoint_averaged_lambdas(
             )
 
         logger.info(
-            f"[seg {seg} ckpt {idx_in_seg}] computing {output_subdir} at "
-            f"model={ckpt!r} using eigvecs from {eigen_path}"
+            f"[seg {seg} ckpt {idx_in_seg}] "
+            + (
+                f"backfilling {LAMBDA_COUNTS_FILENAME} for existing {output_subdir}"
+                if counts_only
+                else f"computing {output_subdir} at model={ckpt!r} "
+                f"using eigvecs from {eigen_path}"
+            )
         )
 
         ckpt_index_cfg = deepcopy(index_cfg)
@@ -77,18 +92,31 @@ def precompute_checkpoint_averaged_lambdas(
 
         ds, _ = setup_data_pipeline(ckpt_index_cfg)
 
-        launch_distributed_run(
-            "checkpoint_averaged_lambda",
-            _lambda_worker,
-            [
-                ckpt_index_cfg,
-                hessian_cfg,
-                ds,
-                ckpt_method_dir,
-                eigen_path,
-                output_subdir,
-            ],
-            ckpt_index_cfg.distributed,
+        if not counts_only:
+            launch_distributed_run(
+                "checkpoint_averaged_lambda",
+                _lambda_worker,
+                [
+                    ckpt_index_cfg,
+                    hessian_cfg,
+                    ds,
+                    ckpt_method_dir,
+                    eigen_path,
+                    output_subdir,
+                ],
+                ckpt_index_cfg.distributed,
+            )
+
+        write_lambda_counts(
+            out_path,
+            documents=len(ds),
+            tokens=int(
+                torch.load(
+                    ckpt_index_cfg.partial_run_path / "total_processed.pt",
+                    map_location="cpu",
+                    weights_only=False,
+                )
+            ),
         )
 
 
@@ -151,9 +179,12 @@ def precompute_checkpoint_hessians(
     hessian_cfg: HessianConfig,
     approx_unrolling_cfg: ApproxUnrollingConfig,
     *,
-    overwrite: bool = False,
+    resume: bool = False,
 ) -> None:
     """Run :func:`approximate_hessians` once per checkpoint.
+
+    ``resume`` skips checkpoints whose output already exists, matching the
+    other steps of the pipeline.
 
     The pipeline-level divisibility check (``n_ckpts % n_segments == 0``)
     runs in :func:`approx_unrolling_pipeline` before this is called.
@@ -173,7 +204,7 @@ def precompute_checkpoint_hessians(
         out_path = ckpt_dir / method
 
         if out_path.exists():
-            if not overwrite:
+            if resume:
                 logger.info(
                     f"[seg {seg} ckpt {idx_in_seg}] skip — exists at {out_path}"
                 )

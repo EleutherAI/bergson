@@ -127,7 +127,17 @@ def resolve(cfg: ApproxUnrollingConfig) -> ApproxUnrollingConfig:
             cfg.momentum = 0.0
         return cfg
 
-    training_cfg = load_training_config(trainer_run)
+    try:
+        training_cfg = load_training_config(trainer_run)
+    except ValueError as e:
+        # A directory with a config.yaml is not necessarily a training run: an
+        # attribution run writes one next to the checkpoints it produced. Infer
+        # nothing from it rather than failing the pipeline.
+        logger.warning("Ignoring %s as a trainer run: %s", trainer_run, e)
+        if cfg.momentum is None:
+            cfg.momentum = 0.0
+        return cfg
+
     filled: list[str] = []
 
     if cfg.model_path is None:

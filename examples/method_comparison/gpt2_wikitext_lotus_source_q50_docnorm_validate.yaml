@@ -1,0 +1,18 @@
+# Validation only: the SOURCE scores for the per-document run already exist.
+
+steps:
+- validate:
+    run_path: runs/lotus_source_q50_docnorm_validate
+    model: gpt2
+    overwrite: true
+    scores: runs/lotus_source_q50_docnorm/scores
+    retrained_dir: runs/lotus
+    data:
+      dataset: EleutherAI/bergson-wikitext-512-chunks
+      split: train
+      chunk_length: 512
+    query:
+      dataset: EleutherAI/bergson-wikitext-512-chunks
+      split: test[1:51]
+      chunk_length: 0
+    batch_size: 64

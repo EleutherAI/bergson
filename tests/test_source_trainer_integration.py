@@ -504,3 +504,20 @@ def test_export_checkpoints_end_to_end(tmp_path):
     out = resolve(ApproxUnrollingConfig(checkpoints=[str(p) for p in exported]))
     assert out.model_path == model_name
     assert out.momentum == 0.0  # adamw
+
+
+def test_resolve_ignores_a_non_training_config(tmp_path):
+    """A checkpoint dir's sibling config.yaml may belong to an attribution run.
+
+    ``infer_trainer_run`` only checks that a config.yaml exists, so ``resolve``
+    has to tolerate one it cannot read as a TrainingConfig.
+    """
+    run = tmp_path / "attribution_run"
+    (run / "models" / "step_1").mkdir(parents=True)
+    (run / "config.yaml").write_text("steps:\n- approxunrolling:\n    index_cfg: {}\n")
+
+    cfg = ApproxUnrollingConfig(checkpoints=[str(run / "models" / "step_1")])
+    resolved = resolve(cfg)
+
+    assert resolved.momentum == 0.0
+    assert resolved.model_path is None
