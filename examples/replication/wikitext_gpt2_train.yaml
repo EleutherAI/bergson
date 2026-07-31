@@ -1,0 +1,67 @@
+# Bae et al. 2024 WikiText-2 / GPT-2 training recipe (Appendix B.1, p. 28):
+#   "we fine-tuned the GPT-2 model using the WikiText-2 dataset. We followed the
+#    training script from the Transformer library but set the maximum sequence
+#    length to 512. During fine-tuning with AdamW, we saved 6 intermediate
+#    checkpoints for data attribution. The learning rate, weight decay, and
+#    batch size were set to 3e-5, 1e-2, and 8, respectively."
+#
+# Matches kronfluence examples/wikitext (3 epochs, seed 1004) so the resulting
+# model is comparable to the one their reported LDS numbers were computed on.
+#
+# train_mode: true is load-bearing. kronfluence's train.py calls model.train(),
+# so GPT-2's default 0.1 resid/embd/attn dropout is active during fine-tuning.
+# Training with it off produces a measurably different model: EK-FAC LDS 0.372
+# on a dropout-free model vs 0.443 on kronfluence's own released model.
+#
+# 4656 train rows / 8 per batch = 582 steps per epoch, 1746 total; a checkpoint
+# every 291 steps gives the paper's 6.
+#
+# Run with:
+#   PYTHONPATH=$PWD python -m bergson examples/replication/wikitext_gpt2_train.yaml
+
+steps:
+  - magic:
+      run_path: runs/wikitext_repro/train
+      model: gpt2
+      overwrite: true
+      precision: fp32
+      seed: 1004
+
+      # MAGIC is used purely as a trainer here; no metagradient is needed.
+      skip_metagradient: true
+      skip_validation: true
+      cleanup_ckpts: false
+
+      data:
+        dataset: runs/wikitext_repro/data
+        split: train
+        chunk_length: 0
+      query:
+        dataset: runs/wikitext_repro/data
+        split: validation
+        chunk_length: 0
+
+      distributed:
+        nproc_per_node: 1
+        nnode: 1
+
+      optimizer: adamw
+      adam_beta1: 0.9
+      adam_beta2: 0.999
+      adam_eps: 1.0e-8
+      eps_root: 0.0
+      weight_decay: 0.01
+      batch_size: 8
+      num_epochs: 3
+      lr_schedule:
+        lr_scheduler_type: constant
+        lr: 3.0e-5
+
+      # Dropout active, as in kronfluence's train.py.
+      train_mode: true
+
+      save_mode: interval
+      save_interval: 291
+      # SOURCE's Adam variant needs the optimizer state at every checkpoint.
+      save_optimizer_state: all
+      save_models: true

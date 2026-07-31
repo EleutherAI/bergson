@@ -80,6 +80,62 @@ def load_attribution_scores(score_path: str) -> tuple[torch.Tensor, bool]:
     return scores, False
 
 
+def lds_from_precomputed_subsets(
+    score_path: str,
+    masks_path: str,
+    losses_path: str,
+    summary_path: str | None = None,
+) -> float:
+    """LDS against a precomputed subset-retrain ground truth.
+
+    ``masks_path``: ``[M, N_train]`` 0/1 subset-membership array (row ``j``
+    marks the training rows the ``j``-th bank model was trained ON);
+    ``losses_path``: ``[M, Q]`` per-subset query losses (averaged over retrain
+    seeds). Follows Park et al. 2023 / Bae et al. 2024 Eq. 26-27: the group
+    prediction for subset ``j`` is the summed score of its members, and the LDS
+    is the per-query Spearman between predictions and subset losses, averaged
+    over queries. ``load_attribution_scores`` orients scores to the loss-diff
+    convention, under which the prediction correlates POSITIVELY with the
+    subset loss, so the returned mean Spearman is comparable to published LDS.
+    """
+    scores, _ = load_attribution_scores(score_path)
+    if scores.ndim == 1:
+        scores = scores[:, None]
+    if scores.ndim != 2:
+        raise ValueError(
+            f"Expected per-document scores [N_train, Q]; got shape "
+            f"{tuple(scores.shape)}."
+        )
+    masks = np.asarray(torch.load(masks_path, weights_only=False), dtype=np.float64)
+    losses = np.asarray(torch.load(losses_path, weights_only=False), dtype=np.float64)
+    if masks.shape[1] != scores.shape[0]:
+        raise ValueError(
+            f"masks cover {masks.shape[1]} training rows but scores have "
+            f"{scores.shape[0]}; the score run must use the identical dataset "
+            "ordering the masks index into."
+        )
+    if losses.shape != (masks.shape[0], scores.shape[1]):
+        raise ValueError(
+            f"losses shape {losses.shape} does not match "
+            f"[num_subsets={masks.shape[0]}, num_queries={scores.shape[1]}]."
+        )
+
+    preds = masks @ scores.double().numpy()
+    per_query = np.array(
+        [spearmanr(preds[:, q], losses[:, q]).statistic for q in range(losses.shape[1])]
+    )
+    mean_lds = float(np.nanmean(per_query))
+
+    if summary_path is not None:
+        writer = CSVWriter(summary_path, ["query", "spearman_corr"])
+        for q, r in enumerate(per_query):
+            writer.writerow(q, float(r))
+        writer.writerow("mean", mean_lds)
+        writer.close()
+    print(f"LDS (mean Spearman over {losses.shape[1]} queries): {mean_lds:.4f}")
+    return mean_lds
+
+
 def bank_loss_cache_key(
     run_cfg: ValidationConfig, multi_query: bool, num_subsets: int
 ) -> str:

@@ -1,0 +1,83 @@
+# SOURCE (approximate unrolling, Bae et al. 2024) for the lotus GPT-2 base
+# model against the 50 test queries, validated on the 400-model lotus bank.
+# Plain SGD variant (no optimizer preconditioning).
+#
+# fisher_normalization: token -- as the document variant, but dividing by the
+# token count instead. LambdaCollector sums over documents, so this is the
+# per-document mean scaled by ~1/mean_tokens_per_doc.
+#
+# Baseline for comparison: runs/lotus_source_q50_damp0 (unnormalized sums,
+# LDS rho=0.387 +/- 0.039).
+
+# Run with `bergson examples/method_comparison/gpt2_wikitext_lotus_source_q50_toknorm.yaml`
+
+steps:
+  - approxunrolling:
+      index_cfg:
+        run_path: runs/lotus_source_q50_toknorm
+        # Tokenizer + final-model reference; per-checkpoint passes load the
+        # model dirs below.
+        model: runs/lotus/retrained/base
+        # In the approxunrolling pipeline `overwrite` doubles as resume:
+        # steps whose output dirs exist are skipped after a crash.
+        overwrite: true
+        precision: fp32
+        # GPT-2's max context length is 1024.
+        token_batch_size: 1024
+        # GPT-2 uses an nn.Linear for its LM head.
+        filter_modules: "lm_head"
+        distributed:
+          nproc_per_node: 8   # <-- adjust to this node's GPU count
+          nnode: 1
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "train"
+          # Doc-level scoring (one doc per row, no packing): packed 512-token
+          # chunks contaminate per-doc gradients across doc boundaries and
+          # were found to suppress LDS (see gpt2_lotus_trackstar50q_docs).
+          chunk_length: 0
+
+      hessian_cfg:
+        method: kfac
+        hessian_dtype: fp32
+        ev_correction: true
+
+      approx_unrolling_cfg:
+        checkpoints:
+          - runs/lotus_source_q50/models/step_51
+          - runs/lotus_source_q50/models/step_102
+          - runs/lotus_source_q50/models/step_136
+          - runs/lotus_source_q50/models/step_187
+          - runs/lotus_source_q50/models/step_238
+          - runs/lotus_source_q50/models/step_288
+        segments: 3
+        fisher_normalization: token
+        lr_list: [4.857423e-04, 5.616667e-04, 2.416667e-04]
+        step_size_list: [97, 96, 96]
+        query:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "test[1:51]"
+          chunk_length: 0
+        # One score column per query (50 total), like the EK-FAC and
+        # TrackStar runs, for multi-query LDS validation.
+        query_aggregation: none
+
+  - validate:
+      run_path: runs/lotus_source_q50_toknorm_validate
+      model: gpt2
+      overwrite: true
+
+      scores: runs/lotus_source_q50_toknorm/scores
+      retrained_dir: runs/lotus
+
+      data:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "train"
+        chunk_length: 512
+
+      query:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "test[1:51]"
+        chunk_length: 0
+
+      batch_size: 64

@@ -3,7 +3,7 @@ import re
 import shutil
 from copy import deepcopy
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 
 import numpy as np
 import torch
@@ -129,21 +129,37 @@ def f_segment(lr_times_steps: float) -> Callable[[Tensor], Tensor]:
     return fn
 
 
+def f_one_minus_exp(lr_times_steps: float) -> Callable[[Tensor], Tensor]:
+    """x -> 1 - exp(-lr_times_steps*x), the numerator of :func:`f_segment`.
+
+    Used by the Eq-43 hybrid: the 1/x that completes f_segment is supplied by
+    the chained EK-FAC inverse rather than evaluated on the diagonal.
+    """
+
+    def fn(sigma: Tensor) -> Tensor:
+        return -torch.expm1(-lr_times_steps * sigma)
+
+    return fn
+
+
 def apply_eigfn_to_query(
     src_grad_path: Path,
     dst_grad_path: Path,
     segment_dir: Path,
     lr_times_steps: float,
-    fn_kind: str,
+    fn_kind: Literal["f_segment", "f_backward"],
     distributed: DistributedConfig,
     preconditioner_path: str = "",
+    preconditioner_hybrid: bool = False,
+    preconditioner_hybrid_damping: float = 0.1,
 ) -> None:
-    """Apply F_segment or F_backward of one segment to a stored query gradient.
+    """Apply a segment's f_segment or f_backward operator to a stored query
+    gradient. The operator scales each query element in the segment's
+    eigenbasis by the function's value at the matching eigenvalue, averaged
+    over the segment's (checkpoint, document) pairs by
+    ``ApproxUnrollingConfig.fisher_normalization``.
 
-    ``fn_kind`` is "f_segment" or "f_backward". The segment eigenvalues are
-    already checkpoint-averaged (expected eigenvalues), so the eigenfunction is
-    applied to them directly.
-    ``preconditioner_path`` selects the preconditioned-optimizer variant: the
+    When ``preconditioner_path`` is set for an Adam-optimized run the
     eigenfunction is evaluated on a diagonal approximation of P^1/2 H P^1/2 in
     parameter space, with F_segment's output additionally multiplied by P
     (its P^1/2 . P^1/2 sandwich; F_backward's sandwich cancels)."""
@@ -153,7 +169,11 @@ def apply_eigfn_to_query(
         run_path=str(dst_grad_path),
         ev_correction=True,
         preconditioner_path=preconditioner_path,
-        preconditioner_post_multiply=fn_kind == "f_segment",
+        # The hybrid's P^1/2 sandwich is absorbed by the chained EK-FAC inverse.
+        preconditioner_post_multiply=fn_kind == "f_segment"
+        and not preconditioner_hybrid,
+        preconditioner_hybrid=preconditioner_hybrid and fn_kind == "f_segment",
+        preconditioner_hybrid_damping=preconditioner_hybrid_damping,
     )
     launch_distributed_run(
         "apply_eigfn_to_query",
@@ -169,13 +189,17 @@ def _apply_eigfn_worker(
     world_size: int,
     cfg: EkfacConfig,
     lr_times_steps: float,
-    fn_kind: str,
+    fn_kind: Literal["f_segment", "f_backward"],
 ) -> None:
     init_dist(rank, local_rank, world_size)
 
     # Segment eigenvalues are already checkpoint-averaged, so the eigenfunction
     # is applied to them directly (no per-example normalization).
-    fn = {"f_segment": f_segment, "f_backward": f_backward}[fn_kind](lr_times_steps)
+    if cfg.preconditioner_hybrid:
+        # 1/x comes from the chained EK-FAC inverse, so mask with the numerator.
+        fn = f_one_minus_exp(lr_times_steps)
+    else:
+        fn = {"f_segment": f_segment, "f_backward": f_backward}[fn_kind](lr_times_steps)
     EkfacApplicator(cfg, apply_fn=fn).compute_ivhp_sharded()
 
 
@@ -185,6 +209,8 @@ def walk_query_phase1(
     lr_times_steps_per_segment: list[float],
     distributed: DistributedConfig,
     preconditioner_paths: list[str] | None = None,
+    preconditioner_hybrid: bool = False,
+    preconditioner_hybrid_damping: float = 0.1,
 ) -> list[Path]:
     """Phase 1: build query_grad_0, ..., query_grad_{L-1} by walking F_backward.
 
@@ -211,6 +237,8 @@ def walk_query_phase1(
             fn_kind="f_backward",
             distributed=distributed,
             preconditioner_path=preconditioner_paths[k] if preconditioner_paths else "",
+            preconditioner_hybrid=preconditioner_hybrid,
+            preconditioner_hybrid_damping=preconditioner_hybrid_damping,
         )
         query_grad_paths[k - 1] = dst
 
@@ -224,6 +252,8 @@ def walk_query_phase2(
     query_grad_paths: list[Path],
     distributed: DistributedConfig,
     preconditioner_paths: list[str] | None = None,
+    preconditioner_hybrid: bool = False,
+    preconditioner_hybrid_damping: float = 0.1,
 ) -> list[Path]:
     """Phase 2: build query_grad_segment_0, ..., query_grad_segment_{L-1} via F_segment.
 
@@ -248,6 +278,8 @@ def walk_query_phase2(
             fn_kind="f_segment",
             distributed=distributed,
             preconditioner_path=preconditioner_paths[l] if preconditioner_paths else "",
+            preconditioner_hybrid=preconditioner_hybrid,
+            preconditioner_hybrid_damping=preconditioner_hybrid_damping,
         )
         query_grad_segment_paths.append(dst)
 
@@ -257,51 +289,64 @@ def walk_query_phase2(
 def score_per_segment_and_aggregate(
     index_cfg: IndexConfig,
     query_grad_segment_paths: list[Path],
-    final_checkpoint: str,
+    segment_checkpoints: list[list[str]],
     query_batch_size: int | None = None,
 ) -> Path:
-    """Phase 3: per-segment ``query_grad_segment_l . g(z_m)`` scores, summed.
+    """Phase 3: per-segment ``query_grad_segment_l . g_bar_l(z_m)`` scores, summed.
 
-    For each l, runs :func:`score_dataset` against the training data at the
-    final checkpoint with ``query_grad_segment_l`` as the query. Writes
-    per-segment outputs to ``<run>/segment_{l}/scores/``, then sums into
-    ``<run>/scores/``.
+    ``g_bar_l`` is the segment's expected training gradient (Bae et al. 2024,
+    Sec. 3.4; App. D notes the scores need "the training gradients C times,
+    where C is the total number of checkpoints"). Per-example gradients are
+    computed at each checkpoint *within* segment l and averaged; scoring every
+    segment at the final checkpoint instead collapses SOURCE toward influence
+    functions at convergence.
+
+    Scores are linear in the training gradient, so averaging the per-checkpoint
+    scores is equivalent to scoring against the averaged gradient. Per-checkpoint
+    outputs land at ``<run>/segment_{l}/scores_ckpt_{c}/``.
     """
     base_run = Path(index_cfg.run_path)
-    num_segments = len(query_grad_segment_paths)
     score_dirs: list[Path] = []
-    for l in range(num_segments):
-        scores_dir = base_run / f"segment_{l}" / "scores"
-        if index_cfg.distributed._node_rank == 0 and scores_dir.exists():
-            shutil.rmtree(scores_dir)
-        seg_index_cfg = deepcopy(index_cfg)
-        seg_index_cfg.model = final_checkpoint
-        seg_index_cfg.run_path = str(scores_dir)
-        seg_index_cfg.projection_dim = 0
-        score_cfg = ScoreConfig(
-            query_path=str(query_grad_segment_paths[l]),
-            higher_is_better=True,
-            query_batch_size=query_batch_size,
-        )
-        seg_preprocess_cfg = PreprocessConfig()
-        save_run_config(
-            Score(score_cfg, seg_index_cfg, seg_preprocess_cfg),
-            seg_index_cfg.partial_run_path,
-        )
-        score_dataset(seg_index_cfg, score_cfg, seg_preprocess_cfg)
-        score_dirs.append(scores_dir)
 
-    total = None
-    for scores_dir in score_dirs:
-        seg_scores = load_scores(scores_dir)[:]
-        seg_score_cfg = load_subconfig(scores_dir, "score_cfg", ScoreConfig)
-        if seg_score_cfg is None:
+    def _oriented(scores_dir: Path):
+        scores = load_scores(scores_dir)[:]
+        score_cfg = load_subconfig(scores_dir, "score_cfg", ScoreConfig)
+        if score_cfg is None:
             raise FileNotFoundError(
                 f"No score_cfg found at {scores_dir}; cannot determine the "
-                "segment scores' orientation for aggregation."
+                "scores' orientation for aggregation."
             )
-        if seg_score_cfg.higher_is_better:
-            seg_scores = -seg_scores
+        return -scores if score_cfg.higher_is_better else scores
+
+    total = None
+    for l, ckpts in enumerate(segment_checkpoints):
+        seg_total = None
+        for c, ckpt in enumerate(ckpts):
+            scores_dir = base_run / f"segment_{l}" / f"scores_ckpt_{c}"
+            if index_cfg.distributed._node_rank == 0 and scores_dir.exists():
+                shutil.rmtree(scores_dir)
+            seg_index_cfg = deepcopy(index_cfg)
+            seg_index_cfg.model = ckpt
+            seg_index_cfg.run_path = str(scores_dir)
+            seg_index_cfg.projection_dim = 0
+            score_cfg = ScoreConfig(
+                query_path=str(query_grad_segment_paths[l]),
+                higher_is_better=True,
+                query_batch_size=query_batch_size,
+            )
+            seg_preprocess_cfg = PreprocessConfig()
+            save_run_config(
+                Score(score_cfg, seg_index_cfg, seg_preprocess_cfg),
+                seg_index_cfg.partial_run_path,
+            )
+            score_dataset(seg_index_cfg, score_cfg, seg_preprocess_cfg)
+            score_dirs.append(scores_dir)
+
+            ckpt_scores = _oriented(scores_dir)
+            seg_total = ckpt_scores if seg_total is None else seg_total + ckpt_scores
+
+        assert seg_total is not None, "each segment has >= 1 checkpoint"
+        seg_scores = seg_total / len(ckpts)
         total = seg_scores if total is None else total + seg_scores
     assert total is not None, "num_segments >= 1 is validated by the pipeline"
 

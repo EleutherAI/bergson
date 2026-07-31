@@ -22,13 +22,15 @@ from bergson.approx_unrolling.trainer_run import (
     write_lr_history,
 )
 from bergson.config.config import ApproxUnrollingConfig, TrainingConfig
+from bergson.config.config_io import save_run_config
 
 
 def _run_dir(tmp_path, **overrides):
-    """A bergson run directory with a config.yaml, as save_run_config writes it."""
-    cfg = TrainingConfig(run_path=str(tmp_path), **overrides)
-    payload = {"magic": cfg.to_dict()}
-    (tmp_path / "config.yaml").write_text(yaml.safe_dump([payload]))
+    """A bergson run directory with a config.yaml.
+
+    Written by ``save_run_config`` itself so the loader is pinned against the
+    real on-disk shape rather than a hand-rolled approximation of it."""
+    save_run_config(TrainingConfig(run_path=str(tmp_path), **overrides), tmp_path)
     return tmp_path
 
 
@@ -135,6 +137,23 @@ def test_explicit_model_path_wins(tmp_path):
 def test_missing_config_yaml_is_explained(tmp_path):
     with pytest.raises(FileNotFoundError, match="bergson run directory"):
         load_training_config(tmp_path)
+
+
+def test_load_reads_the_saved_steps_document(tmp_path):
+    """save_run_config wraps the step list in {steps, metadata}."""
+    _run_dir(tmp_path, optimizer="adamw", adam_beta2=0.98)
+
+    doc = yaml.safe_load((tmp_path / "config.yaml").read_text())
+    assert set(doc) == {"steps", "metadata"}
+    assert load_training_config(tmp_path).adam_beta2 == pytest.approx(0.98)
+
+
+def test_load_still_reads_a_bare_step_list(tmp_path):
+    """Runs saved before the {steps, metadata} wrapper stay readable."""
+    cfg = TrainingConfig(run_path=str(tmp_path), optimizer="sgd", adam_beta1=0.8)
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump([{"magic": cfg.to_dict()}]))
+
+    assert load_training_config(tmp_path).adam_beta1 == pytest.approx(0.8)
 
 
 # ── LR history ──────────────────────────────────────────────────────────────
@@ -504,3 +523,20 @@ def test_export_checkpoints_end_to_end(tmp_path):
     out = resolve(ApproxUnrollingConfig(checkpoints=[str(p) for p in exported]))
     assert out.model_path == model_name
     assert out.momentum == 0.0  # adamw
+
+
+def test_resolve_ignores_a_non_training_config(tmp_path):
+    """A checkpoint dir's sibling config.yaml may belong to an attribution run.
+
+    ``infer_trainer_run`` only checks that a config.yaml exists, so ``resolve``
+    has to tolerate one it cannot read as a TrainingConfig.
+    """
+    run = tmp_path / "attribution_run"
+    (run / "models" / "step_1").mkdir(parents=True)
+    (run / "config.yaml").write_text("steps:\n- approxunrolling:\n    index_cfg: {}\n")
+
+    cfg = ApproxUnrollingConfig(checkpoints=[str(run / "models" / "step_1")])
+    resolved = resolve(cfg)
+
+    assert resolved.momentum == 0.0
+    assert resolved.model_path is None

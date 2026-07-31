@@ -45,6 +45,14 @@ class EkfacConfig:
     diagonal approximation of P^1/2 H P^1/2 in parameter space (the
     Adam/AdamW approximate-unrolling variant) instead of on the eigenvalues
     in the EKFAC eigenbasis. Requires ``apply_fn``."""
+    preconditioner_hybrid: bool = False
+    """With ``preconditioner_path``: instead of evaluating ``apply_fn`` wholly on
+    the diagonal, apply the elementwise ``apply_fn(p * diag(H))`` mask and then
+    the standard EK-FAC inverse. This is the Eq-43 reading of the Adam SOURCE
+    variant (Bae et al. 2024, App. C/D), which keeps eigenbasis curvature in the
+    inverse rather than approximating it diagonally."""
+    preconditioner_hybrid_damping: float = 0.1
+    """Relative damping for the hybrid's EK-FAC inverse."""
     preconditioner_post_multiply: bool = False
     """With ``preconditioner_path``: multiply the applied function's output by
     the preconditioner grid — the P^1/2 F(M) P^1/2 sandwich of the segment
@@ -97,10 +105,11 @@ class EkfacApplicator:
         self.device = get_device(self.rank)
 
     def compute_ivhp_sharded(self):
+        chain: list = []
         if self.cfg.preconditioner_path:
             if self.apply_fn is None:
                 raise ValueError("preconditioner_path requires apply_fn.")
-            preconditioner = DiagonalFactoredPreconditioner.from_shards(
+            diagonal = DiagonalFactoredPreconditioner.from_shards(
                 self.path,
                 self.cfg.preconditioner_path,
                 rank=self.rank,
@@ -109,6 +118,25 @@ class EkfacApplicator:
                 multiply_by_preconditioner=self.cfg.preconditioner_post_multiply,
                 ev_correction=self.cfg.ev_correction,
             )
+            if self.cfg.preconditioner_hybrid:
+                # Bae et al. App. D: "use the diagonal Hessian approximation for
+                # computing the matrix exponential ... Note that we still use the
+                # EK-FAC factors to compute H^-1 g in Equation 43."
+                # Eq-43 reads M_mask @ H^-1 @ g_train; applied to the QUERY
+                # gradient that is the adjoint H^-1 @ M_mask @ q, so the
+                # diagonal mask goes first and the EK-FAC inverse second.
+                chain.append(diagonal)
+                preconditioner = FactoredPreconditioner.from_shards(
+                    self.path,
+                    rank=self.rank,
+                    device=self.device,
+                    inversion_cfg=InversionConfig(
+                        damping_factor=self.cfg.preconditioner_hybrid_damping
+                    ),
+                    ev_correction=self.cfg.ev_correction,
+                )
+            else:
+                preconditioner = diagonal
         else:
             preconditioner = FactoredPreconditioner.from_shards(
                 self.path,
@@ -173,6 +201,8 @@ class EkfacApplicator:
                         device=self.device, dtype=torch.float32
                     )
 
+            for pre in chain:
+                grads = pre.apply(grads)
             transformed = preconditioner.apply(grads)
             del grads
 

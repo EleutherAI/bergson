@@ -1,0 +1,56 @@
+# EK-FAC influence functions at the final checkpoint of the WikiText-2
+# replication run (examples/replication/wikitext_gpt2_train.yaml), scored
+# against all 481 validation queries.
+#
+# Reference: kronfluence examples/wikitext reports LDS 0.44 against its shipped
+# ground truth (masks.pt 100x4656 alpha=0.5 keep-masks, losses.pt 100x481
+# five-seed-averaged subset losses). Running this pipeline on kronfluence's own
+# released model gives 0.4431, so the EK-FAC implementation itself is validated;
+# this config checks that a model trained by OUR trainer lands in the same place.
+#
+# damping_factor 1e-8 is effectively undamped, matching the reference
+# implementation, which adds damping only via its heuristic when unset.
+#
+# Run with:
+#   PYTHONPATH=$PWD python -m bergson examples/replication/wikitext_gpt2_ekfac.yaml
+
+steps:
+  - ekfac:
+      index_cfg:
+        run_path: runs/wikitext_repro/if_scores
+        model: runs/wikitext_repro/train/retrained/base
+        overwrite: true
+        precision: fp32
+        token_batch_size: 1024
+        max_batch_size: 64
+        # GPT-2 ties lm_head to wte; tracking both double-counts the embedding.
+        filter_modules: "lm_head"
+        distributed:
+          nproc_per_node: 8
+          nnode: 1
+        data:
+          dataset: runs/wikitext_repro/data
+          split: train
+          chunk_length: 0
+
+      hessian_cfg:
+        method: kfac
+        hessian_dtype: fp32
+        ev_correction: true
+
+      score_cfg:
+        batch_size: 1024
+        query_batch_size: 64
+
+      preprocess_cfg:
+        unit_normalize: false
+
+      hessian_pipeline_cfg:
+        query:
+          dataset: runs/wikitext_repro/data
+          split: validation
+          chunk_length: 0
+        # One score column per validation query, for per-query LDS.
+        query_aggregation: none
+        inversion_cfg:
+          damping_factor: 1.0e-8

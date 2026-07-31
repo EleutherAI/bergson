@@ -40,8 +40,10 @@ def write_lr_history(
 
 
 def load_training_config(trainer_run: str | Path) -> TrainingConfig:
-    """Load the ``TrainingConfig`` a run was launched with. ``save_run_config``
-    writes ``{command_name: {...}}``, so the single value is the config."""
+    """Load the ``TrainingConfig`` a run was launched with.
+
+    ``save_run_config`` writes ``{steps: [{command_name: {...}}], metadata: ...}``,
+    so the training config is the first step's single value."""
     path = Path(trainer_run) / CONFIG_FILENAME
     if not path.is_file():
         raise FileNotFoundError(
@@ -50,9 +52,11 @@ def load_training_config(trainer_run: str | Path) -> TrainingConfig:
         )
 
     with open(path) as f:
-        loaded = yaml.safe_load(f)
+        loaded: Any = yaml.safe_load(f)
 
-    # One-step configs are a list of {command: payload}; take the first payload.
+    if isinstance(loaded, dict) and "steps" in loaded:
+        loaded = loaded["steps"]
+    # Steps are a list of {command: payload}; take the first payload.
     if isinstance(loaded, list):
         if not loaded:
             raise ValueError(f"{path} is empty")
@@ -64,7 +68,12 @@ def load_training_config(trainer_run: str | Path) -> TrainingConfig:
     if not isinstance(payload, dict):
         raise ValueError(f"{path} is not a bergson run config")
 
-    return TrainingConfig.from_dict(payload, drop_extra_fields=True)
+    try:
+        return TrainingConfig.from_dict(payload, drop_extra_fields=True)
+    except Exception as e:
+        # An attribution run's config.yaml has the same shape, so reaching here
+        # is expected; callers that guess at a run dir catch ValueError.
+        raise ValueError(f"{path} is not a bergson training config: {e}") from e
 
 
 def derive_momentum(training_cfg: TrainingConfig) -> float:
@@ -127,7 +136,17 @@ def resolve(cfg: ApproxUnrollingConfig) -> ApproxUnrollingConfig:
             cfg.momentum = 0.0
         return cfg
 
-    training_cfg = load_training_config(trainer_run)
+    try:
+        training_cfg = load_training_config(trainer_run)
+    except ValueError as e:
+        # A directory with a config.yaml is not necessarily a training run: an
+        # attribution run writes one next to the checkpoints it produced. Infer
+        # nothing from it rather than failing the pipeline.
+        logger.warning("Ignoring %s as a trainer run: %s", trainer_run, e)
+        if cfg.momentum is None:
+            cfg.momentum = 0.0
+        return cfg
+
     filled: list[str] = []
 
     if cfg.model_path is None:

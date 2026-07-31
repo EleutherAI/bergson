@@ -1,5 +1,7 @@
+import json
 import shutil
 from pathlib import Path
+from typing import Literal
 
 import torch
 import torch.distributed as dist
@@ -14,18 +16,62 @@ from bergson.utils.utils import get_device
 
 _SHARD_KINDS = ("activation_sharded", "gradient_sharded")
 
+LAMBDA_COUNTS_FILENAME = "counts.json"
+
+FisherNormalization = Literal["document", "token", "none"]
+
+
+def write_lambda_counts(lambda_dir: Path, *, documents: int, tokens: int) -> None:
+    """Record the denominators available for normalizing a checkpoint's lambdas.
+
+    ``LambdaCollector`` accumulates a sum over documents; ``total_processed``
+    counts tokens. Both are recorded so the choice is made at aggregation time.
+    """
+    with open(lambda_dir / LAMBDA_COUNTS_FILENAME, "w") as f:
+        json.dump({"documents": documents, "tokens": tokens}, f)
+
+
+def lambda_denominator(
+    input_dirs: list[Path], normalization: FisherNormalization
+) -> float:
+    """Pooled count over a segment's checkpoints.
+
+    The lambdas are summed over checkpoints, so the denominator sums too: the
+    result is the mean over every (checkpoint, document) pair, which is what
+    kronfluence's ``lambda_matrix / num_lambda_processed`` computes for a single
+    checkpoint.
+    """
+    if normalization == "none":
+        return 1.0
+
+    key = "documents" if normalization == "document" else "tokens"
+    total = 0
+    for d in input_dirs:
+        counts_path = d / LAMBDA_COUNTS_FILENAME
+        if not counts_path.exists():
+            raise FileNotFoundError(
+                f"Missing {counts_path}, needed to normalize the segment "
+                f"eigenvalues by {key}. It is written alongside the lambda "
+                "shards; re-run the per-checkpoint lambda step, or set "
+                "`fisher_normalization: none` to keep the unnormalized sum."
+            )
+        with open(counts_path) as f:
+            total += json.load(f)[key]
+    return float(total)
+
 
 def sum_sharded_dirs(
     input_dirs: list[Path],
     output_dir: Path,
     distributed: DistributedConfig,
+    divisor: float = 1.0,
 ) -> None:
     """Sum per-rank shards across ``input_dirs`` into ``output_dir``."""
     output_dir.mkdir(parents=True, exist_ok=True)
     launch_distributed_run(
         "sum_sharded_dirs",
         _sum_sharded_dirs_worker,
-        [input_dirs, output_dir],
+        [input_dirs, output_dir, divisor],
         distributed,
     )
 
@@ -36,12 +82,13 @@ def _sum_sharded_dirs_worker(
     world_size: int,
     input_dirs: list[Path],
     output_dir: Path,
+    divisor: float,
 ) -> None:
     init_dist(rank, local_rank, world_size)
     device = get_device(local_rank)
     shard_name = f"shard_{rank}.safetensors"
     in_paths = [d / shard_name for d in input_dirs]
-    _sum_my_shard(in_paths, output_dir / shard_name, device=device)
+    _sum_my_shard(in_paths, output_dir / shard_name, device=device, divisor=divisor)
     if world_size > 1:
         dist.barrier()
 
@@ -50,6 +97,7 @@ def _sum_my_shard(
     in_paths: list[Path],
     out_path: Path,
     device: str,
+    divisor: float = 1.0,
 ) -> None:
     """Sum all tensor dicts in ``in_paths`` and write to ``out_path``."""
     acc: dict[str, torch.Tensor] = {}
@@ -61,6 +109,9 @@ def _sum_my_shard(
                     acc[k] = t.clone()
                 else:
                     acc[k].add_(t)
+    if divisor != 1.0:
+        for v in acc.values():
+            v.div_(divisor)
     save_file({k: v.cpu() for k, v in acc.items()}, out_path)
 
 
@@ -191,10 +242,16 @@ def aggregate_segment_lambdas(
     distributed: DistributedConfig,
     *,
     resume: bool = False,
+    normalization: FisherNormalization = "document",
     input_subdir: str = "averaged_ev_correct_sharded",
     output_subdir: str = "eigenvalue_correction_sharded",
 ) -> None:
-    """Sum per-checkpoint lambdas into per-segment lambda."""
+    """Sum per-checkpoint lambdas into per-segment lambda.
+
+    ``normalization`` divides the sum by the pooled document or token count, so
+    the segment eigenvalues are an expected Fisher rather than a total that
+    grows with dataset size. See ``ApproxUnrollingConfig.fisher_normalization``.
+    """
     logger = get_logger("aggregate_segment_lambdas")
     base_run = Path(run_path)
 
@@ -217,5 +274,9 @@ def aggregate_segment_lambdas(
                     f"Missing per-ckpt lambda dir {d}; did step 3 finish?"
                 )
 
-        logger.info(f"[seg {seg}] summing lambdas -> {out_dir}")
-        sum_sharded_dirs(input_dirs, out_dir, distributed)
+        divisor = lambda_denominator(input_dirs, normalization)
+        logger.info(
+            f"[seg {seg}] summing lambdas -> {out_dir} "
+            f"(normalization={normalization}, divisor={divisor:g})"
+        )
+        sum_sharded_dirs(input_dirs, out_dir, distributed, divisor=divisor)

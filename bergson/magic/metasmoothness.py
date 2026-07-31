@@ -46,6 +46,39 @@ def metasmoothness_score(
     return float((d / total * s1 * s2).sum())
 
 
+def metasmoothness_group_scores(
+    theta0: torch.Tensor,
+    theta_h: torch.Tensor,
+    theta_2h: torch.Tensor,
+    group_ids: torch.Tensor,
+    group_names: list[str],
+) -> dict:
+    """Per-optimizer-path breakdown of the metasmoothness score.
+
+    Muon routes 2D parameters through Newton-Schulz and 1D parameters through
+    an AdamW fallback; ``eps_root`` only enters the AdamW branch. Since the
+    global score weights coordinates by their L1 movement, the 2D group (99.9%
+    of GPT-2's parameters) can dominate it and mask a non-smooth 1D group.
+
+    The decomposition is exact: ``score == sum(share_g * score_g)``.
+    """
+    d = (theta_2h - theta0).abs()
+    total = d.sum()
+    contrib = d * torch.sign(theta_h - theta0) * torch.sign(theta_2h - theta_h)
+
+    out = {}
+    for gid, name in enumerate(group_names):
+        m = group_ids == gid
+        dg = d[m].sum()
+        out[name] = {
+            "score": float(contrib[m].sum() / dg) if dg > 0 else 1.0,
+            "movement_share": float(dg / total) if total > 0 else 0.0,
+            "movement_l1": float(dg),
+            "numel": int(m.sum()),
+        }
+    return out
+
+
 def metasmoothness_worker(
     global_rank: int,
     rank: int,
@@ -97,6 +130,9 @@ def metasmoothness_worker(
         v[-weight_pad_count:] = 0.0
 
     thetas: list[torch.Tensor] = []
+    theta_init: torch.Tensor | None = None
+    group_ids: torch.Tensor | None = None
+    group_names: list[str] = []
     for k in range(3):
         weights = 1.0 + run_cfg.fd_step * k * v
         if pad_count:
@@ -108,6 +144,16 @@ def metasmoothness_worker(
 
         trainer, fwd_state, model = prepare_trainer(run_cfg, rank, schedule)
         fwd_state.detach_()
+        if k == 0 and global_rank == 0:
+            theta_init = torch.cat(
+                [p.detach().float().cpu().flatten() for p in fwd_state.params.values()]
+            )
+            if run_cfg.save_models:
+                os.makedirs(run_cfg.run_path, exist_ok=True)
+                torch.save(
+                    {n: p.detach().float().cpu() for n, p in fwd_state.params.items()},
+                    os.path.join(run_cfg.run_path, "theta_init.pt"),
+                )
         fwd_state = trainer.train(fwd_state, stream, inplace=True, fsdp=run_cfg.fsdp)
 
         if global_rank == 0:
@@ -115,6 +161,27 @@ def metasmoothness_worker(
                 [p.detach().float().cpu().flatten() for p in fwd_state.params.values()]
             )
             thetas.append(theta)
+            if group_ids is None and run_cfg.optimizer == "muon":
+                # Muon's own split: ndim==2 -> Newton-Schulz, else AdamW fallback
+                # (the only branch eps_root enters). See optim.py muon().
+                group_names = ["muon_2d", "adamw_1d"]
+                group_ids = torch.cat(
+                    [
+                        torch.full(
+                            (p.numel(),), 0 if p.ndim == 2 else 1, dtype=torch.uint8
+                        )
+                        for p in fwd_state.params.values()
+                    ]
+                )
+            if run_cfg.save_models and k == 0:
+                # Only the unperturbed run: the k>0 models are finite-difference
+                # probes, not models anyone wants to reuse.
+                path = os.path.join(run_cfg.run_path, "theta_final.pt")
+                torch.save(
+                    {n: p.detach().float().cpu() for n, p in fwd_state.params.items()},
+                    path,
+                )
+                print(f"[metasmoothness] saved {path}")
             print(f"[metasmoothness] finished training {k + 1}/3 (w = 1 + {k}*h*v)")
         del trainer, fwd_state, model
 
@@ -127,7 +194,27 @@ def metasmoothness_worker(
             "direction_seed": run_cfg.direction_seed,
             "total_movement_l1": movement,
         }
+        if theta_init is not None:
+            # Relative update norms of the unperturbed run, matching the ΔL1/ΔL2
+            # convention in LDS_RESULTS (‖θ_final − θ_init‖ / ‖θ_init‖).
+            delta = thetas[0] - theta_init
+            result["delta_l1"] = float(delta.abs().sum() / theta_init.abs().sum())
+            result["delta_l2"] = float(delta.norm() / theta_init.norm())
+            print(
+                f"[metasmoothness] deltaL1 = {result['delta_l1']:.4g}  "
+                f"deltaL2 = {result['delta_l2']:.4g}"
+            )
         print(f"[metasmoothness] score = {score:.4f} (h={run_cfg.fd_step})")
+        if group_ids is not None:
+            groups = metasmoothness_group_scores(
+                thetas[0], thetas[1], thetas[2], group_ids, group_names
+            )
+            result["groups"] = groups
+            for name, g in groups.items():
+                print(
+                    f"[metasmoothness]   {name}: score = {g['score']:.4f}  "
+                    f"share = {g['movement_share']:.4f}  numel = {g['numel']:,}"
+                )
         os.makedirs(run_cfg.run_path, exist_ok=True)
         with open(os.path.join(run_cfg.run_path, "metasmoothness.json"), "w") as f:
             json.dump(result, f, indent=2)
