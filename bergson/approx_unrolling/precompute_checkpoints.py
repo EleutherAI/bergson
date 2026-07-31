@@ -2,8 +2,12 @@ import shutil
 from copy import deepcopy
 from pathlib import Path
 
+import torch
 from datasets import Dataset
 
+from bergson.approx_unrolling.segment_aggregation import (
+    DOCUMENTS_PROCESSED_FILENAME,
+)
 from bergson.collector.collector import (
     CollectorComputer,
     fwd_bwd_hessian_factory,
@@ -90,6 +94,7 @@ def precompute_checkpoint_averaged_lambdas(
             ],
             ckpt_index_cfg.distributed,
         )
+        torch.save(torch.tensor(len(ds)), out_path / DOCUMENTS_PROCESSED_FILENAME)
 
 
 def _lambda_worker(
