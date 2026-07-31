@@ -43,3 +43,9 @@ class MagicConfig(ValidationConfig):
     skip_validation: bool = False
     """Stop after computing and saving attribution scores, before the
     leave-k-out retraining loop. Useful for score-only MAGIC runs."""
+
+    skip_metagradient: bool = False
+    """Skip the MAGIC backward pass entirely, using the trainer only. Attribution
+    scores are filled with zeros. Useful when another method (SOURCE, EK-FAC)
+    supplies the scores and MAGIC is wanted purely for its checkpoint schedule
+    and optimizer-state export."""

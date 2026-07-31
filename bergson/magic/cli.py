@@ -324,6 +324,11 @@ def worker(
     )
 
     multi_query = False
+    # Plain runs compute scores here; skip_metagradient turns MAGIC into a
+    # trainer, which is what the SOURCE/EK-FAC replications want from it.
+    do_metagradient = not score_path and not getattr(
+        run_cfg, "skip_metagradient", False
+    )
     if do_metagradient:
         # Sanity check
         if not isinstance(run_cfg, MagicConfig):
