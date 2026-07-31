@@ -663,7 +663,9 @@ class Trainer:
 
         # Snapshots are written BEFORE each step, so the post-training state has
         # no snapshot of its own; write it when the cadence lands exactly on n.
-        if save_dir and next_save == n:
+        # Interval mode only: the other modes' backward replay indexes the data
+        # stream by checkpoint, so an extra trailing snapshot runs it past the end.
+        if save_dir and save_mode == "interval" and next_save == n:
             p = os.path.join(save_dir, f"step_{n}.ckpt")
             if optimizer_cfg is not None:
                 os.makedirs(p, exist_ok=True)
