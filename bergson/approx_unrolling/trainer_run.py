@@ -95,16 +95,40 @@ def derive_momentum(training_cfg: TrainingConfig) -> float:
             return 0.0
 
 
-def _reject_unexported(checkpoints: list[str]) -> None:
-    """SOURCE loads checkpoints with from_pretrained, so a raw DCP directory
-    would fail deep in the pipeline; say what to do instead."""
-    native = [c for c in checkpoints if Path(c).name.endswith(".ckpt")]
-    if native:
-        raise ValueError(
-            f"{native[:3]} are the trainer's DCP checkpoints, which "
-            "from_pretrained cannot load. Export them first with "
-            "bergson.utils.trainer_export.export_checkpoints(run_path)."
-        )
+def _ensure_exported(checkpoints: list[str]) -> list[str]:
+    """Convert any raw DCP ``step_<n>.ckpt`` paths to the HF ``checkpoint-<n>``
+    dirs SOURCE loads with from_pretrained, exporting on demand.
+
+    A trainer checkpoint lives at ``<run>/checkpoints/step_<n>.ckpt`` and exports
+    to ``<run>/exported/checkpoint-<n>``. Already-exported steps are reused, so
+    this is idempotent across re-runs. Non-DCP paths (HF ids, exported dirs) pass
+    through untouched.
+    """
+    # Import here: trainer_export imports this module, so a top-level import
+    # would be circular.
+    from ..utils.trainer_export import export_checkpoints
+
+    resolved = list(checkpoints)
+    # Group the DCP paths by their run so each run exports in a single pass
+    # (export_checkpoints rebuilds the model once per call).
+    todo: dict[Path, list[tuple[int, int]]] = {}
+    for i, c in enumerate(checkpoints):
+        p = Path(c)
+        if not p.name.endswith(".ckpt"):
+            continue
+        step = int(p.name.removesuffix(".ckpt").removeprefix("step_"))
+        run = p.parent.parent  # <run>/checkpoints/step_<n>.ckpt -> <run>
+        dst = run / EXPORT_DIRNAME / f"checkpoint-{step}"
+        resolved[i] = str(dst)
+        if not dst.exists():
+            todo.setdefault(run, []).append((i, step))
+
+    for run, items in todo.items():
+        steps = sorted({s for _, s in items})
+        logger.info("Auto-exporting %s from %s", steps, run)
+        export_checkpoints(run, steps=steps, overwrite=False)
+
+    return resolved
 
 
 def infer_trainer_run(checkpoints: list[str]) -> str:
@@ -127,7 +151,7 @@ def infer_trainer_run(checkpoints: list[str]) -> str:
 def resolve(cfg: ApproxUnrollingConfig) -> ApproxUnrollingConfig:
     """Fill unset fields from ``cfg.trainer_run``. A no-op when it is empty;
     never overwrites a field the caller set."""
-    _reject_unexported(cfg.checkpoints)
+    cfg.checkpoints = _ensure_exported(cfg.checkpoints)
 
     trainer_run = infer_trainer_run(cfg.checkpoints)
     if not trainer_run:

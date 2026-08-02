@@ -19,10 +19,9 @@
 # Token units put the mask argument in its dead-linear range (LDS 0.125 vs
 # 0.383 in an earlier run of this experiment).
 #
-# The checkpoint dirs come from exporting the trainer's DCP snapshots:
-#   python -c "from bergson.utils.trainer_export import export_checkpoints; \
-#     export_checkpoints('runs/wikitext_repro/train', \
-#       steps=[291,582,873,1164,1455,1746], overwrite=True)"
+# The checkpoints below point straight at the trainer's DCP snapshots
+# (checkpoints/step_<n>.ckpt); the pipeline auto-exports them to HF format on
+# first use, so no manual export step is needed.
 #
 # Run with:
 #   PYTHONPATH=$PWD python -m bergson examples/replication/wikitext_gpt2_source.yaml
@@ -41,7 +40,7 @@ steps:
           nproc_per_node: 8
           nnode: 1
         data:
-          dataset: runs/wikitext_repro/data
+          dataset: EleutherAI/bergson-wikitext-2-4656-chunks
           split: train
           chunk_length: 0
 
@@ -52,17 +51,17 @@ steps:
 
       approx_unrolling_cfg:
         checkpoints:
-          - runs/wikitext_repro/train/exported/checkpoint-291
-          - runs/wikitext_repro/train/exported/checkpoint-582
-          - runs/wikitext_repro/train/exported/checkpoint-873
-          - runs/wikitext_repro/train/exported/checkpoint-1164
-          - runs/wikitext_repro/train/exported/checkpoint-1455
-          - runs/wikitext_repro/train/exported/checkpoint-1746
+          - runs/wikitext_repro/train/checkpoints/step_291.ckpt
+          - runs/wikitext_repro/train/checkpoints/step_582.ckpt
+          - runs/wikitext_repro/train/checkpoints/step_873.ckpt
+          - runs/wikitext_repro/train/checkpoints/step_1164.ckpt
+          - runs/wikitext_repro/train/checkpoints/step_1455.ckpt
+          - runs/wikitext_repro/train/checkpoints/step_1746.ckpt
         segments: 3
         lr_list: [3.0e-5, 3.0e-5, 3.0e-5]
         step_size_list: [582, 582, 582]
         query:
-          dataset: runs/wikitext_repro/data
+          dataset: EleutherAI/bergson-wikitext-2-4656-chunks
           split: validation
           chunk_length: 0
         query_aggregation: none
