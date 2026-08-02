@@ -287,7 +287,12 @@ def validate_scores(
     else:
         valid_indices = torch.arange(flat_scores.shape[0])
 
-    if run_cfg.subset_strategy == "random":
+    subsets_path = os.path.join(run_cfg.run_path, "subsets.json")
+    if os.path.exists(subsets_path):
+        # Reuse a prior run's subsets so methods are compared on the same splits.
+        with open(subsets_path) as f:
+            subsets = [torch.tensor(s, dtype=torch.long) for s in json.load(f)]
+    elif run_cfg.subset_strategy == "random":
         rng = torch.Generator().manual_seed(run_cfg.seed)
         if run_cfg.subset_fraction > 0:
             # Draw potentially overlapping samples
@@ -330,16 +335,16 @@ def validate_scores(
     hf_set_verbosity_error()
 
     # Optionally persist each retrained model for later attribution queries.
+    if global_rank == 0 and not os.path.exists(subsets_path):
+        with open(subsets_path, "w") as f:
+            json.dump([s.tolist() for s in subsets], f)
+
     save_models = getattr(run_cfg, "save_models", False)
     retrained_tokenizer = None
     if save_models and global_rank == 0:
         retrained_tokenizer = AutoTokenizer.from_pretrained(
             run_cfg.tokenizer or run_cfg.model
         )
-        # Row i lists the doc ids left out of retrained/subset_i;
-        # evaluate_retrained needs this to reuse the bank.
-        with open(os.path.join(run_cfg.run_path, "subsets.json"), "w") as f:
-            json.dump([s.tolist() for s in subsets], f)
 
     pbar = tqdm(subsets, desc="Validating", disable=global_rank != 0)
     for i, subset in enumerate(pbar):
