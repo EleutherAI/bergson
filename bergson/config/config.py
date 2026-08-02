@@ -762,6 +762,10 @@ class HessianConfig(Serializable):
     method: Literal["kfac", "tkfac", "shampoo", "autocorrelation"]
     """Method for approximating the Hessian."""
 
+    apply_power: float = -1.0
+    """Inverse power applied to the fitted eigenvalue grid when preconditioning
+    the query gradient. -1.0 is the full inverse H^-1."""
+
     ev_correction: bool = False
     """Whether to additionally compute eigenvalue correction."""
 

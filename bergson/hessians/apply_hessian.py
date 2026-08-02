@@ -28,6 +28,9 @@ class EkfacConfig:
     `HessianConfig.ev_correction=True`."""
     apply_batch_size: int = 32
     """Number of query gradients moved on-device and preconditioned at a time."""
+    power: float = -1.0
+    """Inverse power applied to the fitted factor eigenvalues (-1.0 = full
+    inverse)."""
     debug: bool = False
 
 
@@ -68,14 +71,28 @@ class EkfacApplicator:
         self.device = get_device(self.rank)
 
     def compute_ivhp_sharded(self):
-        preconditioner = FactoredPreconditioner.from_shards(
-            self.path,
-            rank=self.rank,
-            device=self.device,
-            inversion_cfg=None if self.apply_fn is not None else self.inversion_cfg,
-            apply_fn=self.apply_fn,
-            ev_correction=self.cfg.ev_correction,
-        )
+        if self.world_size == 1:
+            # load the full factors and run non-distributed: avoids the sharded
+            # send/recv path, which can hang on some nodes, and lets a
+            # distributed fit be applied on a single gpu
+            preconditioner = FactoredPreconditioner.from_path(
+                self.path,
+                device=self.device,
+                inversion_cfg=None if self.apply_fn is not None else self.inversion_cfg,
+                apply_fn=self.apply_fn,
+                ev_correction=self.cfg.ev_correction,
+                power=self.cfg.power,
+            )
+        else:
+            preconditioner = FactoredPreconditioner.from_shards(
+                self.path,
+                rank=self.rank,
+                device=self.device,
+                inversion_cfg=None if self.apply_fn is not None else self.inversion_cfg,
+                apply_fn=self.apply_fn,
+                ev_correction=self.cfg.ev_correction,
+                power=self.cfg.power,
+            )
 
         grad_sizes = {
             name: preconditioner.eigen_g[name].shape[1]

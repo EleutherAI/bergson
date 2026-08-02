@@ -60,7 +60,11 @@ def hessian_pipeline(
     method = hessian_cfg.method
     query_path = f"{run_path}/query"
     hessian_path = f"{run_path}/hessian"
-    transformed_query_path = f"{run_path}/{method}_query"
+    # tag the output dir with non-default powers so one fit can be applied
+    # at several powers
+    apply_power = hessian_cfg.apply_power
+    power_tag = "" if apply_power == -1.0 else f"_p{-apply_power:g}"
+    transformed_query_path = f"{run_path}/{method}{power_tag}_query"
     scores_path = f"{run_path}/scores"
     resume = hessian_pipeline_cfg.resume
 
@@ -110,6 +114,7 @@ def hessian_pipeline(
             gradient_path=query_path,
             run_path=transformed_query_path,
             ev_correction=hessian_cfg.ev_correction,
+            power=apply_power,
         )
         launch_distributed_run(
             "apply_hessian",
