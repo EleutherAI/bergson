@@ -458,13 +458,30 @@ def test_save_optimizer_state_accepts_old_booleans(value, expected):
     assert cfg.save_optimizer_state == expected
 
 
-def test_dcp_checkpoints_are_rejected_with_the_export_hint(tmp_path):
-    """Passing raw step_<i>.ckpt dirs should fail early, not inside the pipeline."""
-    ckpt = tmp_path / "checkpoints" / "step_0.ckpt"
-    ckpt.mkdir(parents=True)
+def test_dcp_checkpoints_resolve_to_exported_dirs(tmp_path, monkeypatch):
+    """Raw step_<i>.ckpt paths map to exported/checkpoint-<i>, reusing an
+    existing export and exporting the rest in one call per run."""
+    import bergson.utils.trainer_export as te
 
-    with pytest.raises(ValueError, match="export_checkpoints"):
-        resolve(ApproxUnrollingConfig(checkpoints=[str(ckpt)]))
+    for step in (10, 20):
+        (tmp_path / "checkpoints" / f"step_{step}.ckpt").mkdir(parents=True)
+    (tmp_path / "exported" / "checkpoint-10").mkdir(parents=True)
+
+    calls = []
+    monkeypatch.setattr(
+        te, "export_checkpoints", lambda run, steps=None, **kw: calls.append(steps)
+    )
+    cfg = resolve(
+        ApproxUnrollingConfig(
+            checkpoints=[
+                str(tmp_path / "checkpoints" / f"step_{s}.ckpt") for s in (10, 20)
+            ]
+        )
+    )
+    assert cfg.checkpoints == [
+        str(tmp_path / "exported" / f"checkpoint-{s}") for s in (10, 20)
+    ]
+    assert calls == [[20]]
 
 
 def test_export_checkpoints_end_to_end(tmp_path):
@@ -523,3 +540,20 @@ def test_export_checkpoints_end_to_end(tmp_path):
     out = resolve(ApproxUnrollingConfig(checkpoints=[str(p) for p in exported]))
     assert out.model_path == model_name
     assert out.momentum == 0.0  # adamw
+
+
+def test_resolve_ignores_a_non_training_config(tmp_path):
+    """A checkpoint dir's sibling config.yaml may belong to an attribution run.
+
+    ``infer_trainer_run`` only checks that a config.yaml exists, so ``resolve``
+    has to tolerate one it cannot read as a TrainingConfig.
+    """
+    run = tmp_path / "attribution_run"
+    (run / "models" / "step_1").mkdir(parents=True)
+    (run / "config.yaml").write_text("steps:\n- approxunrolling:\n    index_cfg: {}\n")
+
+    cfg = ApproxUnrollingConfig(checkpoints=[str(run / "models" / "step_1")])
+    resolved = resolve(cfg)
+
+    assert resolved.momentum == 0.0
+    assert resolved.model_path is None
