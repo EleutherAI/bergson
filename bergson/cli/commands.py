@@ -16,7 +16,6 @@ from ..config.config import (
     HessianConfig,
     HessianPipelineConfig,
     IndexConfig,
-    TrackstarIndexConfig,
     MetasmoothnessConfig,
     MixConfig,
     PreprocessConfig,
@@ -24,6 +23,7 @@ from ..config.config import (
     RecallConfig,
     ScoreConfig,
     TrackstarConfig,
+    TrackstarIndexConfig,
     TrainingConfig,
     ValidationConfig,
 )
