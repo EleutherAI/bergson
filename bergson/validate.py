@@ -115,7 +115,7 @@ def bank_loss_cache_key(
 def _load_banked_model(
     run_cfg: ValidationConfig, out_dir: str, device: torch.device | str
 ) -> torch.nn.Module:
-    """Load a banked ``save_retrained_models`` checkpoint into a ready model."""
+    """Load a banked ``save_models`` checkpoint into a ready model."""
     load_kwargs = {"dtype": torch.float32, "attn_implementation": "eager"}
     load_kwargs.update(simple_parse_kwargs_string(run_cfg.model_kwargs))
     if os.path.isfile(os.path.join(out_dir, "adapter_config.json")):
@@ -330,7 +330,7 @@ def validate_scores(
     hf_set_verbosity_error()
 
     # Optionally persist each retrained model for later attribution queries.
-    save_models = getattr(run_cfg, "save_retrained_models", False)
+    save_models = getattr(run_cfg, "save_models", False)
     retrained_tokenizer = None
     if save_models and global_rank == 0:
         retrained_tokenizer = AutoTokenizer.from_pretrained(
@@ -464,7 +464,7 @@ def evaluate_retrained(
     """Evaluate a bank of pre-saved leave-k-out models on a query, no retraining.
 
     Reads models written by an earlier run with
-    ``save_retrained_models=true`` and evaluates attribution scores. No training
+    ``save_models=true`` and evaluates attribution scores. No training
     happens so evaluation is cheap.
     """
     assert score_path, "evaluate_retrained requires precomputed --scores"
@@ -474,7 +474,7 @@ def evaluate_retrained(
     if not subsets_path.exists():
         raise FileNotFoundError(
             f"{subsets_path} not found; retrained_dir must point at a run "
-            f"directory written with save_retrained_models=true"
+            f"directory written with save_models=true"
         )
 
     run_path = Path(run_cfg.run_path)

@@ -428,7 +428,7 @@ class ValidationConfig(TrainingConfig, ABC):
     permutation. These scores may be produced by items with fewer than
     2 tokens."""
 
-    save_retrained_models: bool = False
+    save_models: bool = False
     """When True, save each leave-k-out retrained model (HF format, weights +
     tokenizer) to ``<run_path>/retrained/subset_<i>/`` so it can be reused for
     later attribution queries without retraining. ~0.5 GB per subset for GPT-2."""

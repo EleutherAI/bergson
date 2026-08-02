@@ -49,4 +49,4 @@ steps:
 
       wandb_project: magic
       save_optimizer_state: True
-      save_retrained_models: True
+      save_models: True
