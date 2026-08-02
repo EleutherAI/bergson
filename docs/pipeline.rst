@@ -246,6 +246,76 @@ With ``--method kfac`` / ``tkfac`` / ``shampoo``:
        --truncation \
        --method kfac
 
+.. _preconditioners:
+
+Preconditioners: Inverting and Applying Hessians
+------------------------------------------------
+
+A fitted Hessian is applied to gradients as a *preconditioner* ``H^p``. Two
+knobs control this: ``apply_power`` (how much inverse) and the
+``InversionConfig`` (how eigenvalues are regularized before the power is
+taken). The fit itself is identical for every setting of both — only the
+apply changes.
+
+**Apply power**
+
+``HessianConfig.apply_power`` is the inverse power ``p`` applied to the fitted
+eigenvalue grid. For a factored (Kronecker) Hessian ``H = A ⊗ S``, a grid
+power ``p`` is equivalent to per-side factor powers ``p``, since
+``(A ⊗ S)^p = A^p ⊗ S^p``:
+
+- ``-1.0`` — the full inverse ``A^-1 G S^-1``, the influence-function
+  preconditioner.
+- ``-0.5`` — the two-sided square-root inverse ``A^-1/2 G S^-1/2``. Applied to
+  *both* sides of a score inner product this recovers the full inverse
+  (``⟨H^-1/2 q, H^-1/2 g⟩ = q^T H^-1 g``, the ``unit_normalize`` convention);
+  applied one-sided it is a genuinely gentler preconditioner.
+- ``-0.25`` — the per-side quarter roots ``A^-1/4 G S^-1/4``: classic
+  Shampoo's exponent (Meta distributed_shampoo's default root ``1/(2·order)``
+  for a matrix) and the Muon-orthogonalization-equivalent preconditioner.
+
+Because one fit serves every power, the hessian pipeline tags its output
+directory with non-default powers (e.g. ``shampoo_p0.25_query``).
+
+**Inversion modes and their knobs**
+
+Each ``InversionConfig.inversion`` mode maps eigenvalues ``λ`` to a multiplier
+``m(λ)``, which is then raised to ``-apply_power``; regularization therefore
+composes *inside* the power for the damped modes (``(λ + δ)^p``) and as
+truncate-then-power for the pseudoinverse modes (``λ^p·𝟙[λ > tol]``).
+
+The mean-relative modes (``damped_inverse``, ``tikhonov_filtered``,
+``pseudoinverse``, ``factored_tikhonov``) are controlled by
+``damping_factor``: their damping or truncation threshold is
+``damping_factor · mean(λ)``.
+
+The rank-based modes (``pseudoinverse_rank``, ``pseudoinverse_factored``)
+ignore ``damping_factor`` and instead use the ``torch.linalg.matrix_rank``
+convention, matching Meta distributed_shampoo's ``PseudoInverseConfig``:
+
+- threshold = ``clamp(rank_rtol · max(λ), min=rank_atol)``;
+- ``rank_rtol=None`` (the default) means ``numel(λ) · machine_eps``, the
+  ``torch.linalg.matrix_rank`` / distributed_shampoo default;
+- distributed_shampoo requires ``epsilon=0`` with pseudo-inverse, and
+  correspondingly no damping term is added in these modes.
+
+``pseudoinverse_rank`` thresholds the joint eigenvalue spectrum;
+``pseudoinverse_factored`` computes a separate threshold per Kronecker factor,
+so a grid cell ``λ_G·λ_A`` survives only if both factor eigenvalues pass their
+own factor's cutoff — a cell whose *product* is large is still zeroed when one
+factor is rank-deficient, reproducing distributed_shampoo's per-side truncated
+roots ``L^{†p} G R^{†p}``.
+
+**Tolerance units**
+
+The stored factor eigenvalues are trace-normalized and scaled by
+``sqrt(total_processed)`` per factor. ``rank_rtol`` is relative to
+``max(λ)``, so it is invariant to both rescalings and transfers across fits —
+prefer it. ``rank_atol`` is compared in the stored units, *not* in units of a
+raw gradient-covariance accumulator, so an absolute floor tuned for one fit
+(or borrowed from an optimizer setting such as ``eps=1e-15``) does not
+transfer directly.
+
 Choosing the Right Command
 --------------------------
 

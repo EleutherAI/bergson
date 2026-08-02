@@ -96,22 +96,16 @@ class InversionConfig(Serializable):
 
     damping_factor: float = 0.1
     """Damping / truncation strength, relative to the mean eigenvalue. Ignored
-    by the "pseudoinverse_rank" / "pseudoinverse_factored" modes, which use
-    ``rank_rtol`` / ``rank_atol`` instead."""
+    by the "pseudoinverse_rank" / "pseudoinverse_factored" modes."""
 
     rank_rtol: float | None = None
-    """Relative truncation tolerance for the "pseudoinverse_rank" /
-    "pseudoinverse_factored" modes: eigenvalues at or below
-    ``rank_rtol·max(λ)`` are zeroed. ``None`` uses the
-    ``torch.linalg.matrix_rank`` / Meta distributed_shampoo default,
-    ``numel(λ)·machine_eps``. Being relative, it is invariant to the trace
-    normalization and sample-count scaling of the stored factors."""
+    """Relative truncation tolerance for the rank-based pseudoinverse modes:
+    eigenvalues at or below ``rank_rtol·max(λ)`` are zeroed. ``None`` uses
+    ``numel(λ)·machine_eps``. See :ref:`preconditioners`."""
 
     rank_atol: float = 0.0
     """Absolute floor for the truncation threshold of the rank-based
-    pseudoinverse modes. Compared in units of the stored eigenvalues, which
-    for factored Hessians are trace-normalized and scaled by
-    ``sqrt(total_processed)`` per factor."""
+    pseudoinverse modes. See :ref:`preconditioners`."""
 
 
 @dataclass
