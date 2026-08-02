@@ -76,9 +76,9 @@ class InversionConfig(Serializable):
       damping.
     - "factored_tikhonov": damped inverse with the damping split across the
       activation (A) and gradient (G) Kronecker factors via the Martens &
-      Grosse trace ratio ``π = sqrt(mean(λ_A) / mean(λ_G))``. Factored EKFAC
-      only; falls back to ``damped_inverse`` for the dense autocorrelation
-      Hessian, which has no Kronecker structure.
+      Grosse trace ratio ``π = sqrt(mean(λ_A) / mean(λ_G))``. Factored
+      Hessians only; falls back to ``damped_inverse`` for the dense
+      autocorrelation Hessian, which has no Kronecker structure.
     - "pseudoinverse": ``1/λ`` where ``λ > c·mean(λ)``, else ``0`` (truncated
       Moore-Penrose pseudoinverse).
     - "pseudoinverse_rank": ``1/λ`` where ``λ > clamp(rank_rtol·max(λ),
@@ -89,7 +89,7 @@ class InversionConfig(Serializable):
       Kronecker factor; a grid cell ``λ_G·λ_A`` survives only if both factor
       eigenvalues pass their own factor's threshold — matching
       distributed_shampoo's per-side truncated roots ``L^{†p} G R^{†p}``.
-      Factored EKFAC only (falls back to "pseudoinverse_rank" for the dense
+      Factored Hessians only (falls back to "pseudoinverse_rank" for the dense
       autocorrelation Hessian); incompatible with ``ev_correction``.
     - "tikhonov_filtered": ``λ / (λ² + α²)`` with ``α = c·mean(λ)`` — the
       Tikhonov filter factor / ridge solution ``(H² + α²I)⁻¹H``."""

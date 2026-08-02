@@ -2,7 +2,7 @@
 
 Two representations of the Hessian coexist in the library:
 
-- the factored EKFAC family (kfac / tkfac / shampoo), where the Hessian is a
+- the factored Hessian family (kfac / tkfac / shampoo), where the Hessian is a
   Kronecker product applied via the eigenbasis rotation in
   :class:`~bergson.hessians.preconditioner.FactoredPreconditioner`, and
 - the dense autocorrelation Gram, where :func:`invert_psd_matrix`
@@ -23,7 +23,7 @@ mean over the whole spectrum:
 - ``pseudoinverse_factored``: the Meta cutoff computed per Kronecker factor —
   a grid cell survives only if *both* its ``λ_A`` and ``λ_G`` pass their own
   factor's threshold, matching distributed_shampoo's per-factor
-  ``L^{†p} G R^{†p}``. Factored EKFAC only; falls back to
+  ``L^{†p} G R^{†p}``. Factored Hessians only; falls back to
   ``pseudoinverse_rank`` for the dense autocorrelation Hessian.
 - ``factored_tikhonov``: damping split across the Kronecker activation (A) and
   gradient (G) factors (see :func:`factored_tikhonov_damped`). This has no dense
@@ -155,7 +155,7 @@ def factored_rank_pseudoinverse_multiplier(
     rank_rtol: float | None,
     rank_atol: float,
 ) -> Tensor:
-    """Per-factor truncated pseudoinverse on the EKFAC eigenvalue grid.
+    """Per-factor truncated pseudoinverse on the factored eigenvalue grid.
 
     Each factor's spectrum gets its own Meta-style cutoff; a grid cell
     ``λ = λ_G[o]·λ_A[i]`` survives only if both ``λ_G[o]`` and ``λ_A[i]`` pass
@@ -177,7 +177,7 @@ def factored_rank_pseudoinverse_multiplier(
 
 # Inversion modes expressible as a pure function of ``(λ, mean(λ), c)``. These
 # operate elementwise, so they apply unchanged to the dense 1-D spectrum and to
-# the EKFAC eigenvalue grid. ``factored_tikhonov`` is intentionally absent: it
+# the factored eigenvalue grid. ``factored_tikhonov`` is intentionally absent: it
 # needs the per-factor A/G eigenvalues and only exists for the factored path.
 EIGENFNS: dict[str, Callable[[Tensor, Tensor, float], Tensor]] = {
     "damped_inverse": damped_inverse_eigfn,
@@ -203,7 +203,7 @@ def factored_tikhonov_damped(
 
         λ + π·√(c·mean(λ))·λ_G + (√(c·mean(λ))/π)·λ_A + c·mean(λ)
 
-    ``eigvals`` is the EKFAC eigenvalue grid ``λ`` (= ``λ_G ⊗ λ_A``); ``factor_a``
+    ``eigvals`` is the factored eigenvalue grid ``λ`` (= ``λ_G ⊗ λ_A``); ``factor_a``
     / ``factor_g`` are the per-factor eigenvalues ``λ_A`` ``[I]`` / ``λ_G`` ``[O]``.
     All means are passed in so the distributed path can supply globally-reduced
     values rather than per-shard ones. Reciprocate the result for the inverse.
