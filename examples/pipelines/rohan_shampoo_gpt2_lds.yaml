@@ -1,0 +1,50 @@
+# https://x.com/_arohan_/status/2064631528806908134
+#
+# Run with:
+#   bergson examples/pipelines/rohan_shampoo_gpt2_lds.yaml
+run_path: /mnt/ssd-2/lucia-adam-shampoo/shampoo_rohan_adam/pipeline
+steps:
+- ekfac:
+    index_cfg:
+      run_path: /mnt/ssd-2/lucia-adam-shampoo/shampoo_rohan_adam/scores
+      model: /mnt/ssd-2/lucia-adam-shampoo/run_adam/N4k/retrained/base
+      overwrite: false
+      projection_dim: 0
+      token_batch_size: 1024
+      max_batch_size: 64
+      filter_modules: lm_head
+      distributed:
+        nproc_per_node: 8
+        nnode: 1
+      data: &train_data
+        dataset: /mnt/ssd-1/lucia/bergson-damping/runs/ekfac_vs_n/datasets/train_4k.hf
+        split: train
+        chunk_length: 0
+    hessian_cfg:
+      method: shampoo
+      apply_power: -0.25
+      ev_correction: false
+    score_cfg:
+      batch_size: 1024
+    preprocess_cfg:
+      unit_normalize: false
+    hessian_pipeline_cfg:
+      query: &query_data
+        dataset: /mnt/ssd-1/lucia/bergson-damping/runs/ekfac_vs_n/datasets/query_50.hf
+        split: train
+        chunk_length: 0
+      query_aggregation: none
+      inversion_cfg:
+        inversion: pseudoinverse_factored
+        rank_rtol: null
+        rank_atol: 0.0
+      resume: true
+- validate:
+    run_path: /mnt/ssd-2/lucia-adam-shampoo/shampoo_rohan_adam/validate
+    model: gpt2
+    overwrite: true
+    scores: /mnt/ssd-2/lucia-adam-shampoo/shampoo_rohan_adam/scores/scores
+    retrained_dir: /mnt/ssd-2/lucia-adam-shampoo/run_adam/N4k
+    data: *train_data
+    query: *query_data
+    batch_size: 50
