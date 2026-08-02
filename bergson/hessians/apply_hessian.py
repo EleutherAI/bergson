@@ -72,9 +72,8 @@ class EkfacApplicator:
 
     def compute_ivhp_sharded(self):
         if self.world_size == 1:
-            # load the full factors and run non-distributed: avoids the sharded
-            # send/recv path, which can hang on some nodes, and lets a
-            # distributed fit be applied on a single gpu
+            # load the full factors, concatenating any shards from a
+            # distributed fit; from_shards would only load this rank's shard
             preconditioner = FactoredPreconditioner.from_path(
                 self.path,
                 device=self.device,
