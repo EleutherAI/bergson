@@ -247,51 +247,58 @@ def walk_query_phase2(
 def score_per_segment_and_aggregate(
     index_cfg: IndexConfig,
     query_grad_segment_paths: list[Path],
-    final_checkpoint: str,
+    segment_checkpoints: list[list[str]],
     query_batch_size: int | None = None,
 ) -> Path:
-    """Phase 3: per-segment ``query_grad_segment_l . g(z_m)`` scores, summed.
+    """Phase 3: per-segment ``query_grad_segment_l . g_bar_l(z_m)`` scores, summed.
 
-    For each l, runs :func:`score_dataset` against the training data at the
-    final checkpoint with ``query_grad_segment_l`` as the query. Writes
-    per-segment outputs to ``<run>/segment_{l}/scores/``, then sums into
-    ``<run>/scores/``.
+    ``g_bar_l`` is the segment's expected training gradient, estimated over the
+    segment's checkpoints (Bae et al. 2024, Eq. 20). Scores are linear in the
+    training gradient, so the per-checkpoint scores are averaged; they land at
+    ``<run>/segment_{l}/scores_ckpt_{c}/``.
     """
     base_run = Path(index_cfg.run_path)
-    num_segments = len(query_grad_segment_paths)
     score_dirs: list[Path] = []
-    for l in range(num_segments):
-        scores_dir = base_run / f"segment_{l}" / "scores"
-        if index_cfg.distributed._node_rank == 0 and scores_dir.exists():
-            shutil.rmtree(scores_dir)
-        seg_index_cfg = deepcopy(index_cfg)
-        seg_index_cfg.model = final_checkpoint
-        seg_index_cfg.run_path = str(scores_dir)
-        seg_index_cfg.projection_dim = 0
-        score_cfg = ScoreConfig(
-            query_path=str(query_grad_segment_paths[l]),
-            higher_is_better=True,
-            query_batch_size=query_batch_size,
-        )
-        seg_preprocess_cfg = PreprocessConfig()
-        save_run_config(
-            Score(score_cfg, seg_index_cfg, seg_preprocess_cfg),
-            seg_index_cfg.partial_run_path,
-        )
-        score_dataset(seg_index_cfg, score_cfg, seg_preprocess_cfg)
-        score_dirs.append(scores_dir)
 
-    total = None
-    for scores_dir in score_dirs:
-        seg_scores = load_scores(scores_dir)[:]
-        seg_score_cfg = load_subconfig(scores_dir, "score_cfg", ScoreConfig)
-        if seg_score_cfg is None:
+    def _oriented(scores_dir: Path):
+        scores = load_scores(scores_dir)[:]
+        score_cfg = load_subconfig(scores_dir, "score_cfg", ScoreConfig)
+        if score_cfg is None:
             raise FileNotFoundError(
                 f"No score_cfg found at {scores_dir}; cannot determine the "
-                "segment scores' orientation for aggregation."
+                "scores' orientation for aggregation."
             )
-        if seg_score_cfg.higher_is_better:
-            seg_scores = -seg_scores
+        return -scores if score_cfg.higher_is_better else scores
+
+    total = None
+    for l, ckpts in enumerate(segment_checkpoints):
+        seg_total = None
+        for c, ckpt in enumerate(ckpts):
+            scores_dir = base_run / f"segment_{l}" / f"scores_ckpt_{c}"
+            if index_cfg.distributed._node_rank == 0 and scores_dir.exists():
+                shutil.rmtree(scores_dir)
+            seg_index_cfg = deepcopy(index_cfg)
+            seg_index_cfg.model = ckpt
+            seg_index_cfg.run_path = str(scores_dir)
+            seg_index_cfg.projection_dim = 0
+            score_cfg = ScoreConfig(
+                query_path=str(query_grad_segment_paths[l]),
+                higher_is_better=True,
+                query_batch_size=query_batch_size,
+            )
+            seg_preprocess_cfg = PreprocessConfig()
+            save_run_config(
+                Score(score_cfg, seg_index_cfg, seg_preprocess_cfg),
+                seg_index_cfg.partial_run_path,
+            )
+            score_dataset(seg_index_cfg, score_cfg, seg_preprocess_cfg)
+            score_dirs.append(scores_dir)
+
+            ckpt_scores = _oriented(scores_dir)
+            seg_total = ckpt_scores if seg_total is None else seg_total + ckpt_scores
+
+        assert seg_total is not None, "each segment has >= 1 checkpoint"
+        seg_scores = seg_total / len(ckpts)
         total = seg_scores if total is None else total + seg_scores
     assert total is not None, "num_segments >= 1 is validated by the pipeline"
 
