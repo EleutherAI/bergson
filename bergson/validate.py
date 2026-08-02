@@ -513,23 +513,25 @@ def validate_scores(
 
 def evaluate_retrained(
     run_cfg: ValidationConfig,
-    retrained_dir: str,
+    retrain_bank: str,
     *,
     score_path: str = "",
+    subsets_path: str | None = None,
 ):
     """Evaluate a bank of pre-saved leave-k-out models on a query, no retraining.
 
     Reads models written by an earlier run with
     ``save_models=true`` and evaluates attribution scores. No training
-    happens so evaluation is cheap.
+    happens so evaluation is cheap. ``subsets_path`` overrides the default
+    ``<retrain_bank>/subsets.json``.
     """
     assert score_path, "evaluate_retrained requires precomputed --scores"
-    src = Path(retrained_dir)
+    src = Path(retrain_bank)
     models_root = src / "retrained"
-    subsets_path = src / "subsets.json"
-    if not subsets_path.exists():
+    subsets_file = Path(subsets_path) if subsets_path else src / "subsets.json"
+    if not subsets_file.exists():
         raise FileNotFoundError(
-            f"{subsets_path} not found; retrained_dir must point at a run "
+            f"{subsets_file} not found; retrain_bank must point at a run "
             f"directory written with save_models=true"
         )
 
@@ -539,7 +541,7 @@ def evaluate_retrained(
 
     # Row i of subsets.json lists the doc ids left out of retrained/subset_i, so
     # scores[subsets[i]] is the summed attribution of exactly what model i drops.
-    with open(subsets_path) as f:
+    with open(subsets_file) as f:
         subset_lists = json.load(f)
     subsets = [torch.tensor(s, dtype=torch.long) for s in subset_lists]
 

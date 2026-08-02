@@ -1,0 +1,58 @@
+# Ground-truth leave-k-out retrain bank for the WikiText-2 replication.
+#
+# This is the expensive step: it draws `num_subsets` random subsets, retrains a
+# GPT-2 on each with the same recipe as the replication training run
+# (wikitext_gpt2_train.yaml -- AdamW, constant lr 3e-5, 3 epochs), and saves
+# every model. `wikitext_gpt2_validate.yaml` then reads this bank to score LDS.
+#
+# We build our OWN ground truth rather than consuming kronfluence's shipped
+# masks/losses -- that is what makes this an independent replication. Only the
+# production rules are shared: random subsets and the same training recipe.
+#
+# subset_fraction 0.5 == kronfluence's alpha=0.5 keep-half masks. num_subsets is
+# the number of retrained models the LDS Spearman is computed over.
+#
+# Run with:
+#   PYTHONPATH=$PWD python -m bergson examples/replication/wikitext_gpt2_bank.yaml
+
+steps:
+  - magic:
+      run_path: runs/wikitext_repro/bank
+      model: gpt2
+      overwrite: true
+      precision: fp32
+      seed: 1004
+
+      data:
+        dataset: EleutherAI/bergson-wikitext-2-4656-chunks
+        split: train
+        chunk_length: 0
+      query:
+        dataset: EleutherAI/bergson-wikitext-2-4656-chunks
+        split: validation
+        chunk_length: 0
+
+      distributed:
+        nproc_per_node: 8
+        nnode: 1
+
+      # Same optimizer recipe as wikitext_gpt2_train.yaml, so the retrained
+      # models differ from the reference model only in their training subset.
+      optimizer: adamw
+      adam_beta1: 0.9
+      adam_beta2: 0.999
+      adam_eps: 1.0e-8
+      eps_root: 0.0
+      weight_decay: 0.01
+      batch_size: 8
+      num_epochs: 3
+      lr_schedule:
+        lr_scheduler_type: constant
+        lr: 3.0e-5
+      train_mode: true
+
+      # The leave-k-out ground truth: 100 models, each trained on a random half.
+      subset_strategy: random
+      num_subsets: 100
+      subset_fraction: 0.5
+      save_models: true

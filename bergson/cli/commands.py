@@ -273,15 +273,24 @@ class Validate(ValidationConfig):
     scores: str = ""
     """Path to saved attribution scores for validation."""
 
-    retrained_dir: str = ""
-    """Optional: evaluate on an existing run directory of
-    leave-k-out re-trained models written with
-    ``save_models=true``."""
+    retrain_bank: str = ""
+    """Optional: compute LDS against an existing bank of leave-k-out re-trained
+    models (a directory written with ``save_models=true``: ``subsets.json`` +
+    ``retrained/base`` + ``retrained/subset_*``) instead of retraining now."""
+
+    subsets: str = ""
+    """Optional path to the subsets json (which docs each bank model left out);
+    defaults to ``<retrain_bank>/subsets.json``."""
 
     def execute(self):
         """Run the validation."""
         assert self.scores, "Path to attribution scores must be provided."
-        if self.retrained_dir:
-            evaluate_retrained(self, self.retrained_dir, score_path=self.scores)
+        if self.retrain_bank:
+            evaluate_retrained(
+                self,
+                self.retrain_bank,
+                score_path=self.scores,
+                subsets_path=self.subsets or None,
+            )
         else:
             run_magic(self, score_path=self.scores)

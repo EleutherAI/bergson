@@ -1,0 +1,48 @@
+# LDS for the WikiText-2 replication: score the EK-FAC IF and SOURCE attributions
+# against our own retrain bank (wikitext_gpt2_bank.yaml). No kronfluence artifacts.
+#
+# Each step reads the pre-saved bank via --retrain_bank and reports the mean
+# per-query Spearman (LDS); no retraining happens here, so it is cheap. The
+# reference ordering to reproduce is SOURCE > EK-FAC IF (Bae et al. 2024, Fig. 6).
+#
+# Prerequisites (run in order first):
+#   train  -> wikitext_gpt2_train.yaml   (model + checkpoints)
+#   IF     -> wikitext_gpt2_ekfac.yaml   (runs/wikitext_repro/if_scores)
+#   SOURCE -> wikitext_gpt2_source.yaml  (runs/wikitext_repro/source_scores)
+#   bank   -> wikitext_gpt2_bank.yaml    (runs/wikitext_repro/bank)
+#
+# Run with:
+#   PYTHONPATH=$PWD python -m bergson examples/replication/wikitext_gpt2_validate.yaml
+
+steps:
+  - validate:
+      run_path: runs/wikitext_repro/validate_ekfac
+      model: gpt2
+      overwrite: true
+      scores: runs/wikitext_repro/if_scores/scores
+      retrain_bank: runs/wikitext_repro/bank
+      batch_size: 64
+      data:
+        dataset: EleutherAI/bergson-wikitext-2-4656-chunks
+        split: train
+        chunk_length: 0
+      query:
+        dataset: EleutherAI/bergson-wikitext-2-4656-chunks
+        split: validation
+        chunk_length: 0
+
+  - validate:
+      run_path: runs/wikitext_repro/validate_source
+      model: gpt2
+      overwrite: true
+      scores: runs/wikitext_repro/source_scores/scores
+      retrain_bank: runs/wikitext_repro/bank
+      batch_size: 64
+      data:
+        dataset: EleutherAI/bergson-wikitext-2-4656-chunks
+        split: train
+        chunk_length: 0
+      query:
+        dataset: EleutherAI/bergson-wikitext-2-4656-chunks
+        split: validation
+        chunk_length: 0
