@@ -75,9 +75,10 @@ def test_factored_matches_ekfac_applicator(
     query_path = str(tmp_path / "query")
     _make_query_gradients(query_path, grad_sizes, num_grads)
 
-    # factored_tikhonov assumes the eigenvalue grid factorizes as λ = λ_G ⊗ λ_A,
-    # which the EV-corrected eigenvalues do not; apply it to the uncorrected grid.
-    ev_correction = inversion != "factored_tikhonov"
+    # factored_tikhonov and pseudoinverse_factored assume the eigenvalue grid
+    # factorizes as λ = λ_G ⊗ λ_A, which the EV-corrected eigenvalues do not;
+    # apply them to the uncorrected grid.
+    ev_correction = inversion not in ("factored_tikhonov", "pseudoinverse_factored")
 
     # Reference: the pipeline's file-based applicator (full inverse).
     ref = _apply(

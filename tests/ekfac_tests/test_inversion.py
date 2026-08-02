@@ -70,10 +70,13 @@ def test_inversion_methods_apply(ekfac_results_path: str, tmp_path):
     sample = sorted(grad_sizes.keys())[0]
     outputs = {}
     for inversion in INVERSIONS:
-        # factored_tikhonov splits the damping across the Kronecker factors,
-        # which assumes λ = λ_G ⊗ λ_A; the EV-corrected eigenvalues do not
-        # factorize, so it is applied to the uncorrected grid instead.
-        ev_correction = inversion != "factored_tikhonov"
+        # factored_tikhonov and pseudoinverse_factored operate on the Kronecker
+        # factors, which assumes λ = λ_G ⊗ λ_A; the EV-corrected eigenvalues do
+        # not factorize, so they are applied to the uncorrected grid instead.
+        ev_correction = inversion not in (
+            "factored_tikhonov",
+            "pseudoinverse_factored",
+        )
         out = _apply(
             hessian_path,
             query_path,

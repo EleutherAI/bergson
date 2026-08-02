@@ -81,11 +81,37 @@ class InversionConfig(Serializable):
       Hessian, which has no Kronecker structure.
     - "pseudoinverse": ``1/λ`` where ``λ > c·mean(λ)``, else ``0`` (truncated
       Moore-Penrose pseudoinverse).
+    - "pseudoinverse_rank": ``1/λ`` where ``λ > clamp(rank_rtol·max(λ),
+      min=rank_atol)``, else ``0`` — the ``torch.linalg.matrix_rank`` cutoff
+      used by Meta distributed_shampoo's ``PseudoInverseConfig``, applied to
+      the joint spectrum. Ignores ``damping_factor``.
+    - "pseudoinverse_factored": the same cutoff computed separately per
+      Kronecker factor; a grid cell ``λ_G·λ_A`` survives only if both factor
+      eigenvalues pass their own factor's threshold — matching
+      distributed_shampoo's per-side truncated roots ``L^{†p} G R^{†p}``.
+      Factored EKFAC only (falls back to "pseudoinverse_rank" for the dense
+      autocorrelation Hessian); incompatible with ``ev_correction``.
     - "tikhonov_filtered": ``λ / (λ² + α²)`` with ``α = c·mean(λ)`` — the
       Tikhonov filter factor / ridge solution ``(H² + α²I)⁻¹H``."""
 
     damping_factor: float = 0.1
-    """Damping / truncation strength, relative to the mean eigenvalue."""
+    """Damping / truncation strength, relative to the mean eigenvalue. Ignored
+    by the "pseudoinverse_rank" / "pseudoinverse_factored" modes, which use
+    ``rank_rtol`` / ``rank_atol`` instead."""
+
+    rank_rtol: float | None = None
+    """Relative truncation tolerance for the "pseudoinverse_rank" /
+    "pseudoinverse_factored" modes: eigenvalues at or below
+    ``rank_rtol·max(λ)`` are zeroed. ``None`` uses the
+    ``torch.linalg.matrix_rank`` / Meta distributed_shampoo default,
+    ``numel(λ)·machine_eps``. Being relative, it is invariant to the trace
+    normalization and sample-count scaling of the stored factors."""
+
+    rank_atol: float = 0.0
+    """Absolute floor for the truncation threshold of the rank-based
+    pseudoinverse modes. Compared in units of the stored eigenvalues, which
+    for factored Hessians are trace-normalized and scaled by
+    ``sqrt(total_processed)`` per factor."""
 
 
 @dataclass

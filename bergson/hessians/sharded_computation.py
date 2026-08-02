@@ -121,6 +121,17 @@ class ShardedMul:
             dist.all_reduce(total, op=dist.ReduceOp.SUM)
         return total / full_numel
 
+    def global_max(self, x_shard: Tensor) -> Tensor:
+        """Max of a row-sharded tensor over its full extent.
+
+        ``x_shard`` is this rank's row-shard. Maxes locally, all-reduces when
+        distributed, so every rank gets the global max.
+        """
+        local_max = x_shard.max()
+        if self.dist:
+            dist.all_reduce(local_max, op=dist.ReduceOp.MAX)
+        return local_max
+
     def scale_rows_in_place(
         self,
         matrix_noi: Float[Tensor, "n o i"],

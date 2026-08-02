@@ -68,6 +68,8 @@ class DensePreconditioner:
                 inversion=inversion_cfg.inversion,
                 damping_factor=inversion_cfg.damping_factor,
                 power=power,
+                rank_rtol=inversion_cfg.rank_rtol,
+                rank_atol=inversion_cfg.rank_atol,
             )
             for name, H in processor.hessians.items()
         }
@@ -186,21 +188,23 @@ class FactoredPreconditioner:
     def _from_loaded(
         cls, load, load_replicated, inversion_cfg, apply_fn, power, ev_correction
     ):
-        factored_tikhonov = (
-            inversion_cfg is not None and inversion_cfg.inversion == "factored_tikhonov"
+        needs_factor_eigs = inversion_cfg is not None and inversion_cfg.inversion in (
+            "factored_tikhonov",
+            "pseudoinverse_factored",
         )
-        if factored_tikhonov and ev_correction:
+        if needs_factor_eigs and ev_correction:
             raise ValueError(
-                "factored_tikhonov inversion is incompatible with ev_correction: "
-                "the corrected eigenvalues do not factorize as λ_G ⊗ λ_A. Use a "
-                "different inversion (e.g. damped_inverse) or set ev_correction=False."
+                f"{inversion_cfg.inversion} inversion is incompatible with "  # type: ignore[union-attr]
+                "ev_correction: the corrected eigenvalues do not factorize as "
+                "λ_G ⊗ λ_A. Use a different inversion (e.g. damped_inverse) or "
+                "set ev_correction=False."
             )
 
         lambda_dir = (
             "eigenvalue_correction_sharded" if ev_correction else "eigenvalue_sharded"
         )
         factor_eig_a = factor_eig_g = None
-        if factored_tikhonov:
+        if needs_factor_eigs:
             # factor_eig_a indexes the unsharded column dim I -> replicated, full
             # [I]; factor_eig_g indexes the sharded row dim O -> row-sharded.
             factor_eig_a = load_replicated("factor_eig_a")  # replicated, full [I]
@@ -243,6 +247,36 @@ class FactoredPreconditioner:
                     factor_g=factor_g,
                     mean_a=factor_a.clamp_min(0).mean(),
                     mean_g=self.shard_computer.global_mean(factor_g.clamp_min(0), o),
+                    power=self.power,
+                )
+            elif inversion == "pseudoinverse_factored":
+                factor_a = self.factor_eig_a[name]
+                factor_g = self.factor_eig_g[name]
+                inverse_eigvals = eigenvalue_multiplier(
+                    inversion,
+                    lam,
+                    mean,
+                    self.inversion_cfg.damping_factor,
+                    factor_a=factor_a,
+                    factor_g=factor_g,
+                    max_a=factor_a.max(),
+                    max_g=self.shard_computer.global_max(factor_g),
+                    numel_a=i,
+                    numel_g=o,
+                    rank_rtol=self.inversion_cfg.rank_rtol,
+                    rank_atol=self.inversion_cfg.rank_atol,
+                    power=self.power,
+                )
+            elif inversion == "pseudoinverse_rank":
+                inverse_eigvals = eigenvalue_multiplier(
+                    inversion,
+                    lam,
+                    mean,
+                    self.inversion_cfg.damping_factor,
+                    spectrum_max=self.shard_computer.global_max(lam),
+                    spectrum_numel=o * i,
+                    rank_rtol=self.inversion_cfg.rank_rtol,
+                    rank_atol=self.inversion_cfg.rank_atol,
                     power=self.power,
                 )
             else:

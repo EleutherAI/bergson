@@ -16,6 +16,15 @@ mean over the whole spectrum:
 - ``tikhonov_filtered``: ``λ / (λ² + α²)`` with ``α = c·mean(λ)`` (the Tikhonov
   filter factor; formerly named ``cauchy`` for its Lorentzian shape).
 - ``pseudoinverse``: ``1/λ`` where ``λ > c·mean(λ)``, else ``0``.
+- ``pseudoinverse_rank``: ``1/λ`` where ``λ > clamp(rtol·max(λ), min=atol)``,
+  else ``0`` — the ``torch.linalg.matrix_rank`` cutoff used by Meta's
+  distributed_shampoo ``PseudoInverseConfig``, applied to the joint spectrum.
+  Ignores ``damping_factor``; ``rtol = None`` defaults to ``numel(λ)·eps``.
+- ``pseudoinverse_factored``: the Meta cutoff computed per Kronecker factor —
+  a grid cell survives only if *both* its ``λ_A`` and ``λ_G`` pass their own
+  factor's threshold, matching distributed_shampoo's per-factor
+  ``L^{†p} G R^{†p}``. Factored EKFAC only; falls back to
+  ``pseudoinverse_rank`` for the dense autocorrelation Hessian.
 - ``factored_tikhonov``: damping split across the Kronecker activation (A) and
   gradient (G) factors (see :func:`factored_tikhonov_damped`). This has no dense
   analogue (there is no A/G split for a dense Gram), so on the dense path it
@@ -28,7 +37,12 @@ import torch
 from torch import Tensor
 
 Inversion = Literal[
-    "damped_inverse", "factored_tikhonov", "pseudoinverse", "tikhonov_filtered"
+    "damped_inverse",
+    "factored_tikhonov",
+    "pseudoinverse",
+    "pseudoinverse_rank",
+    "pseudoinverse_factored",
+    "tikhonov_filtered",
 ]
 """Eigenvalue function used to invert a Hessian / preconditioner matrix."""
 
@@ -36,6 +50,8 @@ INVERSIONS: tuple[Inversion, ...] = (
     "damped_inverse",
     "factored_tikhonov",
     "pseudoinverse",
+    "pseudoinverse_rank",
+    "pseudoinverse_factored",
     "tikhonov_filtered",
 )
 
@@ -85,6 +101,77 @@ def pseudoinverse_eigfn(
     tol = damping_factor * mean
     return torch.where(
         eigenvals > tol, eigenvals.reciprocal(), torch.zeros_like(eigenvals)
+    )
+
+
+def rank_eigenvalue_threshold(
+    spectrum_max: Tensor,
+    spectrum_numel: int,
+    rank_rtol: float | None,
+    rank_atol: float,
+) -> Tensor:
+    """The ``torch.linalg.matrix_rank``-style truncation cutoff
+    ``clamp(rtol·max(λ)⁺, min=atol)`` used by Meta's distributed_shampoo
+    pseudo-inverse (``rtol = None`` → ``numel(λ)·eps`` of the dtype).
+
+    ``spectrum_max`` must be the max over the full spectrum (globally reduced
+    when sharded) and ``spectrum_numel`` the full element count, so every rank
+    computes the same cutoff.
+    """
+    rtol = (
+        spectrum_numel * torch.finfo(spectrum_max.dtype).eps
+        if rank_rtol is None
+        else rank_rtol
+    )
+    return torch.clamp(rtol * spectrum_max.relu(), min=rank_atol)
+
+
+def rank_pseudoinverse_multiplier(
+    eigvals: Tensor,
+    spectrum_max: Tensor,
+    spectrum_numel: int,
+    rank_rtol: float | None,
+    rank_atol: float,
+) -> Tensor:
+    """Truncated pseudoinverse with the Meta / ``matrix_rank`` cutoff:
+    ``1/λ`` where ``λ > clamp(rtol·max(λ), min=atol)``, else ``0``."""
+    tol = rank_eigenvalue_threshold(spectrum_max, spectrum_numel, rank_rtol, rank_atol)
+    tiny = torch.finfo(eigvals.dtype).tiny
+    return torch.where(
+        eigvals > tol,
+        eigvals.clamp_min(tiny).reciprocal(),
+        torch.zeros_like(eigvals),
+    )
+
+
+def factored_rank_pseudoinverse_multiplier(
+    eigvals: Tensor,
+    factor_a: Tensor,
+    factor_g: Tensor,
+    max_a: Tensor,
+    max_g: Tensor,
+    numel_a: int,
+    numel_g: int,
+    rank_rtol: float | None,
+    rank_atol: float,
+) -> Tensor:
+    """Per-factor truncated pseudoinverse on the EKFAC eigenvalue grid.
+
+    Each factor's spectrum gets its own Meta-style cutoff; a grid cell
+    ``λ = λ_G[o]·λ_A[i]`` survives only if both ``λ_G[o]`` and ``λ_A[i]`` pass
+    theirs. Raised to a fractional power downstream this reproduces
+    distributed_shampoo's per-side truncated roots ``L^{†p} G R^{†p}`` exactly,
+    since ``(L^† ⊗ R^†)^p`` masks and powers factor-wise.
+
+    ``factor_a`` is the full ``λ_A [I]``; ``factor_g`` may be this rank's
+    row-shard of ``λ_G [O]``, with ``max_g`` / ``numel_g`` globally reduced.
+    """
+    tol_a = rank_eigenvalue_threshold(max_a, numel_a, rank_rtol, rank_atol)
+    tol_g = rank_eigenvalue_threshold(max_g, numel_g, rank_rtol, rank_atol)
+    mask = (factor_g > tol_g).unsqueeze(1) & (factor_a > tol_a).unsqueeze(0)
+    tiny = torch.finfo(eigvals.dtype).tiny
+    return torch.where(
+        mask, eigvals.clamp_min(tiny).reciprocal(), torch.zeros_like(eigvals)
     )
 
 
@@ -143,6 +230,14 @@ def eigenvalue_multiplier(
     factor_g: Tensor | None = None,
     mean_a: Tensor | None = None,
     mean_g: Tensor | None = None,
+    spectrum_max: Tensor | None = None,
+    spectrum_numel: int | None = None,
+    max_a: Tensor | None = None,
+    max_g: Tensor | None = None,
+    numel_a: int | None = None,
+    numel_g: int | None = None,
+    rank_rtol: float | None = None,
+    rank_atol: float = 0.0,
     power: float = -1.0,
 ) -> Tensor:
     """The elementwise inverse multiplier ``m(λ)``.
@@ -154,8 +249,11 @@ def eigenvalue_multiplier(
     ``-0.5`` for the matrix square-root inverse (the multiplier is raised to
     ``-power`` so that applying it twice recovers the full inverse).
 
-    ``factored_tikhonov`` requires the per-factor eigenvalues and their means; the
-    other modes are pure functions of ``(λ, mean, c)``.
+    ``factored_tikhonov`` requires the per-factor eigenvalues and their means;
+    ``pseudoinverse_rank`` requires the (globally reduced) ``spectrum_max`` /
+    ``spectrum_numel``; ``pseudoinverse_factored`` requires the per-factor
+    eigenvalues and their (globally reduced) maxes; the remaining modes are pure
+    functions of ``(λ, mean, c)``.
     """
     if inversion == "factored_tikhonov":
         assert (
@@ -167,6 +265,33 @@ def eigenvalue_multiplier(
         multiplier = factored_tikhonov_damped(
             eigvals, factor_a, factor_g, mean, mean_a, mean_g, damping_factor
         ).reciprocal()
+    elif inversion == "pseudoinverse_rank":
+        assert (
+            spectrum_max is not None and spectrum_numel is not None
+        ), "pseudoinverse_rank needs the global spectrum max and numel"
+        multiplier = rank_pseudoinverse_multiplier(
+            eigvals, spectrum_max, spectrum_numel, rank_rtol, rank_atol
+        )
+    elif inversion == "pseudoinverse_factored":
+        assert (
+            factor_a is not None
+            and factor_g is not None
+            and max_a is not None
+            and max_g is not None
+            and numel_a is not None
+            and numel_g is not None
+        ), "pseudoinverse_factored needs the per-factor eigenvalues, maxes, numels"
+        multiplier = factored_rank_pseudoinverse_multiplier(
+            eigvals,
+            factor_a,
+            factor_g,
+            max_a,
+            max_g,
+            numel_a=numel_a,
+            numel_g=numel_g,
+            rank_rtol=rank_rtol,
+            rank_atol=rank_atol,
+        )
     else:
         multiplier = EIGENFNS[inversion](eigvals, mean, damping_factor)
 
@@ -182,6 +307,8 @@ def invert_psd_matrix(
     damping_factor: float = 0.1,
     power: float = -1.0,
     dtype: torch.dtype = torch.float64,
+    rank_rtol: float | None = None,
+    rank_atol: float = 0.0,
 ) -> Tensor:
     """Dense regularized inverse power of a p.s.d. matrix H via eigendecomposition.
 
@@ -196,8 +323,9 @@ def invert_psd_matrix(
     factored path); for ``power = -0.5`` it is raised to ``0.5`` so that applying
     the result twice recovers the full inverse.
 
-    ``factored_tikhonov`` has no dense analogue (there is no Kronecker A/G split
-    for a dense Gram) and falls back to ``damped_inverse`` here.
+    ``factored_tikhonov`` and ``pseudoinverse_factored`` have no dense analogue
+    (there is no Kronecker A/G split for a dense Gram) and fall back to
+    ``damped_inverse`` / ``pseudoinverse_rank`` respectively here.
     """
     original_dtype = H.dtype
     H = H.to(dtype=dtype)
@@ -208,11 +336,21 @@ def invert_psd_matrix(
     # below is real-valued).
     eigvals = eigvals.clamp_min(0)
 
-    dense_inversion = (
-        "damped_inverse" if inversion == "factored_tikhonov" else inversion
-    )
+    dense_fallbacks: dict[Inversion, Inversion] = {
+        "factored_tikhonov": "damped_inverse",
+        "pseudoinverse_factored": "pseudoinverse_rank",
+    }
+    dense_inversion = dense_fallbacks.get(inversion, inversion)
     scaled = eigenvalue_multiplier(
-        dense_inversion, eigvals, eigvals.mean(), damping_factor, power=power
+        dense_inversion,
+        eigvals,
+        eigvals.mean(),
+        damping_factor,
+        spectrum_max=eigvals.max(),
+        spectrum_numel=eigvals.numel(),
+        rank_rtol=rank_rtol,
+        rank_atol=rank_atol,
+        power=power,
     )
 
     return (eigvecs * scaled @ eigvecs.mH).to(original_dtype)
