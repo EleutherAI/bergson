@@ -457,6 +457,14 @@ class ValidationConfig(TrainingConfig, ABC):
     subsets: str = ""
     """Path to a subsets.json to reuse; defaults to ``<run_path>/subsets.json``."""
 
+    subset_start: int = 0
+    """First subset index to retrain. With ``subset_stop``, splits the
+    retraining across independent processes; the subsets are drawn from
+    ``seed``, so every process agrees on the full list."""
+
+    subset_stop: int | None = None
+    """One past the last subset index to retrain; ``None`` means ``num_subsets``."""
+
     subset_fraction: float = 0.0
     """When > 0, each of the ``num_subsets`` leave-k-out subsets is an
     independent draw (without replacement within a subset, overlapping across

@@ -188,12 +188,13 @@ def report_multi_query_validation(
     score_sums: list[list[float]],
     baselines: torch.Tensor,
     num_subsets: int,
+    summary_name: str = "summary.csv",
 ):
     """Print per-query correlations and write one summary.csv row per query."""
     num_queries = len(diffs[0])
 
     summary_csv_writer = CSVWriter(
-        os.path.join(run_path, "summary.csv"),
+        os.path.join(run_path, summary_name),
         columns=[
             "query",
             "spearman_corr",
@@ -318,7 +319,12 @@ def validate_scores(
     else:
         raise ValueError(f"Unknown subset strategy: {run_cfg.subset_strategy}")
 
-    csv_path = os.path.join(run_cfg.run_path, "validation.csv")
+    start = run_cfg.subset_start
+    stop = len(subsets) if run_cfg.subset_stop is None else run_cfg.subset_stop
+    sliced = (start, stop) != (0, len(subsets))
+
+    csv_name = f"validation_{start}_{stop}.csv" if sliced else "validation.csv"
+    csv_path = os.path.join(run_cfg.run_path, csv_name)
     val_csv_writer = CSVWriter(
         csv_path,
         columns=(
@@ -341,12 +347,14 @@ def validate_scores(
             run_cfg.tokenizer or run_cfg.model
         )
         # Row i lists the doc ids left out of retrained/subset_i;
-        # evaluate_retrained needs this to reuse the bank.
-        with open(os.path.join(run_cfg.run_path, "subsets.json"), "w") as f:
-            json.dump([s.tolist() for s in subsets], f)
+        # evaluate_retrained needs this to reuse the models. The first
+        # process owns the shared files.
+        if start == 0:
+            with open(os.path.join(run_cfg.run_path, "subsets.json"), "w") as f:
+                json.dump([s.tolist() for s in subsets], f)
 
-    pbar = tqdm(subsets, desc="Validating", disable=global_rank != 0)
-    for i, subset in enumerate(pbar):
+    pbar = tqdm(subsets[start:stop], desc="Validating", disable=global_rank != 0)
+    for i, subset in enumerate(pbar, start=start):
         trainer, fwd_state, model = prepare_trainer(run_cfg, rank, schedule)
         fwd_state.detach_()
 
@@ -432,7 +440,12 @@ def validate_scores(
     if global_rank == 0:
         if multi_query:
             report_multi_query_validation(
-                run_cfg.run_path, diffs, score_sums, baseline_per_doc, len(subsets)
+                run_cfg.run_path,
+                diffs,
+                score_sums,
+                baseline_per_doc,
+                stop - start,
+                summary_name=f"summary_{start}_{stop}.csv" if sliced else "summary.csv",
             )
             print(f"Saved validation data to {csv_path}")
             return
@@ -628,7 +641,12 @@ def evaluate_retrained(
     else:
         print(f"Baseline query loss (no leave-out): {baseline}")
 
-    csv_path = os.path.join(run_cfg.run_path, "validation.csv")
+    start = run_cfg.subset_start
+    stop = len(subsets) if run_cfg.subset_stop is None else run_cfg.subset_stop
+    sliced = (start, stop) != (0, len(subsets))
+
+    csv_name = f"validation_{start}_{stop}.csv" if sliced else "validation.csv"
+    csv_path = os.path.join(run_cfg.run_path, csv_name)
     val_csv_writer = CSVWriter(
         csv_path,
         columns=(
