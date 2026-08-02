@@ -316,6 +316,34 @@ raw gradient-covariance accumulator, so an absolute floor tuned for one fit
 (or borrowed from an optimizer setting such as ``eps=1e-15``) does not
 transfer directly.
 
+**Background: influence-function vs optimizer-style inversion**
+
+The two regularization families come from different lineages, and they answer
+the rank-deficiency question differently.
+
+The influence-function literature (Koh & Liang 2017; EK-FAC influence, Grosse
+et al. 2023) inverts with Tikhonov damping — ``(H + δI)^-1`` with ``δ``
+proportional to the mean eigenvalue. Near-null directions receive a large but
+*bounded* gain of about ``1/δ``: rare directions get extra credit, but noise
+in the unexplored subspace cannot dominate a score. This is bergson's default
+(``damped_inverse``).
+
+The optimizer lineage instead takes fractional inverse roots of the gradient
+second moment (Shampoo's per-side quarter roots), and in practice handles
+rank deficiency by *truncation*: Meta's distributed_shampoo with
+pseudo-inverse enabled zeroes the deficient part of each factor's spectrum
+rather than damping it, as highlighted in Rohan Anil's NanoGPT-speedrun
+retuning (https://x.com/_arohan_/status/2064631528806908134). Null directions
+are ignored entirely — the preconditioner acts only on the subspace the data
+actually explored.
+
+That optimizer configuration transplants into attribution as
+``apply_power: -0.25`` with ``inversion: pseudoinverse_factored`` and default
+tolerances; ``examples/pipelines/rohan_shampoo_gpt2_lds.yaml`` runs exactly
+this against the influence-function baseline. Whether zeroing or damping the
+null space attributes better is an empirical question — the LDS comparisons
+these knobs exist for.
+
 Choosing the Right Command
 --------------------------
 
