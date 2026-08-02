@@ -33,11 +33,11 @@ steps:
       cleanup_ckpts: false
 
       data:
-        dataset: runs/wikitext_repro/data
+        dataset: EleutherAI/bergson-wikitext-2-4656-chunks
         split: train
         chunk_length: 0
       query:
-        dataset: runs/wikitext_repro/data
+        dataset: EleutherAI/bergson-wikitext-2-4656-chunks
         split: validation
         chunk_length: 0
 

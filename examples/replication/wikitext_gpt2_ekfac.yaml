@@ -29,7 +29,7 @@ steps:
           nproc_per_node: 8
           nnode: 1
         data:
-          dataset: runs/wikitext_repro/data
+          dataset: EleutherAI/bergson-wikitext-2-4656-chunks
           split: train
           chunk_length: 0
 
@@ -47,7 +47,7 @@ steps:
 
       hessian_pipeline_cfg:
         query:
-          dataset: runs/wikitext_repro/data
+          dataset: EleutherAI/bergson-wikitext-2-4656-chunks
           split: validation
           chunk_length: 0
         # One score column per validation query, for per-query LDS.
