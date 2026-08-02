@@ -14,7 +14,10 @@ from bergson.collector.collector import create_projection_matrix
 from bergson.config import InversionConfig
 from bergson.data import column_offsets, create_index, load_gradients
 from bergson.distributed import init_dist
-from bergson.hessians.preconditioner import FactoredPreconditioner
+from bergson.hessians.preconditioner import (
+    DiagonalFactoredPreconditioner,
+    FactoredPreconditioner,
+)
 from bergson.utils.logger import get_logger
 from bergson.utils.utils import get_device, numpy_to_tensor
 
@@ -34,9 +37,11 @@ class EkfacConfig:
     """When set, compress each module's IVHP output to a ``[p, p]`` Kronecker
     random projection (``P_S @ (H^-1 G) @ P_A^T``)."""
     projection_type: Literal["normal", "rademacher"] = "rademacher"
-
     projection_scale: Literal["jl", "row_norm"] = "jl"
     """Must match the index being scored. See ``IndexConfig``."""
+    preconditioner_path: str = ""
+    """Safetensors of a diagonal optimizer preconditioner (module name ->
+    [out, in] grid), for the Adam SOURCE variant."""
     debug: bool = False
 
 
@@ -49,7 +54,9 @@ class EkfacApplicator:
     gradients from the mmap into memory, applies the preconditioner, and
     writes the transformed gradients to ``run_path``. The low-level logic lives in the
     preconditioner. Pass ``inversion_cfg`` for a standard inversion, or ``apply_fn``
-    for a custom eigenvalue function (e.g. approximate unrolling) — not both.
+    for a custom eigenvalue function (e.g. approximate unrolling). Both only with
+    ``preconditioner_path``, where the EK-FAC inverse from ``inversion_cfg`` is
+    applied after ``apply_fn``'s elementwise multiplier.
     """
 
     def __init__(
@@ -58,7 +65,11 @@ class EkfacApplicator:
         inversion_cfg: InversionConfig | None = None,
         apply_fn=None,
     ):
-        if inversion_cfg is not None and apply_fn is not None:
+        if (
+            inversion_cfg is not None
+            and apply_fn is not None
+            and not cfg.preconditioner_path
+        ):
             raise ValueError("Pass either inversion_cfg or apply_fn, not both.")
 
         if cfg.projection_dim > 0 and cfg.ev_correction:
@@ -84,14 +95,46 @@ class EkfacApplicator:
         self.device = get_device(self.rank)
 
     def compute_ivhp_sharded(self):
-        preconditioner = FactoredPreconditioner.from_shards(
-            self.path,
-            rank=self.rank,
-            device=self.device,
-            inversion_cfg=None if self.apply_fn is not None else self.inversion_cfg,
-            apply_fn=self.apply_fn,
-            ev_correction=self.cfg.ev_correction,
-        )
+        chain: list = []
+        if self.cfg.preconditioner_path:
+            if self.apply_fn is None:
+                raise ValueError("preconditioner_path requires apply_fn.")
+            diagonal = DiagonalFactoredPreconditioner.from_shards(
+                self.path,
+                self.cfg.preconditioner_path,
+                rank=self.rank,
+                device=self.device,
+                apply_fn=self.apply_fn,
+                ev_correction=self.cfg.ev_correction,
+            )
+            if self.inversion_cfg is not None:
+                # Bae et al. App. D: "use the diagonal Hessian approximation for
+                # computing the matrix exponential ... Note that we still use the
+                # EK-FAC factors to compute H^-1 g in Equation 43."
+                # Eq-43 reads M_mask @ H^-1 @ g_train; applied to the QUERY
+                # gradient that is the adjoint H^-1 @ M_mask @ q, so the
+                # diagonal mask goes first and the EK-FAC inverse second.
+                chain.append(diagonal)
+                preconditioner = FactoredPreconditioner.from_shards(
+                    self.path,
+                    rank=self.rank,
+                    device=self.device,
+                    inversion_cfg=self.inversion_cfg or InversionConfig(),
+                    ev_correction=self.cfg.ev_correction,
+                )
+            else:
+                preconditioner = diagonal
+        else:
+            preconditioner = FactoredPreconditioner.from_shards(
+                self.path,
+                rank=self.rank,
+                device=self.device,
+                inversion_cfg=(
+                    None if self.apply_fn is not None else self.inversion_cfg
+                ),
+                apply_fn=self.apply_fn,
+                ev_correction=self.cfg.ev_correction,
+            )
 
         o_dims = {
             name: preconditioner.eigen_g[name].shape[1]
@@ -145,6 +188,8 @@ class EkfacApplicator:
                         device=self.device, dtype=torch.float32
                     )
 
+            for pre in chain:
+                grads = pre.apply(grads)
             transformed = preconditioner.apply(grads)
             del grads
 

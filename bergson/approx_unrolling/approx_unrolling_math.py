@@ -14,6 +14,7 @@ from bergson.config.config import (
     ApproxUnrollingConfig,
     DistributedConfig,
     IndexConfig,
+    InversionConfig,
     PreprocessConfig,
     ScoreConfig,
 )
@@ -71,7 +72,6 @@ def compute_lr_times_steps_per_segment(
     if not 0.0 <= momentum < 1.0:
         raise ValueError(f"momentum must be in [0, 1), got {momentum}.")
     momentum_scale = 1.0 / (1.0 - momentum)
-
     if cfg.lr_list and cfg.step_size_list:
         return [
             lr * k * momentum_scale for lr, k in zip(cfg.lr_list, cfg.step_size_list)
@@ -130,6 +130,19 @@ def f_segment(lr_times_steps: float) -> Callable[[Tensor], Tensor]:
     return fn
 
 
+def f_one_minus_exp(lr_times_steps: float) -> Callable[[Tensor], Tensor]:
+    """x -> 1 - exp(-lr_times_steps*x), the numerator of :func:`f_segment`.
+
+    Used by the Eq-43 hybrid: the 1/x that completes f_segment is supplied by
+    the EK-FAC inverse applied afterwards rather than evaluated on the diagonal.
+    """
+
+    def fn(sigma: Tensor) -> Tensor:
+        return -torch.expm1(-lr_times_steps * sigma)
+
+    return fn
+
+
 def apply_eigfn_to_query(
     src_grad_path: Path,
     dst_grad_path: Path,
@@ -137,23 +150,29 @@ def apply_eigfn_to_query(
     lr_times_steps: float,
     fn_kind: str,
     distributed: DistributedConfig,
+    preconditioner_path: str = "",
+    inversion_cfg: InversionConfig | None = None,
 ) -> None:
     """Apply F_segment or F_backward of one segment to a stored query gradient.
 
-    ``fn_kind`` is "f_segment" or "f_backward". The segment eigenvalues are
-    already checkpoint-averaged (expected eigenvalues), so the eigenfunction is
-    applied to them directly.
-    """
+    ``preconditioner_path`` selects the optimizer-preconditioned variant."""
     cfg = EkfacConfig(
         hessian_method_path=str(segment_dir),
         gradient_path=str(src_grad_path),
         run_path=str(dst_grad_path),
         ev_correction=True,
+        preconditioner_path=preconditioner_path,
     )
     launch_distributed_run(
         "apply_eigfn_to_query",
         _apply_eigfn_worker,
-        [cfg, lr_times_steps, fn_kind],
+        # F_segment is the Eq-43 hybrid: diagonal exponential, EK-FAC H^-1.
+        [
+            cfg,
+            lr_times_steps,
+            fn_kind,
+            inversion_cfg if fn_kind == "f_segment" else None,
+        ],
         distributed,
     )
 
@@ -165,13 +184,21 @@ def _apply_eigfn_worker(
     cfg: EkfacConfig,
     lr_times_steps: float,
     fn_kind: str,
+    inversion_cfg: InversionConfig | None,
 ) -> None:
     init_dist(rank, local_rank, world_size)
 
     # Segment eigenvalues are already checkpoint-averaged, so the eigenfunction
     # is applied to them directly (no per-example normalization).
-    fn = {"f_segment": f_segment, "f_backward": f_backward}[fn_kind](lr_times_steps)
-    EkfacApplicator(cfg, apply_fn=fn).compute_ivhp_sharded()
+    if cfg.preconditioner_path and inversion_cfg is not None:
+        # The EK-FAC inverse applied afterwards supplies the 1/x, so
+        # multiply by the numerator only.
+        fn = f_one_minus_exp(lr_times_steps)
+    else:
+        fn = {"f_segment": f_segment, "f_backward": f_backward}[fn_kind](lr_times_steps)
+    EkfacApplicator(
+        cfg, inversion_cfg=inversion_cfg, apply_fn=fn
+    ).compute_ivhp_sharded()
 
 
 def walk_query_phase1(
@@ -179,6 +206,8 @@ def walk_query_phase1(
     method: str,
     lr_times_steps_per_segment: list[float],
     distributed: DistributedConfig,
+    preconditioner_paths: list[str] | None = None,
+    inversion_cfg: InversionConfig | None = None,
 ) -> list[Path]:
     """Phase 1: build query_grad_0, ..., query_grad_{L-1} by walking F_backward.
 
@@ -204,6 +233,7 @@ def walk_query_phase1(
             lr_times_steps=lr_times_steps_per_segment[k],
             fn_kind="f_backward",
             distributed=distributed,
+            preconditioner_path=preconditioner_paths[k] if preconditioner_paths else "",
         )
         query_grad_paths[k - 1] = dst
 
@@ -216,6 +246,8 @@ def walk_query_phase2(
     lr_times_steps_per_segment: list[float],
     query_grad_paths: list[Path],
     distributed: DistributedConfig,
+    preconditioner_paths: list[str] | None = None,
+    inversion_cfg: InversionConfig | None = None,
 ) -> list[Path]:
     """Phase 2: build query_grad_segment_0, ..., query_grad_segment_{L-1} via F_segment.
 
@@ -239,6 +271,7 @@ def walk_query_phase2(
             lr_times_steps=lr_times_steps_per_segment[l],
             fn_kind="f_segment",
             distributed=distributed,
+            preconditioner_path=preconditioner_paths[l] if preconditioner_paths else "",
         )
         query_grad_segment_paths.append(dst)
 

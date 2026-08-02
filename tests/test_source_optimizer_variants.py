@@ -1,0 +1,379 @@
+"""Tests for the SOURCE (approx-unrolling) optimizer variants: SGD heavy-ball
+momentum lr scaling and the Adam/AdamW diagonal-preconditioner eigenfunction
+path (Bae et al., 2024, Appendix C / D.2).
+"""
+
+import numpy as np
+import pytest
+import torch
+from safetensors.torch import save_file
+
+from bergson.approx_unrolling.approx_unrolling_math import (
+    compute_lr_times_steps_per_segment,
+    f_backward,
+    f_one_minus_exp,
+    f_segment,
+)
+from bergson.config import ApproxUnrollingConfig
+from bergson.config.config import InversionConfig
+from bergson.data import create_index, load_module_gradients
+from bergson.hessians.apply_hessian import EkfacApplicator, EkfacConfig
+from bergson.hessians.preconditioner import (
+    DiagonalFactoredPreconditioner,
+    FactoredPreconditioner,
+)
+
+MODULE = "lm_head"
+OUT_DIM, IN_DIM = 6, 4
+LR_TIMES_STEPS = 0.05
+
+
+def test_momentum_scales_lr_times_steps():
+    """SGDm terminal velocity: lr*K scaled by 1/(1-beta)."""
+    base_cfg = ApproxUnrollingConfig(
+        checkpoints=["a", "b"],
+        segments=2,
+        lr_list=[1e-3, 2e-3],
+        step_size_list=[10, 20],
+    )
+    momentum_cfg = ApproxUnrollingConfig(
+        checkpoints=["a", "b"],
+        segments=2,
+        lr_list=[1e-3, 2e-3],
+        step_size_list=[10, 20],
+        momentum=0.9,
+    )
+    base = compute_lr_times_steps_per_segment(base_cfg)
+    scaled = compute_lr_times_steps_per_segment(momentum_cfg)
+    assert scaled == pytest.approx([10 * b for b in base])
+
+
+def test_momentum_out_of_range_raises():
+    for bad in (1.0, -0.1):
+        bad_cfg = ApproxUnrollingConfig(
+            checkpoints=["a"],
+            segments=1,
+            lr_list=[1e-3],
+            step_size_list=[10],
+            momentum=bad,
+        )
+        with pytest.raises(ValueError, match="momentum"):
+            compute_lr_times_steps_per_segment(bad_cfg)
+
+
+def _random_factors():
+    """Random EKFAC-style factors: orthogonal eigenvectors, non-negative
+    eigenvalue grid."""
+    torch.manual_seed(0)
+    q_a, _ = torch.linalg.qr(torch.randn(IN_DIM, IN_DIM, dtype=torch.float64))
+    q_g, _ = torch.linalg.qr(torch.randn(OUT_DIM, OUT_DIM, dtype=torch.float64))
+    lam = torch.rand(OUT_DIM, IN_DIM, dtype=torch.float64)
+    return q_a.float().contiguous(), q_g.float().contiguous(), lam.float()
+
+
+def _write_factor_shards(tmp_path, q_a, q_g, lam, precond):
+    """Write the single-shard on-disk layout DiagonalFactoredPreconditioner
+    loads from, plus the preconditioner grid."""
+    for sub, tensor in [
+        ("eigen_activation_sharded", q_a),
+        ("eigen_gradient_sharded", q_g),
+        ("eigenvalue_correction_sharded", lam),
+    ]:
+        (tmp_path / sub).mkdir()
+        save_file({MODULE: tensor}, str(tmp_path / sub / "shard_0.safetensors"))
+    preconditioner_path = tmp_path / "precond.safetensors"
+    save_file({MODULE: precond}, str(preconditioner_path))
+    return preconditioner_path
+
+
+def _reference_diag_hessian(q_a, q_g, lam):
+    """diag(H) via the dense Kronecker Hessian — independent of the
+    implementation's factored formula.
+
+    The [OUT, IN] grid flattens row-major to vec index o*IN + i, matching
+    kron(q_g, q_a)'s row ordering, so H = kron(Q_G, Q_A) diag(vec Λ)
+    kron(Q_G, Q_A)^T.
+    """
+    q_kron = torch.kron(q_g.double(), q_a.double())
+    h = q_kron @ torch.diag(lam.double().flatten()) @ q_kron.T
+    return torch.diagonal(h).reshape(OUT_DIM, IN_DIM).float()
+
+
+@pytest.mark.parametrize("fn_kind", ["f_backward", "f_one_minus_exp"])
+def test_diagonal_preconditioner_matches_dense_reference(tmp_path, fn_kind):
+    """The diagonal path multiplies gradients elementwise by f(p * diag(H)),
+    with diag(H) recovered exactly from the EKFAC factors."""
+    q_a, q_g, lam = _random_factors()
+    precond = torch.rand(OUT_DIM, IN_DIM) + 0.5
+    preconditioner_path = _write_factor_shards(tmp_path, q_a, q_g, lam, precond)
+
+    fn = {"f_backward": f_backward, "f_one_minus_exp": f_one_minus_exp}[fn_kind](
+        LR_TIMES_STEPS
+    )
+    preconditioner = DiagonalFactoredPreconditioner.from_shards(
+        tmp_path,
+        preconditioner_path,
+        rank=0,
+        device="cpu",
+        apply_fn=fn,
+        ev_correction=True,
+    )
+
+    grads = {MODULE: torch.randn(3, OUT_DIM * IN_DIM)}
+    before = grads[MODULE].clone()
+    out = preconditioner.apply(grads)[MODULE]
+    # apply() must not write through to the caller's tensor: compute_ivhp_sharded
+    # hands it gradients aliasing a read-only mmap.
+    torch.testing.assert_close(grads[MODULE], before)
+
+    sigma = precond * _reference_diag_hessian(q_a, q_g, lam)
+    if fn_kind == "f_backward":
+        multiplier = torch.exp(-LR_TIMES_STEPS * sigma)
+    else:
+        multiplier = -torch.expm1(-LR_TIMES_STEPS * sigma)
+    expected = grads[MODULE].view(3, OUT_DIM, IN_DIM) * multiplier
+    torch.testing.assert_close(
+        out.view(3, OUT_DIM, IN_DIM), expected, rtol=1e-4, atol=1e-6
+    )
+
+
+def test_f_segment_zero_eigenvalue_limit():
+    """At sigma = 0 the segment multiplier hits its lr*K limit with no
+    NaN/inf from the 0/0."""
+    out = f_segment(LR_TIMES_STEPS)(torch.zeros(OUT_DIM, IN_DIM))
+    torch.testing.assert_close(out, torch.full((OUT_DIM, IN_DIM), LR_TIMES_STEPS))
+
+
+def test_preconditioner_shape_mismatch_raises(tmp_path):
+    q_a, q_g, lam = _random_factors()
+    bad_precond = torch.rand(OUT_DIM + 1, IN_DIM)
+    preconditioner_path = _write_factor_shards(tmp_path, q_a, q_g, lam, bad_precond)
+    with pytest.raises(ValueError, match="shape"):
+        DiagonalFactoredPreconditioner.from_shards(
+            tmp_path,
+            preconditioner_path,
+            rank=0,
+            device="cpu",
+            apply_fn=f_backward(LR_TIMES_STEPS),
+            ev_correction=True,
+        )
+
+
+def test_preconditioner_missing_module_raises(tmp_path):
+    q_a, q_g, lam = _random_factors()
+    for sub, tensor in [
+        ("eigen_activation_sharded", q_a),
+        ("eigen_gradient_sharded", q_g),
+        ("eigenvalue_correction_sharded", lam),
+    ]:
+        (tmp_path / sub).mkdir()
+        save_file({MODULE: tensor}, str(tmp_path / sub / "shard_0.safetensors"))
+    preconditioner_path = tmp_path / "precond.safetensors"
+    save_file({"other_module": torch.rand(OUT_DIM, IN_DIM)}, str(preconditioner_path))
+    with pytest.raises(KeyError, match=MODULE):
+        DiagonalFactoredPreconditioner.from_shards(
+            tmp_path,
+            preconditioner_path,
+            rank=0,
+            device="cpu",
+            apply_fn=f_backward(LR_TIMES_STEPS),
+            ev_correction=True,
+        )
+
+
+@pytest.mark.parametrize("fn_kind", ["f_backward", "f_segment"])
+def test_ekfac_applicator_uses_diagonal_path(tmp_path, fn_kind):
+    """``preconditioner_path`` routes the applicator through the diagonal
+    preconditioner; passing ``inversion_cfg`` too chains the EK-FAC inverse
+    after it (Eq-43)."""
+    q_a, q_g, lam = _random_factors()
+    precond = torch.rand(OUT_DIM, IN_DIM) + 0.5
+    preconditioner_path = _write_factor_shards(tmp_path, q_a, q_g, lam, precond)
+
+    query_path = tmp_path / "query"
+    index = create_index(
+        root=query_path,
+        num_grads=3,
+        grad_sizes={MODULE: OUT_DIM * IN_DIM},
+        dtype=np.float32,
+    )
+    index[:] = np.random.default_rng(0).standard_normal(index.shape).astype(np.float32)
+    index.flush()
+
+    hybrid = fn_kind == "f_segment"
+    cfg = EkfacConfig(
+        hessian_method_path=str(tmp_path),
+        gradient_path=str(query_path),
+        run_path=str(tmp_path / "out"),
+        ev_correction=True,
+        preconditioner_path=str(preconditioner_path),
+    )
+    fn = {"f_backward": f_backward, "f_segment": f_one_minus_exp}[fn_kind](
+        LR_TIMES_STEPS
+    )
+    inversion_cfg = InversionConfig(damping_factor=0.1) if hybrid else None
+    EkfacApplicator(
+        cfg, inversion_cfg=inversion_cfg, apply_fn=fn
+    ).compute_ivhp_sharded()
+    out = torch.from_numpy(
+        np.asarray(load_module_gradients(str(tmp_path / "out"))[MODULE][:])
+    )
+
+    grads = {MODULE: torch.from_numpy(np.asarray(index[:])).float()}
+    grads = DiagonalFactoredPreconditioner.from_shards(
+        tmp_path,
+        preconditioner_path,
+        rank=0,
+        device="cpu",
+        apply_fn=fn,
+        ev_correction=True,
+    ).apply(grads)
+    if hybrid:
+        grads = FactoredPreconditioner.from_shards(
+            tmp_path,
+            rank=0,
+            device="cpu",
+            inversion_cfg=InversionConfig(damping_factor=0.1),
+            ev_correction=True,
+        ).apply(grads)
+    torch.testing.assert_close(out, grads[MODULE].cpu())
+
+
+def test_ekfac_applicator_preconditioner_without_apply_fn_raises(tmp_path):
+    cfg = EkfacConfig(
+        hessian_method_path=str(tmp_path),
+        gradient_path=str(tmp_path),
+        run_path=str(tmp_path / "out"),
+        ev_correction=True,
+        preconditioner_path=str(tmp_path / "precond.safetensors"),
+    )
+    with pytest.raises(ValueError, match="preconditioner_path requires apply_fn"):
+        EkfacApplicator(cfg).compute_ivhp_sharded()
+
+
+def test_build_segment_preconditioners(tmp_path):
+    """Per-segment P built from the checkpoints' optimizer.pt files:
+    bias-corrected via the stored step/betas, index-mapped to param names,
+    suffix-matched to the factor modules, oriented to [out, in] (transposed
+    storage flipped), averaged within the segment, and eps-transformed."""
+    from transformers import AutoModelForCausalLM, GPT2Config
+
+    from bergson.approx_unrolling.adam_preconditioner import (
+        build_segment_preconditioners,
+    )
+
+    torch.manual_seed(0)
+    tiny_cfg = GPT2Config(n_layer=1, n_embd=4, n_head=2, n_positions=8, vocab_size=16)
+    module, out_dim, in_dim = "h.0.attn.c_attn", 12, 4
+
+    run = tmp_path / "run"
+    seg_kfac = run / "segment_0" / "kfac"
+    seg_kfac.mkdir(parents=True)
+    for sub, cols in [
+        ("eigen_activation_sharded", in_dim),
+        ("eigen_gradient_sharded", out_dim),
+        ("eigenvalue_correction_sharded", in_dim),
+    ]:
+        (seg_kfac / sub).mkdir()
+        save_file(
+            {module: torch.rand(2, cols)}, str(seg_kfac / sub / "shard_0.safetensors")
+        )
+
+    tiny_model = AutoModelForCausalLM.from_config(tiny_cfg)
+    param_names = [n for n, _ in tiny_model.named_parameters()]
+    idx = param_names.index(f"transformer.{module}.weight")
+
+    # Two checkpoints with raw (uncorrected) moments stored transposed
+    # ([in, out], like GPT-2 Conv1D params), at different steps.
+    beta2, eps_root, eps = 0.975, 1e-6, 1e-8
+    steps, nus = [5, 9], [torch.rand(in_dim, out_dim) for _ in range(2)]
+    ckpts = []
+    for step, nu in zip(steps, nus):
+        ckpt = tmp_path / f"models_step_{step}"
+        ckpt.mkdir()
+        tiny_cfg.save_pretrained(ckpt)
+        # One checkpoint keyed positionally (legacy fallback), the other under
+        # a bogus index with param_name recorded (the FSDP-scrambled case).
+        if step == steps[0]:
+            entry = {idx: {"exp_avg_sq": nu, "step": torch.tensor(step)}}
+        else:
+            entry = {
+                999: {
+                    "exp_avg_sq": nu,
+                    "step": torch.tensor(step),
+                    "param_name": f"transformer.{module}.weight",
+                }
+            }
+        torch.save(
+            {
+                "state": entry,
+                "param_groups": [
+                    {
+                        "params": list(entry),
+                        "betas": (0.9, beta2),
+                        "eps": eps,
+                        "eps_root": eps_root,
+                    }
+                ],
+            },
+            ckpt / "optimizer.pt",
+        )
+        ckpts.append(str(ckpt))
+
+    paths = build_segment_preconditioners(
+        run_path=run,
+        method="kfac",
+        checkpoints=ckpts,
+        segments=1,
+    )
+    assert paths == [run / "segment_0" / "preconditioner.safetensors"]
+    from safetensors.torch import load_file
+
+    precond = load_file(str(paths[0]))[module]
+    v_hats = [nu / (1 - beta2**step) for step, nu in zip(steps, nus)]
+    v_bar = (v_hats[0] + v_hats[1]).T / 2
+    expected = 1.0 / ((v_bar + eps_root).sqrt() + eps)
+    assert precond.shape == (out_dim, in_dim)
+    torch.testing.assert_close(precond, expected)
+
+
+def test_optimizer_pt_snapshot_fields(tmp_path):
+    """save_second_moments_as_optimizer_pt stores the standard step and betas
+    fields when given, making snapshot exports self-describing for the SOURCE
+    Adam variant's bias correction."""
+    import torch.nn as nn
+    import torchopt
+
+    from bergson.utils.load_from_optimizer import save_second_moments_as_optimizer_pt
+
+    class TinyModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.blk = nn.Linear(3, 2, bias=False)
+            self.head = nn.Linear(2, 4, bias=False)
+
+    model = TinyModel()
+    params = dict(model.named_parameters(remove_duplicate=False))
+    opt_state = torchopt.adamw(1e-3, betas=(0.9, 0.975)).init(params)
+    adam_state = next(s for s in opt_state if hasattr(s, "nu"))
+    for nu, count in zip(adam_state.nu, adam_state.count):
+        nu.copy_(torch.rand_like(nu))
+        count.fill_(7)
+
+    path = tmp_path / "step_7.optimizer.pt"
+    n = save_second_moments_as_optimizer_pt(
+        model, opt_state, path, step=7, betas=(0.9, 0.975), eps=1e-8, eps_root=1e-6
+    )
+    assert n == 2
+    optimizer_pt = torch.load(path, weights_only=False)
+    assert optimizer_pt["param_groups"][0]["betas"] == (0.9, 0.975)
+    assert optimizer_pt["param_groups"][0]["eps"] == 1e-8
+    assert optimizer_pt["param_groups"][0]["eps_root"] == 1e-6
+    names = [n for n, _ in model.named_parameters()]
+    # nu lists are in sorted(params) order; blk.weight sorts before head.weight.
+    for idx, entry in optimizer_pt["state"].items():
+        assert int(entry["step"].item()) == 7
+        # param_name recorded per entry: FSDP-scrambled indices stay readable.
+        assert entry["param_name"] == names[idx]
+        nu_idx = sorted(params).index(names[idx])
+        torch.testing.assert_close(entry["exp_avg_sq"], adam_state.nu[nu_idx])

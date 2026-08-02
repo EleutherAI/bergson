@@ -112,6 +112,13 @@ def resolve(cfg: ApproxUnrollingConfig) -> ApproxUnrollingConfig:
             cfg.momentum = 0.0
         return cfg
 
+    if training_cfg.optimizer == "adamw" and not cfg.use_adam_preconditioner:
+        logger.warning(
+            "%s trained with adamw but use_adam_preconditioner is not set; "
+            "scores will use the SGD variant.",
+            trainer_run,
+        )
+
     filled: list[str] = []
 
     if cfg.model_path is None:

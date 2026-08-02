@@ -817,6 +817,15 @@ class ApproxUnrollingConfig(Serializable):
     2024, App. D.2). When ``None`` it's derived from the run if present or set
     to 0.0."""
 
+    use_adam_preconditioner: bool = False
+    """Optimizer-preconditioned SOURCE (Bae et al. 2024, App. C): set when the
+    run was trained with Adam/AdamW. Needs each checkpoint dir's
+    ``optimizer.pt``."""
+
+    inversion_cfg: InversionConfig = field(default_factory=InversionConfig)
+    """Inversion for the Adam SOURCE variant's EK-FAC inverse - the SGD
+    variant has no inversion."""
+
     query: DataConfig = field(default_factory=DataConfig)
     """Query dataset spec; gradients computed at the final checkpoint."""
 

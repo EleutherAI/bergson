@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 import torch
+import torch.distributed as dist
 from safetensors.torch import load_file
 from torch import Tensor
 
@@ -225,10 +226,10 @@ class FactoredPreconditioner:
         plus the globally-reduced means, then applied across shards in-place.
         """
         lam = self.lambdas[name]
+        o, i = g.shape[1], lam.shape[1]
         if self.apply_fn is not None:
             inverse_eigvals = self.apply_fn(lam)
         else:
-            o, i = g.shape[1], lam.shape[1]
             mean = self.shard_computer.global_mean(lam, o * i)
             inversion = self.inversion_cfg.inversion
             if inversion == "factored_tikhonov":
@@ -290,6 +291,165 @@ class FactoredPreconditioner:
             g = self.shard_computer._transpose_matmul(vector_nsa=g, matrix_cb=q_a)
             self.logger.debug("%s: rotated back (H^-1 G)", name)
 
+            out[name] = g.reshape(flat.shape[0], -1).to(flat.dtype)
+        return out
+
+
+class DiagonalFactoredPreconditioner:
+    """Elementwise eigenfunctions on the preconditioned Hessian's diagonal
+    (the Adam/AdamW variant, Bae et al. 2024, App. C and D.2):
+
+    1. ``d = diag(H) = (Q_G ∘ Q_G) Λ (Q_A ∘ Q_A)^T`` from the EKFAC factors,
+    2. ``sigma = p * d``, the diagonal of ``P^1/2 H P^1/2``,
+    3. gradients are multiplied by ``apply_fn(sigma)`` in parameter space —
+       no eigenbasis rotation.
+    """
+
+    def __init__(
+        self,
+        eigen_a: dict[str, Tensor],
+        eigen_g: dict[str, Tensor],
+        lambdas: dict[str, Tensor],
+        preconditioner: dict[str, Tensor],
+        *,
+        apply_fn,
+    ):
+        self.eigen_a = eigen_a
+        self.eigen_g = eigen_g
+        self.lambdas = lambdas
+        self.preconditioner = preconditioner
+        self.apply_fn = apply_fn
+        self.shard_computer = ShardedMul()
+        self.logger = get_logger("DiagonalFactoredPreconditioner")
+        self._multipliers: dict[str, Tensor] = {}
+
+    @classmethod
+    def from_shards(
+        cls,
+        hessian_path: str | Path,
+        preconditioner_path: str | Path,
+        *,
+        rank: int,
+        device: str | torch.device,
+        apply_fn,
+        ev_correction: bool = False,
+    ) -> "DiagonalFactoredPreconditioner":
+        """Load this rank's factor shards plus its row-shard of the full
+        parameter-space preconditioner grids saved at ``preconditioner_path``."""
+        lambda_dir = (
+            "eigenvalue_correction_sharded" if ev_correction else "eigenvalue_sharded"
+        )
+        eigen_a = _load_shard(hessian_path, "eigen_activation_sharded", rank, device)
+        eigen_g = _load_shard(hessian_path, "eigen_gradient_sharded", rank, device)
+        lambdas = _load_shard(hessian_path, lambda_dir, rank, device)
+
+        full_grids = load_file(str(preconditioner_path), device=str(device))
+        sharder = ShardedMul()
+        preconditioner = {}
+        for name, q_g in eigen_g.items():
+            if name not in full_grids:
+                raise KeyError(
+                    f"Module {name!r} has EKFAC factors but no preconditioner "
+                    f"grid in {preconditioner_path}; available: "
+                    f"{sorted(full_grids.keys())}"
+                )
+            p = full_grids[name].to(torch.float32)
+            o, i = q_g.shape[1], eigen_a[name].shape[1]
+            if p.shape != (o, i):
+                raise ValueError(
+                    f"Preconditioner grid for {name!r} has shape "
+                    f"{tuple(p.shape)}, expected [out, in] = ({o}, {i})."
+                )
+            start, end = sharder.shard_bounds(o)
+            preconditioner[name] = p[start:end]
+        return cls(
+            eigen_a,
+            eigen_g,
+            lambdas,
+            preconditioner,
+            apply_fn=apply_fn,
+        )
+
+    def _diag_hessian_shard(self, name: str) -> Tensor:
+        """This rank's ``[c_o, I]`` row-shard (rows = its block of the
+        parameter out-dim) of ``diag(H) = (Q_G ∘ Q_G) Λ (Q_A ∘ Q_A)^T``.
+
+        The factors are row-sharded: ``Q_A [c_i, I']`` / ``Q_G [c_o, O']`` on
+        their parameter dims, ``Λ [c_o', I']`` on the eigen out-dim. Both
+        contractions run over a sharded dim, so each is a broadcast loop in
+        the style of :class:`ShardedMul`.
+        """
+        q_a = self.eigen_a[name]  # [c_i, I'] param rows, eigen cols
+        q_g = self.eigen_g[name]  # [c_o, O'] param rows, eigen cols
+        lam = self.lambdas[name]  # [c_o', I'] eigen rows, eigen cols
+        sc = self.shard_computer
+        n_eig_i = q_a.shape[1]
+        n_eig_o = q_g.shape[1]
+
+        if not sc.dist:
+            # Single process: shards are the full factors.
+            return (q_g**2) @ lam @ (q_a**2).T
+
+        # x_shard[o', i] = sum_i' lam[o', i'] * q_a[i, i']^2 for this rank's
+        # eigen-o' rows and ALL param-i columns (q_a's param rows are sharded).
+        x_shard = torch.empty(lam.shape[0], n_eig_i, device=lam.device, dtype=lam.dtype)
+        for rank_index in range(sc.world_size):
+            start, end = sc.shard_bounds(n_eig_i, rank_index)
+            if rank_index == sc.rank:
+                shard = q_a
+            else:
+                shard = torch.empty(
+                    (end - start, q_a.shape[1]), device=q_a.device, dtype=q_a.dtype
+                )
+            dist.broadcast(shard, src=rank_index)
+            x_shard[:, start:end] = lam @ (shard**2).T
+            if sc.rank != rank_index:
+                del shard
+
+        # d_shard[o, i] = sum_o' q_g[o, o']^2 * x[o', i]; x rows (eigen-o') are
+        # sharded across ranks, q_g's eigen-o' columns are full.
+        d_shard = torch.zeros(q_g.shape[0], n_eig_i, device=q_g.device, dtype=q_g.dtype)
+        for rank_index in range(sc.world_size):
+            start, end = sc.shard_bounds(n_eig_o, rank_index)
+            if rank_index == sc.rank:
+                shard = x_shard
+            else:
+                shard = torch.empty(
+                    (end - start, n_eig_i), device=x_shard.device, dtype=x_shard.dtype
+                )
+            dist.broadcast(shard, src=rank_index)
+            d_shard += (q_g[:, start:end] ** 2) @ shard
+            if sc.rank != rank_index:
+                del shard
+        return d_shard
+
+    def _multiplier(self, name: str) -> Tensor:
+        """This rank's ``[c_o, I]`` row-shard of the elementwise multiplier,
+        cached after the first batch (it is gradient-independent)."""
+        if name not in self._multipliers:
+            p = self.preconditioner[name]
+            sigma = p * self._diag_hessian_shard(name)
+            self._multipliers[name] = self.apply_fn(sigma)
+        return self._multipliers[name]
+
+    def apply(self, grads: dict[str, Tensor]) -> dict[str, Tensor]:
+        """Return ``grads`` scaled elementwise in parameter space; modules
+        absent from the factors pass through unchanged."""
+        out: dict[str, Tensor] = {}
+        for name, flat in grads.items():
+            if name not in self.eigen_a:
+                out[name] = flat
+                continue
+            o = self.eigen_g[name].shape[1]
+            i = self.eigen_a[name].shape[1]
+            # copy=True because the scale below writes through: the caller's
+            # gradients may alias a read-only mmap, and a plain `.to` is a no-op
+            # when they are already float32 on this device, as on a CPU-only run.
+            g = flat.to(self.lambdas[name].device, torch.float32, copy=True).view(
+                -1, o, i
+            )
+            self.shard_computer.scale_rows_in_place(g, self._multiplier(name))
+            self.logger.debug("%s: scaled elementwise by f(p * diag(H))", name)
             out[name] = g.reshape(flat.shape[0], -1).to(flat.dtype)
         return out
 
