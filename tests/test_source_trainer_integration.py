@@ -14,15 +14,14 @@ from bergson.approx_unrolling.approx_unrolling_math import (
     _checkpoint_step,
     compute_lr_times_steps_per_segment,
 )
-from bergson.approx_unrolling.trainer_run import (
-    LR_HISTORY_FILENAME,
+from bergson.approx_unrolling.train_cfg_io import (
     derive_momentum,
     load_training_config,
     resolve,
-    write_lr_history,
 )
 from bergson.config.config import ApproxUnrollingConfig, TrainingConfig
 from bergson.config.config_io import save_run_config
+from bergson.magic.trainer import LR_HISTORY_FILENAME, write_lr_history
 
 
 def _run_dir(tmp_path, **overrides):
@@ -417,7 +416,7 @@ def test_trainer_writes_optimizer_state_inside_each_checkpoint(tmp_path):
 
 def test_trainer_run_inferred_from_exported_checkpoints(tmp_path):
     """Setting checkpoints is enough; the run is found from their path."""
-    from bergson.approx_unrolling.trainer_run import EXPORT_DIRNAME
+    from bergson.utils.trainer_export import EXPORT_DIRNAME
 
     run = _run_dir(tmp_path, optimizer="sgd", adam_beta1=0.9, model="gpt2")
     ckpt = run / EXPORT_DIRNAME / "checkpoint-3"
@@ -492,11 +491,11 @@ def test_export_checkpoints_end_to_end(tmp_path):
     from datasets import Dataset
     from transformers import AutoConfig, AutoModelForCausalLM
 
-    from bergson.approx_unrolling.trainer_run import EXPORT_DIRNAME
     from bergson.magic.data_stream import DataStream
     from bergson.magic.trainer import Trainer
     from bergson.utils.load_from_optimizer import load_optimizer
     from bergson.utils.trainer_export import (
+        EXPORT_DIRNAME,
         OPTIMIZER_STATE_FILE,
         export_checkpoints,
     )

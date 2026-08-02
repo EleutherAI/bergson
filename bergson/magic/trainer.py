@@ -1,3 +1,4 @@
+import json
 import math
 import os
 import time
@@ -5,6 +6,7 @@ from collections.abc import Callable
 from concurrent.futures import Future
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from shutil import rmtree
 from typing import Any, cast
 
@@ -38,6 +40,27 @@ from .grad_accum import (
 from .optim import muon
 from .rtl_tqdm import RtlTqdm
 from .swap import swap_parameters
+
+LR_HISTORY_FILENAME = "log_history.json"
+"""Per-step LRs in HF's ``log_history`` shape, written beside a run's
+checkpoints."""
+
+
+def write_lr_history(
+    save_dir: str | Path, schedule: Callable[[int], float], num_steps: int
+) -> Path:
+    """Record per-step LRs beside the checkpoints, from the ``schedule`` the
+    optimizer was built with."""
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+    history = [
+        {"step": step, "learning_rate": float(schedule(step))}
+        for step in range(num_steps)
+    ]
+    path = save_dir / LR_HISTORY_FILENAME
+    with open(path, "w") as f:
+        json.dump(history, f)
+    return path
 
 
 @contextmanager

@@ -1,42 +1,17 @@
 """Fill in unset SOURCE configuration from a bergson run's ``config.yaml``
 if present."""
 
-import json
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import yaml
 
 from ..config.config import ApproxUnrollingConfig, TrainingConfig
 from ..config.config_io import CONFIG_FILENAME
+from ..magic.trainer import LR_HISTORY_FILENAME
 from ..utils.logger import get_logger
 
-EXPORT_DIRNAME = "exported"
-"""Where export_checkpoints puts ``checkpoint-<N>`` dirs by default, and so the
-first place discovery looks."""
-
-LR_HISTORY_FILENAME = "log_history.json"
-"""Per-step LRs in HF's ``log_history`` shape, written beside a run's
-checkpoints -- the path the LR math already checks first."""
-
 logger = get_logger(__name__)
-
-
-def write_lr_history(
-    save_dir: str | Path, schedule: Callable[[int], float], num_steps: int
-) -> Path:
-    """Record per-step LRs beside the checkpoints, from the ``schedule`` the
-    optimizer was built with, so it is exact rather than reconstructed."""
-    save_dir = Path(save_dir)
-    save_dir.mkdir(parents=True, exist_ok=True)
-    history = [
-        {"step": step, "learning_rate": float(schedule(step))}
-        for step in range(num_steps)
-    ]
-    path = save_dir / LR_HISTORY_FILENAME
-    with open(path, "w") as f:
-        json.dump(history, f)
-    return path
 
 
 def load_training_config(trainer_run: str | Path) -> TrainingConfig:
@@ -95,42 +70,6 @@ def derive_momentum(training_cfg: TrainingConfig) -> float:
             return 0.0
 
 
-def _ensure_exported(checkpoints: list[str]) -> list[str]:
-    """Convert any raw DCP ``step_<n>.ckpt`` paths to the HF ``checkpoint-<n>``
-    dirs SOURCE loads with from_pretrained, exporting on demand.
-
-    A trainer checkpoint lives at ``<run>/checkpoints/step_<n>.ckpt`` and exports
-    to ``<run>/exported/checkpoint-<n>``. Already-exported steps are reused, so
-    this is idempotent across re-runs. Non-DCP paths (HF ids, exported dirs) pass
-    through untouched.
-    """
-    # Import here: trainer_export imports this module, so a top-level import
-    # would be circular.
-    from ..utils.trainer_export import export_checkpoints
-
-    resolved = list(checkpoints)
-    # Group the DCP paths by their run so each run exports in a single pass
-    # (export_checkpoints rebuilds the model once per call).
-    todo: dict[Path, list[tuple[int, int]]] = {}
-    for i, c in enumerate(checkpoints):
-        p = Path(c)
-        if not p.name.endswith(".ckpt"):
-            continue
-        step = int(p.name.removesuffix(".ckpt").removeprefix("step_"))
-        run = p.parent.parent  # <run>/checkpoints/step_<n>.ckpt -> <run>
-        dst = run / EXPORT_DIRNAME / f"checkpoint-{step}"
-        resolved[i] = str(dst)
-        if not dst.exists():
-            todo.setdefault(run, []).append((i, step))
-
-    for run, items in todo.items():
-        steps = sorted({s for _, s in items})
-        logger.info("Auto-exporting %s from %s", steps, run)
-        export_checkpoints(run, steps=steps, overwrite=False)
-
-    return resolved
-
-
 def infer_trainer_run(checkpoints: list[str]) -> str:
     """The bergson run a checkpoint came from, or "" if it did not come from one.
 
@@ -149,9 +88,12 @@ def infer_trainer_run(checkpoints: list[str]) -> str:
 
 
 def resolve(cfg: ApproxUnrollingConfig) -> ApproxUnrollingConfig:
-    """Fill unset fields from ``cfg.trainer_run``. A no-op when it is empty;
+    """Fill unset fields from the training run the checkpoints came from;
     never overwrites a field the caller set."""
-    cfg.checkpoints = _ensure_exported(cfg.checkpoints)
+    # Local import: trainer_export imports load_training_config from here.
+    from ..utils.trainer_export import ensure_exported
+
+    cfg.checkpoints = ensure_exported(cfg.checkpoints)
 
     trainer_run = infer_trainer_run(cfg.checkpoints)
     if not trainer_run:
@@ -163,9 +105,8 @@ def resolve(cfg: ApproxUnrollingConfig) -> ApproxUnrollingConfig:
     try:
         training_cfg = load_training_config(trainer_run)
     except ValueError as e:
-        # A directory with a config.yaml is not necessarily a training run: an
-        # attribution run writes one next to the checkpoints it produced. Infer
-        # nothing from it rather than failing the pipeline.
+        # trainer_run may be a config.yaml for something other than a
+        # training run - infer nothing.
         logger.warning("Ignoring %s as a trainer run: %s", trainer_run, e)
         if cfg.momentum is None:
             cfg.momentum = 0.0

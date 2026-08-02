@@ -26,7 +26,6 @@ from transformers.utils.logging import (
     set_verbosity_error as hf_set_verbosity_error,
 )
 
-from ..approx_unrolling.trainer_run import write_lr_history
 from ..config.config import TrainingConfig, ValidationConfig
 from ..config.config_io import save_run_config
 from ..distributed import grad_tree, launch_distributed_run
@@ -39,7 +38,7 @@ from ..utils.worker_utils import setup_data_pipeline
 from ..validate import load_attribution_scores, validate_scores
 from .config import MagicConfig
 from .data_stream import DataStream, pad_dataset_to_batch_size
-from .trainer import BackwardState, TrainerState, prepare_trainer
+from .trainer import BackwardState, TrainerState, prepare_trainer, write_lr_history
 
 
 def compute_query_gradients(

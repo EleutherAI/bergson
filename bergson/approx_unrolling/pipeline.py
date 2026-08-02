@@ -52,7 +52,7 @@ from .segment_aggregation import (
     aggregate_segment_covariances,
     aggregate_segment_lambdas,
 )
-from .trainer_run import resolve
+from .train_cfg_io import resolve
 
 # Total number of steps in the full approximate unrolling pipeline. Used only for the
 # user-facing "Step k/N_TOTAL_STEPS:" prefix. Bump as steps land.

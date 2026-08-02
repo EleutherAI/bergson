@@ -7,10 +7,13 @@ from pathlib import Path
 import torch
 from transformers import AutoTokenizer
 
-from ..approx_unrolling.trainer_run import EXPORT_DIRNAME, load_training_config
+from ..approx_unrolling.train_cfg_io import load_training_config
 from ..config.config import TrainingConfig
 from ..magic.trainer import prepare_trainer
 from .logger import get_logger
+
+EXPORT_DIRNAME = "exported"
+"""Where export_checkpoints puts ``checkpoint-<N>`` dirs by default."""
 
 OPTIMIZER_STATE_FILE = "optimizer.pt"
 """Second moments, written inside the checkpoint dir they belong to -- both by
@@ -108,3 +111,33 @@ def export_checkpoints(
 
     del trainer, state, model
     return exported
+
+
+def ensure_exported(checkpoints: list[str]) -> list[str]:
+    """Convert any raw DCP ``step_<n>.ckpt`` paths to the HF ``checkpoint-<n>``
+    dirs SOURCE loads with from_pretrained, exporting on demand.
+
+    A trainer checkpoint lives at ``<run>/checkpoints/step_<n>.ckpt`` and exports
+    to ``<run>/exported/checkpoint-<n>``. Already-exported steps are reused.
+    """
+    resolved = list(checkpoints)
+    # Group the DCP paths by their run so each run exports in a single pass
+    # (export_checkpoints rebuilds the model once per call).
+    todo: dict[Path, list[tuple[int, int]]] = {}
+    for i, c in enumerate(checkpoints):
+        p = Path(c)
+        if not p.name.endswith(".ckpt"):
+            continue
+        step = int(p.name.removesuffix(".ckpt").removeprefix("step_"))
+        run = p.parent.parent  # <run>/checkpoints/step_<n>.ckpt -> <run>
+        dst = run / EXPORT_DIRNAME / f"checkpoint-{step}"
+        resolved[i] = str(dst)
+        if not dst.exists():
+            todo.setdefault(run, []).append((i, step))
+
+    for run, items in todo.items():
+        steps = sorted({s for _, s in items})
+        logger.info("Auto-exporting %s from %s", steps, run)
+        export_checkpoints(run, steps=steps, overwrite=False)
+
+    return resolved

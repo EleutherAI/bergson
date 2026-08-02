@@ -24,7 +24,8 @@ from bergson.hessians.apply_hessian import EkfacApplicator, EkfacConfig
 from bergson.score.score import score_dataset
 from bergson.score.score_writer import save_sequence_scores, save_token_scores
 
-from .trainer_run import LR_HISTORY_FILENAME, lr_history_path
+from ..magic.trainer import LR_HISTORY_FILENAME
+from .train_cfg_io import lr_history_path
 
 
 def _checkpoint_step(p: str) -> int:
