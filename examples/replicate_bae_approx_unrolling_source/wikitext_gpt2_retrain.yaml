@@ -1,0 +1,45 @@
+# Ground truth: retrain GPT-2 100 times with the training recipe, each on a
+# random half of the training data, saving every model, and report EK-FAC LDS
+# in the same pass.
+#
+#   PYTHONPATH=$PWD python -m bergson examples/replicate_bae_approx_unrolling_source/wikitext_gpt2_retrain.yaml
+
+steps:
+  - validate:
+      run_path: runs/wikitext_repro/retrain
+      model: gpt2
+      overwrite: true
+      precision: fp32
+      seed: 1004
+      scores: runs/wikitext_repro/if_scores/scores
+
+      data:
+        dataset: EleutherAI/bergson-wikitext-2-4656-chunks
+        split: train
+        chunk_length: 0
+      query:
+        dataset: EleutherAI/bergson-wikitext-2-4656-chunks
+        split: validation
+        chunk_length: 0
+
+      distributed:
+        nproc_per_node: 8
+        nnode: 1
+
+      optimizer: adamw
+      adam_beta1: 0.9
+      adam_beta2: 0.999
+      adam_eps: 1.0e-8
+      eps_root: 0.0
+      weight_decay: 0.01
+      batch_size: 8
+      num_epochs: 3
+      lr_schedule:
+        lr_scheduler_type: constant
+        lr: 3.0e-5
+      train_mode: true
+
+      subset_strategy: random
+      num_subsets: 100
+      subset_fraction: 0.5
+      save_models: true

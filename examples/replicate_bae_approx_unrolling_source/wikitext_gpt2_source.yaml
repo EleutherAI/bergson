@@ -1,0 +1,52 @@
+# SOURCE on the training run, optimizer-preconditioned (it trained with
+# AdamW). The raw trainer checkpoints are exported to HF format automatically.
+#
+#   PYTHONPATH=$PWD python -m bergson examples/replicate_bae_approx_unrolling_source/wikitext_gpt2_source.yaml
+
+steps:
+  - approxunrolling:
+      index_cfg:
+        run_path: runs/wikitext_repro/source_scores
+        model: runs/wikitext_repro/train/exported/checkpoint-1746
+        overwrite: true
+        precision: fp32
+        token_batch_size: 1024
+        max_batch_size: 64
+        # GPT-2 ties lm_head to wte; tracking both double-counts the embedding.
+        filter_modules: "lm_head"
+        distributed:
+          nproc_per_node: 8
+          nnode: 1
+        data:
+          dataset: EleutherAI/bergson-wikitext-2-4656-chunks
+          split: train
+          chunk_length: 0
+
+      hessian_cfg:
+        method: kfac
+        hessian_dtype: fp32
+        ev_correction: true
+
+      approx_unrolling_cfg:
+        checkpoints:
+          - runs/wikitext_repro/train/checkpoints/step_291.ckpt
+          - runs/wikitext_repro/train/checkpoints/step_582.ckpt
+          - runs/wikitext_repro/train/checkpoints/step_873.ckpt
+          - runs/wikitext_repro/train/checkpoints/step_1164.ckpt
+          - runs/wikitext_repro/train/checkpoints/step_1455.ckpt
+          - runs/wikitext_repro/train/checkpoints/step_1746.ckpt
+        segments: 3
+        lr_list: [3.0e-5, 3.0e-5, 3.0e-5]
+        step_size_list: [582, 582, 582]
+        query:
+          dataset: EleutherAI/bergson-wikitext-2-4656-chunks
+          split: validation
+          chunk_length: 0
+        # One score column per validation query, for per-query LDS.
+        query_aggregation: none
+        query_batch_size: 64
+
+        use_adam_preconditioner: true
+        # Effectively undamped, matching the reference implementation.
+        inversion_cfg:
+          damping_factor: 1.0e-8

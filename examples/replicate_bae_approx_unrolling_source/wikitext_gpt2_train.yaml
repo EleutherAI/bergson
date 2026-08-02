@@ -1,0 +1,37 @@
+# Fine-tune GPT-2 on WikiText-2 with the Bae et al. 2024 recipe (App. B.1).
+#
+#   PYTHONPATH=$PWD python -m bergson examples/replicate_bae_approx_unrolling_source/wikitext_gpt2_train.yaml
+
+steps:
+  - train:
+      run_path: runs/wikitext_repro/train
+      model: gpt2
+      overwrite: true
+      precision: fp32
+      seed: 1004
+
+      data:
+        dataset: EleutherAI/bergson-wikitext-2-4656-chunks
+        split: train
+        chunk_length: 0
+
+      distributed:
+        nproc_per_node: 1
+        nnode: 1
+
+      optimizer: adamw
+      adam_beta1: 0.9
+      adam_beta2: 0.999
+      adam_eps: 1.0e-8
+      eps_root: 0.0
+      weight_decay: 0.01
+      batch_size: 8
+      num_epochs: 3
+      lr_schedule:
+        lr_scheduler_type: constant
+        lr: 3.0e-5
+      train_mode: true
+
+      save_mode: interval
+      save_interval: 291
+      save_optimizer_state: all

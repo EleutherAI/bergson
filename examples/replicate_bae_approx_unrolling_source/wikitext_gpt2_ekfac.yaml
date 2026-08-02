@@ -1,0 +1,44 @@
+# EK-FAC influence functions at the final checkpoint. Run after the SOURCE
+# step, which exports it.
+#
+#   PYTHONPATH=$PWD python -m bergson examples/replicate_bae_approx_unrolling_source/wikitext_gpt2_ekfac.yaml
+
+steps:
+  - ekfac:
+      index_cfg:
+        run_path: runs/wikitext_repro/if_scores
+        model: runs/wikitext_repro/train/exported/checkpoint-1746
+        overwrite: true
+        precision: fp32
+        token_batch_size: 1024
+        max_batch_size: 64
+        filter_modules: "lm_head"
+        distributed:
+          nproc_per_node: 8
+          nnode: 1
+        data:
+          dataset: EleutherAI/bergson-wikitext-2-4656-chunks
+          split: train
+          chunk_length: 0
+
+      hessian_cfg:
+        method: kfac
+        hessian_dtype: fp32
+        ev_correction: true
+
+      score_cfg:
+        batch_size: 1024
+        query_batch_size: 64
+
+      preprocess_cfg:
+        unit_normalize: false
+
+      hessian_pipeline_cfg:
+        query:
+          dataset: EleutherAI/bergson-wikitext-2-4656-chunks
+          split: validation
+          chunk_length: 0
+        query_aggregation: none
+        # Effectively undamped, matching the reference implementation.
+        inversion_cfg:
+          damping_factor: 1.0e-8
