@@ -20,11 +20,10 @@ from torchopt.pytree import tree_flatten_with_path, tree_iter, tree_map
 from torchopt.typing import GradientTransformation, OptState
 from tqdm.auto import tqdm
 
-from ..config.config import TrainingConfig
+from ..config.config import SaveMode, TrainingConfig
 from ..data import sorted_checkpoints
 from ..utils.utils import get_device
 from ..utils.worker_utils import setup_model_and_peft
-from .config import MagicSaveMode
 from .data_stream import DataStream
 from .dtensor_patch import apply_dtensor_patch
 from .fsdp import shallow_copy, simple_fsdp
@@ -105,7 +104,9 @@ class SaveFuture:
         return result
 
 
-def next_save_index(current: int, n: int, save_mode: MagicSaveMode) -> int:
+def next_save_index(
+    current: int, n: int, save_mode: SaveMode, save_interval: int = 0
+) -> int:
     """Index of the checkpoint following the one saved at step `current`.
 
     `n` is the total number of training steps. The result is always strictly
@@ -116,6 +117,10 @@ def next_save_index(current: int, n: int, save_mode: MagicSaveMode) -> int:
         case "all":
             # Save every step
             return current + 1
+        case "interval":
+            if save_interval <= 0:
+                raise ValueError("save_mode='interval' requires save_interval > 0.")
+            return current + save_interval
         case "sqrt":
             chunk_size = math.isqrt(n)
 
@@ -546,7 +551,7 @@ class Trainer:
         debug: bool = False,
         inplace: bool = False,
         save_dir: str | None = None,
-        save_mode: MagicSaveMode = "sqrt",
+        save_mode: SaveMode = "sqrt",
         trace: bool = False,
         log_fn: Callable[[int, float], None] | None = None,
         resume: bool = False,
@@ -554,6 +559,7 @@ class Trainer:
         max_grad_norm: float | None = None,
         grad_accum_steps: int = 1,
         optimizer_cfg: dict | None = None,
+        save_interval: int = 0,
     ) -> TrainerState:
         """Train the model on the given data stream, starting from the given state.
 
@@ -582,6 +588,7 @@ class Trainer:
             optimizer_cfg: When set (to the optimizer's betas/eps/eps_root),
                 write each checkpoint's second moments to ``optimizer.pt``,
                 tagged with the step and these hyperparameters. AdamW only.
+            save_interval: Checkpointing interval in steps for ``save_mode="interval"``.
 
         Returns:
             The final trainer state after training.
@@ -639,7 +646,7 @@ class Trainer:
 
                 pending_save = state.save(p, debug_pbar=pbar if debug else None)
 
-                next_save = next_save_index(next_save, n, save_mode)
+                next_save = next_save_index(next_save, n, save_mode, save_interval)
 
             x = data[i]
             state = self.step(
@@ -657,6 +664,27 @@ class Trainer:
 
         if pending_save is not None:
             pending_save.result()
+
+        # Snapshots are written before each step; when the interval cadence
+        # lands on n, write the post-training state too.
+        if save_dir and save_mode == "interval" and next_save == n:
+            p = os.path.join(save_dir, f"step_{n}.ckpt")
+            if optimizer_cfg is not None:
+                # Local import: at module scope this cycles back into
+                # magic.trainer via the package __init__.
+                from ..utils.load_from_optimizer import (
+                    save_second_moments_as_optimizer_pt,
+                )
+
+                os.makedirs(p, exist_ok=True)
+                save_second_moments_as_optimizer_pt(
+                    self.model,
+                    state.opt_state,
+                    os.path.join(p, "optimizer.pt"),
+                    step=n,
+                    **optimizer_cfg,
+                )
+            state.save(p).result()
 
         return state
 
@@ -720,7 +748,7 @@ class Trainer:
         fsdp: bool = False,
         resume: bool = False,
         save_every: int = 0,
-        save_mode: MagicSaveMode = "sqrt",
+        save_mode: SaveMode = "sqrt",
         max_grad_norm: float | None = None,
         grad_accum_steps: int = 1,
     ) -> BackwardState:

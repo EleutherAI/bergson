@@ -247,7 +247,7 @@ def worker(
         debug=run_cfg.debug,
         inplace=True,
         save_dir=ckpts_path,
-        save_mode=getattr(run_cfg, "save_mode", "sqrt"),
+        save_mode=run_cfg.save_mode,
         log_fn=log_fn,
         resume=resume,
         fsdp=run_cfg.fsdp,
@@ -262,6 +262,7 @@ def worker(
             if getattr(run_cfg, "save_optimizer_state", "none") == "all"
             else None
         ),
+        save_interval=run_cfg.save_interval,
     )
     if getattr(run_cfg, "save_optimizer_state", "none") != "none" and global_rank == 0:
         save_second_moments_as_optimizer_pt(
@@ -325,6 +326,8 @@ def worker(
         # Sanity check
         if not isinstance(run_cfg, MagicConfig):
             raise RuntimeError("run_cfg must be a MagicConfig to compute scores")
+        if run_cfg.save_mode == "interval":
+            raise ValueError("save_mode='interval' not supported for MAGIC attribution")
 
         stream.requires_grad = True
         opt_grads = [

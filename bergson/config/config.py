@@ -10,6 +10,8 @@ from simple_parsing import Serializable, field
 
 from ..hessians.inversion import Inversion
 
+SaveMode = Literal["all", "sqrt", "log", "interval"]
+
 
 @dataclass
 class DataConfig(Serializable):
@@ -354,6 +356,25 @@ class TrainingConfig(AttributionConfig, Serializable):
 
     save_optimizer_state: Literal["none", "last", "all"] = "none"
     """Which checkpoints' optimizer second moments to persist. AdamW only."""
+
+    save_mode: SaveMode = "sqrt"
+    """Checkpoint saving mode.
+
+    - 'all' saves every checkpoint. This method uses O(N) space and O(N) time.
+    - 'log' saves at a log-spaced interval, more frequently near the end of a training
+      segment. Training is recursively divided into segments. This method uses O(log N)
+      space and O(N log N) time.
+    - 'sqrt' saves at a linearly-spaced interval, every sqrt(N) steps. This method uses
+      O(sqrt N) space and O(N) time.
+    - 'interval' saves every `save_interval` steps, plus the final state. Not
+      supported by MAGIC.
+
+    The original MAGIC paper used 'log', but 'sqrt' is often a better choice when disk
+    space is not a concern.
+    """
+
+    save_interval: int = 0
+    """Checkpointing interval in steps for `save_mode: interval`."""
 
     weight_decay: float = 0.01
     """Weight decay coefficient for AdamW and Muon."""

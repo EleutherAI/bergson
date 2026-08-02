@@ -1146,3 +1146,12 @@ def test_accumulate_grads_matches_full_batch(valid_lens):
     # The loss casts logits to fp32 internally, so fp32-level associativity
     # noise is the floor even for a float64 model.
     assert num / den < 1e-6, f"accumulated gradient off by {num / den:.3e}"
+
+
+def test_next_save_index_interval():
+    from bergson.magic.trainer import next_save_index
+
+    assert next_save_index(0, 1746, "interval", save_interval=291) == 291
+    assert next_save_index(291, 1746, "interval", save_interval=291) == 582
+    with pytest.raises(ValueError, match="save_interval"):
+        next_save_index(0, 100, "interval")
