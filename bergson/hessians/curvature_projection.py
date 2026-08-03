@@ -133,10 +133,22 @@ def compute_folded_projections(
         a_power = side_curvature_matrix(q_a, v, power)  # [I, I]
 
         p_s = create_projection_matrix(
-            f"{name}/left", p, o, q_g.dtype, q_g.device, projection_type, projection_scale
+            f"{name}/left",
+            p,
+            o,
+            q_g.dtype,
+            q_g.device,
+            projection_type,
+            projection_scale,
         )
         p_a = create_projection_matrix(
-            f"{name}/right", p, i, q_a.dtype, q_a.device, projection_type, projection_scale
+            f"{name}/right",
+            p,
+            i,
+            q_a.dtype,
+            q_a.device,
+            projection_type,
+            projection_scale,
         )
         out[name] = (p_s @ s_power, a_power @ p_a.T)
     return out
@@ -176,7 +188,9 @@ def load_folded_projections(
     factors_dir: str | os.PathLike, device: str | torch.device = "cpu"
 ) -> dict[str, tuple[Tensor, Tensor]]:
     """Inverse of :func:`save_folded_projections`."""
-    flat = load_file(os.path.join(str(factors_dir), "factors.safetensors"), device=str(device))
+    flat = load_file(
+        os.path.join(str(factors_dir), "factors.safetensors"), device=str(device)
+    )
     names = sorted({k.rsplit("/", 1)[0] for k in flat})
     return {name: (flat[f"{name}/left"], flat[f"{name}/right"]) for name in names}
 
