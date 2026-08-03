@@ -1,7 +1,13 @@
 Influence Functions & Preconditioners
 =====================================
 
-Influence functions can be roughly conceptualized as a preconditioned gradient similarity search, with formula :math:`g_q H^{-1} g_t^\top` where :math:`g_q` is the query gradient, :math:`g_t` is a training gradient, and :math:`H` is a Hessian (approximation). Many Hessian approximations are used, and hyperparameters such as the inversion damping factor are also usually incorporated. In some cases, heuristics such as gradient unit normalization are also applied.
+Influence functions are tools borrowed from logistic regression, where they may be applied to compute the exact leave-one-out effects of training data points on test-time model behavior. In this context they have the formula :math:`g_q H^{-1} g_t^\top`, where :math:`g_q` is the query gradient for the test-time behavior, :math:`g_t` is a training item gradient, and :math:`H` is the Hessian. These quantities are all evaluated on the trained model.
+
+Neural networks do not have invertible Hessians, but it `has been shown <https://arxiv.org/abs/1703.04730>`_ that swapping out the inverse Hessian with a damped inverse Hessian approximation can still noisily predict leave-one-out effects in some cases. Later results showed that leave-one-out effects can also be predicted when the matrices in the `H` position do not approximate the Hessian at all: see the empirical Fisher-based preconditioners used in `TRAK <https://arxiv.org/abs/2303.14186>`_, `LoGra <https://arxiv.org/abs/2405.13954>`_, `TrackStar <https://arxiv.org/html/2410.17413v1>`_, and even simple `gradient cosine similarity <https://openreview.net/pdf?id=fQvVV6UN4p>`_. 
+
+Some new attempts to provide theoretical grounding for influence functions `exist <https://proceedings.neurips.cc/paper_files/paper/2025/file/0e8909cae8248c98279f6cd82074aa6d-Paper-Conference.pdf>`_. But in my opinion an applied researcher could do worse than treating influence functions as simply similarity search using a preconditioner matrix that induces an empirically useful definition of similarity, similar to how optimization researchers may consider preconditioner matrices in the context of `steepest descent <https://docs.modula.systems/algorithms/manifold/>`_.
+
+We offer several such matrices, which we hereafter refer to as Hessians, and expose other hyperparameters such as the inversion damping factor that affect some results. We also provide heuristics like gradient unit normalization.
 
 Preconditioners
 ---------------
@@ -24,34 +30,3 @@ Preconditioners
      - ``bergson hessian <run_path> --method shampoo``
    * - Optimizer state (Adam / Adafactor)
      - ``--optimizer_state <path>`` on ``build`` / ``reduce`` / ``score``
-
-.. Gradient Autocorrelation
-.. ------------------------
-
-.. Gradient o
-
-.. KFAC
-.. ----
-
-.. .. TODO
-
-.. TKFAC
-.. -----
-
-.. .. TODO
-
-.. EK-FAC
-.. ------
-
-.. .. TODO: hyperparameter sensitivity (damping, inversion), the LDS ≈ 0 failure
-..    mode, and the ``bergson ekfac`` end-to-end pipeline.
-
-.. Shampoo
-.. -------
-
-.. .. TODO
-
-.. Optimizer State
-.. ---------------
-
-.. .. TODO: Adam / Adafactor second-moment normalization via ``--optimizer_state``.
