@@ -18,5 +18,8 @@ HF format both steps load.
 
 | Method | LDS (mean Spearman over 481 queries, 95% CI) |
 |--------|----------------------------------------------|
-| EK-FAC IF | 0.418 ± 0.016 |
-| SOURCE | 0.429 ± 0.015 |
+| EK-FAC IF | 0.468 ± 0.015 |
+| SOURCE | 0.476 ± 0.015 |
+
+Query losses averaged over the five retrain seeds; kronfluence reports 0.44
+for EK-FAC IF on its own five-seed ground truth.
