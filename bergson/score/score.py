@@ -362,32 +362,48 @@ def score_worker(
             kwargs["scorer"].writer.flush()
             del kwargs["scorer"]
     else:
-        # Convert each shard to a Dataset then map over its gradients
+        # Streaming (IterableDataset) path. Nothing in the pipeline currently
+        # produces an IterableDataset (setup_data_pipeline always returns a
+        # Dataset), so this is a safety net rather than a hot path. Mirrors the
+        # single-shard limitation of build_worker; query batching
+        # (query_batch_size) is not applied here.
         buf, shard_id = [], 0
 
         def flush(kwargs):
             nonlocal buf, shard_id
             if not buf:
                 return
+            # Each create_scorer call sizes the score index to its own shard at
+            # the same path, so a second shard would overwrite the first rather
+            # than append. Limit to a single shard, matching build_worker.
+            assert shard_id == 0, (
+                "Streaming datasets are limited to a single shard: "
+                f"{len(buf)} rows overflowed stream_shard_size="
+                f"{index_cfg.stream_shard_size}. Raise stream_shard_size above "
+                "the dataset size, or load the dataset without streaming."
+            )
             ds_shard = assert_type(Dataset, Dataset.from_list(buf))
             batches = allocate_batches(
                 ds_shard["length"][:],
                 index_cfg.token_batch_size,
                 max_batch_size=index_cfg.max_batch_size,
             )
-            kwargs["ds"] = ds_shard
+            kwargs["data"] = ds_shard
             kwargs["batches"] = batches
 
             kwargs["scorer"] = create_scorer(
-                index_cfg.partial_run_path / f"shard-{shard_id:05d}",
+                index_cfg.partial_run_path,
                 ds_shard,
                 score_cfg,
                 preprocess_cfg,
                 device=score_device,
                 dtype=score_dtype,
+                attribute_tokens=index_cfg.attribute_tokens,
             )
 
             collect_gradients(**kwargs)
+            kwargs["scorer"].writer.flush()
+            del kwargs["scorer"]
 
             buf.clear()
             shard_id += 1
