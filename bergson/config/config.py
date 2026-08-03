@@ -357,6 +357,11 @@ class TrainingConfig(AttributionConfig, Serializable):
     save_optimizer_state: Literal["none", "last", "all"] = "none"
     """Which checkpoints' optimizer second moments to persist. AdamW only."""
 
+    save_models: bool = False
+    """Save the trained model (HF format, weights + tokenizer) to
+    ``<run_path>/model``; ``validate`` saves the leave-k-out family to
+    ``<run_path>/retrained/{base,subset_<i>}`` instead."""
+
     save_mode: SaveMode = "sqrt"
     """Checkpoint saving mode.
 
@@ -448,11 +453,6 @@ class ValidationConfig(TrainingConfig, ABC):
     """When True, drop doc_ids with score == 0 from the validation
     permutation. These scores may be produced by items with fewer than
     2 tokens."""
-
-    save_models: bool = False
-    """When True, save each leave-k-out retrained model (HF format, weights +
-    tokenizer) to ``<run_path>/retrained/subset_<i>/`` so it can be reused for
-    later attribution queries without retraining. ~0.5 GB per subset for GPT-2."""
 
     subsets: str = ""
     """Path to a subsets.json to reuse; defaults to ``<run_path>/subsets.json``."""

@@ -18,6 +18,7 @@ import os
 
 import torch
 import torch.distributed as dist
+from transformers import AutoTokenizer
 
 from ..config.config import MetasmoothnessConfig
 from ..distributed import launch_distributed_run
@@ -116,6 +117,15 @@ def metasmoothness_worker(
             )
             thetas.append(theta)
             print(f"[metasmoothness] finished training {k + 1}/3 (w = 1 + {k}*h*v)")
+
+        if k == 0 and run_cfg.save_models and global_rank == 0:
+            out_dir = os.path.join(run_cfg.run_path, "model")
+            os.makedirs(out_dir, exist_ok=True)
+            with fwd_state.activate(model), torch.no_grad():
+                model.save_pretrained(out_dir, safe_serialization=True)
+            AutoTokenizer.from_pretrained(
+                run_cfg.tokenizer or run_cfg.model
+            ).save_pretrained(out_dir)
         del trainer, fwd_state, model
 
     if global_rank == 0:

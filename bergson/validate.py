@@ -334,7 +334,7 @@ def validate_scores(
     hf_set_verbosity_error()
 
     # Optionally persist each retrained model for later attribution queries.
-    save_models = getattr(run_cfg, "save_models", False)
+    save_models = run_cfg.save_models
     retrained_tokenizer = None
     if save_models and global_rank == 0:
         retrained_tokenizer = AutoTokenizer.from_pretrained(

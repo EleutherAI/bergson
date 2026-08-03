@@ -91,7 +91,7 @@ def _train_and_query_loss(
     dataset,
     batch_size,
     *,
-    per_token: bool,
+    attribute_tokens: bool,
     zero_subset: torch.Tensor | None = None,
     shuffle_seed: int | None = None,
     seed: int = 42,
@@ -123,7 +123,7 @@ def _train_and_query_loss(
         ds, batch_size, num_docs, "Test", 0
     )
 
-    if per_token:
+    if attribute_tokens:
         T = max(len(row) for row in padded_ds["input_ids"])
         weight_shape = (len(padded_ds), T)
     else:
@@ -161,7 +161,7 @@ def _train_and_query_loss(
                 total += model(**batch).loss.item()
         loss = total / len(stream)
 
-    if per_token:
+    if attribute_tokens:
         trimmed = torch.tensor(padded_ds["doc_ids"])
         if pad_count:
             trimmed = trimmed[:-pad_count]
@@ -218,7 +218,7 @@ def test_magic_validation_loop_doc_token_dropout_equiv(model_name):
         model_name,
         ds,
         batch_size=batch_size,
-        per_token=True,
+        attribute_tokens=True,
         shuffle_seed=shuffle_seed,
         zero_subset=None,
     )
@@ -243,7 +243,7 @@ def test_magic_validation_loop_doc_token_dropout_equiv(model_name):
         model_name,
         ds,
         batch_size=batch_size,
-        per_token=False,
+        attribute_tokens=False,
         shuffle_seed=shuffle_seed,
         zero_subset=docs_to_drop,
     )
@@ -251,7 +251,7 @@ def test_magic_validation_loop_doc_token_dropout_equiv(model_name):
         model_name,
         ds,
         batch_size=batch_size,
-        per_token=True,
+        attribute_tokens=True,
         shuffle_seed=shuffle_seed,
         zero_subset=flat_drop,
     )
@@ -267,7 +267,7 @@ def _run_magic_cli(
     dataset,
     batch_size,
     *,
-    per_token: bool,
+    attribute_tokens: bool,
     shuffle_seed: int | None = None,
     seed: int = 42,
     device: str = "cpu",
@@ -292,7 +292,7 @@ def _run_magic_cli(
         ds, batch_size, num_docs, "Test", 0
     )
 
-    if per_token:
+    if attribute_tokens:
         T = max(len(row) for row in padded_ds["input_ids"])
         weight_shape = (len(padded_ds), T)
     else:
@@ -375,7 +375,7 @@ def test_magic_per_token_scores_zero_at_masked_labels(model_name):
     )
     N, T = len(ds), 5
 
-    per_tok, _ = _run_magic_cli(model_name, ds, len(ds), per_token=True)
+    per_tok, _ = _run_magic_cli(model_name, ds, len(ds), attribute_tokens=True)
     assert per_tok.shape == (N, T)
 
     labels = torch.tensor(ds["labels"])
@@ -407,8 +407,8 @@ def test_magic_per_token_sums_to_per_doc(model_name, dataset):
     N = len(dataset)
     T = len(dataset[0]["input_ids"])
 
-    per_doc, _ = _run_magic_cli(model_name, dataset, N, per_token=False)
-    per_tok, _ = _run_magic_cli(model_name, dataset, N, per_token=True)
+    per_doc, _ = _run_magic_cli(model_name, dataset, N, attribute_tokens=False)
+    per_tok, _ = _run_magic_cli(model_name, dataset, N, attribute_tokens=True)
 
     assert per_doc.shape == (N,)
     assert per_tok.shape == (N, T)
@@ -440,8 +440,8 @@ def test_magic_per_token_sums_to_per_doc_packed(model_name):
     )
     N, T, num_docs = len(ds), 6, 4
 
-    per_doc, _ = _run_magic_cli(model_name, ds, N, per_token=False)
-    per_tok, _ = _run_magic_cli(model_name, ds, N, per_token=True)
+    per_doc, _ = _run_magic_cli(model_name, ds, N, attribute_tokens=False)
+    per_tok, _ = _run_magic_cli(model_name, ds, N, attribute_tokens=True)
 
     assert per_doc.shape == (num_docs,)
     assert per_tok.shape == (N, T)
@@ -485,8 +485,8 @@ def test_magic_per_token_sums_to_per_doc_with_padding(model_name):
     T = 5
     batch_size = 2
 
-    per_doc, _ = _run_magic_cli(model_name, ds, batch_size, per_token=False)
-    per_tok, doc_ids = _run_magic_cli(model_name, ds, batch_size, per_token=True)
+    per_doc, _ = _run_magic_cli(model_name, ds, batch_size, attribute_tokens=False)
+    per_tok, doc_ids = _run_magic_cli(model_name, ds, batch_size, attribute_tokens=True)
 
     assert per_doc.shape == (num_real_docs,), f"per_doc shape {per_doc.shape}"
     assert per_tok.shape == (num_real_docs, T), f"per_tok shape {per_tok.shape}"
@@ -583,10 +583,10 @@ def test_magic_unpacked_cli_aggregation(model_name):
     shuffle_seed = 7
 
     per_tok, doc_ids = _run_magic_cli(
-        model_name, ds, batch_size, per_token=True, shuffle_seed=shuffle_seed
+        model_name, ds, batch_size, attribute_tokens=True, shuffle_seed=shuffle_seed
     )
     per_doc, _ = _run_magic_cli(
-        model_name, ds, batch_size, per_token=False, shuffle_seed=shuffle_seed
+        model_name, ds, batch_size, attribute_tokens=False, shuffle_seed=shuffle_seed
     )
 
     assert per_doc.shape == (num_docs,), f"per_doc shape {per_doc.shape}"
@@ -623,10 +623,10 @@ def test_magic_packed_cli_aggregation_with_shuffle(model_name):
     shuffle_seed = 7
 
     per_tok, doc_ids = _run_magic_cli(
-        model_name, ds, batch_size, per_token=True, shuffle_seed=shuffle_seed
+        model_name, ds, batch_size, attribute_tokens=True, shuffle_seed=shuffle_seed
     )
     per_doc, _ = _run_magic_cli(
-        model_name, ds, batch_size, per_token=False, shuffle_seed=shuffle_seed
+        model_name, ds, batch_size, attribute_tokens=False, shuffle_seed=shuffle_seed
     )
 
     assert per_doc.shape == (num_docs,)
@@ -1155,3 +1155,12 @@ def test_next_save_index_interval():
     assert next_save_index(291, 1746, "interval", save_interval=291) == 582
     with pytest.raises(ValueError, match="save_interval"):
         next_save_index(0, 100, "interval")
+
+
+def test_per_token_backward_compatibility():
+    from bergson.magic.config import MagicConfig
+
+    cfg = MagicConfig.from_dict(
+        {"run_path": "x", "per_token": True}, drop_extra_fields=False
+    )
+    assert cfg.attribute_tokens

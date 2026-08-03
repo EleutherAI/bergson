@@ -196,7 +196,7 @@ def worker(
     )
 
     # Plain magic runs enter with score_path="" (scores are computed below).
-    per_token = getattr(run_cfg, "per_token", False) or (
+    per_token = (isinstance(run_cfg, MagicConfig) and run_cfg.attribute_tokens) or (
         score_path and scores_are_per_token(score_path)
     )
     if per_token:
@@ -258,25 +258,27 @@ def worker(
                 eps=run_cfg.adam_eps,
                 eps_root=run_cfg.eps_root,
             )
-            if getattr(run_cfg, "save_optimizer_state", "none") == "all"
+            if run_cfg.save_optimizer_state == "all"
             else None
         ),
         save_interval=run_cfg.save_interval,
     )
     # Called on every rank: FSDP moments are DTensors whose gather is a
     # collective; rank 0 writes inside.
-    if getattr(run_cfg, "save_optimizer_state", "none") != "none":
+    if run_cfg.save_optimizer_state != "none":
         save_second_moments_as_optimizer_pt(
             model,  # type: ignore[reportArgumentType]
             fwd_state.opt_state,
             os.path.join(run_cfg.run_path, "optimizer.pt"),
         )
 
-    if getattr(run_cfg, "save_models", False) and global_rank == 0:
-        # Persist the fully-trained (no leave-out) model alongside the per-subset
-        # models, so a later evaluate_retrained run can measure the query
-        # baseline from the bank itself instead of a separate base_model_dir.
-        base_dir = os.path.join(run_cfg.run_path, "retrained", "base")
+    if run_cfg.save_models and global_rank == 0:
+        # For the leave-k-out family the trained model is the query baseline
+        # that evaluate_retrained reads from retrained/base.
+        if isinstance(run_cfg, ValidationConfig):
+            base_dir = os.path.join(run_cfg.run_path, "retrained", "base")
+        else:
+            base_dir = os.path.join(run_cfg.run_path, "model")
         os.makedirs(base_dir, exist_ok=True)
         with fwd_state.activate(model), torch.no_grad():
             model.save_pretrained(base_dir, safe_serialization=True)
@@ -394,7 +396,7 @@ def worker(
 
     stream.requires_grad = False
 
-    if getattr(run_cfg, "skip_validation", False):
+    if isinstance(run_cfg, MagicConfig) and run_cfg.skip_validation:
         return
 
     validate_scores(
