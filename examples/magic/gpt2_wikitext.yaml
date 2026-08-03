@@ -3,7 +3,6 @@
 
 # Hyperparameters are inferred from the MAGIC paper, the metagradients
 # paper it cites, and the datacomp competition that the metagradients paper cites.
-# The original batch size was lost.
 
 # Run with `bergson examples/magic/gpt2_wikitext.yaml`
 
@@ -15,8 +14,9 @@ steps:
       cleanup_ckpts: false
       weight_decay: 0.01
       adam_eps: 1.0e-8
-      # Chosen experimentally
-      eps_root: 1.0e-6
+      adam_beta1: 0.95
+      adam_beta2: 0.975
+      eps_root: 1.0e-8
       # The metagradients paper documents sum_of_means for Gemma-IFT, but the
       # MAGIC paper's Fig. 5 GPT-2 panel shows 1%-drop retrains moving true
       # loss by only ~0.006 — matching our mean-reduction banks (0.007-0.009)
@@ -37,8 +37,8 @@ steps:
         nproc_per_node: 8
         nnode: 1
 
-      # Original batch size lost
-      batch_size: 64
+      batch_size: 256
+      grad_accum_steps: 2
       num_epochs: 4
       lr_schedule:
         lr_scheduler_type: polynomial
@@ -46,6 +46,9 @@ steps:
         lr_start: 1e-6
         lr_end: 0.00008
         warmup_steps: 0.25
+
+      num_subsets: 100
+      subset_fraction: 0.01
 
       wandb_project: magic
       save_optimizer_state: True
