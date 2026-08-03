@@ -4,8 +4,7 @@ from datetime import timedelta
 
 import torch
 import torch.distributed as dist
-from datasets import Dataset, IterableDataset
-from tqdm.auto import tqdm
+from datasets import Dataset
 
 from bergson.collection import collect_gradients
 from bergson.config.config import IndexConfig, PreprocessConfig
@@ -17,7 +16,6 @@ from bergson.distributed import (
 )
 from bergson.utils.batch_size import maybe_auto_batch_size
 from bergson.utils.utils import (
-    assert_type,
     get_device,
     get_device_index,
     setup_reproducibility,
@@ -35,7 +33,7 @@ def build_worker(
     world_size: int,
     index_cfg: IndexConfig,
     preprocess_cfg: PreprocessConfig,
-    ds: Dataset | IterableDataset,
+    ds: Dataset,
 ):
     """
     Build worker executed per rank to collect gradients to populate the
@@ -54,7 +52,7 @@ def build_worker(
     preprocess_cfg : PreprocessConfig
         Specifies preprocessing strategy (preconditioning, unit normalization,
         aggregation).
-    ds : Dataset | IterableDataset
+    ds : Dataset
         The entire dataset to be processed. A subset is assigned to each worker.
     """
     torch.cuda.set_device(get_device_index(local_rank))
@@ -92,52 +90,13 @@ def build_worker(
         "preprocess_cfg": preprocess_cfg,
     }
 
-    if isinstance(ds, Dataset):
-        batches = allocate_batches(
-            ds["length"][:],
-            index_cfg.token_batch_size,
-            max_batch_size=index_cfg.max_batch_size,
-        )
-        kwargs["batches"] = batches
-        collect_gradients(**kwargs)
-    else:
-        # Convert each shard to a Dataset then map over its gradients
-        buf, shard_id = [], 0
-
-        def flush(kwargs):
-            nonlocal buf, shard_id
-            if not buf:
-                return
-            # Each collect_gradients call creates the index sized to its own
-            # shard at the same path, so a second shard would overwrite the
-            # first rather than append to it.
-            assert shard_id == 0, (
-                "Streaming datasets are limited to a single shard: "
-                f"{len(buf)} rows overflowed stream_shard_size="
-                f"{index_cfg.stream_shard_size}. Raise stream_shard_size above "
-                "the dataset size, or load the dataset without streaming."
-            )
-            ds_shard = assert_type(Dataset, Dataset.from_list(buf))
-            batches = allocate_batches(
-                ds_shard["length"][:],
-                index_cfg.token_batch_size,
-                max_batch_size=index_cfg.max_batch_size,
-            )
-            kwargs["data"] = ds_shard
-            kwargs["batches"] = batches
-            collect_gradients(**kwargs)
-
-            buf.clear()
-            shard_id += 1
-
-        for ex in tqdm(ds, desc="Collecting gradients"):
-            buf.append(ex)
-            if len(buf) == index_cfg.stream_shard_size:
-                flush(kwargs=kwargs)
-
-        flush(kwargs=kwargs)  # Final flush
-        if rank == 0:
-            processor.save(index_cfg.partial_run_path)
+    batches = allocate_batches(
+        ds["length"][:],
+        index_cfg.token_batch_size,
+        max_batch_size=index_cfg.max_batch_size,
+    )
+    kwargs["batches"] = batches
+    collect_gradients(**kwargs)
 
 
 def build(

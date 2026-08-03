@@ -6,10 +6,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-from datasets import (
-    Dataset,
-    IterableDataset,
-)
+from datasets import Dataset
 from peft import (
     PeftConfig,
     PeftModel,
@@ -258,9 +255,6 @@ def filter_by_max_tokens(ds: Dataset, cfg: AttributionConfig) -> Dataset:
     if cfg.max_tokens is None:
         return ds
 
-    if isinstance(ds, IterableDataset):
-        raise ValueError("max_tokens is not supported for IterableDataset")
-
     lengths = ds["length"]
     dataset_tokens = sum(lengths)
 
@@ -430,8 +424,7 @@ def setup_data_pipeline(
     # Remove extraneous columns
     keep = {"length", "input_ids", "labels"}
     remove_columns -= keep
-    # An IterableDataset with no inferred features reports column_names as None.
-    remove_columns &= set(ds.column_names or ())
+    remove_columns &= set(ds.column_names)
     if remove_columns:
         ds = ds.remove_columns(list(remove_columns))
 

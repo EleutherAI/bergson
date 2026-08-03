@@ -593,9 +593,6 @@ class IndexConfig(AttributionConfig, Serializable):
     near-zero gradients for high-confidence predictions that can cause numerical
     instability."""
 
-    stream_shard_size: int = 400_000
-    """Shard size for streaming the dataset into Dataset objects."""
-
     split_attention_modules: list[str] = field(default_factory=list)
     """Modules to split into head matrices."""
 

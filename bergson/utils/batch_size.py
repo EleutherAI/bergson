@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import torch
 import torch.distributed as dist
-from datasets import Dataset, IterableDataset
+from datasets import Dataset
 from peft import PeftModel
 from transformers import PreTrainedModel
 
@@ -69,7 +69,7 @@ def test_fwd_bwd(
 def maybe_auto_batch_size(
     cfg: IndexConfig,
     model: PreTrainedModel | PeftModel,
-    ds: Dataset | IterableDataset,
+    ds: Dataset,
     processor: GradientProcessor,
     target_modules: set[str] | None,
     rank: int = 0,

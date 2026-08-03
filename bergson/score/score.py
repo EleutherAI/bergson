@@ -7,8 +7,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.distributed as dist
-from datasets import Dataset, IterableDataset
-from tqdm.auto import tqdm
+from datasets import Dataset
 
 from bergson.collection import collect_gradients
 from bergson.config.config import IndexConfig, PreprocessConfig, ScoreConfig
@@ -35,7 +34,6 @@ from bergson.score.score_writer import (
 )
 from bergson.score.scorer import Scorer
 from bergson.utils.utils import (
-    assert_type,
     convert_precision_to_torch,
     get_device,
     get_device_index,
@@ -263,7 +261,7 @@ def score_worker(
     index_cfg: IndexConfig,
     score_cfg: ScoreConfig,
     preprocess_cfg: PreprocessConfig,
-    ds: Dataset | IterableDataset,
+    ds: Dataset,
 ):
     """
     Score worker executed per rank to produce and score gradients against a query.
@@ -283,7 +281,7 @@ def score_worker(
         method (mean/nearest/individual).
     preprocess_cfg : PreprocessConfig
         Preprocessing configuration for gradient normalization/preconditioning.
-    ds : Dataset | IterableDataset
+    ds : Dataset
         The entire dataset to be indexed. A subset is assigned to each worker.
     """
     torch.cuda.set_device(get_device_index(local_rank))
@@ -325,81 +323,41 @@ def score_worker(
     )
     score_device = torch.device(get_device(local_rank))
 
-    if isinstance(ds, Dataset):
-        kwargs["batches"] = allocate_batches(
-            ds["length"][:],
-            index_cfg.token_batch_size,
-            max_batch_size=index_cfg.max_batch_size,
+    kwargs["batches"] = allocate_batches(
+        ds["length"][:],
+        index_cfg.token_batch_size,
+        max_batch_size=index_cfg.max_batch_size,
+    )
+
+    with open(Path(score_cfg.query_path) / "info.json") as f:
+        num_queries = json.load(f)["num_grads"]
+    qbs = score_cfg.query_batch_size
+    if qbs is None or qbs >= num_queries:
+        query_ranges = [None]
+    else:
+        # Every rank loops the same slices so the collectives inside
+        # collect_gradients stay aligned.
+        query_ranges = [
+            (start, min(start + qbs, num_queries))
+            for start in range(0, num_queries, qbs)
+        ]
+
+    for query_range in query_ranges:
+        kwargs["scorer"] = create_scorer(
+            index_cfg.partial_run_path,
+            ds,
+            score_cfg,
+            preprocess_cfg,
+            device=score_device,
+            dtype=score_dtype,
+            attribute_tokens=index_cfg.attribute_tokens,
+            query_range=query_range,
+            num_queries_total=num_queries,
         )
 
-        with open(Path(score_cfg.query_path) / "info.json") as f:
-            num_queries = json.load(f)["num_grads"]
-        qbs = score_cfg.query_batch_size
-        if qbs is None or qbs >= num_queries:
-            query_ranges = [None]
-        else:
-            # Every rank loops the same slices so the collectives inside
-            # collect_gradients stay aligned.
-            query_ranges = [
-                (start, min(start + qbs, num_queries))
-                for start in range(0, num_queries, qbs)
-            ]
-
-        for query_range in query_ranges:
-            kwargs["scorer"] = create_scorer(
-                index_cfg.partial_run_path,
-                ds,
-                score_cfg,
-                preprocess_cfg,
-                device=score_device,
-                dtype=score_dtype,
-                attribute_tokens=index_cfg.attribute_tokens,
-                query_range=query_range,
-                num_queries_total=num_queries,
-            )
-
-            collect_gradients(**kwargs)
-            kwargs["scorer"].writer.flush()
-            del kwargs["scorer"]
-    else:
-        # Convert each shard to a Dataset then map over its gradients
-        buf, shard_id = [], 0
-
-        def flush(kwargs):
-            nonlocal buf, shard_id
-            if not buf:
-                return
-            ds_shard = assert_type(Dataset, Dataset.from_list(buf))
-            batches = allocate_batches(
-                ds_shard["length"][:],
-                index_cfg.token_batch_size,
-                max_batch_size=index_cfg.max_batch_size,
-            )
-            kwargs["ds"] = ds_shard
-            kwargs["batches"] = batches
-
-            kwargs["scorer"] = create_scorer(
-                index_cfg.partial_run_path / f"shard-{shard_id:05d}",
-                ds_shard,
-                score_cfg,
-                preprocess_cfg,
-                device=score_device,
-                dtype=score_dtype,
-            )
-
-            collect_gradients(**kwargs)
-
-            buf.clear()
-            shard_id += 1
-
-        for ex in tqdm(ds, desc="Collecting gradients"):
-            buf.append(ex)
-            if len(buf) == index_cfg.stream_shard_size:
-                flush(kwargs=kwargs)
-
-        flush(kwargs=kwargs)  # Final flush
-        if rank == 0:
-            processor.save(index_cfg.partial_run_path)
+        collect_gradients(**kwargs)
+        kwargs["scorer"].writer.flush()
+        del kwargs["scorer"]
 
 
 def score_dataset(
