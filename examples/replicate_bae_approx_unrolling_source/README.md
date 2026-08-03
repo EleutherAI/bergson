@@ -15,3 +15,8 @@ Run each config with `PYTHONPATH=$PWD python -m bergson <config>`, in order:
 
 Step 2 runs before step 3 because it exports the trainer checkpoints to the
 HF format both steps load.
+
+| Method | LDS (mean Spearman over 481 queries, 95% CI) |
+|--------|----------------------------------------------|
+| EK-FAC IF | 0.418 ± 0.016 |
+| SOURCE | 0.429 ± 0.015 |

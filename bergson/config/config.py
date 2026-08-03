@@ -454,6 +454,9 @@ class ValidationConfig(TrainingConfig, ABC):
     tokenizer) to ``<run_path>/retrained/subset_<i>/`` so it can be reused for
     later attribution queries without retraining. ~0.5 GB per subset for GPT-2."""
 
+    subsets: str = ""
+    """Path to a subsets.json to reuse; defaults to ``<run_path>/subsets.json``."""
+
     subset_fraction: float = 0.0
     """When > 0, each of the ``num_subsets`` leave-k-out subsets is an
     independent draw (without replacement within a subset, overlapping across

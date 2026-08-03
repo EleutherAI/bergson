@@ -162,3 +162,42 @@ def test_different_query_does_not_reuse_losses(tmp_path, model):
     name_a = bank_loss_cache_key(cfg_a, True, len(SUBSETS))
     name_b = bank_loss_cache_key(cfg_b, True, len(SUBSETS))
     assert name_a != name_b
+
+
+def test_evaluate_retrained_averages_over_dirs(tmp_path, model):
+    bank_a = _build_bank(tmp_path / "a", model)
+    bank_b = _build_bank(tmp_path / "b", model)
+    query_path, _ = _query_dataset(tmp_path)
+
+    scores = np.random.default_rng(0).standard_normal((NUM_DOCS, 1)).astype(np.float32)
+    score_path = tmp_path / "scores.npy"
+    np.save(score_path, scores)
+
+    for name, dirs in [
+        ("one", str(bank_a)),
+        ("avg", [str(bank_a), str(bank_b)]),
+    ]:
+        evaluate_retrained(
+            _run_cfg(tmp_path, name, query_path),
+            dirs,
+            score_path=str(score_path),
+        )
+
+    one = _read_validation(tmp_path / "one")
+    avg = _read_validation(tmp_path / "avg")
+    for r1, r2 in zip(one, avg):
+        assert abs(float(r1["diff"]) - float(r2["diff"])) < 1e-6
+
+
+def test_validate_cli_comma_separated_dirs(tmp_path, model, monkeypatch):
+    from bergson.cli.commands import Validate
+
+    seen = {}
+    monkeypatch.setattr(
+        "bergson.cli.commands.evaluate_retrained",
+        lambda cfg, dirs, score_path="": seen.setdefault("dirs", dirs),
+    )
+    Validate.from_dict(
+        {"run_path": str(tmp_path), "scores": "s", "retrained_dir": "a,b"}
+    ).execute()
+    assert seen["dirs"] == ["a", "b"]

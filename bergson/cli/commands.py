@@ -7,8 +7,10 @@ corresponding CLI entrypoint.
 """
 
 from dataclasses import dataclass
+from typing import cast
 
 from simple_parsing import Serializable
+from simple_parsing.helpers.serialization import register_decoding_fn
 
 from ..build import build
 from ..config.config import (
@@ -38,6 +40,8 @@ from ..recall.recall import run_recall
 from ..score.score import score_dataset
 from ..utils.worker_utils import validate_run_path
 from ..validate import evaluate_retrained
+
+register_decoding_fn(cast(type, str | list[str]), lambda v: v)
 
 
 @dataclass
@@ -273,15 +277,18 @@ class Validate(ValidationConfig):
     scores: str = ""
     """Path to saved attribution scores for validation."""
 
-    retrained_dir: str = ""
-    """Optional: evaluate on an existing run directory of
-    leave-k-out re-trained models written with
-    ``save_models=true``."""
+    retrained_dir: str | list[str] = ""
+    """Optional: evaluate on existing run directories of leave-k-out re-trained
+    models written with ``save_models=true``; multiple directories (a yaml list,
+    or comma-separated on the CLI) average the query losses over the runs."""
 
     def execute(self):
         """Run the validation."""
         assert self.scores, "Path to attribution scores must be provided."
         if self.retrained_dir:
-            evaluate_retrained(self, self.retrained_dir, score_path=self.scores)
+            retrained_dir = self.retrained_dir
+            if isinstance(retrained_dir, str) and "," in retrained_dir:
+                retrained_dir = retrained_dir.split(",")
+            evaluate_retrained(self, retrained_dir, score_path=self.scores)
         else:
             run_magic(self, score_path=self.scores)

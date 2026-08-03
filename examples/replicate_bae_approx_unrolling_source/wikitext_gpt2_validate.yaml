@@ -1,20 +1,40 @@
-# SOURCE LDS against the saved retrained models. No retraining happens here.
+# EK-FAC and SOURCE LDS against the retrained models, query losses averaged
+# over the seeds. No retraining happens here.
 #
 #   PYTHONPATH=$PWD python -m bergson examples/replicate_bae_approx_unrolling_source/wikitext_gpt2_validate.yaml
 
 steps:
-  - validate:
-      run_path: runs/wikitext_repro/validate_source
-      model: gpt2
-      overwrite: true
-      scores: runs/wikitext_repro/source_scores/scores
-      retrained_dir: runs/wikitext_repro/retrain
-      batch_size: 64
-      data:
-        dataset: EleutherAI/bergson-wikitext-2-4656-chunks
-        split: train
-        chunk_length: 0
-      query:
-        dataset: EleutherAI/bergson-wikitext-2-4656-chunks
-        split: validation
-        chunk_length: 0
+- validate:
+    run_path: runs/wikitext_repro/validate_ekfac
+    model: gpt2
+    overwrite: true
+    scores: runs/wikitext_repro/if_scores/scores
+    retrained_dir:
+    - runs/wikitext_repro/retrain_seed1004
+    - runs/wikitext_repro/retrain_seed1005
+    - runs/wikitext_repro/retrain_seed1006
+    - runs/wikitext_repro/retrain_seed1007
+    - runs/wikitext_repro/retrain_seed1008
+    batch_size: 64
+    data: &id001
+      dataset: EleutherAI/bergson-wikitext-2-4656-chunks
+      split: train
+      chunk_length: 0
+    query: &id002
+      dataset: EleutherAI/bergson-wikitext-2-4656-chunks
+      split: validation
+      chunk_length: 0
+- validate:
+    run_path: runs/wikitext_repro/validate_source
+    model: gpt2
+    overwrite: true
+    scores: runs/wikitext_repro/source_scores/scores
+    retrained_dir:
+    - runs/wikitext_repro/retrain_seed1004
+    - runs/wikitext_repro/retrain_seed1005
+    - runs/wikitext_repro/retrain_seed1006
+    - runs/wikitext_repro/retrain_seed1007
+    - runs/wikitext_repro/retrain_seed1008
+    batch_size: 64
+    data: *id001
+    query: *id002

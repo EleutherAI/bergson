@@ -287,7 +287,11 @@ def validate_scores(
     else:
         valid_indices = torch.arange(flat_scores.shape[0])
 
-    if run_cfg.subset_strategy == "random":
+    subsets_path = run_cfg.subsets or os.path.join(run_cfg.run_path, "subsets.json")
+    if os.path.exists(subsets_path):
+        with open(subsets_path) as f:
+            subsets = [torch.tensor(s, dtype=torch.long) for s in json.load(f)]
+    elif run_cfg.subset_strategy == "random":
         rng = torch.Generator().manual_seed(run_cfg.seed)
         if run_cfg.subset_fraction > 0:
             # Draw potentially overlapping samples
@@ -457,7 +461,7 @@ def validate_scores(
 
 def evaluate_retrained(
     run_cfg: ValidationConfig,
-    retrained_dir: str,
+    retrained_dir: str | list[str],
     *,
     score_path: str = "",
 ):
@@ -468,8 +472,11 @@ def evaluate_retrained(
     happens so evaluation is cheap.
     """
     assert score_path, "evaluate_retrained requires precomputed --scores"
-    src = Path(retrained_dir)
-    models_root = src / "retrained"
+    dirs = [
+        Path(d)
+        for d in ([retrained_dir] if isinstance(retrained_dir, str) else retrained_dir)
+    ]
+    src = dirs[0]
     subsets_path = src / "subsets.json"
     if not subsets_path.exists():
         raise FileNotFoundError(
@@ -553,7 +560,9 @@ def evaluate_retrained(
             :num_real_query_docs
         ].cpu()
 
-    def compute_bank_losses() -> tuple[float, torch.Tensor, torch.Tensor]:
+    def compute_bank_losses(
+        models_root: Path,
+    ) -> tuple[float, torch.Tensor, torch.Tensor]:
         """Evaluate every banked model, returning baseline + per-subset losses.
 
         ``per_subset`` is ``[num_subsets, num_real_query_docs]`` for multi-query
@@ -588,29 +597,31 @@ def evaluate_retrained(
         return base_scalar, base_per_doc, per_subset
 
     # Cache per-subset query losses for re-use with different attribution methods.
-    cache_path = (
-        src
-        / "query_loss_cache"
-        / bank_loss_cache_key(run_cfg, multi_query, len(subsets))
-    )
-    if cache_path.exists():
-        print(f"Reusing cached bank losses from {cache_path}")
-        blob = torch.load(cache_path, map_location="cpu")
-        baseline = float(blob["baseline"])
-        baseline_per_doc = blob["baseline_per_doc"]
-        per_subset_losses = blob["per_subset"]
-    else:
-        baseline, baseline_per_doc, per_subset_losses = compute_bank_losses()
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(
-            {
-                "baseline": baseline,
-                "baseline_per_doc": baseline_per_doc,
-                "per_subset": per_subset_losses,
-            },
-            cache_path,
+    per_dir = []
+    for d in dirs:
+        cache_path = (
+            d
+            / "query_loss_cache"
+            / bank_loss_cache_key(run_cfg, multi_query, len(subsets))
         )
-        print(f"Saved bank losses to {cache_path}")
+        if cache_path.exists():
+            print(f"Reusing cached bank losses from {cache_path}")
+            blob = torch.load(cache_path, map_location="cpu")
+        else:
+            base_scalar, base_per_doc, per_subset = compute_bank_losses(d / "retrained")
+            blob = {
+                "baseline": base_scalar,
+                "baseline_per_doc": base_per_doc,
+                "per_subset": per_subset,
+            }
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            torch.save(blob, cache_path)
+            print(f"Saved bank losses to {cache_path}")
+        per_dir.append(blob)
+
+    baseline = float(np.mean([b["baseline"] for b in per_dir]))
+    baseline_per_doc = torch.stack([b["baseline_per_doc"] for b in per_dir]).mean(0)
+    per_subset_losses = torch.stack([b["per_subset"] for b in per_dir]).mean(0)
 
     if multi_query:
         print(f"Baseline per-query losses (no leave-out): {baseline_per_doc.tolist()}")
