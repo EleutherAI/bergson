@@ -1,3 +1,4 @@
+import itertools
 import subprocess
 from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError
@@ -154,6 +155,58 @@ def load_subconfig(
     return None
 
 
+def expand_matrix(cmd_dict: dict) -> list[dict]:
+    """Expand a step's ``matrix`` mapping into one config per grid cell.
+
+    ``{key}`` in string values substitutes the cell's value; a value that is
+    exactly ``"{key}"`` becomes the typed grid value.
+    """
+    matrix = cmd_dict.pop("matrix", None)
+    if matrix is None:
+        return [cmd_dict]
+    if not isinstance(matrix, dict) or not all(
+        isinstance(v, list) and v for v in matrix.values()
+    ):
+        raise ValueError(f"matrix must map keys to non-empty lists; got {matrix!r}.")
+
+    def substitute(value, cell: dict):
+        if isinstance(value, dict):
+            return {k: substitute(v, cell) for k, v in value.items()}
+        if isinstance(value, list):
+            return [substitute(v, cell) for v in value]
+        if isinstance(value, str):
+            for key, cell_value in cell.items():
+                if value == "{" + key + "}":
+                    return cell_value
+                value = value.replace("{" + key + "}", str(cell_value))
+        return value
+
+    keys = list(matrix)
+    cells = [dict(zip(keys, values)) for values in itertools.product(*matrix.values())]
+    expanded = [cast(dict, substitute(cmd_dict, cell)) for cell in cells]
+
+    def run_paths(value):
+        if isinstance(value, dict):
+            for k, v in value.items():
+                if k == "run_path":
+                    yield v
+                else:
+                    yield from run_paths(v)
+
+    seen: dict = {}
+    for cfg, cell in zip(expanded, cells):
+        for rp in run_paths(cfg):
+            if rp in seen:
+                raise ValueError(
+                    f"matrix cells {seen[rp]} and {cell} both write {rp}; "
+                    "vary run_path with a {key} substitution."
+                )
+            seen[rp] = cell
+    if len(cells) > 1 and not seen:
+        raise ValueError("matrix step has no run_path; cells would collide.")
+    return expanded
+
+
 def parse_steps(
     steps: list, command_registry: dict[str, type]
 ) -> list[tuple[str, Any]]:
@@ -174,8 +227,8 @@ def parse_steps(
                 f"Valid commands: {sorted(command_registry)}."
             ) from None
 
-        # Hydrate config
-        parsed_step = cmd_cls.from_dict(cmd_dict or {}, drop_extra_fields=False)
-
-        parsed.append((cmd_name, parsed_step))
+        for cell_dict in expand_matrix(dict(cmd_dict or {})):
+            parsed.append(
+                (cmd_name, cmd_cls.from_dict(cell_dict, drop_extra_fields=False))
+            )
     return parsed
