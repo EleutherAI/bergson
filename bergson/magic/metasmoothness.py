@@ -23,7 +23,7 @@ from ..config.config import MetasmoothnessConfig
 from ..distributed import launch_distributed_run
 from ..utils.utils import get_device, get_device_index
 from ..utils.worker_utils import setup_data_pipeline
-from .cli import attach_doc_ids_if_missing
+from .cli import attach_doc_ids_if_missing, shuffled_epochs
 from .data_stream import DataStream, pad_dataset_to_batch_size
 from .trainer import prepare_trainer
 
@@ -71,8 +71,6 @@ def metasmoothness_worker(
     assert not run_cfg.fsdp, "metasmoothness does not support FSDP parameters"
     assert not getattr(run_cfg, "per_token", False)
 
-    if run_cfg.num_epochs > 1:
-        train_dataset = train_dataset.repeat(run_cfg.num_epochs)
     assert run_cfg.batch_size % world_size == 0
 
     train_dataset, num_train_docs, pad_count, weight_pad_count = (
@@ -144,7 +142,7 @@ def run_metasmoothness(run_cfg: MetasmoothnessConfig):
 
     train_ds, train_n = setup_data_pipeline(run_cfg)
     train_ds = attach_doc_ids_if_missing(train_ds)
-    train_ds = train_ds.shuffle(seed=run_cfg.seed)
+    train_ds = shuffled_epochs(train_ds, run_cfg.seed, max(1, run_cfg.num_epochs))
 
     launch_distributed_run(
         "metasmoothness",

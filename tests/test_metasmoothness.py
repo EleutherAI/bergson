@@ -51,3 +51,27 @@ def test_score_is_negative_when_response_reverses():
 def test_score_is_one_when_nothing_moves():
     theta = torch.zeros(4)
     assert metasmoothness_score(theta, theta, theta) == 1.0
+
+
+def test_run_metasmoothness_uses_epoch_pipeline(tmp_path, monkeypatch):
+    from datasets import Dataset
+
+    from bergson.config.config import MetasmoothnessConfig
+    from bergson.magic import metasmoothness as ms
+
+    ds = Dataset.from_dict({"text": [f"doc {i}" for i in range(4)]})
+    monkeypatch.setattr(ms, "setup_data_pipeline", lambda cfg: (ds, len(ds)))
+    monkeypatch.setattr(ms, "attach_doc_ids_if_missing", lambda d: d)
+
+    seen = {}
+    monkeypatch.setattr(
+        ms,
+        "launch_distributed_run",
+        lambda name, fn, args, dist: seen.setdefault("ds", args[0]),
+    )
+    cfg = MetasmoothnessConfig(run_path=str(tmp_path), num_epochs=3, seed=0)
+    ms.run_metasmoothness(cfg)
+
+    assert len(seen["ds"]) == 3 * len(ds)
+    epochs = [seen["ds"]["text"][i * 4 : (i + 1) * 4] for i in range(3)]
+    assert len({tuple(e) for e in epochs}) > 1
