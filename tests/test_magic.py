@@ -1236,8 +1236,13 @@ def test_weighted_ce_preserves_fp64():
     logits = torch.randn(2, 6, 32, dtype=torch.float64)
     labels = torch.randint(0, 32, (2, 6))
     w = torch.ones(2, dtype=torch.float64)
-    assert weighted_causal_lm_ce(logits, labels, example_weight=w).dtype == torch.float64
+    assert (
+        weighted_causal_lm_ce(logits, labels, example_weight=w).dtype == torch.float64
+    )
     # fp16/bf16 still promote to fp32 for stability
-    assert weighted_causal_lm_ce(
-        logits.bfloat16(), labels, example_weight=w.bfloat16()
-    ).dtype == torch.float32
+    assert (
+        weighted_causal_lm_ce(
+            logits.bfloat16(), labels, example_weight=w.bfloat16()
+        ).dtype
+        == torch.float32
+    )
