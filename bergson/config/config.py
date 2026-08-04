@@ -153,7 +153,7 @@ class ModelConfig(ABC):
     model: str = "EleutherAI/pythia-160m"
     """Name of the model to load."""
 
-    precision: Literal["auto", "bf16", "fp16", "fp32", "int4", "int8"] = "fp32"
+    precision: Literal["auto", "bf16", "fp16", "fp32", "fp64", "int4", "int8"] = "fp32"
     """Precision (dtype) to use for the model parameters."""
 
     revision: str | None = None

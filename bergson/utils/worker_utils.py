@@ -144,6 +144,8 @@ def setup_model_and_peft(
             dtype = torch.float16
         case "fp32":
             dtype = torch.float32
+        case "fp64":
+            dtype = torch.float64
         case "int4" | "int8":
             dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
         case "auto":

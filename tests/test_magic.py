@@ -1164,3 +1164,59 @@ def test_per_token_backward_compatibility():
         {"run_path": "x", "per_token": True}, drop_extra_fields=False
     )
     assert cfg.attribute_tokens
+
+
+@pytest.mark.parametrize("model_name", MODEL_CONFIGS)
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_magic_grad_accum_weight_grads_match(model_name, dataset, dtype):
+    """The ga>1 (microbatch) metagradient must match the ga=1 (traced) path.
+
+    Regression guard for ``microbatch_step_vjp``'s weight-gradient path, which
+    had no coverage. Over a single step the fp-associativity between the two
+    summation orders is negligible, so the paths must agree to tight tolerance;
+    an algorithmic difference would show here.
+    """
+
+    def scores(ga: int) -> torch.Tensor:
+        torch.manual_seed(42)
+        config = AutoConfig.from_pretrained(model_name)
+        model = AutoModelForCausalLM.from_config(
+            config, attn_implementation="eager"
+        ).to(dtype)
+        model.eval()
+        model.loss_function = weighted_causal_lm_ce
+        model.requires_grad_(True)
+        optimizer = torchopt.adamw(1e-4, betas=(0.95, 0.975), eps_root=1e-8)
+        trainer, fwd_state = Trainer.initialize(model, optimizer)
+        stream = DataStream(dataset, batch_size=len(dataset), device="cpu")
+        with tempfile.TemporaryDirectory() as ckpt_dir:
+            fwd_state = trainer.train(
+                fwd_state, stream, inplace=True, save_dir=ckpt_dir,
+                grad_accum_steps=ga,
+            )
+            with fwd_state.activate(model) as params:
+                batch = stream[0]
+                del batch["example_weight"]
+                loss = model(**batch).loss
+                query_grads = {
+                    k: g.detach().clone() for k, g in grad_tree(loss, params).items()
+                }
+                opt_grads = [
+                    torch.zeros_like(buf)
+                    for buf in tree_iter(fwd_state.opt_state)
+                    if isinstance(buf, torch.Tensor) and buf.is_floating_point()
+                ]
+                bwd_state = BackwardState(
+                    query_grads, opt_grads, torch.zeros_like(stream.weights)
+                )
+            stream.requires_grad = True
+            bwd_state = trainer.backward(
+                ckpt_dir, stream, bwd_state, fwd_state, inplace=True, cleanup=True,
+                grad_accum_steps=ga,
+            )
+        return bwd_state.weight_grads.detach().float().cpu()
+
+    s1 = scores(1)
+    s2 = scores(2)
+    assert s1.abs().sum() > 0, "metagradient is all zero; test is degenerate"
+    torch.testing.assert_close(s2, s1, atol=1e-6, rtol=1e-4)
