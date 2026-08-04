@@ -282,6 +282,80 @@ def validate_scores(
     num_queries = scores.shape[-1] if multi_query else 1
     flat_scores = scores.reshape(-1, num_queries)
 
+    if run_cfg.weight_lrs:
+        # Gradient step on the data weights: retrain with w = 1 - lr * score
+        # for each lr and compare the query loss change to the first-order
+        # prediction lr * <s_q, s_step>.
+        step_scores = flat_scores.mean(dim=1)
+        predicted = flat_scores.mul(step_scores[:, None]).sum(dim=0)
+        csv_path = os.path.join(run_cfg.run_path, "weight_step.csv")
+        csv_writer = CSVWriter(
+            csv_path,
+            columns=(
+                ["lr", "query", "diff", "predicted_diff"]
+                if multi_query
+                else ["lr", "diff", "predicted_diff"]
+            ),
+            enabled=global_rank == 0,
+        )
+
+        for lr in run_cfg.weight_lrs:
+            trainer, fwd_state, model = prepare_trainer(run_cfg, rank, schedule)
+            fwd_state.detach_()
+
+            stream.weights.fill_(1.0)
+            if pad_count:
+                if stream.weights.ndim == 1:
+                    stream.weights.data[-weight_pad_count:] = 0.0
+                else:
+                    stream.weights.data[-pad_count:] = 0.0
+            flat_w = stream.weights.view(-1)
+            flat_w[: len(step_scores)] -= lr * step_scores.to(flat_w)
+
+            for x in stream:
+                fwd_state = trainer.step(
+                    fwd_state,
+                    x,
+                    inplace=True,
+                    fsdp=run_cfg.fsdp,
+                    max_grad_norm=run_cfg.max_grad_norm,
+                    grad_accum_steps=run_cfg.grad_accum_steps,
+                )
+
+            if multi_query:
+                with fwd_state.activate(model):
+                    per_doc = per_doc_query_losses(model, query_stream, num_query_docs)
+                diff_vec = baseline_per_doc - per_doc[:num_real_query_docs].cpu()
+                for q in range(num_real_query_docs):
+                    csv_writer.writerow(
+                        lr, q, diff_vec[q].item(), lr * predicted[q].item()
+                    )
+                if global_rank == 0:
+                    print(
+                        f"lr {lr:g}: mean diff {diff_vec.mean():.6f} "
+                        f"(predicted {lr * predicted.mean().item():.6f})"
+                    )
+            else:
+                with fwd_state.activate(model), torch.no_grad():
+                    loss = torch.tensor(0.0, device=stream.weights.device)
+                    for batch in query_stream:
+                        del batch["example_weight"]
+                        loss += model(**batch).loss.detach() / len(query_stream)
+                if world_size > 1:
+                    dist.all_reduce(loss, op=dist.ReduceOp.AVG)
+                diff = baseline - loss.item()
+                csv_writer.writerow(lr, diff, lr * predicted.mean().item())
+                if global_rank == 0:
+                    print(
+                        f"lr {lr:g}: diff {diff:.6f} "
+                        f"(predicted {lr * predicted.mean().item():.6f})"
+                    )
+
+        csv_writer.close()
+        if global_rank == 0:
+            print(f"Saved weight-step validation to {csv_path}")
+        return
+
     if run_cfg.exclude_zero_scores:
         valid_indices = torch.nonzero((flat_scores != 0).any(dim=1), as_tuple=True)[0]
     else:
