@@ -1191,7 +1191,10 @@ def test_magic_grad_accum_weight_grads_match(model_name, dataset, dtype):
         stream = DataStream(dataset, batch_size=len(dataset), device="cpu")
         with tempfile.TemporaryDirectory() as ckpt_dir:
             fwd_state = trainer.train(
-                fwd_state, stream, inplace=True, save_dir=ckpt_dir,
+                fwd_state,
+                stream,
+                inplace=True,
+                save_dir=ckpt_dir,
                 grad_accum_steps=ga,
             )
             with fwd_state.activate(model) as params:
@@ -1211,7 +1214,12 @@ def test_magic_grad_accum_weight_grads_match(model_name, dataset, dtype):
                 )
             stream.requires_grad = True
             bwd_state = trainer.backward(
-                ckpt_dir, stream, bwd_state, fwd_state, inplace=True, cleanup=True,
+                ckpt_dir,
+                stream,
+                bwd_state,
+                fwd_state,
+                inplace=True,
+                cleanup=True,
                 grad_accum_steps=ga,
             )
         return bwd_state.weight_grads.detach().float().cpu()
