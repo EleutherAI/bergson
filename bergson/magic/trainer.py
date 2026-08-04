@@ -4,7 +4,7 @@ import os
 import time
 from collections.abc import Callable
 from concurrent.futures import Future
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from shutil import rmtree
@@ -640,52 +640,61 @@ class Trainer:
         main = not dist.is_initialized() or dist.get_rank() == 0
         pbar = tqdm(range(start, n), desc="Training", disable=not main)
 
-        for i in pbar:
-            # Save checkpoint BEFORE each step. Step 0 is the initial state prior to
-            # any updates, step 1 is the state after the first update, etc.
-            if save_dir and i == next_save:
-                # Wait for the previous save before starting a new one to avoid
-                # multiple concurrent DCP saves with separate Gloo groups, which can
-                # deadlock when background threads call distributed operations.
-                if pending_save is not None:
+        try:
+            for i in pbar:
+                # Save checkpoint BEFORE each step. Step 0 is the initial state prior
+                # to any updates, step 1 is the state after the first update, etc.
+                if save_dir and i == next_save:
+                    # Wait for the previous save before starting a new one to avoid
+                    # multiple concurrent DCP saves with separate Gloo groups, which
+                    # can deadlock when background threads call distributed
+                    # operations.
+                    if pending_save is not None:
+                        pending_save.result()
+
+                    p = os.path.join(save_dir, f"step_{i}.ckpt")
+
+                    # Write before the DCP save starts, into the same directory.
+                    if optimizer_cfg is not None:
+                        # Local import: at module scope this cycles back into
+                        # magic.trainer via the package __init__.
+                        from ..utils.load_from_optimizer import (
+                            save_second_moments_as_optimizer_pt,
+                        )
+
+                        os.makedirs(p, exist_ok=True)
+                        save_second_moments_as_optimizer_pt(
+                            self.model,
+                            state.opt_state,
+                            os.path.join(p, "optimizer.pt"),
+                            step=i,
+                            **optimizer_cfg,
+                        )
+
+                    pending_save = state.save(p, debug_pbar=pbar if debug else None)
+
+                    next_save = next_save_index(next_save, n, save_mode, save_interval)
+
+                x = data[i]
+                state = self.step(
+                    state,
+                    x,
+                    inplace=inplace,
+                    trace=trace,
+                    fsdp=fsdp,
+                    max_grad_norm=max_grad_norm,
+                    grad_accum_steps=grad_accum_steps,
+                )
+
+                if log_fn is not None:
+                    log_fn(i, self._last_loss)
+        except BaseException:
+            # Await the in-flight async save so its writer thread can't race a
+            # subsequent resume()'s cleanup of incomplete checkpoints.
+            if pending_save is not None:
+                with suppress(Exception):
                     pending_save.result()
-
-                p = os.path.join(save_dir, f"step_{i}.ckpt")
-
-                # Write before the DCP save starts, into the same directory.
-                if optimizer_cfg is not None:
-                    # Local import: at module scope this cycles back into
-                    # magic.trainer via the package __init__.
-                    from ..utils.load_from_optimizer import (
-                        save_second_moments_as_optimizer_pt,
-                    )
-
-                    os.makedirs(p, exist_ok=True)
-                    save_second_moments_as_optimizer_pt(
-                        self.model,
-                        state.opt_state,
-                        os.path.join(p, "optimizer.pt"),
-                        step=i,
-                        **optimizer_cfg,
-                    )
-
-                pending_save = state.save(p, debug_pbar=pbar if debug else None)
-
-                next_save = next_save_index(next_save, n, save_mode, save_interval)
-
-            x = data[i]
-            state = self.step(
-                state,
-                x,
-                inplace=inplace,
-                trace=trace,
-                fsdp=fsdp,
-                max_grad_norm=max_grad_norm,
-                grad_accum_steps=grad_accum_steps,
-            )
-
-            if log_fn is not None:
-                log_fn(i, self._last_loss)
+            raise
 
         if pending_save is not None:
             pending_save.result()
