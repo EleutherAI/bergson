@@ -431,6 +431,7 @@ def worker(
         )
 
     # Pad query dataset to be divisible by batch_size (weight=0 for padding)
+    num_real_query_docs = num_query_docs
     query_dataset, num_query_docs, query_pad_count, query_weight_pad_count = (
         pad_dataset_to_batch_size(
             query_dataset, run_cfg.batch_size, num_query_docs, "Query", global_rank
@@ -480,7 +481,7 @@ def worker(
             fwd_state,
             model,
             query_dataset,
-            num_query_docs,
+            num_real_query_docs,
             run_cfg,
             world_size,
             global_rank,
