@@ -11,6 +11,7 @@ the uniform mean of the per-query losses. That identity is the correctness gate.
 
 import tempfile
 
+import pytest
 import torch
 import torchopt
 from datasets import Dataset
@@ -68,7 +69,8 @@ def _aggregate_magic_score(trainer, model, fwd_state, stream, ckpt_dir, query_ds
     return bwd.weight_grads.detach().cpu()
 
 
-def test_per_query_mean_reproduces_aggregate():
+@pytest.mark.parametrize("grad_accum_steps", [1, 2])
+def test_per_query_mean_reproduces_aggregate(grad_accum_steps):
     model = _model()
     optimizer = torchopt.adamw(1e-4, betas=(0.95, 0.975), eps_root=1e-2)
     trainer, fwd_state = Trainer.initialize(model, optimizer)
@@ -84,7 +86,11 @@ def test_per_query_mean_reproduces_aggregate():
         ckpts = f"{run_path}/checkpoints"
         fwd_state = trainer.train(fwd_state, stream, inplace=True, save_dir=ckpts)
 
-        run_cfg = MagicConfig(run_path=run_path, query_method="none")
+        run_cfg = MagicConfig(
+            run_path=run_path,
+            query_method="none",
+            grad_accum_steps=grad_accum_steps,
+        )
         run_cfg.query.prompt_column = "input_ids"
 
         # Snapshot final state so the aggregate reference starts where per-query does.

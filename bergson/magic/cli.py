@@ -187,7 +187,7 @@ def compute_per_query_magic_scores(
         if one_pad:
             qstream.weights.data[-one_wpad:] = 0.0
         qgrads, _ = compute_query_gradients(
-            fwd_state, model, qstream, "mean", run_cfg.fsdp
+            fwd_state, model, qstream, "mean", run_cfg.fsdp, run_cfg.grad_accum_steps
         )
 
         fwd_state.detach_()  # clear requires_grad set by the activation above
