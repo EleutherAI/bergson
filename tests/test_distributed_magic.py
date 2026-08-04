@@ -46,12 +46,19 @@ def magic_cfg(
         split="train[:512]",
         chunk_length=32,
     )
+    # Single query doc: query_method="none" runs one backward per query.
+    query = DataConfig(
+        dataset="Salesforce/wikitext",
+        subset="wikitext-2-raw-v1",
+        split="train[9:10]",
+        chunk_length=32,
+    )
     return MagicConfig(
         run_path=run_path,
         model="trl-internal-testing/tiny-Phi3ForCausalLM",
         fsdp=fsdp,
         data=data,
-        query=data,
+        query=query,
         lr_schedule=LRScheduleConfig(lr=lr) if lr is not None else _LR_SCHEDULE,
         batch_size=8,
         num_epochs=1,
