@@ -51,7 +51,10 @@ def weighted_causal_lm_ce(
         assert V == vocab_size, f"Expected vocab size {vocab_size}, got {V}"
 
     # Shift for causal LM
-    shift_logits = logits[:, :-1, :].float().contiguous()  # [B, T-1, V]
+    shift = logits[:, :-1, :]
+    if shift.dtype != torch.float64:
+        shift = shift.float()
+    shift_logits = shift.contiguous()  # [B, T-1, V]
     shift_labels = labels[:, 1:].contiguous()  # [B, T-1]
 
     needs_per_token = example_weight is not None or reduction in (
