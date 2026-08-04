@@ -51,5 +51,5 @@ steps:
       subset_fraction: 0.01
 
       wandb_project: magic
-      save_optimizer_state: True
+      save_optimizer_state: last
       save_models: True

@@ -144,7 +144,7 @@ Method Pipelines
        --method kfac \
        --hessian_cfg.ev_correction true
 
-See ``examples/magic/compare/q3_ekfac.yaml`` for a complete pipeline
+See ``examples/magic/compare_wikitext/ekfac.yaml`` for a complete pipeline
 configuration.
 
 .. autoclass:: bergson.__main__.ApproxUnrolling

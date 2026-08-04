@@ -1,0 +1,76 @@
+# Compute TrackStar attribution scores for a model generated
+# using q3_magic.yaml against test[0:50] (one score column per query), then
+# run leave-k-out validation on those scores, with and without zero-score
+# exclusion.
+
+# Run with `bergson examples/magic/compare_wikitext/trackstar.yaml`
+
+run_path: runs/compare_wikitext/trackstar
+steps:
+  - trackstar:
+      index_cfg:
+        projection_dim: 16
+        run_path: runs/compare_wikitext/trackstar
+        model: runs/compare_wikitext/random/retrained/base
+        overwrite: true
+        # GPT-2's max context length is 1024
+        token_batch_size: 1024
+        # GPT-2 uses an nn.Linear for its LM head.
+        filter_modules: "lm_head"
+        distributed:
+          nproc_per_node: 8
+          nnode: 1
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "train"
+          chunk_length: 0
+
+      trackstar_cfg:
+        stats_sample_size: 10000
+        query:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "test[0:50]"
+          chunk_length: 0
+        preprocess_cfg:
+          unit_normalize: true
+          aggregation: none
+        score_cfg:
+          batch_size: 1024
+
+  - validate: &validate
+      run_path: runs/compare_wikitext/validate_trackstar_random
+      model: gpt2
+      overwrite: true
+
+      scores: runs/compare_wikitext/trackstar/scores
+
+      data:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "train"
+        chunk_length: 0
+
+      query:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "test[0:50]"
+        chunk_length: 0
+
+      distributed:
+        nproc_per_node: 4
+        nnode: 4
+
+      batch_size: 256
+      num_epochs: 2
+      lr_schedule:
+        lr_scheduler_type: polynomial
+        lr: 0.0008
+        lr_start: 1e-6
+        lr_end: 0.00008
+        warmup_steps: 0.25
+
+      wandb_project: magic
+
+  - validate:
+      # YAML merge key: copy the contents of &validate
+      <<: *validate
+      run_path: runs/compare_wikitext/validate_trackstar_random_exclude_0
+      exclude_zero_scores: true

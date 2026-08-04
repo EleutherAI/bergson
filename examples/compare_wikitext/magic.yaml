@@ -1,0 +1,72 @@
+# Compute per-query MAGIC attribution scores (one backward per query, 50
+# queries) with leave-k-out validation, then revalidate the same scores
+# excluding zero scores.
+
+# Run with `bergson examples/magic/compare_wikitext/magic.yaml`
+
+run_path: runs/compare_wikitext/magic
+steps:
+  - magic:
+      run_path: runs/compare_wikitext/random
+      model: gpt2
+      overwrite: true
+
+      data:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "train"
+        chunk_length: 0
+
+      query:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "test[0:50]"
+        chunk_length: 0
+
+      distributed:
+        nproc_per_node: 4
+        nnode: 4
+
+      batch_size: 256
+      num_epochs: 2
+      lr_schedule:
+        lr_scheduler_type: polynomial
+        lr: 0.0008
+        lr_start: 1e-6
+        lr_end: 0.00008
+        warmup_steps: 0.25
+
+      # Export the trained model for q3_ekfac.yaml / q3_trackstar.yaml.
+      save_models: true
+      wandb_project: magic
+
+  - validate:
+      run_path: runs/compare_wikitext/validate_magic_random_exclude_0
+      model: gpt2
+      overwrite: true
+
+      scores: runs/compare_wikitext/random/scores.pt
+
+      data:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "train"
+        chunk_length: 0
+
+      query:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "test[0:50]"
+        chunk_length: 0
+
+      distributed:
+        nproc_per_node: 8
+        nnode: 1
+
+      batch_size: 256
+      num_epochs: 2
+      lr_schedule:
+        lr_scheduler_type: polynomial
+        lr: 0.0008
+        lr_start: 1e-6
+        lr_end: 0.00008
+        warmup_steps: 0.25
+
+      exclude_zero_scores: true
+      wandb_project: magic

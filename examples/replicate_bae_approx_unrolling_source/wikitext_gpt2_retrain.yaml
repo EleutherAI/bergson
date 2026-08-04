@@ -35,7 +35,6 @@ steps:
       lr_scheduler_type: constant
       lr: 3.0e-05
     train_mode: true
-    subset_strategy: random
     num_subsets: 100
     subset_fraction: 0.5
     save_models: true
