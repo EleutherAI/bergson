@@ -245,6 +245,11 @@ def microbatch_step_vjp(
         for i in range(num_params, num_inputs)
     ]
 
+    # Free Stage A's update graph and gradient copies before Stage B's
+    # double backward; keeping them alive raises the peak by several GiB.
+    del grads_detached, grad_variables, updated_state, stage_a_results
+    del direct_cotangents
+
     # ``example_weight`` is one indexing of ``data_weights`` shared by all
     # micro-batch slices, so accumulate cotangents on it and map them back
     # to ``data_weights`` once after the loop.
@@ -283,7 +288,7 @@ def microbatch_step_vjp(
                 )
         if example_weight_cotangent is not None and contributions[-1] is not None:
             example_weight_cotangent = example_weight_cotangent + contributions[-1]
-        del micro_grads, contributions
+        del micro_grads, contributions, outputs, micro_loss
 
     weight_cotangent = torch.zeros_like(data_weights)
     if (

@@ -28,7 +28,7 @@ from transformers.utils.logging import (
 
 from ..config.config import TrainingConfig, ValidationConfig
 from ..config.config_io import save_run_config
-from ..distributed import grad_tree, launch_distributed_run
+from ..distributed import launch_distributed_run
 from ..utils.load_from_optimizer import (
     save_second_moments_as_optimizer_pt,
 )
@@ -38,6 +38,7 @@ from ..utils.worker_utils import setup_data_pipeline
 from ..validate import load_attribution_scores, validate_scores
 from .config import MagicConfig
 from .data_stream import DataStream, pad_dataset_to_batch_size
+from .grad_accum import accumulate_grads
 from .trainer import BackwardState, TrainerState, prepare_trainer, write_lr_history
 
 
@@ -47,6 +48,7 @@ def compute_query_gradients(
     query_stream: DataStream,
     method: str = "mean",
     fsdp: bool = False,
+    grad_accum_steps: int = 1,
 ) -> tuple[dict[str, torch.Tensor], float]:
     """Compute reduced query gradients over the query dataset.
 
@@ -66,8 +68,9 @@ def compute_query_gradients(
     with fwd_state.activate(model) as params:
         for batch in tqdm(query_stream, desc="Query", disable=not main):
             del batch["example_weight"]
-            loss = model(**batch).loss
-            grads = grad_tree(loss, params)
+            grads, loss = accumulate_grads(
+                model, params, batch, grad_accum_steps, create_graph=False
+            )
 
             if grad_accum is None:
                 grad_accum = {k: g.detach().clone() for k, g in grads.items()}
@@ -75,7 +78,7 @@ def compute_query_gradients(
                 for k, g in grads.items():
                     grad_accum[k] += g.detach()
 
-            loss_accum += loss.detach()
+            loss_accum += loss
 
     assert grad_accum is not None, "Query stream was empty"
 
@@ -99,7 +102,9 @@ def compute_query_gradients(
             }
 
         # Loss is never a DTensor
-        dist.all_reduce(loss_accum)
+        loss_tensor = torch.tensor(loss_accum, device=torch.cuda.current_device())
+        dist.all_reduce(loss_tensor)
+        loss_accum = loss_tensor.item()
 
     return grad_accum, float(loss_accum)
 
@@ -321,7 +326,12 @@ def worker(
         query_stream.weights.data[-query_weight_pad_count:] = 0.0
 
     query_grads, baseline = compute_query_gradients(
-        fwd_state, model, query_stream, run_cfg.query_method, run_cfg.fsdp
+        fwd_state,
+        model,
+        query_stream,
+        run_cfg.query_method,
+        run_cfg.fsdp,
+        run_cfg.grad_accum_steps,
     )
 
     multi_query = False
