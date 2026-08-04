@@ -9,21 +9,21 @@ steps:
       overwrite: true
 
       data:
-        dataset: Salesforce/wikitext
-        subset: wikitext-2-raw-v1
-        split: "train[:512]"
-        chunk_length: 128
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "train"
+        chunk_length: 0
 
       query:
-        dataset: Salesforce/wikitext
-        subset: wikitext-2-raw-v1
-        split: "train[:512]"
-        chunk_length: 128
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "test[0:1]"
+        chunk_length: 0
 
       distributed:
         nproc_per_node: 1
 
-      batch_size: 16
+      batch_size: 64
+      grad_accum_steps: 4
+      double_backward_batch_size: 4
       num_epochs: 1
       lr_schedule:
         lr_scheduler_type: polynomial

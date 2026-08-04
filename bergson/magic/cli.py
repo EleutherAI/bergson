@@ -209,6 +209,8 @@ def compute_per_query_magic_scores(
             fsdp=run_cfg.fsdp,
             save_mode=run_cfg.save_mode,
             max_grad_norm=run_cfg.max_grad_norm,
+            grad_accum_steps=run_cfg.grad_accum_steps,
+            double_backward_batch_size=run_cfg.double_backward_batch_size,
         )
         if world_size > 1:
             dist.all_reduce(bwd_state.weight_grads, op=dist.ReduceOp.SUM)
@@ -525,6 +527,7 @@ def worker(
             save_mode=run_cfg.save_mode,
             max_grad_norm=run_cfg.max_grad_norm,
             grad_accum_steps=run_cfg.grad_accum_steps,
+            double_backward_batch_size=run_cfg.double_backward_batch_size,
         )
         if world_size > 1:
             dist.all_reduce(bwd_state.weight_grads, op=dist.ReduceOp.SUM)

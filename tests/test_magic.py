@@ -1038,8 +1038,15 @@ def test_metagrad_step_matches_single_shot_under_dropout(dataset, device):
     ref_weights = ref[-1]
     assert ref_weights is not None and ref_weights.abs().sum() > 0
 
+    # double_backward_batch_size must be ignored under dropout: re-splitting
+    # would change the shapes the masks are drawn for and break the replay.
     out = trainer.metagrad_step(
-        fwd_state, batch_mb, bwd_state, stream.weights, grad_accum_steps=2
+        fwd_state,
+        batch_mb,
+        bwd_state,
+        stream.weights,
+        grad_accum_steps=2,
+        double_backward_batch_size=1,
     )
 
     for k, expected in ref_params.items():
@@ -1177,7 +1184,7 @@ def test_magic_grad_accum_weight_grads_match(model_name, dataset, dtype):
     an algorithmic difference would show here.
     """
 
-    def scores(ga: int) -> torch.Tensor:
+    def scores(ga: int, double_backward_batch_size: int | None = None) -> torch.Tensor:
         torch.manual_seed(42)
         config = AutoConfig.from_pretrained(model_name)
         model = AutoModelForCausalLM.from_config(
@@ -1221,13 +1228,16 @@ def test_magic_grad_accum_weight_grads_match(model_name, dataset, dtype):
                 inplace=True,
                 cleanup=True,
                 grad_accum_steps=ga,
+                double_backward_batch_size=double_backward_batch_size,
             )
         return bwd_state.weight_grads.detach().float().cpu()
 
     s1 = scores(1)
     s2 = scores(2)
+    s3 = scores(2, double_backward_batch_size=1)
     assert s1.abs().sum() > 0, "metagradient is all zero; test is degenerate"
     torch.testing.assert_close(s2, s1, atol=1e-6, rtol=1e-4)
+    torch.testing.assert_close(s3, s1, atol=1e-6, rtol=1e-4)
 
 
 def test_weighted_ce_preserves_fp64():

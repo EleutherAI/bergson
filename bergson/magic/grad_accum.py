@@ -162,6 +162,7 @@ def microbatch_step_vjp(
     fsdp: bool = False,
     max_grad_norm: float | None = None,
     grad_accum_steps: int = 1,
+    double_backward_batch_size: int | None = None,
 ) -> tuple[dict[str, torch.Tensor], list[torch.Tensor], torch.Tensor]:
     """VJP through one training step, one micro-batch graph at a time.
 
@@ -262,7 +263,23 @@ def microbatch_step_vjp(
     total_denom = loss_denom(inputs)
     micro_batches = split_batch(inputs, grad_accum_steps)
     assert len(micro_batches) == len(rng_snapshots)
-    for micro_batch, snapshot in zip(micro_batches, rng_snapshots):
+    stage_b = list(zip(micro_batches, rng_snapshots))
+
+    # The double-backward graph retains several vocab-sized tensors per
+    # sequence, so re-split micro-batches down to ``double_backward_batch_size``. The
+    # gradient sum is exact under any split; only dropout runs must reuse the
+    # forward's micro-batches (the masks are drawn per forward shape).
+    if double_backward_batch_size is not None and not model.training:
+        stage_b = [
+            (sub, snapshot)
+            for micro_batch, snapshot in stage_b
+            for sub in split_batch(
+                micro_batch,
+                -(-micro_batch["input_ids"].shape[0] // double_backward_batch_size),
+            )
+        ]
+
+    for micro_batch, snapshot in stage_b:
         with swap_parameters(
             model, state_params, buffers, preserve_graph=True
         ) as params:

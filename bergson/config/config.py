@@ -399,6 +399,13 @@ class TrainingConfig(AttributionConfig, Serializable):
     Under dropout, changing this changes the shapes the masks are drawn for, so
     trajectories are not identical across values."""
 
+    double_backward_batch_size: int | None = None
+    """Max sequences per double-backward graph in the micro-batched backward
+    (requires ``grad_accum_steps > 1``). The graph retains several vocab-sized
+    tensors per sequence, so it dominates the backward's peak memory. Exact
+    under any split; ignored under dropout (``train_mode``), where the replay
+    must reuse the forward's micro-batches."""
+
     resume: bool = False
     """Resume a previously interrupted run from the last checkpoint."""
 

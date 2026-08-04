@@ -515,6 +515,7 @@ class Trainer:
         fsdp: bool = False,
         max_grad_norm: float | None = None,
         grad_accum_steps: int = 1,
+        double_backward_batch_size: int | None = None,
     ) -> "BackwardState":
         """Micro-batched VJP through one training step (metagradient replay).
 
@@ -535,6 +536,7 @@ class Trainer:
             fsdp=fsdp,
             max_grad_norm=max_grad_norm,
             grad_accum_steps=grad_accum_steps,
+            double_backward_batch_size=double_backward_batch_size,
         )
         return BackwardState(
             param_grads, opt_grads, weight_cot + bwd_state.weight_grads
@@ -774,6 +776,7 @@ class Trainer:
         save_mode: SaveMode = "sqrt",
         max_grad_norm: float | None = None,
         grad_accum_steps: int = 1,
+        double_backward_batch_size: int | None = None,
     ) -> BackwardState:
         """Run a backward pass through the training trajectory saved at `ckpt_dir`.
 
@@ -809,6 +812,8 @@ class Trainer:
             grad_accum_steps: Micro-batch count used during the forward pass;
                 must match for the replay to be faithful. When > 1 the traced
                 step uses the two-stage micro-VJP (`Trainer.metagrad_step`).
+            double_backward_batch_size: Max sequences per double-backward graph in the
+                micro-VJP; see `TrainingConfig.double_backward_batch_size`.
 
         Returns:
             The final backward state after processing the entire trajectory.
@@ -946,6 +951,7 @@ class Trainer:
                     fsdp=fsdp,
                     max_grad_norm=max_grad_norm,
                     grad_accum_steps=grad_accum_steps,
+                    double_backward_batch_size=double_backward_batch_size,
                 )
                 main_pbar.update()
             else:
