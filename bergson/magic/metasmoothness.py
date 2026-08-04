@@ -72,8 +72,6 @@ def metasmoothness_worker(
     assert not run_cfg.fsdp, "metasmoothness does not support FSDP parameters"
     assert not getattr(run_cfg, "per_token", False)
 
-    if run_cfg.num_epochs > 1:
-        train_dataset = train_dataset.repeat(run_cfg.num_epochs)
     assert run_cfg.batch_size % world_size == 0
 
     train_dataset, num_train_docs, pad_count, weight_pad_count = (

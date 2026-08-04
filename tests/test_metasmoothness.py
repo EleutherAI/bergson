@@ -4,7 +4,9 @@ These tests exercise CLI parsing and the scoring function only — they never
 call `.execute()`, so they need no GPU and no model downloads.
 """
 
+import pytest
 import torch
+from datasets import Dataset
 from simple_parsing import ArgumentParser, ConflictResolution
 
 from bergson.__main__ import Main
@@ -75,3 +77,46 @@ def test_run_metasmoothness_uses_epoch_pipeline(tmp_path, monkeypatch):
     assert len(seen["ds"]) == 3 * len(ds)
     epochs = [seen["ds"]["text"][i * 4 : (i + 1) * 4] for i in range(3)]
     assert len({tuple(e) for e in epochs}) > 1
+
+
+def test_worker_does_not_reexpand_epochs(monkeypatch):
+    """``run_metasmoothness`` passes a dataset already expanded to ``num_epochs``
+    shuffled copies; ``metasmoothness_worker`` must build its training stream from
+    exactly those docs. Repeating again trains ``num_epochs**2`` epochs — the
+    regression left behind when #393 moved epoch expansion into the pipeline."""
+    from bergson.config.config import MetasmoothnessConfig
+    from bergson.magic import metasmoothness as ms
+
+    num_epochs, base = 3, 24
+    expanded = Dataset.from_dict(
+        {
+            "text": ["x"] * (num_epochs * base),
+            "doc_ids": list(range(num_epochs * base)),
+        }
+    )
+
+    monkeypatch.setattr(torch.cuda, "set_device", lambda *a, **k: None)
+    monkeypatch.setattr(
+        ms,
+        "pad_dataset_to_batch_size",
+        lambda ds, bs, n, label, gr: (ds, len(ds), 0, 0),
+    )
+
+    seen = {}
+
+    class _Stop(Exception):
+        pass
+
+    def _capture(ds, _bs, **_kw):
+        seen["docs"] = len(ds)
+        raise _Stop
+
+    monkeypatch.setattr(ms, "DataStream", _capture)
+
+    cfg = MetasmoothnessConfig(
+        run_path="unused", num_epochs=num_epochs, batch_size=8, seed=0
+    )
+    with pytest.raises(_Stop):
+        ms.metasmoothness_worker(0, 0, 1, expanded, num_epochs * base, cfg)
+
+    assert seen["docs"] == num_epochs * base
