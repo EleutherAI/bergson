@@ -3,6 +3,7 @@
 
 # Hyperparameters are inferred from the MAGIC paper, the metagradients
 # paper it cites, and the datacomp competition that the metagradients paper cites.
+# Original batch size and loss reduction were lost and re-selected empirically.
 
 # Per-query MAGIC LDS = 0.952 (95% CI [0.944, 0.959]), measured over m=50
 # queries against an N=100 leave-1%-out retrain bank.
@@ -11,7 +12,7 @@
 
 steps:
   - magic:
-      run_path: runs/gpt2_wikitext
+      run_path: runs/gpt2_wikitext_replication
       model: gpt2
       overwrite: true
       cleanup_ckpts: false
@@ -20,10 +21,6 @@ steps:
       adam_beta1: 0.95
       adam_beta2: 0.975
       eps_root: 1.0e-8
-      # The metagradients paper documents sum_of_means for Gemma-IFT, but the
-      # MAGIC paper's Fig. 5 GPT-2 panel shows 1%-drop retrains moving true
-      # loss by only ~0.006 — matching our mean-reduction banks (0.007-0.009)
-      # and excluding sum_of_means (0.2, nearly batch-size-invariant).
       loss_reduction: mean
 
       data:
