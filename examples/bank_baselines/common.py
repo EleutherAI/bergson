@@ -1,6 +1,6 @@
 """Shared helpers for non-gradient attribution baselines on a re-train bank.
 
-A "re-train bank" is any directory written with ``save_retrained_models=true``
+A "re-train bank" is any directory written with ``save_models=true``
 (e.g. by ``examples/magic/gpt2_wikitext_bank.yaml``): it holds ``subsets.json``,
 ``retrained/base`` and ``retrained/subset_*`` checkpoints, and the ``config.yaml``
 that built it. Each baseline reads the model + dataset straight from the bank,
@@ -14,13 +14,15 @@ and every later baseline on the same bank/query reuses that cache.
 
 import subprocess
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 
 import numpy as np
 import yaml
-from datasets import load_dataset
+from transformers import AutoTokenizer
 
 from bergson.config.config import DataConfig
+from bergson.data import load_data_string
 from bergson.magic.config import MagicConfig
 from bergson.validate import evaluate_retrained
 
@@ -58,7 +60,7 @@ def ensure_bank(bank: str | None) -> Path:
         if not (path / "subsets.json").exists():
             raise FileNotFoundError(
                 f"{path} is not a re-train bank (no subsets.json); pass a dir "
-                "written with save_retrained_models=true"
+                "written with save_models=true"
             )
         return path
 
@@ -96,15 +98,38 @@ def read_bank_spec(bank: Path) -> BankSpec:
     )
 
 
-def load_texts(spec: BankSpec, query_split: str) -> tuple[list[str], list[str]]:
+@cache
+def _tokenizer(model: str):
+    return AutoTokenizer.from_pretrained(model)
+
+
+def _texts(dataset, spec: BankSpec) -> list[str]:
+    """Doc texts, decoding ``input_ids`` when the set is pre-tokenized."""
+    if spec.prompt_column in dataset.column_names:
+        return list(dataset[spec.prompt_column])
+    if "input_ids" in dataset.column_names:
+        tok = _tokenizer(spec.model)
+        return [
+            tok.decode(ids, skip_special_tokens=True) for ids in dataset["input_ids"]
+        ]
+    raise ValueError(
+        f"dataset has neither {spec.prompt_column!r} nor input_ids: "
+        f"{dataset.column_names}"
+    )
+
+
+def load_texts(
+    spec: BankSpec, query_dataset: str, query_split: str
+) -> tuple[list[str], list[str]]:
     """Return (train_texts, query_texts) in original doc order.
 
     Row i of ``train_texts`` is training doc id i, matching the ids in the
-    bank's ``subsets.json`` and the rows of every score matrix.
+    bank's ``subsets.json`` and the rows of every score matrix. Pre-tokenized
+    datasets (``input_ids`` only) are decoded with the model's tokenizer.
     """
-    train = load_dataset(spec.dataset, split=spec.train_split)
-    query = load_dataset(spec.dataset, split=query_split)
-    return list(train[spec.prompt_column]), list(query[spec.prompt_column])
+    train = load_data_string(spec.dataset, spec.train_split)
+    query = load_data_string(query_dataset, query_split)
+    return _texts(train, spec), _texts(query, spec)
 
 
 def evaluate_lds(
@@ -112,6 +137,7 @@ def evaluate_lds(
     score_path: Path,
     out_dir: Path,
     spec: BankSpec,
+    query_dataset: str,
     query_split: str,
 ) -> np.ndarray:
     """Per-query LDS Spearman of a score matrix against the bank.
@@ -126,7 +152,7 @@ def evaluate_lds(
         precision="fp32",
         batch_size=spec.batch_size,
         query=DataConfig(
-            dataset=spec.dataset,
+            dataset=query_dataset,
             split=query_split,
             prompt_column=spec.prompt_column,
             chunk_length=0,

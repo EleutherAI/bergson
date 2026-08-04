@@ -47,20 +47,31 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--bank", default=None, help="re-train bank dir; built if omitted")
     ap.add_argument("--query_split", default=common.DEFAULT_QUERY_SPLIT)
+    ap.add_argument(
+        "--query_dataset",
+        default=None,
+        help="query dataset; default = bank train dataset",
+    )
     ap.add_argument("--out", default=str(common.REPO / "runs" / "bank_baselines"))
     args = ap.parse_args()
 
     bank = common.ensure_bank(args.bank)
     spec = common.read_bank_spec(bank)
+    query_dataset = args.query_dataset or spec.dataset
     out_dir = Path(args.out)
 
-    train_texts, query_texts = common.load_texts(spec, args.query_split)
+    train_texts, query_texts = common.load_texts(spec, query_dataset, args.query_split)
     print(f"BM25 over {len(train_texts)} train docs, {len(query_texts)} queries ...")
     scores = -bm25_scores(train_texts, query_texts)  # loss-diff convention
     score_path = common.save_scores(scores, out_dir, "bm25_scores")
 
     rhos = common.evaluate_lds(
-        bank, score_path, out_dir / "bm25_validate", spec, args.query_split
+        bank,
+        score_path,
+        out_dir / "bm25_validate",
+        spec,
+        query_dataset,
+        args.query_split,
     )
     common.report("BM25 lexical overlap", rhos)
 

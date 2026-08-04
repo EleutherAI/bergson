@@ -12,7 +12,7 @@ Each produces a `[num_train_docs, num_queries]` score matrix.
 
 ## Running
 
-Point a baseline at a re-train bank (written with `save_retrained_models=true`); it reads the model and dataset from the bank's `config.yaml`:
+Point a baseline at a re-train bank (written with `save_models=true`); it reads the model and dataset from the bank's `config.yaml`:
 
 ```bash
 python -m examples.bank_baselines.bm25_baseline        --bank runs/retrain_bank_path

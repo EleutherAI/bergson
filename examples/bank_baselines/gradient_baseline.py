@@ -45,6 +45,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--bank", default=None, help="re-train bank dir; built if omitted")
     ap.add_argument("--query_split", default=common.DEFAULT_QUERY_SPLIT)
+    ap.add_argument(
+        "--query_dataset",
+        default=None,
+        help="query dataset; default = bank train dataset",
+    )
     ap.add_argument("--out", default=str(common.REPO / "runs" / "bank_baselines"))
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--max_len", type=int, default=1024)
@@ -52,6 +57,7 @@ def main():
 
     bank = common.ensure_bank(args.bank)
     spec = common.read_bank_spec(bank)
+    query_dataset = args.query_dataset or spec.dataset
     out_dir = Path(args.out)
 
     tokenizer = AutoTokenizer.from_pretrained(spec.model)
@@ -60,7 +66,7 @@ def main():
     ).to(args.device)
     model.eval()
 
-    train_texts, query_texts = common.load_texts(spec, args.query_split)
+    train_texts, query_texts = common.load_texts(spec, query_dataset, args.query_split)
 
     # Keep the query gradients resident; stream train gradients against them.
     # Pre-allocate and fill row by row so we never hold a second copy (each full
@@ -85,7 +91,12 @@ def main():
     score_path = common.save_scores(scores, out_dir, "gradient_scores")
 
     rhos = common.evaluate_lds(
-        bank, score_path, out_dir / "gradient_validate", spec, args.query_split
+        bank,
+        score_path,
+        out_dir / "gradient_validate",
+        spec,
+        query_dataset,
+        args.query_split,
     )
     common.report("gradient cosine similarity", rhos)
 
