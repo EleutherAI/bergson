@@ -234,6 +234,13 @@ def compute_per_query_magic_scores(
         if main:
             print(f"[per-query MAGIC] scored query {qi + 1}/{num_query_docs}")
 
+    # The last backward walked fwd_state down the trajectory; validate_scores
+    # needs the trained state for the multi-query baseline.
+    fwd_state.detach_()
+    restored = final_state.to(device)
+    fwd_state.copy_(restored)
+    del restored
+
     # [num_train_docs, num_query_docs] — the layout validate_scores expects
     # (rows are leave-out docs; columns are queries).
     return torch.stack(per_query, dim=1)
