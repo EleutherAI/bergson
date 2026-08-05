@@ -153,3 +153,47 @@ def test_per_query_scores_saved_incrementally():
         )
         assert os.path.exists(f"{run_path}/per_query/q0.pt")
         assert os.path.exists(f"{run_path}/per_query/q1.pt")
+
+
+def test_per_query_scores_only_real_queries_when_padded():
+    """A query set padded to fill a batch must yield one score column per real
+    query, not per padded row (the pads are copies of the last real query)."""
+    from bergson.magic.data_stream import pad_dataset_to_batch_size
+
+    model = _model()
+    optimizer = torchopt.adamw(1e-4, betas=(0.95, 0.975), eps_root=1e-2)
+    trainer, fwd_state = Trainer.initialize(model, optimizer)
+    stream = DataStream(_equal_length_docs(3), batch_size=1, device="cpu")
+    query_ds = _equal_length_docs(3, start=100)
+
+    # run_magic pads the query set to a batch_size multiple with weight-0 rows.
+    padded_ds, num_query_docs, pad_count, weight_pad_count = pad_dataset_to_batch_size(
+        query_ds, 4, len(query_ds), "Query", 0
+    )
+    assert len(padded_ds) == 4 and pad_count == 1
+    assert num_query_docs - weight_pad_count == len(query_ds)
+
+    with tempfile.TemporaryDirectory() as run_path:
+        ckpts = f"{run_path}/checkpoints"
+        fwd_state = trainer.train(fwd_state, stream, inplace=True, save_dir=ckpts)
+        run_cfg = MagicConfig(run_path=run_path, query_method="none")
+        run_cfg.query.prompt_column = "input_ids"
+        stream.requires_grad = True
+        per_query = compute_per_query_magic_scores(
+            trainer,
+            ckpts,
+            stream,
+            fwd_state,
+            model,
+            padded_ds,
+            num_query_docs - weight_pad_count,
+            run_cfg=run_cfg,
+            world_size=1,
+            global_rank=0,
+            pad_count=0,
+            weight_pad_count=0,
+        )
+        assert per_query.shape == (3, len(query_ds))
+        import os
+
+        assert not os.path.exists(f"{run_path}/per_query/q3.pt")
