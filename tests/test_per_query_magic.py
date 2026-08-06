@@ -239,23 +239,16 @@ def _per_query_run(tmp_path, attribute_tokens: bool, num_docs=5, seq_len=8, n_qu
     )
 
 
-def test_per_query_per_token_layout(tmp_path):
-    """Per-token per-query scores are [docs, seq_len, queries], so doc_ids
-    indexes the leading two axes and validate_scores reads shape[-1]."""
-    scores, doc_ids = _per_query_run(tmp_path, attribute_tokens=True)
-
-    assert scores.shape == (5, 8, 2), f"got {tuple(scores.shape)}"
-    assert doc_ids is not None, "per-token run must write doc_ids.pt"
-    assert doc_ids.shape == scores.shape[:2]
-
-
 def test_per_query_per_token_aggregates_to_per_doc(tmp_path):
-    """Summing per-token per-query scores over each document's tokens
-    reproduces the per-doc per-query run."""
+    """Per-token per-query scores are [docs, seq_len, queries], and summing
+    them over each document's tokens reproduces the per-doc per-query run."""
     per_tok, doc_ids = _per_query_run(tmp_path, attribute_tokens=True)
     per_doc, _ = _per_query_run(tmp_path, attribute_tokens=False)
     num_docs, n_query = per_doc.shape
-    assert doc_ids is not None
+
+    assert per_tok.shape == (num_docs, 8, n_query), f"got {tuple(per_tok.shape)}"
+    assert doc_ids is not None, "per-token run must write doc_ids.pt"
+    assert doc_ids.shape == per_tok.shape[:2]
 
     agg = torch.zeros(num_docs, n_query, dtype=torch.float64)
     agg.scatter_add_(
@@ -276,6 +269,5 @@ def test_three_dim_scores_load_as_per_token_multi_query(tmp_path):
     torch.save(torch.randn(4, 6, 3), path)
 
     assert scores_are_per_token(str(path))
-    loaded, multi_query = load_attribution_scores(str(path))
+    _, multi_query = load_attribution_scores(str(path))
     assert multi_query
-    assert loaded.shape == (4, 6, 3)

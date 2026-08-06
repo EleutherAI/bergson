@@ -18,7 +18,6 @@ import numpy as np
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
-import yaml
 from peft import PeftModel
 from scipy.stats import pearsonr, spearmanr
 from tqdm import tqdm
@@ -31,7 +30,7 @@ from transformers.utils.logging import (
 )
 
 from .config.config import ScoreConfig, ValidationConfig
-from .config.config_io import CONFIG_FILENAME, load_subconfig, save_run_config
+from .config.config_io import load_subconfig, read_first_step_config, save_run_config
 from .data import Scores, load_scores, pad_and_tensor
 from .magic.data_stream import DataStream, pad_dataset_to_batch_size
 from .magic.trainer import TrainerState, prepare_trainer
@@ -50,7 +49,8 @@ def load_attribution_scores(score_path: str) -> tuple[torch.Tensor, bool]:
     ``[docs, seq_len, queries]``. A 2-D ``.pt`` tensor is ambiguous — per-token
     MAGIC scores are ``[docs, seq_len]`` and per-query MAGIC scores are
     ``[docs, queries]`` — so the run config next to it decides: it is
-    per-query iff the run used ``query_method: none``.
+    per-query iff the run used ``query_method: none`` without attributing
+    tokens.
 
     Score directories are negated when their ``score_cfg.higher_is_better`` is
     set, aligning them with the loss-diff convention. ``.npy`` files carry no
@@ -70,7 +70,7 @@ def load_attribution_scores(score_path: str) -> tuple[torch.Tensor, bool]:
             scores = loaded.to_grid()
             if negate:
                 scores = -scores
-            return scores, scores.ndim == 3
+            return scores, loaded.num_scores > 1
 
         arr = np.asarray(loaded[:])
         # Copy: the slice is a read-only view onto the memmap.
@@ -78,37 +78,22 @@ def load_attribution_scores(score_path: str) -> tuple[torch.Tensor, bool]:
         scores = torch.from_numpy(arr.astype(out_dtype, copy=True))
         if negate:
             scores = -scores
-        return scores, scores.ndim == 2 and scores.shape[1] > 1
+        return scores, loaded.num_scores > 1
 
     scores = torch.load(score_path, map_location="cpu")
-    return scores, _pt_scores_are_per_query(score_path, scores)
-
-
-def _pt_scores_are_per_query(score_path: str, scores: torch.Tensor) -> bool:
-    """Whether a ``.pt`` tensor carries a query axis. 3-D is unambiguously
-    ``[docs, seq_len, queries]``; a 2-D tensor is per-query ``[docs, queries]``
-    or per-token ``[docs, seq_len]`` and the shape alone cannot tell them
-    apart, so the run config next to ``scores.pt`` decides."""
     if not isinstance(scores, torch.Tensor) or scores.ndim not in (2, 3):
-        return False
-    if scores.ndim == 3:
-        return True
-    cfg_path = Path(score_path).parent / CONFIG_FILENAME
-    if not cfg_path.is_file():
-        return False
-    with open(cfg_path) as f:
-        doc = yaml.safe_load(f)
-    if not isinstance(doc, dict):
-        return False
-    steps = doc.get("steps")
-    payload = (
-        next(iter(steps[0].values())) if isinstance(steps, list) and steps else doc
-    )
-    return (
-        isinstance(payload, dict)
-        and payload.get("query_method") == "none"
-        and not payload.get("per_token")
-    )
+        return scores, False
+
+    step_cfg = read_first_step_config(score_path)
+    if step_cfg is None:
+        return scores, scores.ndim == 3
+    return scores, step_cfg.get("query_method") == "none"
+
+
+def cfg_attributes_tokens(step_cfg: dict) -> bool:
+    """``attribute_tokens`` from a serialized run config, honouring the
+    deprecated ``per_token`` alias that ``MagicConfig`` still accepts."""
+    return bool(step_cfg.get("attribute_tokens") or step_cfg.get("per_token"))
 
 
 def bank_loss_cache_key(

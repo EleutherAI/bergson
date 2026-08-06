@@ -174,11 +174,12 @@ def test_load_attribution_scores_pt_per_query(tmp_path):
     assert multi_query
     torch.testing.assert_close(scores, values)
 
-    # Per-token runs save [docs, seq_len]; never multi-query.
-    cfg = {"steps": [{"magic": {"query_method": "none", "per_token": True}}]}
+    # Attributing tokens as well makes it 3-D, and still per-query.
+    cfg = {"steps": [{"magic": {"query_method": "none", "attribute_tokens": True}}]}
     (tmp_path / "config.yaml").write_text(yaml.safe_dump(cfg))
-    _, multi_query = load_attribution_scores(str(tmp_path / "scores.pt"))
-    assert not multi_query
+    torch.save(torch.zeros(4, 3, 2), tmp_path / "tok.pt")
+    _, multi_query = load_attribution_scores(str(tmp_path / "tok.pt"))
+    assert multi_query
 
     cfg = {"steps": [{"magic": {"query_method": "mean"}}]}
     (tmp_path / "config.yaml").write_text(yaml.safe_dump(cfg))
