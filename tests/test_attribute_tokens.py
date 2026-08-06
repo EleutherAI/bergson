@@ -236,7 +236,7 @@ def test_token_score_writer(tmp_path: Path):
     # lengths [4, 3] → num_token_grads [3, 2]
     ds = Dataset.from_dict({"input_ids": [[1, 2, 3, 4], [5, 6, 7]], "length": [4, 3]})
 
-    writer = MemmapTokenScoreWriter(
+    writer = MemmapTokenScoreWriter.from_dataset(
         tmp_path,
         data=ds,
         num_scores=2,
@@ -457,7 +457,7 @@ def test_token_score_e2e(tmp_path: Path, model, dataset):
     query_grads = {m: torch.randn(1, math.prod(shapes[m])) for m in modules}
 
     score_dtype = get_gradient_dtype(model)
-    writer = MemmapTokenScoreWriter(
+    writer = MemmapTokenScoreWriter.from_dataset(
         tmp_path / "scores",
         data=dataset,
         num_scores=1,
@@ -877,7 +877,7 @@ def test_trackstar_token_scores_sum_to_sequence_scores_on_disk(
 
     # --- Per-token scores via MemmapTokenScoreWriter ---
     tok_path = tmp_path / "tok_scores"
-    tok_writer = MemmapTokenScoreWriter(tok_path, dataset, 1, dtype=dtype)
+    tok_writer = MemmapTokenScoreWriter.from_dataset(tok_path, dataset, 1, dtype=dtype)
     tok_scorer = Scorer(
         query_grads=query_grads,
         modules=sorted_modules,
