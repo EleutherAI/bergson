@@ -139,3 +139,30 @@ def test_metasmoothness_score():
 
     # Zero movement -> defined as perfectly smooth.
     assert metasmoothness_score(theta0, theta0, theta0) == 1.0
+
+
+def test_load_scores_loss_signed_legacy_pt(tmp_path):
+    """Runs that predate score directories still load from ``scores.pt``. A
+    2-D tensor is per-token unless the run config beside it says the run was
+    per-query; a 3-D tensor is unambiguous.
+
+    TODO: Lucia Quirke remove December 2026
+    """
+    import yaml
+
+    per_token = torch.randn(6, 5)
+    torch.save(per_token, tmp_path / "scores.pt")
+
+    scores, multi_query = load_scores_loss_signed(str(tmp_path / "scores.pt"))
+    assert not multi_query
+    torch.testing.assert_close(scores, per_token)
+
+    cfg = {"steps": [{"magic": {"query_method": "none"}}]}
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump(cfg))
+    _, multi_query = load_scores_loss_signed(str(tmp_path / "scores.pt"))
+    assert multi_query
+
+    torch.save(torch.randn(4, 6, 3), tmp_path / "tok.pt")
+    scores, multi_query = load_scores_loss_signed(str(tmp_path / "tok.pt"))
+    assert multi_query
+    assert scores.shape == (4, 6, 3)

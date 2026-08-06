@@ -13,6 +13,7 @@ import numpy as np
 import pyarrow as pa
 import torch
 import torch.distributed as dist
+import yaml
 from datasets import (
     Dataset,
     DatasetDict,
@@ -26,7 +27,7 @@ from numpy.typing import DTypeLike, NDArray
 from transformers import PreTrainedTokenizerFast, logging
 
 from .config.config import DataConfig, ScoreConfig
-from .config.config_io import load_subconfig
+from .config.config_io import CONFIG_FILENAME, load_subconfig, read_config
 from .utils.utils import (
     assert_type,
     simple_parse_kwargs_string,
@@ -663,9 +664,46 @@ def load_scores(path: Path) -> Scores:
     return Scores(mmap, info, offsets)
 
 
+def _load_legacy_pt_scores(score_path: str) -> tuple[torch.Tensor, bool]:
+    """Read a bare ``scores.pt`` written by a MAGIC run that predates score
+    directories.
+
+    A 2-D tensor is ambiguous — per-token scores are ``[docs, seq_len]`` and
+    per-query scores are ``[docs, queries]`` — so the run config beside it
+    decides: per-query iff the run used ``query_method: none``. Already in the
+    loss-diff convention, so nothing is negated.
+
+    TODO: Lucia Quirke remove December 2026
+    """
+    scores = torch.load(score_path, map_location="cpu")
+    if not isinstance(scores, torch.Tensor) or scores.ndim not in (2, 3):
+        return scores, False
+    if scores.ndim == 3:
+        return scores, True
+
+    cfg_path = Path(score_path).parent / CONFIG_FILENAME
+    if not cfg_path.is_file():
+        return scores, False
+
+    try:
+        steps = read_config(cfg_path)["steps"]
+    except (ValueError, yaml.YAMLError):
+        return scores, False
+
+    for step in steps:
+        for step_cfg in step.values():
+            if isinstance(step_cfg, dict):
+                return scores, step_cfg.get("query_method") == "none"
+    return scores, False
+
+
 def load_scores_loss_signed(score_path: str) -> tuple[torch.Tensor, bool]:
     """Loads scores using the sign convention that negative scores reduce
     query loss (proponents are negative)."""
+    # TODO: Lucia Quirke remove December 2026
+    if score_path.endswith(".pt"):
+        return _load_legacy_pt_scores(score_path)
+
     loaded = load_scores(Path(score_path))
     score_cfg = load_subconfig(score_path, "score_cfg", ScoreConfig)
     negate = score_cfg is not None and score_cfg.higher_is_better
