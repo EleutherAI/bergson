@@ -1,24 +1,18 @@
-# Adam-preconditioned SOURCE (approximate unrolling, Bae et al. 2024,
-# App. C) scores for the magic-trained model against test[0:50], validated
-# against the retrained models from magic.yaml.
-#
-# MAGIC needs sqrt-mode checkpoints, which are unevenly spaced and never
-# include the final step, so the first step re-runs the identical training
-# recipe (same seed and batch schedule) with save_mode interval to get
-# evenly spaced checkpoints including the final state, each with its Adam
-# second moments. 4 epochs x 18 steps = 72 steps; interval 12 saves
-# step_{0,12,24,36,48,60,72}. Raw DCP checkpoints are auto-exported to
-# runs/compare_wikitext/interval/exported/; lr_list and step_size_list are
-# inferred from the run's log_history.json.
+# SOURCE (approximate unrolling, Bae et al. 2024) scores for the
+# magic-trained model against test[0:50], validated against the retrained
+# models from magic.yaml. Plain variant: no optimizer preconditioning; see
+# source_adam.yaml for the Adam variant. Shares its evenly spaced interval
+# checkpoints (steps 12..72; sqrt mode never saves the final step) — the
+# train step resumes instantly when runs/compare_wikitext/interval already
+# exists.
 
-# Run with `bergson examples/compare_wikitext/source_adam.yaml`
+# Run with `bergson examples/compare_wikitext/source.yaml`
 
-run_path: runs/compare_wikitext/source_adam
+run_path: runs/compare_wikitext/source
 steps:
   - train:
       run_path: runs/compare_wikitext/interval
       model: gpt2
-      # Shared with source.yaml; resumes instantly when the run exists.
       resume: true
 
       data:
@@ -46,7 +40,7 @@ steps:
 
   - approxunrolling:
       index_cfg:
-        run_path: runs/compare_wikitext/source_adam
+        run_path: runs/compare_wikitext/source
         model: runs/compare_wikitext/random/retrained/base
         overwrite: true
         precision: fp32
@@ -76,7 +70,6 @@ steps:
           - runs/compare_wikitext/interval/checkpoints/step_60.ckpt
           - runs/compare_wikitext/interval/checkpoints/step_72.ckpt
         segments: 3
-        use_adam_preconditioner: true
         query:
           dataset: EleutherAI/bergson-wikitext-512-chunks
           split: "test[0:50]"
@@ -85,11 +78,11 @@ steps:
         query_aggregation: none
 
   - validate:
-      run_path: runs/compare_wikitext/validate_source_adam_random
+      run_path: runs/compare_wikitext/validate_source_random
       model: gpt2
       overwrite: true
 
-      scores: runs/compare_wikitext/source_adam/scores
+      scores: runs/compare_wikitext/source/scores
       retrained_dir: runs/compare_wikitext/random
 
       data:
