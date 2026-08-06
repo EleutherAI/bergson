@@ -197,3 +197,85 @@ def test_per_query_scores_only_real_queries_when_padded():
         import os
 
         assert not os.path.exists(f"{run_path}/per_query/q3.pt")
+
+
+def _per_query_run(tmp_path, attribute_tokens: bool, num_docs=5, seq_len=8, n_query=2):
+    """Run worker() in per-query mode; return (scores, doc_ids).
+
+    num_docs=5 at batch_size 4 pads by 3 rows, where weight_pad_count is 1 but
+    pad_count is 3 — the gap a rank-blind trim falls into.
+    """
+    from bergson.config.config import DataConfig
+    from bergson.magic.cli import worker
+
+    def ds(n):
+        toks = [[(d * seq_len + t) % 50 + 1 for t in range(seq_len)] for d in range(n)]
+        return Dataset.from_dict(
+            {
+                "input_ids": toks,
+                "labels": toks,
+                "doc_ids": [[d] * seq_len for d in range(n)],
+                "length": [seq_len] * n,
+            }
+        )
+
+    run_path = tmp_path / ("tok" if attribute_tokens else "doc")
+    run_cfg = MagicConfig(
+        run_path=str(run_path),
+        model="EleutherAI/pythia-14m",
+        data=DataConfig(dataset="unused", chunk_length=seq_len),
+        query=DataConfig(dataset="unused", chunk_length=seq_len),
+        batch_size=4,
+        attribute_tokens=attribute_tokens,
+        query_method="none",
+        skip_validation=True,
+    )
+    worker(0, 0, 1, ds(num_docs), ds(n_query), num_docs, n_query, run_cfg)
+
+    doc_ids = run_path / "doc_ids.pt"
+    return (
+        torch.load(run_path / "scores.pt"),
+        torch.load(doc_ids) if doc_ids.exists() else None,
+    )
+
+
+def test_per_query_per_token_layout(tmp_path):
+    """Per-token per-query scores are [docs, seq_len, queries], so doc_ids
+    indexes the leading two axes and validate_scores reads shape[-1]."""
+    scores, doc_ids = _per_query_run(tmp_path, attribute_tokens=True)
+
+    assert scores.shape == (5, 8, 2), f"got {tuple(scores.shape)}"
+    assert doc_ids is not None, "per-token run must write doc_ids.pt"
+    assert doc_ids.shape == scores.shape[:2]
+
+
+def test_per_query_per_token_aggregates_to_per_doc(tmp_path):
+    """Summing per-token per-query scores over each document's tokens
+    reproduces the per-doc per-query run."""
+    per_tok, doc_ids = _per_query_run(tmp_path, attribute_tokens=True)
+    per_doc, _ = _per_query_run(tmp_path, attribute_tokens=False)
+    num_docs, n_query = per_doc.shape
+    assert doc_ids is not None
+
+    agg = torch.zeros(num_docs, n_query, dtype=torch.float64)
+    agg.scatter_add_(
+        0,
+        doc_ids.reshape(-1, 1).expand(-1, n_query),
+        per_tok.reshape(-1, n_query).to(torch.float64),
+    )
+
+    torch.testing.assert_close(agg, per_doc.to(torch.float64), atol=1e-5, rtol=1e-4)
+
+
+def test_three_dim_scores_load_as_per_token_multi_query(tmp_path):
+    """A 3-D scores.pt is unambiguous: neither classifier needs the run config."""
+    from bergson.magic.cli import scores_are_per_token
+    from bergson.validate import load_attribution_scores
+
+    path = tmp_path / "scores.pt"
+    torch.save(torch.randn(4, 6, 3), path)
+
+    assert scores_are_per_token(str(path))
+    loaded, multi_query = load_attribution_scores(str(path))
+    assert multi_query
+    assert loaded.shape == (4, 6, 3)
