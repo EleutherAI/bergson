@@ -62,6 +62,26 @@ def pad_dataset_to_batch_size(
     return dataset, num_docs, pad_count, weight_pad_count
 
 
+def doc_rows(dataset: Dataset, num_docs: int) -> list[list[int]]:
+    """Row indices holding each document's tokens.
+
+    A chunked dataset (``chunk_length > 0``) packs several documents into a row
+    and splits documents across rows, so document ``i`` is not row ``i``; its
+    per-token ``doc_ids`` column says which is which. Pad rows carry a
+    synthetic id past the real documents, and a document that chunking dropped
+    (the tail that doesn't fill a chunk) gets no rows.
+    """
+    if "doc_ids" not in dataset.column_names:
+        return [[i] for i in range(num_docs)]
+
+    rows: list[list[int]] = [[] for _ in range(num_docs)]
+    for r, ids in enumerate(dataset["doc_ids"]):
+        for doc_id in set(ids):
+            if doc_id < num_docs:
+                rows[doc_id].append(r)
+    return rows
+
+
 class DataStream:
     def __init__(
         self,
@@ -71,13 +91,28 @@ class DataStream:
         device: torch.device | str = "cpu",
         input_key: str = "text",
         weight_shape: tuple[int, ...] | None = None,
+        rows: list[int] | None = None,
+        doc_id: int | None = None,
     ):
+        """``rows`` restricts the stream to those dataset rows, cycling them to
+        fill whole batches; ``doc_id`` restricts the loss to that document's
+        tokens, which is how a single document is scored out of rows that pack
+        several (see :func:`doc_rows`)."""
         self.batch_size = batch_size
         self.dataset = dataset
         self.device = torch.device(device)
         self.input_key = input_key
         self.n = len(dataset)
-        self.num_batches = self.n // batch_size
+        self.doc_id = doc_id
+
+        self.rows = list(range(self.n)) if rows is None else list(rows)
+        if rows is not None:
+            # Cycle rather than append dead pad rows: a pad row is a real term
+            # in the loss wherever the data weights are discarded, and an
+            # all-pad batch on some rank would scale that loss down.
+            n = len(self.rows) + (-len(self.rows)) % batch_size
+            self.rows = [self.rows[i % len(self.rows)] for i in range(n)]
+        self.num_batches = len(self.rows) // batch_size
 
         # If a shape isn't provided, assume that each sequence contains one document
         if weight_shape is None:
@@ -97,11 +132,8 @@ class DataStream:
 
     def batch_rows(self, i: int) -> list[int]:
         """The current rank's dataset row indices for batch ``i``."""
-        rng = range(
-            i * self.batch_size,
-            min((i + 1) * self.batch_size, len(self.dataset)),
-        )
-        return list(rng)[self.rank :: self.world_size]
+        rows = self.rows[i * self.batch_size : (i + 1) * self.batch_size]
+        return rows[self.rank :: self.world_size]
 
     def __getitem__(self, i: int) -> dict:
         if i < 0 or i >= len(self):
@@ -114,17 +146,30 @@ class DataStream:
             labels=batch.get("labels"),
             device=self.device,
         )
+        doc_ids = batch.get("doc_ids")
+        if doc_ids is not None:
+            doc_ids = torch.tensor(doc_ids, device=self.device)
+            # doc_ids may be longer than the per-batch padded seq_len (unpacked
+            # path stores doc_ids at dataset-wide max_len); truncate to match.
+            if doc_ids.ndim == 2:
+                doc_ids = doc_ids[:, : x.shape[1]]
+
         # If the weights are 1D, we assume they correspond to documents and look for
-        # "doc_ids" in the batch to index them. If they're 2D, they correspond to tokens
+        # "doc_ids" in the batch to index them. If they're 2D, they correspond to
+        # tokens. A doc_id-restricted stream weights by row, since its rows repeat.
         if self.weights.ndim == 2:
             # Truncate to the max sequence length in the batch to avoid indexing errors
             indices = (indices, slice(None, x.shape[1]))
-        elif "doc_ids" in batch:
-            indices = torch.tensor(batch["doc_ids"], device=self.device)
-            # doc_ids may be longer than the per-batch padded seq_len (unpacked
-            # path stores doc_ids at dataset-wide max_len); truncate to match.
-            if indices.ndim == 2:
-                indices = indices[:, : x.shape[1]]
+        elif doc_ids is not None and self.doc_id is None:
+            indices = doc_ids
+
+        # Drop the other documents sharing these rows from the loss, so it is
+        # this document's own mean cross-entropy. The shift mask is the loss
+        # denominator, so it has to follow the labels.
+        if self.doc_id is not None and doc_ids is not None and doc_ids.ndim == 2:
+            y = y.where(doc_ids == self.doc_id, -100)
+            shift_loss_mask = torch.zeros_like(y, dtype=torch.bool)
+            shift_loss_mask[:, :-1] = y[:, 1:] != -100
 
         return {
             "input_ids": x,

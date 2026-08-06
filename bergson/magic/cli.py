@@ -38,7 +38,7 @@ from ..utils.utils import get_device, get_device_index
 from ..utils.worker_utils import setup_data_pipeline
 from ..validate import load_attribution_scores, validate_scores
 from .config import MagicConfig
-from .data_stream import DataStream, pad_dataset_to_batch_size
+from .data_stream import DataStream, doc_rows, pad_dataset_to_batch_size
 from .grad_accum import accumulate_grads
 from .trainer import BackwardState, TrainerState, prepare_trainer, write_lr_history
 
@@ -156,11 +156,27 @@ def compute_per_query_magic_scores(
         if isinstance(buf, torch.Tensor) and buf.is_floating_point()
     ]
 
+    def trim_pads(s: torch.Tensor) -> torch.Tensor:
+        if not pad_count:
+            return s
+        return s[:-weight_pad_count] if s.ndim == 1 else s[:-pad_count]
+
+    rows_by_doc = doc_rows(query_dataset, num_query_docs)
+    zero_score = trim_pads(torch.zeros_like(stream.weights.detach(), device="cpu"))
+    if main and not all(rows_by_doc):
+        empty = sum(not rows for rows in rows_by_doc)
+        print(f"[per-query MAGIC] {empty} queries have no tokens")
+
     per_query = []
     for qi in range(num_query_docs):
         qpath = os.path.join(scores_dir, f"q{qi}.pt")
         if os.path.exists(qpath):  # resume: already scored
             per_query.append(torch.load(qpath, map_location="cpu"))
+            continue
+
+        if not rows_by_doc[qi]:
+            # No tokens, no gradient — and validate_scores baselines it at 0 too.
+            per_query.append(zero_score)
             continue
 
         # Restore the final trained state (the backward walks it back down the
@@ -172,19 +188,14 @@ def compute_per_query_magic_scores(
         fwd_state.copy_(restored)
         del restored
 
-        one = query_dataset.select([qi])
-        one, n_one, one_pad, one_wpad = pad_dataset_to_batch_size(
-            one, run_cfg.batch_size, 1, f"Query {qi}", global_rank
-        )
         qstream = DataStream(
-            one,
+            query_dataset,
             run_cfg.batch_size,
             device=device,
             input_key=run_cfg.query.prompt_column,
-            weight_shape=(n_one,),
+            rows=rows_by_doc[qi],
+            doc_id=qi,
         )
-        if one_pad:
-            qstream.weights.data[-one_wpad:] = 0.0
         qgrads, _ = compute_query_gradients(
             fwd_state, model, qstream, "mean", run_cfg.fsdp, run_cfg.grad_accum_steps
         )
@@ -214,15 +225,13 @@ def compute_per_query_magic_scores(
         if world_size > 1:
             dist.all_reduce(bwd_state.weight_grads, op=dist.ReduceOp.SUM)
 
-        s = bwd_state.weight_grads.detach().cpu()
-        if pad_count:
-            s = s[:-weight_pad_count] if s.ndim == 1 else s[:-pad_count]
+        s = trim_pads(bwd_state.weight_grads.detach().cpu())
         if main:
             torch.save(s, qpath)
         per_query.append(s)
 
         # Free per-query state and any temp checkpoints the backward wrote.
-        del bwd_state, qgrads, qstream, one
+        del bwd_state, qgrads, qstream
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.synchronize()
