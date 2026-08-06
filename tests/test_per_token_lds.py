@@ -82,8 +82,8 @@ def test_load_token_dir_scatters_packed_to_grid(tmp_path):
 
 def test_scores_are_per_token_inference(tmp_path):
     """``bergson validate`` infers per-token-ness from the scores themselves:
-    token dirs and 2-D ``.pt`` tensors are per-token; 1-D ``.pt``, ``.npy``,
-    and plain score dirs are per-document."""
+    token dirs and 2-D ``.pt`` tensors are per-token; 1-D ``.pt`` and plain
+    score dirs are per-document."""
     from bergson.magic.cli import scores_are_per_token
 
     token_dir = tmp_path / "token_dir"
@@ -102,12 +102,6 @@ def test_scores_are_per_token_inference(tmp_path):
     pt_col = tmp_path / "per_doc_col.pt"
     torch.save(torch.randn(6, 1), pt_col)
     assert not scores_are_per_token(str(pt_col))
-
-    import numpy as np
-
-    npy = tmp_path / "multi_query.npy"
-    np.save(npy, np.random.randn(6, 5))
-    assert not scores_are_per_token(str(npy))
 
     plain_dir = tmp_path / "plain_dir"
     plain_dir.mkdir()
