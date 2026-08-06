@@ -110,6 +110,52 @@ def compute_query_gradients(
     return grad_accum, float(loss_accum)
 
 
+def query_doc_rows(query_dataset: Dataset, num_query_docs: int) -> list[list[int]]:
+    """Row indices holding each query document's tokens.
+
+    A chunked query set (``query.chunk_length > 0``) packs several documents
+    into a row and splits documents across rows, so query ``i`` is not row
+    ``i``; its per-token ``doc_ids`` column says which is which. Pad rows carry
+    a synthetic id past the real documents, and a document that chunking
+    dropped (the tail that doesn't fill a chunk) gets no rows.
+    """
+    if "doc_ids" not in query_dataset.column_names:
+        return [[i] for i in range(num_query_docs)]
+
+    rows: list[list[int]] = [[] for _ in range(num_query_docs)]
+    for r, ids in enumerate(query_dataset["doc_ids"]):
+        for doc_id in set(ids):
+            if doc_id < num_query_docs:
+                rows[doc_id].append(r)
+    return rows
+
+
+def query_doc_batch(
+    query_dataset: Dataset, doc_id: int, rows: list[int], batch_size: int
+) -> Dataset:
+    """One document's rows, other documents' tokens masked out with ``-100``,
+    padded to a whole batch by cycling through those rows.
+
+    The loss is then this document's own mean cross-entropy. Dropping
+    ``doc_ids`` keeps ``DataStream`` indexing the weights by row; cycling
+    rather than appending dead pad rows keeps every row a real term in the
+    loss, since ``compute_query_gradients`` discards the weights that would
+    silence one.
+    """
+    total = len(rows) + (-len(rows)) % batch_size
+    one = query_dataset.select([rows[i % len(rows)] for i in range(total)])
+    if "doc_ids" not in one.column_names:
+        return one
+
+    label_col = "labels" if "labels" in one.column_names else "input_ids"
+    labels = [
+        [tok if d == doc_id else -100 for tok, d in zip(toks, ids)]
+        for toks, ids in zip(one[label_col], one["doc_ids"])
+    ]
+    drop = [c for c in ("doc_ids", "labels") if c in one.column_names]
+    return one.remove_columns(drop).add_column("labels", labels)
+
+
 def compute_per_query_magic_scores(
     trainer,
     ckpts_path: str,
@@ -156,11 +202,28 @@ def compute_per_query_magic_scores(
         if isinstance(buf, torch.Tensor) and buf.is_floating_point()
     ]
 
+    def trim_pads(s: torch.Tensor) -> torch.Tensor:
+        if not pad_count:
+            return s
+        return s[:-weight_pad_count] if s.ndim == 1 else s[:-pad_count]
+
+    doc_rows = query_doc_rows(query_dataset, num_query_docs)
+    zero_score = trim_pads(torch.zeros_like(stream.weights.detach(), device="cpu"))
+    if main and not all(doc_rows):
+        print(
+            f"[per-query MAGIC] {sum(not r for r in doc_rows)} queries have no tokens"
+        )
+
     per_query = []
     for qi in range(num_query_docs):
         qpath = os.path.join(scores_dir, f"q{qi}.pt")
         if os.path.exists(qpath):  # resume: already scored
             per_query.append(torch.load(qpath, map_location="cpu"))
+            continue
+
+        if not doc_rows[qi]:
+            # No tokens, no gradient — and validate_scores baselines it at 0 too.
+            per_query.append(zero_score)
             continue
 
         # Restore the final trained state (the backward walks it back down the
@@ -172,19 +235,14 @@ def compute_per_query_magic_scores(
         fwd_state.copy_(restored)
         del restored
 
-        one = query_dataset.select([qi])
-        one, n_one, one_pad, one_wpad = pad_dataset_to_batch_size(
-            one, run_cfg.batch_size, 1, f"Query {qi}", global_rank
-        )
+        one = query_doc_batch(query_dataset, qi, doc_rows[qi], run_cfg.batch_size)
         qstream = DataStream(
             one,
             run_cfg.batch_size,
             device=device,
             input_key=run_cfg.query.prompt_column,
-            weight_shape=(n_one,),
+            weight_shape=(len(one),),
         )
-        if one_pad:
-            qstream.weights.data[-one_wpad:] = 0.0
         qgrads, _ = compute_query_gradients(
             fwd_state, model, qstream, "mean", run_cfg.fsdp, run_cfg.grad_accum_steps
         )
@@ -214,9 +272,7 @@ def compute_per_query_magic_scores(
         if world_size > 1:
             dist.all_reduce(bwd_state.weight_grads, op=dist.ReduceOp.SUM)
 
-        s = bwd_state.weight_grads.detach().cpu()
-        if pad_count:
-            s = s[:-weight_pad_count] if s.ndim == 1 else s[:-pad_count]
+        s = trim_pads(bwd_state.weight_grads.detach().cpu())
         if main:
             torch.save(s, qpath)
         per_query.append(s)

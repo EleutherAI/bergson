@@ -228,7 +228,12 @@ def report_multi_query_validation(
             float(baselines[q]),
         )
     summary_csv_writer.close()
-    print(f"Mean Spearman across {num_queries} queries: {np.mean(rhos):.4f}")
+
+    # A query whose loss doesn't move across subsets (an empty document that
+    # chunking left with no tokens, say) has no correlation to average in.
+    rhos = [rho for rho in rhos if not np.isnan(rho)]
+    mean = np.mean(rhos) if rhos else float("nan")
+    print(f"Mean Spearman {mean:.4f} ({num_queries - len(rhos)}/{num_queries} nan)")
 
 
 def validate_scores(

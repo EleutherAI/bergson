@@ -19,7 +19,11 @@ from torchopt.pytree import tree_iter
 
 from bergson.distributed import grad_tree
 from bergson.magic import BackwardState, DataStream, Trainer
-from bergson.magic.cli import compute_per_query_magic_scores
+from bergson.magic.cli import (
+    compute_per_query_magic_scores,
+    query_doc_batch,
+    query_doc_rows,
+)
 from bergson.magic.config import MagicConfig
 from bergson.utils.math import weighted_causal_lm_ce
 
@@ -271,3 +275,80 @@ def test_three_dim_scores_load_as_per_token_multi_query(tmp_path):
     assert scores_are_per_token(str(path))
     _, multi_query = load_attribution_scores(str(path))
     assert multi_query
+
+
+# A chunked query set (query.chunk_length > 0) carries a per-token doc_ids
+# column: a row can pack several documents and a document can span several
+# rows, so query i is not row i.
+
+PACKED = Dataset.from_dict(
+    {
+        "input_ids": [[1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12], [0] * 6],
+        "doc_ids": [[0, 0, 0, 1, 1, 1], [1, 1, 2, 2, 2, 2], [4] * 6],
+    }
+)
+
+
+def test_query_doc_rows_and_batch():
+    """Doc 0 sits inside row 0, doc 1 straddles both rows, doc 3 was dropped by
+    chunking, row 2 is padding. Doc 1's batch keeps only its tokens, drops
+    doc_ids, and pads by cycling through its own rows."""
+    assert query_doc_rows(PACKED, 4) == [[0], [0, 1], [1], []]
+    assert query_doc_rows(_equal_length_docs(3), 3) == [[0], [1], [2]]
+
+    one = query_doc_batch(PACKED, 1, [0, 1], batch_size=3)
+    assert "doc_ids" not in one.column_names
+    assert one["input_ids"][2] == one["input_ids"][0]  # cycled, not a dead pad
+    assert one["labels"] == [
+        [-100, -100, -100, 4, 5, 6],
+        [7, 8, -100, -100, -100, -100],
+        [-100, -100, -100, 4, 5, 6],
+    ]
+
+
+def _per_query(query_ds, num_query_docs):
+    model = _model()
+    opt = torchopt.adamw(1e-4, betas=(0.95, 0.975), eps_root=1e-2)
+    trainer, fwd_state = Trainer.initialize(model, opt)
+    stream = DataStream(_equal_length_docs(3), batch_size=1, device="cpu")
+
+    with tempfile.TemporaryDirectory() as run_path:
+        ckpts = f"{run_path}/checkpoints"
+        fwd_state = trainer.train(fwd_state, stream, inplace=True, save_dir=ckpts)
+        cfg = MagicConfig(run_path=run_path, query_method="none", batch_size=2)
+        cfg.query.prompt_column = "input_ids"
+        stream.requires_grad = True
+        return compute_per_query_magic_scores(
+            trainer,
+            ckpts,
+            stream,
+            fwd_state,
+            model,
+            query_ds,
+            num_query_docs,
+            cfg,
+            1,
+            0,
+            0,
+            0,
+        )
+
+
+def test_per_query_packed_docs_score_separately():
+    """Two documents packed into one row (which used to crash: the stream sizes
+    its weights by row, DataStream indexes them by doc id) score as the same two
+    documents split across rows — each column is that document's tokens alone.
+    Doc 2 is missing from the rows entirely, as chunking's dropped tail is."""
+    row = list(range(100, 106))
+    packed = Dataset.from_dict({"input_ids": [row], "doc_ids": [[0, 0, 0, 1, 1, 1]]})
+    split = Dataset.from_dict(
+        {
+            "input_ids": [row, row],
+            "labels": [row[:3] + [-100] * 3, [-100] * 3 + row[3:]],
+        }
+    )
+
+    scores = _per_query(packed, 3)
+    assert not torch.allclose(scores[:, 0], scores[:, 1])
+    assert (scores[:, 2] == 0).all()
+    torch.testing.assert_close(scores[:, :2], _per_query(split, 2))
