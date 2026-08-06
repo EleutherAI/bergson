@@ -1,6 +1,31 @@
 # CHANGELOG
 
 
+## v0.25.1 (2026-08-06)
+
+### Bug Fixes
+
+- **magic**: Reject chunked query sets in per-query MAGIC
+  ([#418](https://github.com/EleutherAI/bergson/pull/418),
+  [`012b54a`](https://github.com/EleutherAI/bergson/commit/012b54adec7e57d98ce4040d87bce20697328229))
+
+Per-query MAGIC scores one column per query *document*, but a chunked query set (`query.chunk_length
+  > 0`) has rows that pack several documents and documents that span several rows, so query `i` is
+  not row `i`. `compute_per_query_magic_scores` selected row `qi` and sized the stream's weights by
+  row, while `DataStream` indexes weights by document id whenever the batch carries `doc_ids`, so a
+  run crashed with:
+
+IndexError: index 2 is out of bounds for dimension 0 with size 2 bergson/magic/data_stream.py:132
+  self.weights[indices]
+
+Chunking exists to pack a training set efficiently; a query set is small — 50 documents in the
+  compare_wikitext runs — so packing it buys nothing, and every shipped config already passes
+  query.chunk_length 0. Rather than teach the per-query path to split and repack documents, require
+  the query rows to be documents and say so at config time, before a run trains for hours.
+
+Co-authored-by: Claude Opus 5 (1M context) <noreply@anthropic.com>
+
+
 ## v0.25.0 (2026-08-06)
 
 ### Features
