@@ -1,8 +1,11 @@
-# Compute per-query MAGIC attribution scores (one backward per query, 50
-# queries) with leave-k-out validation, then revalidate the same scores
-# excluding zero scores.
+# Train GPT-2 on WikiText, computing per-query MAGIC scores (one backward per
+# query, 50 queries) and leave-k-out validation over 100 random 1%-drop
+# subsets. bs 256 / 4 epochs / eps_root 1e-8 scored per-query LDS 0.93-0.98
+# in the 2026-08-03 batch-size sweep (runs/bs_eps1e8). The retrained models
+# are saved so every other yaml in this directory validates against the same
+# family, and the final Adam second moments are kept for trackstar_adam.yaml.
 
-# Run with `bergson examples/magic/compare_wikitext/magic.yaml`
+# Run with `bergson examples/compare_wikitext/magic.yaml`
 
 run_path: runs/compare_wikitext/magic
 steps:
@@ -10,40 +13,9 @@ steps:
       run_path: runs/compare_wikitext/random
       model: gpt2
       overwrite: true
-
-      data:
-        dataset: EleutherAI/bergson-wikitext-512-chunks
-        split: "train"
-        chunk_length: 0
-
-      query:
-        dataset: EleutherAI/bergson-wikitext-512-chunks
-        split: "test[0:50]"
-        chunk_length: 0
-
-      distributed:
-        nproc_per_node: 4
-        nnode: 4
-
-      batch_size: 256
-      num_epochs: 2
-      lr_schedule:
-        lr_scheduler_type: polynomial
-        lr: 0.0008
-        lr_start: 1e-6
-        lr_end: 0.00008
-        warmup_steps: 0.25
-
-      # Export the trained model for q3_ekfac.yaml / q3_trackstar.yaml.
-      save_models: true
-      wandb_project: magic
-
-  - validate:
-      run_path: runs/compare_wikitext/validate_magic_random_exclude_0
-      model: gpt2
-      overwrite: true
-
-      scores: runs/compare_wikitext/random/scores.pt
+      # Resume: keep finished per_query/q<i>.pt scores and fast-forward
+      # training from the last checkpoint after an interruption.
+      resume: true
 
       data:
         dataset: EleutherAI/bergson-wikitext-512-chunks
@@ -60,7 +32,12 @@ steps:
         nnode: 1
 
       batch_size: 256
-      num_epochs: 2
+      # Bound double-backward memory; no trajectory change without dropout.
+      # Without the cap the retained graph OOMs 48GB GPUs (vocab-sized
+      # tensors per sequence).
+      grad_accum_steps: 2
+      double_backward_batch_size: 8
+      num_epochs: 4
       lr_schedule:
         lr_scheduler_type: polynomial
         lr: 0.0008
@@ -68,5 +45,9 @@ steps:
         lr_end: 0.00008
         warmup_steps: 0.25
 
-      exclude_zero_scores: true
+      num_subsets: 100
+      subset_fraction: 0.01
+
+      save_models: true
+      save_optimizer_state: last
       wandb_project: magic

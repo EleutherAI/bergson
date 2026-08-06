@@ -1,0 +1,108 @@
+# Adam-preconditioned SOURCE (approximate unrolling, Bae et al. 2024,
+# App. C) scores for the magic-trained model against test[0:50], validated
+# against the retrained models from magic.yaml.
+#
+# MAGIC needs sqrt-mode checkpoints, which are unevenly spaced and never
+# include the final step, so the first step re-runs the identical training
+# recipe (same seed and batch schedule) with save_mode interval to get
+# evenly spaced checkpoints including the final state, each with its Adam
+# second moments. 4 epochs x 18 steps = 72 steps; interval 12 saves
+# step_{0,12,24,36,48,60,72}. Raw DCP checkpoints are auto-exported to
+# runs/compare_wikitext/interval/exported/; lr_list and step_size_list are
+# inferred from the run's log_history.json.
+
+# Run with `bergson examples/compare_wikitext/source_adam.yaml`
+
+run_path: runs/compare_wikitext/source_adam
+steps:
+  - train:
+      run_path: runs/compare_wikitext/interval
+      model: gpt2
+      overwrite: true
+
+      data:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "train"
+        chunk_length: 0
+
+      distributed:
+        nproc_per_node: 8
+        nnode: 1
+
+      batch_size: 256
+      grad_accum_steps: 2
+      num_epochs: 4
+      lr_schedule:
+        lr_scheduler_type: polynomial
+        lr: 0.0008
+        lr_start: 1e-6
+        lr_end: 0.00008
+        warmup_steps: 0.25
+
+      save_mode: interval
+      save_interval: 12
+      save_optimizer_state: all
+
+  - approxunrolling:
+      index_cfg:
+        run_path: runs/compare_wikitext/source_adam
+        model: runs/compare_wikitext/random/retrained/base
+        overwrite: true
+        precision: fp32
+        # GPT-2's max context length is 1024.
+        token_batch_size: 1024
+        # GPT-2 uses an nn.Linear for its LM head.
+        filter_modules: "lm_head"
+        distributed:
+          nproc_per_node: 8
+          nnode: 1
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "train"
+          chunk_length: 0
+
+      hessian_cfg:
+        method: kfac
+        hessian_dtype: fp32
+        ev_correction: true
+
+      approx_unrolling_cfg:
+        checkpoints:
+          - runs/compare_wikitext/interval/checkpoints/step_12.ckpt
+          - runs/compare_wikitext/interval/checkpoints/step_24.ckpt
+          - runs/compare_wikitext/interval/checkpoints/step_36.ckpt
+          - runs/compare_wikitext/interval/checkpoints/step_48.ckpt
+          - runs/compare_wikitext/interval/checkpoints/step_60.ckpt
+          - runs/compare_wikitext/interval/checkpoints/step_72.ckpt
+        segments: 3
+        use_adam_preconditioner: true
+        query:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "test[0:50]"
+          chunk_length: 0
+        # One score column per query, for per-query LDS.
+        query_aggregation: none
+
+  - validate:
+      run_path: runs/compare_wikitext/validate_source_adam_random
+      model: gpt2
+      overwrite: true
+
+      scores: runs/compare_wikitext/source_adam/scores
+      retrained_dir: runs/compare_wikitext/random
+
+      data:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "train"
+        chunk_length: 0
+
+      query:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "test[0:50]"
+        chunk_length: 0
+
+      distributed:
+        nproc_per_node: 8
+        nnode: 1
+
+      batch_size: 64

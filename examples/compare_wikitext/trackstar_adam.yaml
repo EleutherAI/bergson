@@ -1,18 +1,17 @@
-# Compute TrackStar attribution scores for the magic-trained model against
-# test[0:50] (one score column per query), then run leave-k-out validation on
-# those scores against the retrained models from magic.yaml. No optimizer
-# normalization; see trackstar_adam.yaml for the Adam second-moment-normalized
-# variant.
+# TrackStar with Adam second-moment gradient normalization (Chang et al.
+# 2024), using the optimizer state saved at the end of the magic.yaml
+# training run. Otherwise identical to trackstar.yaml.
 
-# Run with `bergson examples/compare_wikitext/trackstar.yaml`
+# Run with `bergson examples/compare_wikitext/trackstar_adam.yaml`
 
-run_path: runs/compare_wikitext/trackstar
+run_path: runs/compare_wikitext/trackstar_adam
 steps:
   - trackstar:
       index_cfg:
         projection_dim: 32
-        run_path: runs/compare_wikitext/trackstar
+        run_path: runs/compare_wikitext/trackstar_adam
         model: runs/compare_wikitext/random/retrained/base
+        optimizer_state: runs/compare_wikitext/random/optimizer.pt
         overwrite: true
         # GPT-2's max context length is 1024
         token_batch_size: 1024
@@ -39,11 +38,11 @@ steps:
           batch_size: 1024
 
   - validate:
-      run_path: runs/compare_wikitext/validate_trackstar_random
+      run_path: runs/compare_wikitext/validate_trackstar_adam_random
       model: gpt2
       overwrite: true
 
-      scores: runs/compare_wikitext/trackstar/scores
+      scores: runs/compare_wikitext/trackstar_adam/scores
       retrained_dir: runs/compare_wikitext/random
 
       data:

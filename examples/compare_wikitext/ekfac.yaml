@@ -1,8 +1,8 @@
-# Pipeline: compute EK-FAC scores for the magic-trained model from q3_random
-# against test[0:50] (one score column per query), then run leave-k-out
-# validation on those scores, with and without zero-score exclusion.
+# Pipeline: compute EK-FAC scores for the magic-trained model against
+# test[0:50] (one score column per query), then run leave-k-out validation on
+# those scores against the retrained models from magic.yaml.
 
-# Run with `bergson examples/magic/compare_wikitext/ekfac.yaml`
+# Run with `bergson examples/compare_wikitext/ekfac.yaml`
 
 run_path: runs/compare_wikitext/ekfac
 steps:
@@ -48,12 +48,13 @@ steps:
         inversion_cfg:
           damping_factor: 0.1
 
-  - validate: &validate
+  - validate:
       run_path: runs/compare_wikitext/validate_ekfac_random
       model: gpt2
       overwrite: true
 
       scores: runs/compare_wikitext/ekfac/scores
+      retrained_dir: runs/compare_wikitext/random
 
       data:
         dataset: EleutherAI/bergson-wikitext-512-chunks
@@ -66,22 +67,7 @@ steps:
         chunk_length: 0
 
       distributed:
-        nproc_per_node: 4
-        nnode: 4
+        nproc_per_node: 8
+        nnode: 1
 
-      batch_size: 256
-      num_epochs: 2
-      lr_schedule:
-        lr_scheduler_type: polynomial
-        lr: 0.0008
-        lr_start: 1e-6
-        lr_end: 0.00008
-        warmup_steps: 0.25
-
-      wandb_project: magic
-
-  - validate:
-      # YAML merge key: copy the contents of &validate
-      <<: *validate
-      run_path: runs/compare_wikitext/validate_ekfac_random_exclude_0
-      exclude_zero_scores: true
+      batch_size: 64
