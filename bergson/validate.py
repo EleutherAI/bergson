@@ -40,30 +40,23 @@ from .utils.worker_utils import setup_data_pipeline
 
 
 def load_attribution_scores(score_path: str) -> tuple[torch.Tensor, bool]:
-    """Load attribution scores from a score directory, ``.npy``, or ``.pt`` file.
+    """Load attribution scores from a score directory or ``.pt`` file.
 
     Returns ``(scores, multi_query)``. Token score directories are per-token,
     with a query dimension when ``num_scores > 1`` (``[docs, seq_len,
-    queries]``); plain score directories and ``.npy`` arrays are per-document,
-    with one column per query. A 3-D ``.pt`` tensor is per-token per-query
-    ``[docs, seq_len, queries]``. A 2-D ``.pt`` tensor is ambiguous — per-token
-    MAGIC scores are ``[docs, seq_len]`` and per-query MAGIC scores are
-    ``[docs, queries]`` — so the run config next to it decides: it is
-    per-query iff the run used ``query_method: none`` without attributing
-    tokens.
+    queries]``); plain score directories are per-document, with one column per
+    query. A 3-D ``.pt`` tensor is per-token per-query ``[docs, seq_len,
+    queries]``. A 2-D ``.pt`` tensor is ambiguous — per-token MAGIC scores are
+    ``[docs, seq_len]`` and per-query MAGIC scores are ``[docs, queries]`` —
+    so the run config next to it decides: it is per-query iff the run used
+    ``query_method: none`` without attributing tokens.
 
     Score directories are negated when their ``score_cfg.higher_is_better`` is
-    set, aligning them with the loss-diff convention. ``.npy`` files carry no
-    ``score_cfg`` and are loaded as-is: they must already be in the loss-diff
-    convention.
+    set, aligning them with the loss-diff convention.
     """
-    if os.path.isdir(score_path) or score_path.endswith(".npy"):
+    if os.path.isdir(score_path):
         loaded = load_scores(Path(score_path))
-        score_cfg = (
-            load_subconfig(score_path, "score_cfg", ScoreConfig)
-            if os.path.isdir(score_path)
-            else None
-        )
+        score_cfg = load_subconfig(score_path, "score_cfg", ScoreConfig)
         negate = score_cfg is not None and score_cfg.higher_is_better
 
         if isinstance(loaded, Scores) and loaded.offsets is not None:

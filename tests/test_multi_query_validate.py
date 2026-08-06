@@ -1,4 +1,3 @@
-import numpy as np
 import torch
 import torch.nn.functional as F
 from datasets import Dataset
@@ -72,13 +71,7 @@ def test_load_attribution_scores_single_column_dir(tmp_path):
     assert scores.shape == (4, 1)
 
 
-def test_load_attribution_scores_npy_and_pt(tmp_path):
-    npy_path = tmp_path / "scores.npy"
-    np.save(npy_path, np.zeros((5, 2), dtype=np.float32))
-    scores, multi_query = load_attribution_scores(str(npy_path))
-    assert multi_query
-    assert scores.shape == (5, 2)
-
+def test_load_attribution_scores_pt_without_config(tmp_path):
     # 2D tensors in .pt files are per-token MAGIC scores, never multi-query.
     pt_path = tmp_path / "scores.pt"
     torch.save(torch.zeros(5, 2), pt_path)

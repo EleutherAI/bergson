@@ -18,6 +18,7 @@ from datasets import Dataset
 import bergson.validate as validate
 from bergson.config.config import DataConfig
 from bergson.magic.config import MagicConfig
+from bergson.score.score_writer import save_sequence_scores
 from bergson.validate import bank_loss_cache_key, evaluate_retrained
 
 MODEL = "trl-internal-testing/tiny-Phi3ForCausalLM"
@@ -111,8 +112,8 @@ def test_evaluate_retrained_reuses_cached_bank_losses(
     cols = n_query if multi_query else 1
     rng = np.random.default_rng(0)
     scores = rng.standard_normal((NUM_DOCS, cols)).astype(np.float32)
-    score_path = tmp_path / "scores.npy"
-    np.save(score_path, scores)
+    score_path = tmp_path / "scores"
+    save_sequence_scores(score_path, scores)
 
     # First run: cold cache, evaluates the bank and writes the cache.
     cfg1 = _run_cfg(tmp_path, "run1", query_path)
@@ -150,8 +151,8 @@ def test_different_query_does_not_reuse_losses(tmp_path, model):
     root = _build_bank(tmp_path, model)
     query_path, n_query = _query_dataset(tmp_path)
     scores = np.random.default_rng(2).standard_normal((NUM_DOCS, n_query)).astype("f4")
-    score_path = tmp_path / "scores.npy"
-    np.save(score_path, scores)
+    score_path = tmp_path / "scores"
+    save_sequence_scores(score_path, scores)
 
     cfg_a = _run_cfg(tmp_path, "run_a", query_path)
     evaluate_retrained(cfg_a, str(root), score_path=str(score_path))
@@ -170,8 +171,8 @@ def test_evaluate_retrained_averages_over_dirs(tmp_path, model):
     query_path, _ = _query_dataset(tmp_path)
 
     scores = np.random.default_rng(0).standard_normal((NUM_DOCS, 1)).astype(np.float32)
-    score_path = tmp_path / "scores.npy"
-    np.save(score_path, scores)
+    score_path = tmp_path / "scores"
+    save_sequence_scores(score_path, scores)
 
     for name, dirs in [
         ("one", str(bank_a)),

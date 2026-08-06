@@ -260,9 +260,6 @@ def scores_are_per_token(score_path: str) -> bool:
             return False
         with open(info_path) as f:
             return bool(json.load(f).get("attribute_tokens", False))
-    if score_path.endswith(".npy"):
-        return False
-
     step_cfg = read_first_step_config(score_path)
     if step_cfg is not None:
         return cfg_attributes_tokens(step_cfg)
@@ -582,7 +579,7 @@ def worker(
             score_path = os.path.join(run_cfg.run_path, "scores.pt")
             torch.save(scores, score_path)
             print(f"Saved attribution scores to {score_path}")
-    elif os.path.isdir(score_path) or score_path.endswith(".npy"):
+    elif os.path.isdir(score_path):
         scores, multi_query = load_attribution_scores(score_path)
     else:
         scores = torch.load(score_path, map_location="cpu")
