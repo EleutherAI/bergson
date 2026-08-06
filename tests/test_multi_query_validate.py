@@ -71,14 +71,6 @@ def test_load_attribution_scores_single_column_dir(tmp_path):
     assert scores.shape == (4, 1)
 
 
-def test_load_attribution_scores_pt_without_config(tmp_path):
-    # 2D tensors in .pt files are per-token MAGIC scores, never multi-query.
-    pt_path = tmp_path / "scores.pt"
-    torch.save(torch.zeros(5, 2), pt_path)
-    scores, multi_query = load_attribution_scores(str(pt_path))
-    assert not multi_query
-
-
 def test_weighted_ce_sum_of_means_reduction():
     """sum_of_means = per-sample token-mean, summed over batch (no /B) —
     the MAGIC/metagradients convention (arXiv 2503.13751 App. D)."""
@@ -146,35 +138,3 @@ def test_metasmoothness_score():
 
     # Zero movement -> defined as perfectly smooth.
     assert metasmoothness_score(theta0, theta0, theta0) == 1.0
-
-
-def test_load_attribution_scores_pt_per_query(tmp_path):
-    """A per-query [docs, queries] scores.pt is flagged multi-query when the
-    run config beside it says query_method: none; per-token and configless
-    tensors stay single-query."""
-    import yaml
-
-    values = torch.arange(12, dtype=torch.float32).reshape(4, 3)
-    torch.save(values, tmp_path / "scores.pt")
-
-    # No config.yaml: ambiguous, keep the per-token interpretation.
-    _, multi_query = load_attribution_scores(str(tmp_path / "scores.pt"))
-    assert not multi_query
-
-    cfg = {"steps": [{"magic": {"query_method": "none", "per_token": False}}]}
-    (tmp_path / "config.yaml").write_text(yaml.safe_dump(cfg))
-    scores, multi_query = load_attribution_scores(str(tmp_path / "scores.pt"))
-    assert multi_query
-    torch.testing.assert_close(scores, values)
-
-    # Attributing tokens as well makes it 3-D, and still per-query.
-    cfg = {"steps": [{"magic": {"query_method": "none", "attribute_tokens": True}}]}
-    (tmp_path / "config.yaml").write_text(yaml.safe_dump(cfg))
-    torch.save(torch.zeros(4, 3, 2), tmp_path / "tok.pt")
-    _, multi_query = load_attribution_scores(str(tmp_path / "tok.pt"))
-    assert multi_query
-
-    cfg = {"steps": [{"magic": {"query_method": "mean"}}]}
-    (tmp_path / "config.yaml").write_text(yaml.safe_dump(cfg))
-    _, multi_query = load_attribution_scores(str(tmp_path / "scores.pt"))
-    assert not multi_query

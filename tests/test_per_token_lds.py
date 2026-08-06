@@ -16,20 +16,6 @@ from bergson.magic.data_stream import DataStream
 from bergson.validate import load_attribution_scores
 
 
-def test_load_attribution_scores_per_token_pt(tmp_path):
-    """A 2-D ``.pt`` tensor is treated as per-token MAGIC scores, never
-    multi-query -- so ``validate_scores`` keeps it 2-D for token re-weighting."""
-    scores = torch.randn(6, 5)
-    path = tmp_path / "scores.pt"
-    torch.save(scores, path)
-
-    loaded, multi_query = load_attribution_scores(str(path))
-
-    assert not multi_query
-    assert loaded.shape == (6, 5)
-    torch.testing.assert_close(loaded, scores)
-
-
 def test_datastream_serves_reweighted_per_token_weights():
     """End of the pipeline: after a flat per-token re-weight, the DataStream
     serves the updated per-token ``example_weight`` for each batch, so the
@@ -81,27 +67,14 @@ def test_load_token_dir_scatters_packed_to_grid(tmp_path):
 
 
 def test_scores_are_per_token_inference(tmp_path):
-    """``bergson validate`` infers per-token-ness from the scores themselves:
-    token dirs and 2-D ``.pt`` tensors are per-token; 1-D ``.pt`` and plain
-    score dirs are per-document."""
+    """Per-token-ness comes from the store's info.json; a directory without
+    one is not a score store."""
     from bergson.magic.cli import scores_are_per_token
 
     token_dir = tmp_path / "token_dir"
     token_dir.mkdir()
     _write_token_dir(token_dir, ntg=[3, 2], values=[1, 2, 3, 4, 5])
     assert scores_are_per_token(str(token_dir))
-
-    pt_2d = tmp_path / "per_token.pt"
-    torch.save(torch.randn(6, 5), pt_2d)
-    assert scores_are_per_token(str(pt_2d))
-
-    pt_1d = tmp_path / "per_doc.pt"
-    torch.save(torch.randn(6), pt_1d)
-    assert not scores_are_per_token(str(pt_1d))
-
-    pt_col = tmp_path / "per_doc_col.pt"
-    torch.save(torch.randn(6, 1), pt_col)
-    assert not scores_are_per_token(str(pt_col))
 
     plain_dir = tmp_path / "plain_dir"
     plain_dir.mkdir()
@@ -120,18 +93,3 @@ def test_load_token_dir_keeps_query_dim_when_multiscore(tmp_path):
     torch.testing.assert_close(scores[0, 0], torch.tensor([1.0, 2.0]))
     torch.testing.assert_close(scores[1, 0], torch.tensor([5.0, 6.0]))
     torch.testing.assert_close(scores[1, 1], torch.tensor([0.0, 0.0]))
-
-
-def test_scores_are_per_token_from_run_config(tmp_path):
-    """With a run config beside it, the flag decides rather than the shape --
-    including ``attribute_tokens``, not just the deprecated ``per_token``."""
-    import yaml
-
-    from bergson.magic.cli import scores_are_per_token
-
-    # A shape the fallback above would read as per-doc.
-    torch.save(torch.zeros(4, 1), tmp_path / "scores.pt")
-    cfg = {"steps": [{"magic": {"query_method": "mean", "attribute_tokens": True}}]}
-    (tmp_path / "config.yaml").write_text(yaml.safe_dump(cfg))
-
-    assert scores_are_per_token(str(tmp_path / "scores.pt"))

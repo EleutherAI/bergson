@@ -32,25 +32,35 @@ Output files
 
 After a run completes, ``run_cfg.run_path`` contains:
 
-* ``scores.pt`` — attribution scores tensor. Shape depends on the weight
-  parameterization:
+* ``scores/`` — a score directory, the same self-describing format the
+  scoring pipeline writes. ``info.json`` records ``attribute_tokens`` and
+  ``num_scores``, so consumers never infer the layout from the shape.
+  Read it with :func:`bergson.validate.load_attribution_scores`, which
+  returns ``(scores, multi_query)``:
 
-  * Per-example (1D weights): ``(num_train_docs,)``, indexed directly by
-    ``doc_id``.
-  * Per-token (2D weights): ``(num_chunks, seq_len)``, indexed by
-    ``(chunk_idx, token_idx)`` in the *post-shuffle* order used during
-    training. Pad rows appended to make the dataset divisible by
-    ``batch_size`` are trimmed before saving.
+  * Per-example: ``(num_train_docs, 1)``, indexed directly by ``doc_id``.
+  * Per-token: ``(num_chunks, seq_len)``, indexed by ``(chunk_idx,
+    token_idx)`` in the *post-shuffle* order used during training.
+  * Per-query (``query_method: none``) adds a trailing query axis, so
+    per-token per-query scores are ``(num_chunks, seq_len,
+    num_query_docs)``.
 
-* ``doc_ids.pt`` — written alongside ``scores.pt`` for every per-token
-  run, shape ``(num_chunks, seq_len)`` matching ``scores.pt`` row-for-row.
-  Each entry is the original (pre-shuffle) document id for that token
-  position. Downstream aggregation is one line:
+  Pad rows appended to make the dataset divisible by ``batch_size`` are
+  trimmed before saving. Per-token scores are stored ragged — a row holds
+  ``length - 1`` values, the positions ``weighted_causal_lm_ce`` can reach
+  — and are unpacked back into the dense grid on load.
+
+* ``scores/doc_ids.npy`` — written for every per-token run, shape
+  ``(num_chunks, seq_len)`` matching the loaded scores row-for-row. Each
+  entry is the original (pre-shuffle) document id for that token position.
+  Downstream aggregation is one line:
 
   .. code-block:: python
 
-     scores = torch.load("scores.pt")      # (num_chunks, seq_len)
-     doc_ids = torch.load("doc_ids.pt")    # (num_chunks, seq_len)
+     from bergson.validate import load_attribution_scores
+
+     scores, _ = load_attribution_scores("runs/magic/scores")
+     doc_ids = torch.from_numpy(np.load("runs/magic/scores/doc_ids.npy"))
      num_docs = int(doc_ids.max()) + 1
      per_doc = torch.zeros(num_docs, dtype=scores.dtype)
      per_doc.scatter_add_(0, doc_ids.flatten(), scores.flatten())

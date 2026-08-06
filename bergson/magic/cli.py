@@ -6,6 +6,7 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 
+import numpy as np
 import torch
 import torch.distributed as dist
 from datasets import Dataset, concatenate_datasets
@@ -28,8 +29,10 @@ from transformers.utils.logging import (
 )
 
 from ..config.config import TrainingConfig, ValidationConfig
-from ..config.config_io import read_first_step_config, save_run_config
+from ..config.config_io import save_run_config
+from ..data import compute_num_token_grads
 from ..distributed import launch_distributed_run
+from ..score.score_writer import save_sequence_scores, save_token_scores
 from ..utils.load_from_optimizer import (
     save_second_moments_as_optimizer_pt,
 )
@@ -244,20 +247,11 @@ def compute_per_query_magic_scores(
 
 
 def scores_are_per_token(score_path: str) -> bool:
-    if os.path.isdir(score_path):
-        info_path = os.path.join(score_path, "info.json")
-        if not os.path.isfile(info_path):
-            return False
-        with open(info_path) as f:
-            return bool(json.load(f).get("attribute_tokens", False))
-    step_cfg = read_first_step_config(score_path)
-    if step_cfg is not None:
-        return bool(step_cfg.get("attribute_tokens") or step_cfg.get("per_token"))
-
-    scores = torch.load(score_path, map_location="cpu")
-    return isinstance(scores, torch.Tensor) and (
-        scores.ndim == 3 or (scores.ndim == 2 and scores.shape[1] > 1)
-    )
+    info_path = os.path.join(score_path, "info.json")
+    if not os.path.isfile(info_path):
+        return False
+    with open(info_path) as f:
+        return bool(json.load(f).get("attribute_tokens", False))
 
 
 def attach_doc_ids_if_missing(dataset: Dataset) -> Dataset:
@@ -286,16 +280,46 @@ def attach_doc_ids_if_missing(dataset: Dataset) -> Dataset:
     )
 
 
-def save_doc_ids(run_path: str, train_dataset: Dataset, pad_count: int) -> str:
-    """Write ``doc_ids.pt`` beside a per-token ``scores.pt``."""
-    doc_ids = torch.tensor(train_dataset["doc_ids"])
+def save_magic_scores(
+    run_path: str,
+    scores: torch.Tensor,
+    train_dataset: Dataset,
+    pad_count: int,
+    per_token: bool,
+) -> str:
+    """Write MAGIC scores as a score directory under ``<run_path>/scores``.
+
+    Columns past a row's ``length - 1`` never receive gradient, so the dense
+    per-token grid packs into the ragged store without loss.
+    """
+    path = Path(run_path) / "scores"
+
+    if not per_token:
+        arr = scores.float().numpy()
+        save_sequence_scores(path, arr if arr.ndim > 1 else arr[:, None])
+        print(f"Saved attribution scores to {path}")
+        return str(path)
+
+    num_token_grads = compute_num_token_grads(train_dataset)
+    doc_ids = np.asarray(train_dataset["doc_ids"], dtype=np.int64)
     if pad_count:
+        num_token_grads = num_token_grads[:-pad_count]
         doc_ids = doc_ids[:-pad_count]
 
-    doc_ids_path = os.path.join(run_path, "doc_ids.pt")
-    torch.save(doc_ids, doc_ids_path)
-    print(f"Saved doc_ids to {doc_ids_path}")
-    return doc_ids_path
+    offsets = np.zeros(len(num_token_grads) + 1, dtype=np.int64)
+    np.cumsum(num_token_grads, out=offsets[1:])
+
+    grid = scores.float().numpy()
+    if grid.ndim == 2:
+        grid = grid[:, :, None]
+    flat = np.concatenate(
+        [grid[r, : num_token_grads[r]] for r in range(len(num_token_grads))]
+    )
+
+    save_token_scores(path, flat, offsets)
+    np.save(path / "doc_ids.npy", doc_ids)
+    print(f"Saved attribution scores to {path}")
+    return str(path)
 
 
 def shuffled_epochs(dataset: Dataset, seed: int, num_epochs: int) -> Dataset:
@@ -512,9 +536,9 @@ def worker(
         if global_rank == 0:
             print(f"Baseline loss: {baseline}")
             print(f"Score summary: {describe(scores.flatten())}")
-            score_path = os.path.join(run_cfg.run_path, "scores.pt")
-            torch.save(scores, score_path)
-            print(f"Saved per-query attribution scores to {score_path}")
+            score_path = save_magic_scores(
+                run_cfg.run_path, scores, train_dataset, pad_count, bool(per_token)
+            )
     elif not score_path:
         # Sanity check
         if not isinstance(run_cfg, MagicConfig):
@@ -566,16 +590,11 @@ def worker(
             summ = describe(scores.flatten())
             print(f"Score summary: {summ}")
 
-            score_path = os.path.join(run_cfg.run_path, "scores.pt")
-            torch.save(scores, score_path)
-            print(f"Saved attribution scores to {score_path}")
-    elif os.path.isdir(score_path):
-        scores, multi_query = load_attribution_scores(score_path)
+            score_path = save_magic_scores(
+                run_cfg.run_path, scores, train_dataset, pad_count, bool(per_token)
+            )
     else:
-        scores = torch.load(score_path, map_location="cpu")
-
-    if per_token and global_rank == 0:
-        save_doc_ids(run_cfg.run_path, train_dataset, pad_count)
+        scores, multi_query = load_attribution_scores(score_path)
 
     stream.requires_grad = False
 

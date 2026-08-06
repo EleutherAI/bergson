@@ -232,11 +232,13 @@ def _per_query_run(tmp_path, attribute_tokens: bool, num_docs=5, seq_len=8, n_qu
     )
     worker(0, 0, 1, ds(num_docs), ds(n_query), num_docs, n_query, run_cfg)
 
-    doc_ids = run_path / "doc_ids.pt"
-    return (
-        torch.load(run_path / "scores.pt"),
-        torch.load(doc_ids) if doc_ids.exists() else None,
-    )
+    import numpy as np
+
+    from bergson.validate import load_attribution_scores
+
+    scores, _ = load_attribution_scores(str(run_path / "scores"))
+    doc_ids = run_path / "scores" / "doc_ids.npy"
+    return scores, (torch.from_numpy(np.load(doc_ids)) if doc_ids.exists() else None)
 
 
 def test_per_query_per_token_aggregates_to_per_doc(tmp_path):
@@ -258,16 +260,3 @@ def test_per_query_per_token_aggregates_to_per_doc(tmp_path):
     )
 
     torch.testing.assert_close(agg, per_doc.to(torch.float64), atol=1e-5, rtol=1e-4)
-
-
-def test_three_dim_scores_load_as_per_token_multi_query(tmp_path):
-    """A 3-D scores.pt is unambiguous: neither classifier needs the run config."""
-    from bergson.magic.cli import scores_are_per_token
-    from bergson.validate import load_attribution_scores
-
-    path = tmp_path / "scores.pt"
-    torch.save(torch.randn(4, 6, 3), path)
-
-    assert scores_are_per_token(str(path))
-    _, multi_query = load_attribution_scores(str(path))
-    assert multi_query

@@ -30,8 +30,8 @@ from transformers.utils.logging import (
 )
 
 from .config.config import ScoreConfig, ValidationConfig
-from .config.config_io import load_subconfig, read_first_step_config, save_run_config
-from .data import Scores, load_scores, pad_and_tensor
+from .config.config_io import load_subconfig, save_run_config
+from .data import load_scores, pad_and_tensor
 from .magic.data_stream import DataStream, pad_dataset_to_batch_size
 from .magic.trainer import TrainerState, prepare_trainer
 from .utils.csv_writer import CSVWriter
@@ -40,47 +40,29 @@ from .utils.worker_utils import setup_data_pipeline
 
 
 def load_attribution_scores(score_path: str) -> tuple[torch.Tensor, bool]:
-    """Load attribution scores from a score directory or ``.pt`` file.
+    """Load attribution scores from a score directory.
 
-    Returns ``(scores, multi_query)``. Token score directories are per-token,
-    with a query dimension when ``num_scores > 1`` (``[docs, seq_len,
-    queries]``); plain score directories are per-document, with one column per
-    query. A 3-D ``.pt`` tensor is per-token per-query ``[docs, seq_len,
-    queries]``. A 2-D ``.pt`` tensor is ambiguous — per-token MAGIC scores are
-    ``[docs, seq_len]`` and per-query MAGIC scores are ``[docs, queries]`` —
-    so the run config next to it decides: it is per-query iff the run used
-    ``query_method: none`` without attributing tokens.
-
-    Score directories are negated when their ``score_cfg.higher_is_better`` is
-    set, aligning them with the loss-diff convention.
+    Returns ``(scores, multi_query)``. Token stores are per-token, with a
+    query dimension when ``num_scores > 1`` (``[docs, seq_len, queries]``);
+    plain stores are per-document, with one column per query. Scores are
+    negated when ``score_cfg.higher_is_better`` is set, aligning them with
+    the loss-diff convention.
     """
-    if os.path.isdir(score_path):
-        loaded = load_scores(Path(score_path))
-        score_cfg = load_subconfig(score_path, "score_cfg", ScoreConfig)
-        negate = score_cfg is not None and score_cfg.higher_is_better
+    loaded = load_scores(Path(score_path))
+    score_cfg = load_subconfig(score_path, "score_cfg", ScoreConfig)
+    negate = score_cfg is not None and score_cfg.higher_is_better
 
-        if isinstance(loaded, Scores) and loaded.offsets is not None:
-            scores = loaded.to_grid()
-            if negate:
-                scores = -scores
-            return scores, loaded.num_scores > 1
-
+    if loaded.offsets is not None:
+        scores = loaded.to_grid()
+    else:
         arr = np.asarray(loaded[:])
         # Copy: the slice is a read-only view onto the memmap.
         out_dtype = arr.dtype if np.issubdtype(arr.dtype, np.floating) else np.float32
         scores = torch.from_numpy(arr.astype(out_dtype, copy=True))
-        if negate:
-            scores = -scores
-        return scores, loaded.num_scores > 1
 
-    scores = torch.load(score_path, map_location="cpu")
-    if not isinstance(scores, torch.Tensor) or scores.ndim not in (2, 3):
-        return scores, False
-
-    step_cfg = read_first_step_config(score_path)
-    if step_cfg is None:
-        return scores, scores.ndim == 3
-    return scores, step_cfg.get("query_method") == "none"
+    if negate:
+        scores = -scores
+    return scores, loaded.num_scores > 1
 
 
 def bank_loss_cache_key(

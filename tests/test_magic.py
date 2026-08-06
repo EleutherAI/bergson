@@ -1358,16 +1358,20 @@ def test_worker_writes_doc_ids_for_fresh_per_token_run(tmp_path):
 
     worker(0, 0, 1, train_ds, query_ds, num_docs, 2, run_cfg)
 
-    scores_path = tmp_path / "scores.pt"
-    doc_ids_path = tmp_path / "doc_ids.pt"
-    assert scores_path.is_file(), "worker() did not write scores.pt"
+    import numpy as np
+
+    from bergson.validate import load_attribution_scores
+
+    score_dir = tmp_path / "scores"
+    doc_ids_path = score_dir / "doc_ids.npy"
+    assert score_dir.is_dir(), "worker() did not write a score directory"
     assert doc_ids_path.is_file(), (
-        "worker() wrote scores.pt but no doc_ids.pt; per-token scores are "
+        "worker() wrote scores but no doc_ids.npy; per-token scores are "
         "indexed by shuffled chunk, so they are unaggregatable without it"
     )
 
-    scores = torch.load(scores_path)
-    doc_ids = torch.load(doc_ids_path)
+    scores, _ = load_attribution_scores(str(score_dir))
+    doc_ids = torch.from_numpy(np.load(doc_ids_path))
     assert scores.ndim == 2, f"expected per-token scores, got {scores.shape}"
     assert doc_ids.shape == scores.shape
 
@@ -1376,3 +1380,39 @@ def test_worker_writes_doc_ids_for_fresh_per_token_run(tmp_path):
     torch.testing.assert_close(
         agg.sum(), scores.sum().to(torch.float64), atol=1e-6, rtol=1e-5
     )
+
+
+@pytest.mark.parametrize("num_scores", [1, 2])
+def test_save_magic_scores_round_trips_the_grid(tmp_path, num_scores):
+    """The ragged store returns the dense grid MAGIC computed. Columns past a
+    row's ``length - 1`` never receive gradient, so packing drops only zeros
+    and ``to_grid`` restores the same shape and values."""
+    import numpy as np
+    from datasets import Dataset
+
+    from bergson.magic.cli import save_magic_scores
+    from bergson.validate import load_attribution_scores
+
+    rows, seq_len = 4, 6
+    data = Dataset.from_dict(
+        {
+            "input_ids": [[1] * seq_len] * rows,
+            "labels": [[1] * seq_len] * rows,
+            "doc_ids": [[d] * seq_len for d in range(rows)],
+            "length": [seq_len] * rows,
+        }
+    )
+
+    shape = (rows, seq_len) if num_scores == 1 else (rows, seq_len, num_scores)
+    grid = torch.arange(int(np.prod(shape)), dtype=torch.float32).reshape(shape)
+    grid[:, seq_len - 1] = 0.0  # the column weighted_causal_lm_ce never reaches
+
+    save_magic_scores(str(tmp_path), grid, data, pad_count=0, per_token=True)
+    loaded, multi_query = load_attribution_scores(str(tmp_path / "scores"))
+
+    assert multi_query == (num_scores > 1)
+    assert loaded.shape == grid.shape
+    torch.testing.assert_close(loaded, grid)
+
+    doc_ids = np.load(tmp_path / "scores" / "doc_ids.npy")
+    assert doc_ids.shape == (rows, seq_len)
