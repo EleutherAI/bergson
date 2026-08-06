@@ -28,7 +28,7 @@ from transformers.utils.logging import (
 )
 
 from ..config.config import TrainingConfig, ValidationConfig
-from ..config.config_io import save_run_config
+from ..config.config_io import read_first_step_config, save_run_config
 from ..distributed import launch_distributed_run
 from ..utils.load_from_optimizer import (
     save_second_moments_as_optimizer_pt,
@@ -130,9 +130,8 @@ def compute_per_query_magic_scores(
     yields a single aggregate-query score. This scores each query separately:
     for each query document it takes that document's gradient at the final model
     as the backward cotangent and runs ``Trainer.backward`` over the saved
-    trajectory, producing a ``[num_train_docs, num_query_docs]`` matrix (the
-    layout ``validate_scores`` consumes: rows are leave-out docs, columns
-    queries).
+    trajectory, producing ``[num_train_docs, num_query_docs]`` — or
+    ``[num_train_docs, seq_len, num_query_docs]`` when attributing tokens.
 
     The backward is linear in the cotangent, so this is exact; the forward runs
     once and every query reuses its checkpoints (``cleanup=False``). Per-query
@@ -217,7 +216,7 @@ def compute_per_query_magic_scores(
 
         s = bwd_state.weight_grads.detach().cpu()
         if pad_count:
-            s = s[:-weight_pad_count]
+            s = s[:-weight_pad_count] if s.ndim == 1 else s[:-pad_count]
         if main:
             torch.save(s, qpath)
         per_query.append(s)
@@ -241,22 +240,30 @@ def compute_per_query_magic_scores(
     fwd_state.copy_(restored)
     del restored
 
-    # [num_train_docs, num_query_docs] — the layout validate_scores expects
-    # (rows are leave-out docs; columns are queries).
-    return torch.stack(per_query, dim=1)
+    return torch.stack(per_query, dim=-1)
 
 
 def scores_are_per_token(score_path: str) -> bool:
+    """Whether ``score_path`` holds per-token scores.
+
+    Score directories record it in ``info.json`` and ``.pt`` files in the run
+    config beside them. Without either -- an externally produced tensor --
+    fall back to the shape, where only 3-D is unambiguous.
+    """
     if os.path.isdir(score_path):
         info_path = os.path.join(score_path, "info.json")
         if not os.path.isfile(info_path):
             return False
         with open(info_path) as f:
             return bool(json.load(f).get("attribute_tokens", False))
-    if score_path.endswith(".npy"):
-        return False
+    step_cfg = read_first_step_config(score_path)
+    if step_cfg is not None:
+        return bool(step_cfg.get("attribute_tokens") or step_cfg.get("per_token"))
+
     scores = torch.load(score_path, map_location="cpu")
-    return isinstance(scores, torch.Tensor) and scores.ndim == 2 and scores.shape[1] > 1
+    return isinstance(scores, torch.Tensor) and (
+        scores.ndim == 3 or (scores.ndim == 2 and scores.shape[1] > 1)
+    )
 
 
 def attach_doc_ids_if_missing(dataset: Dataset) -> Dataset:
@@ -487,9 +494,8 @@ def worker(
 
     multi_query = False
     if not score_path and run_cfg.query_method == "none":
-        # Per-query MAGIC: one backward per query, sharing the forward. Yields a
-        # [num_query_docs, num_train_docs] score matrix (multi_query), the unit
-        # for a per-query LDS.
+        # Per-query MAGIC: one backward per query, sharing the forward. Yields
+        # the unit for a per-query LDS.
         if not isinstance(run_cfg, MagicConfig):
             raise RuntimeError("run_cfg must be a MagicConfig to compute scores")
         assert query_dataset is not None
@@ -569,7 +575,7 @@ def worker(
             score_path = os.path.join(run_cfg.run_path, "scores.pt")
             torch.save(scores, score_path)
             print(f"Saved attribution scores to {score_path}")
-    elif os.path.isdir(score_path) or score_path.endswith(".npy"):
+    elif os.path.isdir(score_path):
         scores, multi_query = load_attribution_scores(score_path)
     else:
         scores = torch.load(score_path, map_location="cpu")

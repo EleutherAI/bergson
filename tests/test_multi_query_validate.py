@@ -1,4 +1,3 @@
-import numpy as np
 import torch
 import torch.nn.functional as F
 from datasets import Dataset
@@ -72,13 +71,7 @@ def test_load_attribution_scores_single_column_dir(tmp_path):
     assert scores.shape == (4, 1)
 
 
-def test_load_attribution_scores_npy_and_pt(tmp_path):
-    npy_path = tmp_path / "scores.npy"
-    np.save(npy_path, np.zeros((5, 2), dtype=np.float32))
-    scores, multi_query = load_attribution_scores(str(npy_path))
-    assert multi_query
-    assert scores.shape == (5, 2)
-
+def test_load_attribution_scores_pt_without_config(tmp_path):
     # 2D tensors in .pt files are per-token MAGIC scores, never multi-query.
     pt_path = tmp_path / "scores.pt"
     torch.save(torch.zeros(5, 2), pt_path)
@@ -174,11 +167,12 @@ def test_load_attribution_scores_pt_per_query(tmp_path):
     assert multi_query
     torch.testing.assert_close(scores, values)
 
-    # Per-token runs save [docs, seq_len]; never multi-query.
-    cfg = {"steps": [{"magic": {"query_method": "none", "per_token": True}}]}
+    # Attributing tokens as well makes it 3-D, and still per-query.
+    cfg = {"steps": [{"magic": {"query_method": "none", "attribute_tokens": True}}]}
     (tmp_path / "config.yaml").write_text(yaml.safe_dump(cfg))
-    _, multi_query = load_attribution_scores(str(tmp_path / "scores.pt"))
-    assert not multi_query
+    torch.save(torch.zeros(4, 3, 2), tmp_path / "tok.pt")
+    _, multi_query = load_attribution_scores(str(tmp_path / "tok.pt"))
+    assert multi_query
 
     cfg = {"steps": [{"magic": {"query_method": "mean"}}]}
     (tmp_path / "config.yaml").write_text(yaml.safe_dump(cfg))

@@ -18,7 +18,6 @@ import numpy as np
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
-import yaml
 from peft import PeftModel
 from scipy.stats import pearsonr, spearmanr
 from tqdm import tqdm
@@ -31,7 +30,7 @@ from transformers.utils.logging import (
 )
 
 from .config.config import ScoreConfig, ValidationConfig
-from .config.config_io import CONFIG_FILENAME, load_subconfig, save_run_config
+from .config.config_io import load_subconfig, read_first_step_config, save_run_config
 from .data import Scores, load_scores, pad_and_tensor
 from .magic.data_stream import DataStream, pad_dataset_to_batch_size
 from .magic.trainer import TrainerState, prepare_trainer
@@ -41,35 +40,30 @@ from .utils.worker_utils import setup_data_pipeline
 
 
 def load_attribution_scores(score_path: str) -> tuple[torch.Tensor, bool]:
-    """Load attribution scores from a score directory, ``.npy``, or ``.pt`` file.
+    """Load attribution scores from a score directory or ``.pt`` file.
 
     Returns ``(scores, multi_query)``. Token score directories are per-token,
     with a query dimension when ``num_scores > 1`` (``[docs, seq_len,
-    queries]``); plain score directories and ``.npy`` arrays are per-document,
-    with one column per query. A 2-D ``.pt`` tensor is ambiguous — per-token
-    MAGIC scores are ``[docs, seq_len]`` and per-query MAGIC scores are
-    ``[docs, queries]`` — so the run config next to it decides: it is
-    per-query iff the run used ``query_method: none``.
+    queries]``); plain score directories are per-document, with one column per
+    query. A 3-D ``.pt`` tensor is per-token per-query ``[docs, seq_len,
+    queries]``. A 2-D ``.pt`` tensor is ambiguous — per-token MAGIC scores are
+    ``[docs, seq_len]`` and per-query MAGIC scores are ``[docs, queries]`` —
+    so the run config next to it decides: it is per-query iff the run used
+    ``query_method: none`` without attributing tokens.
 
     Score directories are negated when their ``score_cfg.higher_is_better`` is
-    set, aligning them with the loss-diff convention. ``.npy`` files carry no
-    ``score_cfg`` and are loaded as-is: they must already be in the loss-diff
-    convention.
+    set, aligning them with the loss-diff convention.
     """
-    if os.path.isdir(score_path) or score_path.endswith(".npy"):
+    if os.path.isdir(score_path):
         loaded = load_scores(Path(score_path))
-        score_cfg = (
-            load_subconfig(score_path, "score_cfg", ScoreConfig)
-            if os.path.isdir(score_path)
-            else None
-        )
+        score_cfg = load_subconfig(score_path, "score_cfg", ScoreConfig)
         negate = score_cfg is not None and score_cfg.higher_is_better
 
         if isinstance(loaded, Scores) and loaded.offsets is not None:
             scores = loaded.to_grid()
             if negate:
                 scores = -scores
-            return scores, scores.ndim == 3
+            return scores, loaded.num_scores > 1
 
         arr = np.asarray(loaded[:])
         # Copy: the slice is a read-only view onto the memmap.
@@ -77,35 +71,16 @@ def load_attribution_scores(score_path: str) -> tuple[torch.Tensor, bool]:
         scores = torch.from_numpy(arr.astype(out_dtype, copy=True))
         if negate:
             scores = -scores
-        return scores, scores.ndim == 2 and scores.shape[1] > 1
+        return scores, loaded.num_scores > 1
 
     scores = torch.load(score_path, map_location="cpu")
-    return scores, _pt_scores_are_per_query(score_path, scores)
+    if not isinstance(scores, torch.Tensor) or scores.ndim not in (2, 3):
+        return scores, False
 
-
-def _pt_scores_are_per_query(score_path: str, scores: torch.Tensor) -> bool:
-    """Whether a 2-D ``.pt`` tensor is per-query ``[docs, queries]`` rather
-    than per-token ``[docs, seq_len]``. The shape alone cannot tell them
-    apart; the run config written next to ``scores.pt`` records which one
-    ``run_magic`` saved."""
-    if not (isinstance(scores, torch.Tensor) and scores.ndim == 2):
-        return False
-    cfg_path = Path(score_path).parent / CONFIG_FILENAME
-    if not cfg_path.is_file():
-        return False
-    with open(cfg_path) as f:
-        doc = yaml.safe_load(f)
-    if not isinstance(doc, dict):
-        return False
-    steps = doc.get("steps")
-    payload = (
-        next(iter(steps[0].values())) if isinstance(steps, list) and steps else doc
-    )
-    return (
-        isinstance(payload, dict)
-        and payload.get("query_method") == "none"
-        and not payload.get("per_token")
-    )
+    step_cfg = read_first_step_config(score_path)
+    if step_cfg is None:
+        return scores, scores.ndim == 3
+    return scores, step_cfg.get("query_method") == "none"
 
 
 def bank_loss_cache_key(

@@ -120,6 +120,31 @@ def read_config(path: str | Path) -> dict[str, Any]:
     return config
 
 
+def read_first_step_config(path: str | Path) -> dict[str, Any] | None:
+    """The first step's configuration from a run's ``config.yaml``.
+
+    ``path`` may be the run directory or an artifact inside it (``scores.pt``),
+    so callers holding an output path need not resolve it. Returns ``None``
+    when there is no readable config, which is the signal that a caller must
+    fall back to inspecting the artifact itself.
+    """
+    p = Path(path)
+    cfg_path = (p if p.is_dir() else p.parent) / CONFIG_FILENAME
+    if not cfg_path.is_file():
+        return None
+
+    try:
+        steps = read_config(cfg_path)["steps"]
+    except (ValueError, yaml.YAMLError):
+        return None
+
+    for step in steps:
+        for step_cfg in step.values():
+            if isinstance(step_cfg, dict):
+                return step_cfg
+    return None
+
+
 T = TypeVar("T", bound="FromDict")
 
 

@@ -16,105 +16,6 @@ from bergson.magic.data_stream import DataStream
 from bergson.validate import load_attribution_scores
 
 
-def test_flat_reweight_per_doc_matches_direct_indexing():
-    """1-D (per-doc) weights: ``view(-1)[subset]`` equals direct indexing, so
-    the per-document leave-k-out path is unchanged by the flat generalization."""
-    weights = torch.ones(8)
-    subset = torch.tensor([1, 4, 6])
-
-    flat = weights.clone()
-    flat.view(-1)[subset] = 0.0
-    direct = torch.ones(8)
-    direct[subset] = 0.0
-
-    torch.testing.assert_close(flat, direct)
-
-
-def test_flat_reweight_per_token_hits_grid_positions():
-    """2-D (per-token) weights: a flat subset re-weights exactly the intended
-    ``doc * seq_len + token`` grid positions and nothing else."""
-    n_docs, seq_len = 4, 5
-    weights = torch.ones(n_docs, seq_len)
-    # doc 1 token 2, doc 3 token 0, doc 3 token 4
-    positions = [(1, 2), (3, 0), (3, 4)]
-    subset = torch.tensor([d * seq_len + t for d, t in positions])
-
-    weights.view(-1)[subset] = 2.0
-
-    expected = torch.ones(n_docs, seq_len)
-    for d, t in positions:
-        expected[d, t] = 2.0
-    torch.testing.assert_close(weights, expected)
-
-
-def test_whole_doc_token_subset_reweights_full_row():
-    """Selecting every token position of a document is equivalent to selecting
-    that document in the per-document formulation (its whole row is set)."""
-    n_docs, seq_len = 3, 6
-    weights = torch.ones(n_docs, seq_len)
-    doc = 1
-    subset = torch.arange(doc * seq_len, (doc + 1) * seq_len)
-
-    weights.view(-1)[subset] = 0.0
-
-    expected = torch.ones(n_docs, seq_len)
-    expected[doc] = 0.0
-    torch.testing.assert_close(weights, expected)
-
-
-def test_reweight_sequence_preserves_padding_rows():
-    """The retrain loop's exact sequence -- fill with 1.0, zero the padding
-    rows, then flat-reweight the subset -- leaves padding rows at zero, so
-    batch-size padding docs never re-enter training."""
-    n_docs, seq_len, pad_count = 4, 5, 1
-    weights = torch.ones(n_docs, seq_len)
-    weights.data[-pad_count:] = 0.0
-    subset = torch.tensor([0 * seq_len + 2, 1 * seq_len + 4])
-
-    weights.view(-1)[subset] = 0.0
-
-    assert weights[-pad_count:].eq(0).all()
-    expected_real = torch.ones(n_docs - pad_count, seq_len)
-    expected_real[0, 2] = 0.0
-    expected_real[1, 4] = 0.0
-    torch.testing.assert_close(weights[:-pad_count], expected_real)
-
-
-def test_score_sum_flat_per_token():
-    """``scores.reshape(-1)[subset].sum()`` sums the selected per-token scores
-    regardless of the score tensor's shape (1-D per doc or 2-D per token)."""
-    scores = torch.arange(12, dtype=torch.float32).reshape(3, 4)
-    subset = torch.tensor([0 * 4 + 1, 2 * 4 + 3])  # scores 1 and 11
-
-    got = scores.reshape(-1)[subset].sum()
-
-    torch.testing.assert_close(got, torch.tensor(12.0))
-    # Same expression on a flat (per-doc) score vector.
-    flat = torch.arange(6, dtype=torch.float32)
-    torch.testing.assert_close(
-        flat.reshape(-1)[torch.tensor([0, 5])].sum(), torch.tensor(5.0)
-    )
-
-
-def test_score_sum_flat_multi_query_per_token():
-    """``scores.reshape(-1, num_queries)[subset].sum(dim=0)`` sums each query's
-    scores over the selected token positions of a ``[docs, seq_len, queries]``
-    grid -- the same expression that serves per-doc multi-query scores."""
-    n_docs, seq_len, num_queries = 2, 3, 2
-    scores = torch.arange(12, dtype=torch.float32).reshape(n_docs, seq_len, num_queries)
-    # doc 0 token 1, doc 1 token 2
-    subset = torch.tensor([0 * seq_len + 1, 1 * seq_len + 2])
-
-    got = scores.reshape(-1, num_queries)[subset].sum(dim=0)
-
-    torch.testing.assert_close(got, scores[0, 1] + scores[1, 2])
-    # Per-doc multi-query [docs, queries] is served by the same expression.
-    per_doc = torch.arange(8, dtype=torch.float32).reshape(4, 2)
-    torch.testing.assert_close(
-        per_doc.reshape(-1, 2)[torch.tensor([1, 3])].sum(dim=0), per_doc[1] + per_doc[3]
-    )
-
-
 def test_load_attribution_scores_per_token_pt(tmp_path):
     """A 2-D ``.pt`` tensor is treated as per-token MAGIC scores, never
     multi-query -- so ``validate_scores`` keeps it 2-D for token re-weighting."""
@@ -181,8 +82,8 @@ def test_load_token_dir_scatters_packed_to_grid(tmp_path):
 
 def test_scores_are_per_token_inference(tmp_path):
     """``bergson validate`` infers per-token-ness from the scores themselves:
-    token dirs and 2-D ``.pt`` tensors are per-token; 1-D ``.pt``, ``.npy``,
-    and plain score dirs are per-document."""
+    token dirs and 2-D ``.pt`` tensors are per-token; 1-D ``.pt`` and plain
+    score dirs are per-document."""
     from bergson.magic.cli import scores_are_per_token
 
     token_dir = tmp_path / "token_dir"
@@ -202,12 +103,6 @@ def test_scores_are_per_token_inference(tmp_path):
     torch.save(torch.randn(6, 1), pt_col)
     assert not scores_are_per_token(str(pt_col))
 
-    import numpy as np
-
-    npy = tmp_path / "multi_query.npy"
-    np.save(npy, np.random.randn(6, 5))
-    assert not scores_are_per_token(str(npy))
-
     plain_dir = tmp_path / "plain_dir"
     plain_dir.mkdir()
     assert not scores_are_per_token(str(plain_dir))
@@ -225,3 +120,18 @@ def test_load_token_dir_keeps_query_dim_when_multiscore(tmp_path):
     torch.testing.assert_close(scores[0, 0], torch.tensor([1.0, 2.0]))
     torch.testing.assert_close(scores[1, 0], torch.tensor([5.0, 6.0]))
     torch.testing.assert_close(scores[1, 1], torch.tensor([0.0, 0.0]))
+
+
+def test_scores_are_per_token_from_run_config(tmp_path):
+    """With a run config beside it, the flag decides rather than the shape --
+    including ``attribute_tokens``, not just the deprecated ``per_token``."""
+    import yaml
+
+    from bergson.magic.cli import scores_are_per_token
+
+    # A shape the fallback above would read as per-doc.
+    torch.save(torch.zeros(4, 1), tmp_path / "scores.pt")
+    cfg = {"steps": [{"magic": {"query_method": "mean", "attribute_tokens": True}}]}
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump(cfg))
+
+    assert scores_are_per_token(str(tmp_path / "scores.pt"))

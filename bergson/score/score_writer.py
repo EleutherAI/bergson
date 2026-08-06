@@ -156,11 +156,12 @@ class MemmapTokenScoreWriter(ScoreWriter):
     def __init__(
         self,
         path: Path,
-        data: Dataset,
+        num_token_grads: np.ndarray,
         num_scores: int,
         *,
         dtype: torch.dtype = torch.float32,
         flush_interval: int = 64,
+        overwrite: bool = False,
     ):
         self.path = path
         self.num_scores = num_scores
@@ -168,10 +169,9 @@ class MemmapTokenScoreWriter(ScoreWriter):
         self.flush_interval = flush_interval
         self.num_batches_since_flush = 0
 
-        num_token_grads = compute_num_token_grads(data)
-        num_items = len(data)
+        num_items = len(num_token_grads)
         self.num_token_grads = num_token_grads
-        self.offsets = np.zeros(len(num_token_grads) + 1, dtype=np.int64)
+        self.offsets = np.zeros(num_items + 1, dtype=np.int64)
         np.cumsum(num_token_grads, out=self.offsets[1:])
         total_tokens = int(self.offsets[-1])
 
@@ -181,7 +181,7 @@ class MemmapTokenScoreWriter(ScoreWriter):
         struct_dtype, struct_dtype_json = _score_struct_dtype(num_scores, np_dtype)
 
         rank = dist.get_rank() if dist.is_initialized() else 0
-        if rank == 0 and not scores_file_path.exists():
+        if rank == 0 and (overwrite or not scores_file_path.exists()):
             print(f"Creating new token scores file: {scores_file_path}")
 
             self.scores = np.memmap(
@@ -216,6 +216,11 @@ class MemmapTokenScoreWriter(ScoreWriter):
             shape=(total_tokens,),
         )
 
+    @classmethod
+    def from_dataset(cls, path: Path, data: Dataset, num_scores: int, **kwargs):
+        """For callers holding the dataset the scores were computed over."""
+        return cls(path, compute_num_token_grads(data), num_scores, **kwargs)
+
     def __call__(self, indices: list[int], scores: torch.Tensor, query_offset: int = 0):
         # scores: [total_valid_in_batch, num_scores]
         scores = scores.to(dtype=self.dtype)
@@ -248,48 +253,24 @@ def save_token_scores(
     *,
     dtype: torch.dtype = torch.float32,
 ) -> None:
-    """One-shot equivalent of :class:`MemmapTokenScoreWriter`'s on-disk
-    layout, for callers that already hold the full flat ``(total_tokens,
-    num_scores)`` array in memory (e.g. summed across upstream per-token
-    score dirs sharing the same ``offsets``), rather than streaming batches
-    through ``__call__``.
+    """One-shot equivalent of :class:`MemmapTokenScoreWriter`, for callers that
+    already hold the full flat ``(total_tokens, num_scores)`` array in memory
+    (e.g. summed across upstream per-token score dirs sharing the same
+    ``offsets``), rather than streaming batches through ``__call__``.
     """
     if scores.ndim == 1:
         scores = scores[:, None]
-    total_tokens, num_scores = scores.shape
-    num_items = len(offsets) - 1
+    _, num_scores = scores.shape
+    num_token_grads = np.diff(offsets).astype(np.int64)
 
-    path.mkdir(parents=True, exist_ok=True)
-    np_dtype = convert_dtype_to_np(dtype)
-    struct_dtype, struct_dtype_json = _score_struct_dtype(num_scores, np_dtype)
-
-    mmap = np.memmap(
-        path / "scores.bin",
-        dtype=np.dtype(struct_dtype),  # type: ignore
-        mode="w+",
-        shape=(total_tokens,),
+    writer = MemmapTokenScoreWriter(
+        path, num_token_grads, num_scores, dtype=dtype, overwrite=True
     )
-    # numpy_to_tensor handles bf16, which torch.from_numpy cannot.
-    scores_np = tensor_to_numpy(numpy_to_tensor(np.ascontiguousarray(scores)).to(dtype))
-    for i in range(num_scores):
-        mmap[f"score_{i}"] = scores_np[:, i]
-        mmap[f"written_{i}"] = True
-    mmap.flush()
-
-    np.save(path / "offsets.npy", offsets)
-
-    with (path / "info.json").open("w") as f:
-        json.dump(
-            {
-                "attribute_tokens": True,
-                "num_items": num_items,
-                "num_rows": total_tokens,
-                "num_scores": num_scores,
-                "dtype": struct_dtype_json,
-            },
-            f,
-            indent=2,
-        )
+    writer(
+        list(range(len(num_token_grads))),
+        numpy_to_tensor(np.ascontiguousarray(scores)),
+    )
+    writer.flush()
 
 
 class MemmapSequenceScoreWriter(ScoreWriter):

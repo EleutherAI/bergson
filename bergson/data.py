@@ -640,40 +640,13 @@ class Scores:
         return scores[..., 0] if self.num_scores == 1 else scores
 
 
-class ArrayScores:
-    """Dense ``[num_items, num_scores]`` score matrix with the same interface
-    as :class:`Scores`, for scores saved as a plain ``.npy`` (e.g. an ad hoc
-    array from outside the standard scoring pipeline)."""
-
-    def __init__(self, arr: np.ndarray):
-        if arr.ndim == 1:
-            arr = arr[:, None]
-        self.arr = arr
-        self.num_scores = arr.shape[1]
-
-    def __len__(self) -> int:
-        return self.arr.shape[0]
-
-    def __getitem__(self, key: Any) -> NDArray:
-        return self.arr[key]
-
-    def get(self, key: Any, score_idx: int = 0) -> NDArray:
-        return self.arr[key, score_idx]
-
-    def is_written(self) -> bool:
-        return True
-
-
-def load_scores(path: Path) -> Scores | ArrayScores:
+def load_scores(path: Path) -> Scores:
     """Load a score store written by the standard scoring pipeline.
 
-    A plain ``.npy`` array loads as :class:`ArrayScores`. Any other score
-    directory loads its ``scores.bin`` as :class:`Scores`, with ``offsets``
-    set when ``info["attribute_tokens"]`` marks it as a per-token store.
+    A score directory loads its ``scores.bin`` as :class:`Scores`, with
+    ``offsets`` set when ``info["attribute_tokens"]`` marks it as a per-token
+    store.
     """
-    if path.suffix == ".npy":
-        return ArrayScores(np.load(path))
-
     info_path = path / "info.json"
     with open(info_path, "r") as f:
         info = json.load(f)
