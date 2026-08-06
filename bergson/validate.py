@@ -83,12 +83,6 @@ def load_attribution_scores(score_path: str) -> tuple[torch.Tensor, bool]:
     return scores, step_cfg.get("query_method") == "none"
 
 
-def cfg_attributes_tokens(step_cfg: dict) -> bool:
-    """``attribute_tokens`` from a serialized run config, honouring the
-    deprecated ``per_token`` alias that ``MagicConfig`` still accepts."""
-    return bool(step_cfg.get("attribute_tokens") or step_cfg.get("per_token"))
-
-
 def bank_loss_cache_key(
     run_cfg: ValidationConfig, multi_query: bool, num_subsets: int
 ) -> str:
