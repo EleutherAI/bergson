@@ -308,7 +308,8 @@ def worker(
     run_cfg: TrainingConfig,
     score_path: str = "",
 ):
-    torch.cuda.set_device(get_device_index(rank))
+    if torch.cuda.is_available():
+        torch.cuda.set_device(get_device_index(rank))
 
     # For each non-main local rank, suppress HF info and warning messages
     if rank != 0:
