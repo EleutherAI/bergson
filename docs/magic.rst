@@ -76,10 +76,10 @@ After a run completes, ``run_cfg.run_path`` contains:
 * ``validation.csv`` — leave-subset-out validation results (if validation
   was run).
 
-Metasmoothness
----------------
+Smoothness
+----------
 
-MAGIC is valid when the function you are differentiating through is metasmooth. There a few heuristics known to encourage metasmoothness:
+MAGIC is valid when the model training function you differentiate through is smooth with respect to the data weightings (metasmooth). There a few heuristics known to encourage smoothness:
 
 * Use the Muon optimizer
 * Increase batch size
@@ -89,7 +89,7 @@ MAGIC is valid when the function you are differentiating through is metasmooth. 
 * QK norm
 * Tune weight decay
 
-Many of these methods boil down to "Identify and manage spikes in your training loss." You can measure your metasmoothness with ``bergson metasmoothness``.
+Many of these methods boil down to "Identify and manage spikes in your training loss." You can measure your smoothness with ``bergson metasmoothness``.
 
 Core components
 ^^^^^^^^^^^^^^^

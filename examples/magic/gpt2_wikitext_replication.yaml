@@ -46,7 +46,8 @@ steps:
         lr_start: 1e-6
         lr_end: 0.00008
         warmup_steps: 0.25
-
+      
+      skip_validation: false
       num_subsets: 100
       subset_fraction: 0.01
 
