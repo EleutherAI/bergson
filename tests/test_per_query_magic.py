@@ -224,7 +224,7 @@ def _per_query_run(tmp_path, attribute_tokens: bool, num_docs=5, seq_len=8, n_qu
         run_path=str(run_path),
         model="EleutherAI/pythia-14m",
         data=DataConfig(dataset="unused", chunk_length=seq_len),
-        query=DataConfig(dataset="unused", chunk_length=seq_len),
+        query=DataConfig(dataset="unused"),
         batch_size=4,
         attribute_tokens=attribute_tokens,
         query_method="none",
@@ -271,3 +271,16 @@ def test_three_dim_scores_load_as_per_token_multi_query(tmp_path):
     assert scores_are_per_token(str(path))
     _, multi_query = load_attribution_scores(str(path))
     assert multi_query
+
+
+def test_chunked_query_set_rejected_for_per_query():
+    """Rejected at config time, before a run trains for hours."""
+    from bergson.config.config import DataConfig
+
+    with pytest.raises(ValueError, match="query.chunk_length must be 0"):
+        MagicConfig(
+            run_path="x", query_method="none", query=DataConfig(chunk_length=32)
+        )
+
+    # Chunked query sets are fine for the aggregate-query backward.
+    MagicConfig(run_path="x", query_method="mean", query=DataConfig(chunk_length=32))

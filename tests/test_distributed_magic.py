@@ -46,12 +46,12 @@ def magic_cfg(
         split="train[:512]",
         chunk_length=32,
     )
-    # Single query doc: query_method="none" runs one backward per query.
+    # Single query doc: query_method="none" runs one backward per query, which
+    # needs one document per row — so query the pre-chunked dataset the example
+    # configs use, where a row is a document already.
     query = DataConfig(
-        dataset="Salesforce/wikitext",
-        subset="wikitext-2-raw-v1",
-        split="train[9:10]",
-        chunk_length=32,
+        dataset="EleutherAI/bergson-wikitext-512-chunks",
+        split="test[0:1]",
     )
     return MagicConfig(
         run_path=run_path,

@@ -28,3 +28,9 @@ class MagicConfig(ValidationConfig):
         super().__post_init__()
         if self.per_token:
             self.attribute_tokens = True
+        # Per-query MAGIC needs one document per row.
+        if self.query_method == "none" and self.query.chunk_length > 0:
+            raise ValueError(
+                "query.chunk_length must be 0 for per-query MAGIC "
+                "(query_method='none'); use query.truncation for long documents."
+            )
