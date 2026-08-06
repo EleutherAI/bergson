@@ -120,3 +120,61 @@ def test_worker_does_not_reexpand_epochs(monkeypatch):
         ms.metasmoothness_worker(0, 0, 1, expanded, num_epochs * base, cfg)
 
     assert seen["docs"] == num_epochs * base
+
+
+def test_worker_forwards_grad_accum_and_clipping(monkeypatch):
+    """``metasmoothness_worker`` must pass ``grad_accum_steps`` and
+    ``max_grad_norm`` through to ``trainer.train``: dropping them makes each
+    rank run its whole batch in one graph (OOM at large batch/context) and
+    diverges from the clipped trajectory MAGIC would train."""
+    from bergson.config.config import MetasmoothnessConfig
+    from bergson.magic import metasmoothness as ms
+
+    ds = Dataset.from_dict({"text": ["x"] * 8, "doc_ids": list(range(8))})
+
+    monkeypatch.setattr(torch.cuda, "set_device", lambda *a, **k: None)
+    monkeypatch.setattr(
+        ms,
+        "pad_dataset_to_batch_size",
+        lambda d, bs, n, label, gr: (d, len(d), 0, 0),
+    )
+
+    class _Stream:
+        def __init__(self, *a, **k):
+            self.weights = torch.nn.Parameter(torch.ones(8))
+
+        def __len__(self):
+            return 1
+
+    monkeypatch.setattr(ms, "DataStream", _Stream)
+
+    seen = {}
+
+    class _Stop(Exception):
+        pass
+
+    class _Trainer:
+        def train(self, state, stream, **kwargs):
+            seen.update(kwargs)
+            raise _Stop
+
+    monkeypatch.setattr(
+        ms, "prepare_trainer", lambda cfg, rank, schedule: (_Trainer(), _State(), None)
+    )
+
+    class _State:
+        def detach_(self):
+            return self
+
+    cfg = MetasmoothnessConfig(
+        run_path="unused",
+        batch_size=8,
+        seed=0,
+        grad_accum_steps=4,
+        max_grad_norm=1.0,
+    )
+    with pytest.raises(_Stop):
+        ms.metasmoothness_worker(0, 0, 1, ds, 8, cfg)
+
+    assert seen.get("grad_accum_steps") == 4
+    assert seen.get("max_grad_norm") == 1.0

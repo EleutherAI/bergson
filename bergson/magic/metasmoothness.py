@@ -107,7 +107,14 @@ def metasmoothness_worker(
 
         trainer, fwd_state, model = prepare_trainer(run_cfg, rank, schedule)
         fwd_state.detach_()
-        fwd_state = trainer.train(fwd_state, stream, inplace=True, fsdp=run_cfg.fsdp)
+        fwd_state = trainer.train(
+            fwd_state,
+            stream,
+            inplace=True,
+            fsdp=run_cfg.fsdp,
+            max_grad_norm=run_cfg.max_grad_norm,
+            grad_accum_steps=run_cfg.grad_accum_steps,
+        )
 
         if global_rank == 0:
             theta = torch.cat(
