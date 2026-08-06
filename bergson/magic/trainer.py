@@ -633,7 +633,7 @@ class Trainer:
 
             # Fast-forward the checkpoint schedule to where we're resuming from.
             while next_save < start:
-                next_save = next_save_index(next_save, n, save_mode)
+                next_save = next_save_index(next_save, n, save_mode, save_interval)
 
         pending_save: SaveFuture | None = None
 

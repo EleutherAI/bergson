@@ -868,6 +868,59 @@ def test_magic_resume_preserves_checkpoint_schedule(save_mode):
     torch.testing.assert_close(resumed_scores, fresh_scores, atol=1e-12, rtol=1e-6)
 
 
+def test_magic_resume_interval_fast_forwards_schedule():
+    """Resuming a ``save_mode="interval"`` run fast-forwards the checkpoint
+    schedule with ``save_interval``; the resume branch used to omit it and
+    raise ``save_mode='interval' requires save_interval > 0``."""
+    n = 9
+    crash_at = 5
+
+    trainer, fwd_state, model = _fresh_trainer()
+    stream = _multi_step_stream(n)
+    with tempfile.TemporaryDirectory() as ckpt_dir:
+        trainer.train(
+            fwd_state,
+            stream,
+            inplace=True,
+            save_dir=ckpt_dir,
+            save_mode="interval",
+            save_interval=3,
+        )
+        fresh_steps = _saved_steps(ckpt_dir)
+
+    with tempfile.TemporaryDirectory() as ckpt_dir:
+
+        def boom(i, loss):
+            if i == crash_at:
+                raise RuntimeError("simulated crash")
+
+        trainer, fwd_state, model = _fresh_trainer()
+        stream = _multi_step_stream(n)
+        with pytest.raises(RuntimeError, match="simulated crash"):
+            trainer.train(
+                fwd_state,
+                stream,
+                inplace=True,
+                save_dir=ckpt_dir,
+                save_mode="interval",
+                save_interval=3,
+                log_fn=boom,
+            )
+
+        trainer, fwd_state, model = _fresh_trainer()
+        stream = _multi_step_stream(n)
+        trainer.train(
+            fwd_state,
+            stream,
+            inplace=True,
+            save_dir=ckpt_dir,
+            save_mode="interval",
+            save_interval=3,
+            resume=True,
+        )
+        assert _saved_steps(ckpt_dir) == fresh_steps
+
+
 def test_magic_resume(dataset):
     """Resume from a checkpoint mid-training and verify identical final state."""
     device = "cpu"
