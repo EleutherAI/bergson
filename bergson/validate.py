@@ -46,7 +46,8 @@ def load_attribution_scores(score_path: str) -> tuple[torch.Tensor, bool]:
     Returns ``(scores, multi_query)``. Token score directories are per-token,
     with a query dimension when ``num_scores > 1`` (``[docs, seq_len,
     queries]``); plain score directories and ``.npy`` arrays are per-document,
-    with one column per query. A 2-D ``.pt`` tensor is ambiguous — per-token
+    with one column per query. A 3-D ``.pt`` tensor is per-token per-query
+    ``[docs, seq_len, queries]``. A 2-D ``.pt`` tensor is ambiguous — per-token
     MAGIC scores are ``[docs, seq_len]`` and per-query MAGIC scores are
     ``[docs, queries]`` — so the run config next to it decides: it is
     per-query iff the run used ``query_method: none``.
@@ -84,12 +85,14 @@ def load_attribution_scores(score_path: str) -> tuple[torch.Tensor, bool]:
 
 
 def _pt_scores_are_per_query(score_path: str, scores: torch.Tensor) -> bool:
-    """Whether a 2-D ``.pt`` tensor is per-query ``[docs, queries]`` rather
-    than per-token ``[docs, seq_len]``. The shape alone cannot tell them
-    apart; the run config written next to ``scores.pt`` records which one
-    ``run_magic`` saved."""
-    if not (isinstance(scores, torch.Tensor) and scores.ndim == 2):
+    """Whether a ``.pt`` tensor carries a query axis. 3-D is unambiguously
+    ``[docs, seq_len, queries]``; a 2-D tensor is per-query ``[docs, queries]``
+    or per-token ``[docs, seq_len]`` and the shape alone cannot tell them
+    apart, so the run config next to ``scores.pt`` decides."""
+    if not isinstance(scores, torch.Tensor) or scores.ndim not in (2, 3):
         return False
+    if scores.ndim == 3:
+        return True
     cfg_path = Path(score_path).parent / CONFIG_FILENAME
     if not cfg_path.is_file():
         return False

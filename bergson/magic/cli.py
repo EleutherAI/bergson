@@ -130,9 +130,8 @@ def compute_per_query_magic_scores(
     yields a single aggregate-query score. This scores each query separately:
     for each query document it takes that document's gradient at the final model
     as the backward cotangent and runs ``Trainer.backward`` over the saved
-    trajectory, producing a ``[num_train_docs, num_query_docs]`` matrix (the
-    layout ``validate_scores`` consumes: rows are leave-out docs, columns
-    queries).
+    trajectory, producing ``[num_train_docs, num_query_docs]`` — or
+    ``[num_train_docs, seq_len, num_query_docs]`` when attributing tokens.
 
     The backward is linear in the cotangent, so this is exact; the forward runs
     once and every query reuses its checkpoints (``cleanup=False``). Per-query
@@ -217,7 +216,7 @@ def compute_per_query_magic_scores(
 
         s = bwd_state.weight_grads.detach().cpu()
         if pad_count:
-            s = s[:-weight_pad_count]
+            s = s[:-weight_pad_count] if s.ndim == 1 else s[:-pad_count]
         if main:
             torch.save(s, qpath)
         per_query.append(s)
@@ -241,9 +240,7 @@ def compute_per_query_magic_scores(
     fwd_state.copy_(restored)
     del restored
 
-    # [num_train_docs, num_query_docs] — the layout validate_scores expects
-    # (rows are leave-out docs; columns are queries).
-    return torch.stack(per_query, dim=1)
+    return torch.stack(per_query, dim=-1)
 
 
 def scores_are_per_token(score_path: str) -> bool:
@@ -256,7 +253,9 @@ def scores_are_per_token(score_path: str) -> bool:
     if score_path.endswith(".npy"):
         return False
     scores = torch.load(score_path, map_location="cpu")
-    return isinstance(scores, torch.Tensor) and scores.ndim == 2 and scores.shape[1] > 1
+    return isinstance(scores, torch.Tensor) and (
+        scores.ndim == 3 or (scores.ndim == 2 and scores.shape[1] > 1)
+    )
 
 
 def attach_doc_ids_if_missing(dataset: Dataset) -> Dataset:
@@ -487,9 +486,8 @@ def worker(
 
     multi_query = False
     if not score_path and run_cfg.query_method == "none":
-        # Per-query MAGIC: one backward per query, sharing the forward. Yields a
-        # [num_query_docs, num_train_docs] score matrix (multi_query), the unit
-        # for a per-query LDS.
+        # Per-query MAGIC: one backward per query, sharing the forward. Yields
+        # the unit for a per-query LDS.
         if not isinstance(run_cfg, MagicConfig):
             raise RuntimeError("run_cfg must be a MagicConfig to compute scores")
         assert query_dataset is not None
