@@ -231,7 +231,7 @@ def create_scorer(
     else:
         num_scores = num_queries_total if num_queries_total is not None else num_queries
     if attribute_tokens:
-        writer = MemmapTokenScoreWriter(
+        writer = MemmapTokenScoreWriter.from_dataset(
             path,
             data,
             num_scores,
