@@ -35,7 +35,7 @@ After a run completes, ``run_cfg.run_path`` contains:
 * ``scores/`` — a score directory, the same self-describing format the
   scoring pipeline writes. ``info.json`` records ``attribute_tokens`` and
   ``num_scores``, so consumers never infer the layout from the shape.
-  Read it with :func:`bergson.validate.load_attribution_scores`, which
+  Read it with :func:`bergson.validate.load_scores_loss_signed`, which
   returns ``(scores, multi_query)``:
 
   * Per-example: ``(num_train_docs, 1)``, indexed directly by ``doc_id``.
@@ -57,9 +57,9 @@ After a run completes, ``run_cfg.run_path`` contains:
 
   .. code-block:: python
 
-     from bergson.validate import load_attribution_scores
+     from bergson.validate import load_scores_loss_signed
 
-     scores, _ = load_attribution_scores("runs/magic/scores")
+     scores, _ = load_scores_loss_signed("runs/magic/scores")
      doc_ids = torch.from_numpy(np.load("runs/magic/scores/doc_ids.npy"))
      num_docs = int(doc_ids.max()) + 1
      per_doc = torch.zeros(num_docs, dtype=scores.dtype)

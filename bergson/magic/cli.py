@@ -39,7 +39,7 @@ from ..utils.load_from_optimizer import (
 from ..utils.logging import wandb_log_fn
 from ..utils.utils import get_device, get_device_index
 from ..utils.worker_utils import setup_data_pipeline
-from ..validate import load_attribution_scores, validate_scores
+from ..validate import load_scores_loss_signed, validate_scores
 from .config import MagicConfig
 from .data_stream import DataStream, pad_dataset_to_batch_size
 from .grad_accum import accumulate_grads
@@ -594,7 +594,7 @@ def worker(
                 run_cfg.run_path, scores, train_dataset, pad_count, bool(per_token)
             )
     else:
-        scores, multi_query = load_attribution_scores(score_path)
+        scores, multi_query = load_scores_loss_signed(score_path)
 
     stream.requires_grad = False
 

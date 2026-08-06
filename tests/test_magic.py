@@ -1360,7 +1360,7 @@ def test_worker_writes_doc_ids_for_fresh_per_token_run(tmp_path):
 
     import numpy as np
 
-    from bergson.validate import load_attribution_scores
+    from bergson.validate import load_scores_loss_signed
 
     score_dir = tmp_path / "scores"
     doc_ids_path = score_dir / "doc_ids.npy"
@@ -1370,7 +1370,7 @@ def test_worker_writes_doc_ids_for_fresh_per_token_run(tmp_path):
         "indexed by shuffled chunk, so they are unaggregatable without it"
     )
 
-    scores, _ = load_attribution_scores(str(score_dir))
+    scores, _ = load_scores_loss_signed(str(score_dir))
     doc_ids = torch.from_numpy(np.load(doc_ids_path))
     assert scores.ndim == 2, f"expected per-token scores, got {scores.shape}"
     assert doc_ids.shape == scores.shape
@@ -1391,7 +1391,7 @@ def test_save_magic_scores_round_trips_the_grid(tmp_path, num_scores):
     from datasets import Dataset
 
     from bergson.magic.cli import save_magic_scores
-    from bergson.validate import load_attribution_scores
+    from bergson.validate import load_scores_loss_signed
 
     rows, seq_len = 4, 6
     data = Dataset.from_dict(
@@ -1408,7 +1408,7 @@ def test_save_magic_scores_round_trips_the_grid(tmp_path, num_scores):
     grid[:, seq_len - 1] = 0.0  # the column weighted_causal_lm_ce never reaches
 
     save_magic_scores(str(tmp_path), grid, data, pad_count=0, per_token=True)
-    loaded, multi_query = load_attribution_scores(str(tmp_path / "scores"))
+    loaded, multi_query = load_scores_loss_signed(str(tmp_path / "scores"))
 
     assert multi_query == (num_scores > 1)
     assert loaded.shape == grid.shape

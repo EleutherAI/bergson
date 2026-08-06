@@ -4,7 +4,7 @@ from datasets import Dataset
 
 from bergson.magic.data_stream import DataStream
 from bergson.score.score_writer import MemmapSequenceScoreWriter
-from bergson.validate import load_attribution_scores, per_doc_query_losses
+from bergson.validate import load_scores_loss_signed, per_doc_query_losses
 
 
 def test_per_doc_query_losses_matches_hf_loss(model):
@@ -47,26 +47,26 @@ def test_per_doc_query_losses_packed_rows(model):
         torch.testing.assert_close(losses[d], expected, rtol=1e-4, atol=1e-5)
 
 
-def test_load_attribution_scores_score_dir(tmp_path):
+def test_load_scores_loss_signed_score_dir(tmp_path):
     """Score dirs load all query columns and flag multi-query."""
     writer = MemmapSequenceScoreWriter(tmp_path, num_items=6, num_scores=3)
     values = torch.arange(18, dtype=torch.float32).reshape(6, 3)
     writer(list(range(6)), values)
     writer.flush()
 
-    scores, multi_query = load_attribution_scores(str(tmp_path))
+    scores, multi_query = load_scores_loss_signed(str(tmp_path))
     assert multi_query
     assert scores.shape == (6, 3)
     # No score_cfg saved, so no higher_is_better negation is applied.
     torch.testing.assert_close(scores, values)
 
 
-def test_load_attribution_scores_single_column_dir(tmp_path):
+def test_load_scores_loss_signed_single_column_dir(tmp_path):
     writer = MemmapSequenceScoreWriter(tmp_path, num_items=4, num_scores=1)
     writer(list(range(4)), torch.ones(4, 1))
     writer.flush()
 
-    scores, multi_query = load_attribution_scores(str(tmp_path))
+    scores, multi_query = load_scores_loss_signed(str(tmp_path))
     assert not multi_query
     assert scores.shape == (4, 1)
 

@@ -13,7 +13,7 @@ import torch
 from datasets import Dataset
 
 from bergson.magic.data_stream import DataStream
-from bergson.validate import load_attribution_scores
+from bergson.validate import load_scores_loss_signed
 
 
 def test_datastream_serves_reweighted_per_token_weights():
@@ -58,7 +58,7 @@ def test_load_token_dir_scatters_packed_to_grid(tmp_path):
     ``[docs, seq_len]`` grid as MAGIC, with tokens at positions 0..len-2."""
     _write_token_dir(tmp_path, ntg=[3, 2], values=[1, 2, 3, 4, 5])
 
-    scores, multi_query = load_attribution_scores(str(tmp_path))
+    scores, multi_query = load_scores_loss_signed(str(tmp_path))
 
     assert not multi_query
     assert scores.shape == (2, 4)  # width = max(len-1)+1
@@ -86,7 +86,7 @@ def test_load_token_dir_keeps_query_dim_when_multiscore(tmp_path):
         tmp_path, ntg=[2, 1], values=[[1, 2], [3, 4], [5, 6]], num_scores=2
     )
 
-    scores, multi_query = load_attribution_scores(str(tmp_path))
+    scores, multi_query = load_scores_loss_signed(str(tmp_path))
 
     assert multi_query
     assert scores.shape == (2, 3, 2)

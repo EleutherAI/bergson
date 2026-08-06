@@ -13,7 +13,7 @@ import torch
 
 from bergson.config import DataConfig, DistributedConfig, LRScheduleConfig
 from bergson.magic.cli import MagicConfig, run_magic
-from bergson.validate import load_attribution_scores
+from bergson.validate import load_scores_loss_signed
 
 # Both tests consume the module-scoped noclip_scores fixture, so they must run
 # on the same xdist worker or each worker recomputes the two no-clip runs.
@@ -82,7 +82,7 @@ def noclip_scores(tmp_path_factory) -> dict[str, torch.Tensor]:
     scores = {}
     for mode, fsdp in [("ddp", False), ("fsdp", True)]:
         run_magic(magic_cfg(f"{tmpdir}/{mode}", fsdp=fsdp, clip=False))
-        scores[mode] = load_attribution_scores(f"{tmpdir}/{mode}/scores")[0]
+        scores[mode] = load_scores_loss_signed(f"{tmpdir}/{mode}/scores")[0]
     return scores
 
 
@@ -131,8 +131,8 @@ def test_fsdp_ddp_scores_match_with_grad_clipping(noclip_scores, tmp_path):
     run_magic(magic_cfg(f"{tmp_path}/ddp", fsdp=False, clip=True))
     run_magic(magic_cfg(f"{tmp_path}/fsdp", fsdp=True, clip=True))
 
-    ddp_scores = load_attribution_scores(f"{tmp_path}/ddp/scores")[0]
-    fsdp_scores = load_attribution_scores(f"{tmp_path}/fsdp/scores")[0]
+    ddp_scores = load_scores_loss_signed(f"{tmp_path}/ddp/scores")[0]
+    fsdp_scores = load_scores_loss_signed(f"{tmp_path}/fsdp/scores")[0]
 
     assert fsdp_scores.shape == ddp_scores.shape
 
@@ -168,8 +168,8 @@ def test_grad_accum_matches_full_batch(noclip_scores, tmp_path):
     run_magic(magic_cfg(f"{tmp_path}/ddp", fsdp=False, clip=False, grad_accum=2))
     run_magic(magic_cfg(f"{tmp_path}/fsdp", fsdp=True, clip=False, grad_accum=2))
 
-    ddp_scores = load_attribution_scores(f"{tmp_path}/ddp/scores")[0]
-    fsdp_scores = load_attribution_scores(f"{tmp_path}/fsdp/scores")[0]
+    ddp_scores = load_scores_loss_signed(f"{tmp_path}/ddp/scores")[0]
+    fsdp_scores = load_scores_loss_signed(f"{tmp_path}/fsdp/scores")[0]
 
     assert fsdp_scores.shape == ddp_noclip.shape
 
@@ -227,7 +227,7 @@ def test_grad_accum_matches_across_fsdp_ddp_under_dropout(tmp_path):
                 lr=1e-5,
             )
         )
-        return load_attribution_scores(f"{path}/scores")[0]
+        return load_scores_loss_signed(f"{path}/scores")[0]
 
     ddp1 = run("ddp1", fsdp=False, grad_accum=1)
     ddp2 = run("ddp2", fsdp=False, grad_accum=2)

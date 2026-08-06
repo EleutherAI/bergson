@@ -234,9 +234,9 @@ def _per_query_run(tmp_path, attribute_tokens: bool, num_docs=5, seq_len=8, n_qu
 
     import numpy as np
 
-    from bergson.validate import load_attribution_scores
+    from bergson.validate import load_scores_loss_signed
 
-    scores, _ = load_attribution_scores(str(run_path / "scores"))
+    scores, _ = load_scores_loss_signed(str(run_path / "scores"))
     doc_ids = run_path / "scores" / "doc_ids.npy"
     return scores, (torch.from_numpy(np.load(doc_ids)) if doc_ids.exists() else None)
 

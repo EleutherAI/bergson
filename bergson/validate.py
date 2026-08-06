@@ -39,15 +39,9 @@ from .utils.utils import get_device, simple_parse_kwargs_string
 from .utils.worker_utils import setup_data_pipeline
 
 
-def load_attribution_scores(score_path: str) -> tuple[torch.Tensor, bool]:
-    """Load attribution scores from a score directory.
-
-    Returns ``(scores, multi_query)``. Token stores are per-token, with a
-    query dimension when ``num_scores > 1`` (``[docs, seq_len, queries]``);
-    plain stores are per-document, with one column per query. Scores are
-    negated when ``score_cfg.higher_is_better`` is set, aligning them with
-    the loss-diff convention.
-    """
+def load_scores_loss_signed(score_path: str) -> tuple[torch.Tensor, bool]:
+    """Loads scores using the sign convention that negative scores reduce
+    query loss (proponents are negative)."""
     loaded = load_scores(Path(score_path))
     score_cfg = load_subconfig(score_path, "score_cfg", ScoreConfig)
     negate = score_cfg is not None and score_cfg.higher_is_better
@@ -554,7 +548,7 @@ def evaluate_retrained(
     subsets = [torch.tensor(s, dtype=torch.long) for s in subset_lists]
 
     # Load per-query attribution scores (mirrors run_magic's score loading).
-    scores, multi_query = load_attribution_scores(score_path)
+    scores, multi_query = load_scores_loss_signed(score_path)
     if not multi_query:
         assert (
             scores.ndim == 1 or scores.shape[1] == 1

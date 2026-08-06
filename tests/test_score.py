@@ -314,19 +314,19 @@ def test_memmap_score_writer_float32(tmp_path: Path):
     )
 
 
-def test_load_attribution_scores_bfloat16(tmp_path: Path):
+def test_load_scores_loss_signed_bfloat16(tmp_path: Path):
     """A bf16 per-document store must be readable back.
 
     ``torch.from_numpy`` cannot ingest ``ml_dtypes.bfloat16`` directly, so the
     per-document branch has to cast the way the per-token one does.
     """
-    from bergson.validate import load_attribution_scores
+    from bergson.validate import load_scores_loss_signed
 
     writer = MemmapSequenceScoreWriter(tmp_path, 4, 1, dtype=torch.bfloat16)
     writer([0, 1, 2, 3], torch.tensor([[1.0], [2.0], [3.0], [4.0]]))
     writer.flush()
 
-    scores, multi_query = load_attribution_scores(str(tmp_path))
+    scores, multi_query = load_scores_loss_signed(str(tmp_path))
     assert not multi_query
     assert scores.dtype == torch.float32
     np.testing.assert_array_equal(scores.squeeze(-1).numpy(), [1.0, 2.0, 3.0, 4.0])
