@@ -36,11 +36,7 @@ from ..utils.load_from_optimizer import (
 from ..utils.logging import wandb_log_fn
 from ..utils.utils import get_device, get_device_index
 from ..utils.worker_utils import setup_data_pipeline
-from ..validate import (
-    cfg_attributes_tokens,
-    load_attribution_scores,
-    validate_scores,
-)
+from ..validate import load_attribution_scores, validate_scores
 from .config import MagicConfig
 from .data_stream import DataStream, pad_dataset_to_batch_size
 from .grad_accum import accumulate_grads
@@ -248,12 +244,6 @@ def compute_per_query_magic_scores(
 
 
 def scores_are_per_token(score_path: str) -> bool:
-    """Whether ``score_path`` holds per-token scores.
-
-    Score directories record it in ``info.json`` and ``.pt`` files in the run
-    config beside them. Without either -- an externally produced tensor --
-    fall back to the shape, where only 3-D is unambiguous.
-    """
     if os.path.isdir(score_path):
         info_path = os.path.join(score_path, "info.json")
         if not os.path.isfile(info_path):
@@ -262,7 +252,7 @@ def scores_are_per_token(score_path: str) -> bool:
             return bool(json.load(f).get("attribute_tokens", False))
     step_cfg = read_first_step_config(score_path)
     if step_cfg is not None:
-        return cfg_attributes_tokens(step_cfg)
+        return bool(step_cfg.get("attribute_tokens") or step_cfg.get("per_token"))
 
     scores = torch.load(score_path, map_location="cpu")
     return isinstance(scores, torch.Tensor) and (
