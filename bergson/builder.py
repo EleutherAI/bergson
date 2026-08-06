@@ -9,7 +9,7 @@ from .config.config import PreprocessConfig
 from .data import compute_num_token_grads, create_index, create_token_index
 from .hessians.preconditioner import Preconditioner, load_preconditioner
 from .process_grads import normalize_flat_grad
-from .utils.utils import convert_dtype_to_np, tensor_to_numpy
+from .utils.utils import convert_dtype_to_np, current_device, tensor_to_numpy
 
 _EPS_SQ = torch.finfo(torch.float32).eps ** 2
 
@@ -74,7 +74,7 @@ class Builder:
         total_grad_dim = sum(grad_sizes.values())
 
         # ── Device & precomputed hessian ──────────────────────────────────────
-        device = torch.device("cuda", torch.cuda.current_device())
+        device = current_device()
         self.preconditioner = load_preconditioner(
             preprocess_cfg.hessian_path,
             inversion_cfg=preprocess_cfg.inversion_cfg,

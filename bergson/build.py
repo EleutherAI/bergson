@@ -16,7 +16,8 @@ from bergson.distributed import (
 )
 from bergson.utils.batch_size import maybe_auto_batch_size
 from bergson.utils.utils import (
-    get_device,
+    dist_backend,
+    dist_device_id,
     get_device_index,
     setup_reproducibility,
 )
@@ -55,7 +56,8 @@ def build_worker(
     ds : Dataset
         The entire dataset to be processed. A subset is assigned to each worker.
     """
-    torch.cuda.set_device(get_device_index(local_rank))
+    if torch.cuda.is_available():
+        torch.cuda.set_device(get_device_index(local_rank))
 
     # These should be set by the main process
     if world_size > 1:
@@ -63,9 +65,9 @@ def build_worker(
         port = os.environ.get("MASTER_PORT", "29500")
 
         dist.init_process_group(
-            "nccl",
+            dist_backend(),
             init_method=f"tcp://{addr}:{port}",
-            device_id=torch.device(get_device(local_rank)),
+            device_id=dist_device_id(local_rank),
             rank=rank,
             timeout=timedelta(minutes=30),
             world_size=world_size,

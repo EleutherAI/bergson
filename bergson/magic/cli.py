@@ -37,7 +37,13 @@ from ..utils.load_from_optimizer import (
     save_second_moments_as_optimizer_pt,
 )
 from ..utils.logging import wandb_log_fn
-from ..utils.utils import get_device, get_device_index
+from ..utils.utils import (
+    current_device,
+    dist_backend,
+    dist_device_id,
+    get_device,
+    get_device_index,
+)
 from ..utils.worker_utils import setup_data_pipeline
 from ..validate import validate_scores
 from .config import MagicConfig
@@ -106,7 +112,7 @@ def compute_query_gradients(
             }
 
         # Loss is never a DTensor
-        loss_tensor = torch.tensor(loss_accum, device=torch.cuda.current_device())
+        loss_tensor = torch.tensor(loss_accum, device=current_device())
         dist.all_reduce(loss_tensor)
         loss_accum = loss_tensor.item()
 
@@ -358,9 +364,9 @@ def worker(
         port = os.environ.get("MASTER_PORT", "29500")
 
         dist.init_process_group(
-            "cpu:gloo,cuda:nccl",
+            dist_backend(mixed=True),
             init_method=f"tcp://{addr}:{port}",
-            device_id=torch.device(get_device(rank)),
+            device_id=dist_device_id(rank),
             rank=global_rank,
             world_size=world_size,
         )

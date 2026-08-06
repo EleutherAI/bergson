@@ -243,3 +243,31 @@ def get_device(rank: int = 0) -> str:
     if not torch.cuda.is_available():
         return "cpu"
     return f"cuda:{get_device_index(rank)}"
+
+
+def current_device() -> torch.device:
+    """The CUDA device this process is pinned to, or CPU when CUDA is
+    unavailable — ``torch.cuda.current_device`` raises there."""
+    if not torch.cuda.is_available():
+        return torch.device("cpu")
+    return torch.device("cuda", torch.cuda.current_device())
+
+
+def dist_backend(mixed: bool = False) -> str:
+    """Process group backend for the available hardware: Gloo on CPU-only
+    machines, otherwise NCCL — or ``cpu:gloo,cuda:nccl`` when *mixed*, for
+    groups that also collect over CPU tensors."""
+    if not torch.cuda.is_available():
+        return "gloo"
+    return "cpu:gloo,cuda:nccl" if mixed else "nccl"
+
+
+def dist_device_id(rank: int = 0) -> torch.device | None:
+    """``init_process_group(device_id=...)`` value for this rank.
+
+    ``None`` without CUDA: eager device binding is CUDA-only, and Gloo
+    rejects a CPU device here.
+    """
+    if not torch.cuda.is_available():
+        return None
+    return torch.device(get_device(rank))

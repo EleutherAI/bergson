@@ -13,6 +13,12 @@ from ..hessians.inversion import Inversion
 SaveMode = Literal["all", "sqrt", "log", "interval"]
 
 
+def default_nproc_per_node() -> int:
+    """One process per visible GPU, or a single process on a CPU-only
+    machine — a zero world size would divide by zero downstream."""
+    return max(1, torch.cuda.device_count())
+
+
 @dataclass
 class DataConfig(Serializable):
     dataset: str = "NeelNanda/pile-10k"
@@ -97,7 +103,7 @@ class DistributedConfig(Serializable):
     nnode: int = 1
     """The number of nodes to use for computation."""
 
-    nproc_per_node: int = field(default_factory=torch.cuda.device_count)
+    nproc_per_node: int = field(default_factory=default_nproc_per_node)
     """The number of processes per node."""
 
     node_rank: int | None = None

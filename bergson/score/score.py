@@ -35,6 +35,8 @@ from bergson.score.score_writer import (
 from bergson.score.scorer import Scorer
 from bergson.utils.utils import (
     convert_precision_to_torch,
+    dist_backend,
+    dist_device_id,
     get_device,
     get_device_index,
     get_gradient_dtype,
@@ -284,7 +286,8 @@ def score_worker(
     ds : Dataset
         The entire dataset to be indexed. A subset is assigned to each worker.
     """
-    torch.cuda.set_device(get_device_index(local_rank))
+    if torch.cuda.is_available():
+        torch.cuda.set_device(get_device_index(local_rank))
 
     # These should be set by the main process
     if world_size > 1:
@@ -292,9 +295,9 @@ def score_worker(
         port = os.environ.get("MASTER_PORT", "29500")
 
         dist.init_process_group(
-            "nccl",
+            dist_backend(),
             init_method=f"tcp://{addr}:{port}",
-            device_id=torch.device(get_device(local_rank)),
+            device_id=dist_device_id(local_rank),
             rank=rank,
             timeout=timedelta(hours=1),
             world_size=world_size,

@@ -16,7 +16,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from bergson.config import DataConfig
 from bergson.data import pad_and_tensor, tokenize
-from bergson.utils.utils import simple_parse_kwargs_string
+from bergson.utils.utils import get_device, simple_parse_kwargs_string
 
 
 @dataclass
@@ -43,7 +43,7 @@ class DiagnoseConfig:
     )
     """Base precision for model parameters."""
 
-    device: str = "cuda:0"
+    device: str = field(default_factory=get_device)
     """Device to run the test on."""
 
     max_len: int = 512
@@ -400,7 +400,8 @@ def diagnose(diagnose_cfg: DiagnoseConfig):
     )
     _print_results(eq_results, diagnose_cfg.threshold)
     del eq_model
-    torch.cuda.synchronize()
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
 
     # ── Padding tests (escalating configurations) ─────────────────────
     config_results = {}  # label -> (n_flagged, min_cos_sim)
@@ -443,7 +444,8 @@ def diagnose(diagnose_cfg: DiagnoseConfig):
         config_results[label] = (n_flagged, min_cos_sim)
 
         del model
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
 
         if n_flagged == 0:
             passing_config = label

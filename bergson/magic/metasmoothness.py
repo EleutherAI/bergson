@@ -22,7 +22,7 @@ from transformers import AutoTokenizer
 
 from ..config.config import MetasmoothnessConfig
 from ..distributed import launch_distributed_run
-from ..utils.utils import get_device, get_device_index
+from ..utils.utils import dist_backend, dist_device_id, get_device, get_device_index
 from ..utils.worker_utils import setup_data_pipeline
 from .cli import attach_doc_ids_if_missing, shuffled_epochs
 from .data_stream import DataStream, pad_dataset_to_batch_size
@@ -55,16 +55,17 @@ def metasmoothness_worker(
     num_train_docs: int,
     run_cfg: MetasmoothnessConfig,
 ):
-    torch.cuda.set_device(get_device_index(rank))
+    if torch.cuda.is_available():
+        torch.cuda.set_device(get_device_index(rank))
 
     if world_size > 1:
         addr = os.environ.get("MASTER_ADDR", "localhost")
         port = os.environ.get("MASTER_PORT", "29500")
 
         dist.init_process_group(
-            "cpu:gloo,cuda:nccl",
+            dist_backend(mixed=True),
             init_method=f"tcp://{addr}:{port}",
-            device_id=torch.device(get_device(rank)),
+            device_id=dist_device_id(rank),
             rank=global_rank,
             world_size=world_size,
         )

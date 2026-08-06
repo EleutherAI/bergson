@@ -12,7 +12,7 @@ import torch.multiprocessing as mp
 from torch.distributed.elastic.multiprocessing import DefaultLogsSpecs, start_processes
 
 from bergson.config.config import DistributedConfig
-from bergson.utils.utils import get_device, get_device_index
+from bergson.utils.utils import dist_backend, dist_device_id, get_device_index
 
 
 def init_dist(rank: int, local_rank: int, world_size: int) -> None:
@@ -24,9 +24,9 @@ def init_dist(rank: int, local_rank: int, world_size: int) -> None:
         addr = os.environ.get("MASTER_ADDR", "localhost")
         port = os.environ.get("MASTER_PORT", "29500")
         dist.init_process_group(
-            "nccl",
+            dist_backend(),
             init_method=f"tcp://{addr}:{port}",
-            device_id=torch.device(get_device(local_rank)),
+            device_id=dist_device_id(local_rank),
             rank=rank,
             timeout=timedelta(hours=1),
             world_size=world_size,

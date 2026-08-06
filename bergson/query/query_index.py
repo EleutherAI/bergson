@@ -10,7 +10,7 @@ from bergson import Attributor
 from bergson.config.config import IndexConfig, QueryConfig
 from bergson.config.config_io import CONFIG_FILENAME, load_subconfig
 from bergson.data import load_data_string
-from bergson.utils.utils import setup_reproducibility
+from bergson.utils.utils import get_device, setup_reproducibility
 from bergson.utils.worker_utils import setup_model_and_peft
 
 
@@ -94,7 +94,7 @@ def query(
     faiss_cfg = query_cfg.faiss_cfg if query_cfg.faiss else None
     attr = Attributor(
         Path(query_cfg.index),
-        device="cuda",
+        device=get_device(),
         unit_norm=query_cfg.unit_norm,
         faiss_cfg=faiss_cfg,
         inversion_cfg=query_cfg.inversion_cfg,

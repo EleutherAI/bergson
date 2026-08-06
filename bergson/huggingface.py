@@ -87,7 +87,8 @@ class GradientCollectorCallback(TrainerCallback):
         self.torch_dtype = convert_dtype_to_torch(self.dtype)
 
     def write_grads(self, grad_buffer: np.memmap):
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         for layer_name, g in self.collector.mod_grads.items():
             lo, hi = self.grad_offsets[layer_name]
             grad_buffer[self.batch_indices, lo:hi] = g.numpy()
