@@ -285,6 +285,18 @@ def attach_doc_ids_if_missing(dataset: Dataset) -> Dataset:
     )
 
 
+def save_doc_ids(run_path: str, train_dataset: Dataset, pad_count: int) -> str:
+    """Write ``doc_ids.pt`` beside a per-token ``scores.pt``."""
+    doc_ids = torch.tensor(train_dataset["doc_ids"])
+    if pad_count:
+        doc_ids = doc_ids[:-pad_count]
+
+    doc_ids_path = os.path.join(run_path, "doc_ids.pt")
+    torch.save(doc_ids, doc_ids_path)
+    print(f"Saved doc_ids to {doc_ids_path}")
+    return doc_ids_path
+
+
 def shuffled_epochs(dataset: Dataset, seed: int, num_epochs: int) -> Dataset:
     """Concatenate `num_epochs` independently shuffled copies of `dataset`.
 
@@ -562,16 +574,8 @@ def worker(
     else:
         scores = torch.load(score_path, map_location="cpu")
 
-        # Per-token scores are indexed by (shuffled_chunk_idx, token_idx).
-        # Save doc_ids alongside so downstream can aggregate per-doc with
-        # one scatter_add and no reference to the raw dataset or seed.
-        if scores.ndim == 2:
-            doc_ids = torch.tensor(train_dataset["doc_ids"])
-            if pad_count:
-                doc_ids = doc_ids[:-pad_count]
-            doc_ids_path = os.path.join(run_cfg.run_path, "doc_ids.pt")
-            torch.save(doc_ids, doc_ids_path)
-            print(f"Saved doc_ids to {doc_ids_path}")
+    if per_token and global_rank == 0:
+        save_doc_ids(run_cfg.run_path, train_dataset, pad_count)
 
     stream.requires_grad = False
 

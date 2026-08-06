@@ -1309,3 +1309,70 @@ def test_weighted_ce_preserves_fp64():
         ).dtype
         == torch.float32
     )
+
+
+def _tiny_magic_dataset(num_docs: int, seq_len: int):
+    """A dataset shaped the way run_magic hands it to worker()."""
+    from datasets import Dataset
+
+    return Dataset.from_dict(
+        {
+            "input_ids": [
+                [(d * seq_len + t) % 50 + 1 for t in range(seq_len)]
+                for d in range(num_docs)
+            ],
+            "labels": [
+                [(d * seq_len + t) % 50 + 1 for t in range(seq_len)]
+                for d in range(num_docs)
+            ],
+            "doc_ids": [[d] * seq_len for d in range(num_docs)],
+            "length": [seq_len] * num_docs,
+        }
+    )
+
+
+def test_worker_writes_doc_ids_for_fresh_per_token_run(tmp_path):
+    """A per-token ``bergson magic`` run must write doc_ids.pt next to scores.pt.
+
+    Calls worker() rather than reimplementing it, so it covers what actually
+    lands on disk.
+    """
+    from bergson.config.config import DataConfig
+    from bergson.magic.cli import worker
+    from bergson.magic.config import MagicConfig
+
+    num_docs, seq_len = 4, 8
+    train_ds = _tiny_magic_dataset(num_docs, seq_len)
+    query_ds = _tiny_magic_dataset(2, seq_len)
+
+    run_cfg = MagicConfig(
+        run_path=str(tmp_path),
+        model="EleutherAI/pythia-14m",
+        data=DataConfig(dataset="unused", chunk_length=seq_len),
+        query=DataConfig(dataset="unused", chunk_length=seq_len),
+        batch_size=2,
+        attribute_tokens=True,
+        query_method="mean",
+        skip_validation=True,
+    )
+
+    worker(0, 0, 1, train_ds, query_ds, num_docs, 2, run_cfg)
+
+    scores_path = tmp_path / "scores.pt"
+    doc_ids_path = tmp_path / "doc_ids.pt"
+    assert scores_path.is_file(), "worker() did not write scores.pt"
+    assert doc_ids_path.is_file(), (
+        "worker() wrote scores.pt but no doc_ids.pt; per-token scores are "
+        "indexed by shuffled chunk, so they are unaggregatable without it"
+    )
+
+    scores = torch.load(scores_path)
+    doc_ids = torch.load(doc_ids_path)
+    assert scores.ndim == 2, f"expected per-token scores, got {scores.shape}"
+    assert doc_ids.shape == scores.shape
+
+    agg = torch.zeros(num_docs, dtype=torch.float64)
+    agg.scatter_add_(0, doc_ids.reshape(-1), scores.reshape(-1).to(torch.float64))
+    torch.testing.assert_close(
+        agg.sum(), scores.sum().to(torch.float64), atol=1e-6, rtol=1e-5
+    )
