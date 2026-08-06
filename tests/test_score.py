@@ -320,7 +320,7 @@ def test_load_scores_loss_signed_bfloat16(tmp_path: Path):
     ``torch.from_numpy`` cannot ingest ``ml_dtypes.bfloat16`` directly, so the
     per-document branch has to cast the way the per-token one does.
     """
-    from bergson.validate import load_scores_loss_signed
+    from bergson.data import load_scores_loss_signed
 
     writer = MemmapSequenceScoreWriter(tmp_path, 4, 1, dtype=torch.bfloat16)
     writer([0, 1, 2, 3], torch.tensor([[1.0], [2.0], [3.0], [4.0]]))

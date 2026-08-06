@@ -30,7 +30,7 @@ from transformers.utils.logging import (
 
 from ..config.config import TrainingConfig, ValidationConfig
 from ..config.config_io import save_run_config
-from ..data import compute_num_token_grads
+from ..data import compute_num_token_grads, load_scores_loss_signed
 from ..distributed import launch_distributed_run
 from ..score.score_writer import save_sequence_scores, save_token_scores
 from ..utils.load_from_optimizer import (
@@ -39,7 +39,7 @@ from ..utils.load_from_optimizer import (
 from ..utils.logging import wandb_log_fn
 from ..utils.utils import get_device, get_device_index
 from ..utils.worker_utils import setup_data_pipeline
-from ..validate import load_scores_loss_signed, validate_scores
+from ..validate import validate_scores
 from .config import MagicConfig
 from .data_stream import DataStream, pad_dataset_to_batch_size
 from .grad_accum import accumulate_grads

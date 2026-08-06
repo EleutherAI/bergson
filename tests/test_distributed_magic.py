@@ -12,8 +12,8 @@ import pytest
 import torch
 
 from bergson.config import DataConfig, DistributedConfig, LRScheduleConfig
+from bergson.data import load_scores_loss_signed
 from bergson.magic.cli import MagicConfig, run_magic
-from bergson.validate import load_scores_loss_signed
 
 # Both tests consume the module-scoped noclip_scores fixture, so they must run
 # on the same xdist worker or each worker recomputes the two no-clip runs.

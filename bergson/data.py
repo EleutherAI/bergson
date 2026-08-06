@@ -25,7 +25,8 @@ from numpy.lib.recfunctions import structured_to_unstructured
 from numpy.typing import DTypeLike, NDArray
 from transformers import PreTrainedTokenizerFast, logging
 
-from .config.config import DataConfig
+from .config.config import DataConfig, ScoreConfig
+from .config.config_io import load_subconfig
 from .utils.utils import (
     assert_type,
     simple_parse_kwargs_string,
@@ -660,6 +661,26 @@ def load_scores(path: Path) -> Scores:
     offsets = np.load(path / "offsets.npy") if info.get("attribute_tokens") else None
 
     return Scores(mmap, info, offsets)
+
+
+def load_scores_loss_signed(score_path: str) -> tuple[torch.Tensor, bool]:
+    """Loads scores using the sign convention that negative scores reduce
+    query loss (proponents are negative)."""
+    loaded = load_scores(Path(score_path))
+    score_cfg = load_subconfig(score_path, "score_cfg", ScoreConfig)
+    negate = score_cfg is not None and score_cfg.higher_is_better
+
+    if loaded.offsets is not None:
+        scores = loaded.to_grid()
+    else:
+        arr = np.asarray(loaded[:])
+        # Copy: the slice is a read-only view onto the memmap.
+        out_dtype = arr.dtype if np.issubdtype(arr.dtype, np.floating) else np.float32
+        scores = torch.from_numpy(arr.astype(out_dtype, copy=True))
+
+    if negate:
+        scores = -scores
+    return scores, loaded.num_scores > 1
 
 
 def sorted_checkpoints(folder: str) -> list[tuple[int, str]]:

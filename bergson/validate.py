@@ -29,34 +29,14 @@ from transformers.utils.logging import (
     set_verbosity_error as hf_set_verbosity_error,
 )
 
-from .config.config import ScoreConfig, ValidationConfig
-from .config.config_io import load_subconfig, save_run_config
-from .data import load_scores, pad_and_tensor
+from .config.config import ValidationConfig
+from .config.config_io import save_run_config
+from .data import load_scores_loss_signed, pad_and_tensor
 from .magic.data_stream import DataStream, pad_dataset_to_batch_size
 from .magic.trainer import TrainerState, prepare_trainer
 from .utils.csv_writer import CSVWriter
 from .utils.utils import get_device, simple_parse_kwargs_string
 from .utils.worker_utils import setup_data_pipeline
-
-
-def load_scores_loss_signed(score_path: str) -> tuple[torch.Tensor, bool]:
-    """Loads scores using the sign convention that negative scores reduce
-    query loss (proponents are negative)."""
-    loaded = load_scores(Path(score_path))
-    score_cfg = load_subconfig(score_path, "score_cfg", ScoreConfig)
-    negate = score_cfg is not None and score_cfg.higher_is_better
-
-    if loaded.offsets is not None:
-        scores = loaded.to_grid()
-    else:
-        arr = np.asarray(loaded[:])
-        # Copy: the slice is a read-only view onto the memmap.
-        out_dtype = arr.dtype if np.issubdtype(arr.dtype, np.floating) else np.float32
-        scores = torch.from_numpy(arr.astype(out_dtype, copy=True))
-
-    if negate:
-        scores = -scores
-    return scores, loaded.num_scores > 1
 
 
 def bank_loss_cache_key(

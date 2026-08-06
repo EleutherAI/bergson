@@ -1360,7 +1360,7 @@ def test_worker_writes_doc_ids_for_fresh_per_token_run(tmp_path):
 
     import numpy as np
 
-    from bergson.validate import load_scores_loss_signed
+    from bergson.data import load_scores_loss_signed
 
     score_dir = tmp_path / "scores"
     doc_ids_path = score_dir / "doc_ids.npy"
@@ -1390,8 +1390,8 @@ def test_save_magic_scores_round_trips_the_grid(tmp_path, num_scores):
     import numpy as np
     from datasets import Dataset
 
+    from bergson.data import load_scores_loss_signed
     from bergson.magic.cli import save_magic_scores
-    from bergson.validate import load_scores_loss_signed
 
     rows, seq_len = 4, 6
     data = Dataset.from_dict(

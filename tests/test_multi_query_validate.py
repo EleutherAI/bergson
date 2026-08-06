@@ -2,9 +2,10 @@ import torch
 import torch.nn.functional as F
 from datasets import Dataset
 
+from bergson.data import load_scores_loss_signed
 from bergson.magic.data_stream import DataStream
 from bergson.score.score_writer import MemmapSequenceScoreWriter
-from bergson.validate import load_scores_loss_signed, per_doc_query_losses
+from bergson.validate import per_doc_query_losses
 
 
 def test_per_doc_query_losses_matches_hf_loss(model):

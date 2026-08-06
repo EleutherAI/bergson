@@ -12,8 +12,8 @@ that the per-document (1-D) path is unchanged.
 import torch
 from datasets import Dataset
 
+from bergson.data import load_scores_loss_signed
 from bergson.magic.data_stream import DataStream
-from bergson.validate import load_scores_loss_signed
 
 
 def test_datastream_serves_reweighted_per_token_weights():

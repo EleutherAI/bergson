@@ -234,7 +234,7 @@ def _per_query_run(tmp_path, attribute_tokens: bool, num_docs=5, seq_len=8, n_qu
 
     import numpy as np
 
-    from bergson.validate import load_scores_loss_signed
+    from bergson.data import load_scores_loss_signed
 
     scores, _ = load_scores_loss_signed(str(run_path / "scores"))
     doc_ids = run_path / "scores" / "doc_ids.npy"
