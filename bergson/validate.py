@@ -18,6 +18,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
+import yaml
 from peft import PeftModel
 from scipy.stats import pearsonr, spearmanr
 from tqdm import tqdm
@@ -30,7 +31,7 @@ from transformers.utils.logging import (
 )
 
 from .config.config import ScoreConfig, ValidationConfig
-from .config.config_io import load_subconfig, save_run_config
+from .config.config_io import CONFIG_FILENAME, load_subconfig, save_run_config
 from .data import Scores, load_scores, pad_and_tensor
 from .magic.data_stream import DataStream, pad_dataset_to_batch_size
 from .magic.trainer import TrainerState, prepare_trainer
@@ -45,8 +46,10 @@ def load_attribution_scores(score_path: str) -> tuple[torch.Tensor, bool]:
     Returns ``(scores, multi_query)``. Token score directories are per-token,
     with a query dimension when ``num_scores > 1`` (``[docs, seq_len,
     queries]``); plain score directories and ``.npy`` arrays are per-document,
-    with one column per query; 2-D ``.pt`` tensors are per-token MAGIC scores
-    (``[docs, seq_len]``, single-query).
+    with one column per query. A 2-D ``.pt`` tensor is ambiguous — per-token
+    MAGIC scores are ``[docs, seq_len]`` and per-query MAGIC scores are
+    ``[docs, queries]`` — so the run config next to it decides: it is
+    per-query iff the run used ``query_method: none``.
 
     Score directories are negated when their ``score_cfg.higher_is_better`` is
     set, aligning them with the loss-diff convention. ``.npy`` files carry no
@@ -77,7 +80,32 @@ def load_attribution_scores(score_path: str) -> tuple[torch.Tensor, bool]:
         return scores, scores.ndim == 2 and scores.shape[1] > 1
 
     scores = torch.load(score_path, map_location="cpu")
-    return scores, False
+    return scores, _pt_scores_are_per_query(score_path, scores)
+
+
+def _pt_scores_are_per_query(score_path: str, scores: torch.Tensor) -> bool:
+    """Whether a 2-D ``.pt`` tensor is per-query ``[docs, queries]`` rather
+    than per-token ``[docs, seq_len]``. The shape alone cannot tell them
+    apart; the run config written next to ``scores.pt`` records which one
+    ``run_magic`` saved."""
+    if not (isinstance(scores, torch.Tensor) and scores.ndim == 2):
+        return False
+    cfg_path = Path(score_path).parent / CONFIG_FILENAME
+    if not cfg_path.is_file():
+        return False
+    with open(cfg_path) as f:
+        doc = yaml.safe_load(f)
+    if not isinstance(doc, dict):
+        return False
+    steps = doc.get("steps")
+    payload = (
+        next(iter(steps[0].values())) if isinstance(steps, list) and steps else doc
+    )
+    return (
+        isinstance(payload, dict)
+        and payload.get("query_method") == "none"
+        and not payload.get("per_token")
+    )
 
 
 def bank_loss_cache_key(

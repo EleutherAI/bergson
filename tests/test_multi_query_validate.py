@@ -153,3 +153,34 @@ def test_metasmoothness_score():
 
     # Zero movement -> defined as perfectly smooth.
     assert metasmoothness_score(theta0, theta0, theta0) == 1.0
+
+
+def test_load_attribution_scores_pt_per_query(tmp_path):
+    """A per-query [docs, queries] scores.pt is flagged multi-query when the
+    run config beside it says query_method: none; per-token and configless
+    tensors stay single-query."""
+    import yaml
+
+    values = torch.arange(12, dtype=torch.float32).reshape(4, 3)
+    torch.save(values, tmp_path / "scores.pt")
+
+    # No config.yaml: ambiguous, keep the per-token interpretation.
+    _, multi_query = load_attribution_scores(str(tmp_path / "scores.pt"))
+    assert not multi_query
+
+    cfg = {"steps": [{"magic": {"query_method": "none", "per_token": False}}]}
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump(cfg))
+    scores, multi_query = load_attribution_scores(str(tmp_path / "scores.pt"))
+    assert multi_query
+    torch.testing.assert_close(scores, values)
+
+    # Per-token runs save [docs, seq_len]; never multi-query.
+    cfg = {"steps": [{"magic": {"query_method": "none", "per_token": True}}]}
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump(cfg))
+    _, multi_query = load_attribution_scores(str(tmp_path / "scores.pt"))
+    assert not multi_query
+
+    cfg = {"steps": [{"magic": {"query_method": "mean"}}]}
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump(cfg))
+    _, multi_query = load_attribution_scores(str(tmp_path / "scores.pt"))
+    assert not multi_query
