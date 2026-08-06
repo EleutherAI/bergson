@@ -63,14 +63,7 @@ def pad_dataset_to_batch_size(
 
 
 def doc_rows(dataset: Dataset, num_docs: int) -> list[list[int]]:
-    """Row indices holding each document's tokens.
-
-    A chunked dataset (``chunk_length > 0``) packs several documents into a row
-    and splits documents across rows, so document ``i`` is not row ``i``; its
-    per-token ``doc_ids`` column says which is which. Pad rows carry a
-    synthetic id past the real documents, and a document that chunking dropped
-    (the tail that doesn't fill a chunk) gets no rows.
-    """
+    """For each document, the dataset rows containing any of its tokens."""
     if "doc_ids" not in dataset.column_names:
         return [[i] for i in range(num_docs)]
 
