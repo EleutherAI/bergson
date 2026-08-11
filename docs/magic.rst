@@ -100,55 +100,75 @@ after normalising (which should sit near 0).
 
 Requires the optional plotting dependency: ``pip install 'bergson[viz]'``.
 
-.. figure:: _static/score_instability_pythia160m.png
+.. figure:: _static/score_trajectory_healthy.png
    :width: 100%
-   :alt: Per-step attribution-score level for a pythia-160m MAGIC run.
+   :alt: Per-step attribution-score level for a healthy SmolLM2-360M run.
 
-   A real pythia-160m MAGIC run. The per-step score level sweeps **~37 orders of
-   magnitude** across training, and the leading ~1550 steps carry no score at all
-   (red band, back-filled from the first live step) — so a raw score at step 500
-   is not comparable to one at step 6000. The orange line is the level after
-   step-normalisation, which flattens it to ~0.
+   A healthy run (SmolLM2-360M): every step has a score and the level stays
+   within a ~6-decade band across all ~6.7k steps.
+
+.. figure:: _static/score_trajectory_pythia.png
+   :width: 100%
+   :alt: Per-step attribution-score level for a pathological pythia-160m run.
+
+   A pathological run (pythia-160m): the level sweeps **~37 orders of magnitude**,
+   and the first ~1550 steps produce no score at all (red band) — so a raw score
+   at step 500 is not comparable to one at step 6000.
 
 Does normalising scores help?
 -----------------------------
 
-Because the level drifts so far, an obvious idea is to *step-normalise*: divide
-each token's score by its step's level before using the scores — which is what
-``--window`` previews. We tested whether drawing leave-subset-out quantiles from
-the normalised ranking predicts the measured query-loss change better than the
-raw ranking (a linear-datamodeling-score, LDS), on three pythia-160m cells:
+Because we train on shuffled documents, you might expect a token's score to be
+roughly consistent wherever it happens to land in training — but the level in
+fact drifts by many orders of magnitude (above). An obvious idea, then, is to
+*step-normalise*: divide each token's score by its step's level before using the
+scores (the curve ``score_trajectory --window`` overlays). We tested whether
+drawing leave-subset-out quantiles from the normalised ranking predicts the
+measured query-loss change better than the raw ranking (a linear-datamodeling
+score, LDS), on three runs — a ~7B deep-ignorance run (``p1_r256_30M``) and two
+pythia-160m cells:
 
 .. list-table::
    :header-rows: 1
    :widths: 30 40 30
 
-   * - cell
+   * - run
      - LDS Pearson (raw → normalised)
      - verdict
-   * - ``p1_r256_30M``
+   * - ``p1_r256_30M`` (~7B)
      - 0.731 → 0.810
      - helped
-   * - ``pythia160_full``
+   * - ``pythia160_full`` (160M)
      - 0.850 → 0.839
      - no change
-   * - ``sweep_b128``
+   * - ``sweep_b128`` (160M)
      - 0.647 → −0.046
      - hurt (though effect-size spread tripled)
+
+.. figure:: _static/score_trajectory_p1.png
+   :width: 100%
+   :alt: Per-step attribution-score level for the p1 deep-ignorance run.
+
+   ``p1_r256_30M`` (a ~7B deep-ignorance model), the run where normalisation
+   *helped*: no dead steps, ~14 decades (vs ~37 for pythia) and metasmoothness
+   ≈ 0.88. The orange line is the level after normalisation.
 
 .. figure:: _static/score_instability_b128.png
    :width: 100%
    :alt: Per-step attribution-score level for the sweep_b128 pythia-160m run.
 
-   ``sweep_b128``: the cleanest of the three trajectories (only ~5% dead steps),
-   yet still ~35 decades of range. Normalising its ranking made LDS *worse*.
+   ``sweep_b128``: the cleanest pythia-160m trajectory (only ~5% dead steps), yet
+   still ~35 decades. Normalising its ranking made LDS *worse*.
 
-So step-normalisation is **not a robust win** — one cell improved, one was
-unchanged, one was clearly hurt. It is therefore offered only as the opt-in
-``score_trajectory --window`` overlay and is never applied to the saved scores.
-Caveats: these are pythia-160m (a model we found numerically pathological for
-MAGIC), N=5 per cell with no measured noise floor, so a null is ambiguous — treat
-the numbers as directional, not conclusive.
+So step-normalisation is **not a robust win** — one run improved, one was
+unchanged, one was clearly hurt. We don't ship it as a Bergson utility, but it is
+straightforward to implement yourself (divide each token's score by its step's
+level) if you suspect it might help on your run. Notably, the run where it helped
+is by far the least pathological — no dead steps, far less dynamic range, higher
+metasmoothness — so it may help more in less-extreme cases. Caveats: the two runs
+where it did not help are pythia-160m (numerically pathological for MAGIC), and
+every run is N=5 with no measured noise floor, so a null is ambiguous — treat the
+numbers as directional, not conclusive.
 
 Metasmoothness
 ---------------
