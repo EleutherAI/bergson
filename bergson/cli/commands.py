@@ -9,7 +9,7 @@ corresponding CLI entrypoint.
 from dataclasses import dataclass
 from typing import cast
 
-from simple_parsing import Serializable
+from simple_parsing import Serializable, field
 from simple_parsing.helpers.serialization import register_decoding_fn
 
 from ..build import build
@@ -34,6 +34,7 @@ from ..diagnose import DiagnoseConfig, diagnose
 from ..hessians.hessian_approximations import approximate_hessians
 from ..magic import MagicConfig, run_magic
 from ..magic.metasmoothness import run_metasmoothness
+from ..magic.score_trajectory import plot_score_trajectory
 from ..process_grads import mix_autocorrelation_matrices
 from ..query.query_index import query
 from ..recall.recall import run_recall
@@ -144,6 +145,30 @@ class Metasmoothness(MetasmoothnessConfig):
     def execute(self):
         save_run_config(self, self.run_path)
         run_metasmoothness(self)
+
+
+@dataclass
+class Score_Trajectory:
+    """Plot per-step attribution-score magnitude for a finished MAGIC run.
+
+    Writes ``<run_path>/score_vs_step.png`` -- the batch-median ``log10|score|``
+    at each optimizer step."""
+
+    run_path: str = field(positional=True)
+    """Finished MAGIC run directory (contains ``scores/`` and ``config.yaml``)."""
+
+    window: int = 0
+    """If > 1, also overlay the window-N step-normalisation curve and the
+    residual post-normalisation level."""
+
+    out: str = ""
+    """Output PNG path (default: ``<run_path>/score_vs_step.png``)."""
+
+    def execute(self):
+        path = plot_score_trajectory(
+            self.run_path, window=self.window, out=self.out or None
+        )
+        print(f"wrote {path}")
 
 
 @dataclass

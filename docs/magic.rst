@@ -76,6 +76,110 @@ After a run completes, ``run_cfg.run_path`` contains:
 * ``validation.csv`` — leave-subset-out validation results (if validation
   was run).
 
+Score trajectory
+----------------
+
+A MAGIC run processes the shuffled training documents in batches of
+``batch_size`` — batch ``s`` is optimizer step ``s`` — so the saved scores group
+back into per-step buckets. ``bergson score_trajectory`` plots the per-step
+median ``log10|score|`` (the score *level*) against training step:
+
+.. code-block:: bash
+
+   bergson score_trajectory runs/my-magic             # -> runs/my-magic/score_vs_step.png
+   bergson score_trajectory runs/my-magic --window 5  # also overlay the step-norm curve
+
+It reads ``<run_path>/scores`` and ``<run_path>/config.yaml`` and writes
+``<run_path>/score_vs_step.png``. A smooth, gently-varying band is healthy; a
+level that sweeps tens of decades or oscillates ("rings") flags a run whose
+attribution may not be trustworthy. It is a direct view of score behaviour and
+complements the metasmoothness check (below): the two are related but distinct —
+a high metasmoothness score does not guarantee a stable level. ``--window N``
+additionally overlays the window-``N``
+step-normalisation curve the level would be divided by, and the residual level
+after normalising (which should sit near 0).
+
+Requires the optional plotting dependency: ``pip install 'bergson[viz]'``.
+
+.. figure:: _static/score_trajectory_healthy.png
+   :width: 100%
+   :alt: Per-step attribution-score level for a healthy deep-ignorance MCQA run.
+
+   A healthy run (deep-ignorance strong-filter on MedMCQA — the ``magic``
+   example from the pipeline). The level holds a tight band near -6.5 dex for the
+   whole run, dipping only in the final few hundred steps.
+
+.. figure:: _static/score_trajectory_pythia.png
+   :width: 100%
+   :alt: Per-step attribution-score level for a pathological pythia-160m run.
+
+   A pathological run (pythia-160m): the level sweeps **~37 orders of magnitude**,
+   and the first ~1550 steps produce no score at all (red band) — so a raw score
+   at step 500 is not comparable to one at step 6000.
+
+.. figure:: _static/score_trajectory_r32.png
+   :width: 100%
+   :alt: Per-step attribution-score level for a high-metasmoothness deep-ignorance run.
+
+   High metasmoothness does not guarantee a stable score level. This
+   deep-ignorance r32 run scores **0.99** on the ``bergson metasmoothness`` test
+   — about as metasmooth as a run gets — yet its level still drifts ~7 decades
+   and rings periodically (the regular dips). So check the trajectory even when
+   the metasmoothness score looks good.
+
+Does normalising scores help?
+-----------------------------
+
+If we train on shuffled documents (as is usual), you might expect a token's
+score to be roughly consistent wherever it happens to land in training — but the
+level sometimes drifts by many orders of magnitude (above). An obvious idea then
+is to
+*step-normalise*: divide each token's score by its step's level before using the
+scores (the curve ``score_trajectory --window`` overlays). We tested whether
+drawing leave-subset-out quantiles from the normalised ranking predicts the
+measured query-loss change better than the raw ranking (a linear-datamodeling
+score, LDS), on three runs — a ~7B deep-ignorance run (``p1_r256_30M``) and two
+pythia-160m cells:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 40 30
+
+   * - run
+     - LDS Pearson (raw → normalised)
+     - verdict
+   * - ``p1_r256_30M`` (~7B)
+     - 0.731 → 0.810
+     - helped
+   * - ``pythia160_full`` (160M)
+     - 0.850 → 0.839
+     - no change
+   * - ``sweep_b128`` (160M)
+     - 0.647 → −0.046
+     - hurt (though effect-size spread tripled)
+
+.. figure:: _static/score_trajectory_p1.png
+   :width: 100%
+   :alt: Per-step attribution-score level for the p1 deep-ignorance run.
+
+   ``p1_r256_30M`` (a ~7B deep-ignorance model), the run where normalisation
+   *helped*: no dead steps, ~14 decades (vs ~37 for pythia) and metasmoothness
+   ≈ 0.88. The orange line is the level after normalisation.
+
+.. figure:: _static/score_instability_b128.png
+   :width: 100%
+   :alt: Per-step attribution-score level for the sweep_b128 pythia-160m run.
+
+   ``sweep_b128``: the cleanest pythia-160m trajectory (only ~5% dead steps), yet
+   still ~35 decades. Normalising its ranking made LDS *worse*.
+
+So step-normalisation is **not a robust win** — one run improved, one was
+unchanged, one was clearly hurt. We don't ship it as a Bergson utility, but it is
+straightforward to implement yourself (divide each token's score by its step's
+level) if you suspect it might help on your run. We found that normalising more
+often helped when other signs pointed toward health — high metasmoothness test
+results, and scores that don't climb to NaN regions.
+
 Metasmoothness
 ---------------
 

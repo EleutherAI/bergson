@@ -44,6 +44,7 @@ dev = [
     "pytest",
     "pytest-xdist",
     "pyright==1.1.378", # pinned to match CI (build.yml)
+    "matplotlib", # for `bergson score_trajectory` (also exposed as the `viz` extra)
     "trl",
     # Generate documentation
     "furo",
@@ -70,6 +71,9 @@ example = [
 ]
 faiss = [
     "faiss-gpu-cu12",
+]
+viz = [
+    "matplotlib", # `bergson score_trajectory` score-vs-step plots
 ]
 
 [project.scripts]
