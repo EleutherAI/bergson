@@ -92,9 +92,10 @@ median ``log10|score|`` (the score *level*) against training step:
 It reads ``<run_path>/scores`` and ``<run_path>/config.yaml`` and writes
 ``<run_path>/score_vs_step.png``. A smooth, gently-varying band is healthy; a
 level that sweeps tens of decades or oscillates ("rings") flags a run whose
-attribution may not be trustworthy. It is a direct view of score behaviour —
-related to metasmoothness (below), which is a separate check that does not always
-predict this instability. ``--window N`` additionally overlays the window-``N``
+attribution may not be trustworthy. It is a direct view of score behaviour and
+complements the metasmoothness check (below): the two are related but distinct —
+a high metasmoothness score does not guarantee a stable level. ``--window N``
+additionally overlays the window-``N``
 step-normalisation curve the level would be divided by, and the residual level
 after normalising (which should sit near 0).
 
@@ -114,6 +115,16 @@ Requires the optional plotting dependency: ``pip install 'bergson[viz]'``.
    A pathological run (pythia-160m): the level sweeps **~37 orders of magnitude**,
    and the first ~1550 steps produce no score at all (red band) — so a raw score
    at step 500 is not comparable to one at step 6000.
+
+.. figure:: _static/score_trajectory_r32.png
+   :width: 100%
+   :alt: Per-step attribution-score level for a high-metasmoothness deep-ignorance run.
+
+   High metasmoothness does not guarantee a stable score level. This
+   deep-ignorance r32 run scores **0.99** on the ``bergson metasmoothness`` test
+   — about as metasmooth as a run gets — yet its level still drifts ~7 decades
+   and rings periodically (the regular dips). So check the trajectory even when
+   the metasmoothness score looks good.
 
 Does normalising scores help?
 -----------------------------
