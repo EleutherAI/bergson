@@ -151,11 +151,8 @@ class Metasmoothness(MetasmoothnessConfig):
 class Score_Trajectory:
     """Plot per-step attribution-score magnitude for a finished MAGIC run.
 
-    Reads ``<run_path>/scores`` and ``<run_path>/config.yaml``, groups the
-    scores into training steps (``batch_size`` rows per step) and writes
-    ``<run_path>/score_vs_step.png`` -- the per-step median ``log10|score|``.
-    Run it after ``bergson magic`` to see score explosion / ringing (the
-    Metasmoothness docs list ways to reduce it)."""
+    Writes ``<run_path>/score_vs_step.png`` -- the batch-median ``log10|score|``
+    at each optimizer step."""
 
     run_path: str = field(positional=True)
     """Finished MAGIC run directory (contains ``scores/`` and ``config.yaml``)."""

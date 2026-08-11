@@ -1,12 +1,11 @@
 """Per-step attribution-score magnitude, plotted against training step.
 
-A MAGIC run processes the (shuffled) training documents in batches of
-``batch_size``; batch ``s`` is optimizer step ``s``. Grouping the saved scores
-by ``batch_size`` rows therefore recovers a per-step view, and the batch-median
-of ``log10|score|`` is the run's score *level* at that step -- the quantity that
-sweeps orders of magnitude when a run is not metasmooth (see the Metasmoothness
-section of the MAGIC docs). ``bergson score_trajectory <run>`` reads a finished
-run's ``scores/`` directory and writes ``score_vs_step.png``.
+A MAGIC run takes the shuffled training documents ``batch_size`` at a time, so
+grouping the saved scores into ``batch_size``-row blocks gives one value per
+optimizer step. ``bergson score_trajectory <run>`` plots the batch-median of
+``log10|score|`` -- the score *level* -- against step and writes
+``score_vs_step.png``. The level can sweep many orders of magnitude when a run
+is not healthy; see the MAGIC docs.
 """
 
 import os
@@ -30,12 +29,10 @@ def batch_size_from_config(run_path: str) -> int:
 def per_step_level(scores: np.ndarray, batch_size: int) -> np.ndarray:
     """Per-step median ``log10|score|``.
 
-    ``scores`` is ``(n_rows, ...)`` with rows in training order (the leading
-    axis is the document/chunk axis; anything trailing -- token position, query
-    -- is pooled into the step). Step ``s`` is rows ``[s*bs : (s+1)*bs)``.
-    Steps whose scores are all zero or non-finite come back ``NaN`` (a MAGIC
-    backward leaves early steps undefined); callers fill them if they need a
-    dense curve.
+    ``scores`` is ``(n_rows, ...)`` in training order; the leading axis is the
+    document/chunk axis and any trailing axes (token position, query) are pooled
+    into the step. Step ``s`` is rows ``[s*bs : (s+1)*bs)``. A step with no
+    finite non-zero score comes back ``NaN``.
     """
     a = np.abs(np.asarray(scores, dtype=np.float64))
     ns = a.shape[0] // batch_size

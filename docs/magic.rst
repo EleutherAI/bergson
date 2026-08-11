@@ -90,12 +90,13 @@ median ``log10|score|`` (the score *level*) against training step:
    bergson score_trajectory runs/my-magic --window 5  # also overlay the step-norm curve
 
 It reads ``<run_path>/scores`` and ``<run_path>/config.yaml`` and writes
-``<run_path>/score_vs_step.png``. This is the visual companion to the
-metasmoothness score below: a smooth, gently-varying band is healthy, while a
+``<run_path>/score_vs_step.png``. A smooth, gently-varying band is healthy; a
 level that sweeps tens of decades or oscillates ("rings") flags a run whose
-attribution is not to be trusted. ``--window N`` additionally overlays the
-window-``N`` step-normalisation curve the level would be divided by, and the
-residual level after normalising (which should sit near 0).
+attribution may not be trustworthy. It is a direct view of score behaviour —
+related to metasmoothness (below), which is a separate check that does not always
+predict this instability. ``--window N`` additionally overlays the window-``N``
+step-normalisation curve the level would be divided by, and the residual level
+after normalising (which should sit near 0).
 
 Requires the optional plotting dependency: ``pip install 'bergson[viz]'``.
 
