@@ -76,6 +76,29 @@ After a run completes, ``run_cfg.run_path`` contains:
 * ``validation.csv`` — leave-subset-out validation results (if validation
   was run).
 
+Score trajectory
+----------------
+
+A MAGIC run processes the shuffled training documents in batches of
+``batch_size`` — batch ``s`` is optimizer step ``s`` — so the saved scores group
+back into per-step buckets. ``bergson score_trajectory`` plots the per-step
+median ``log10|score|`` (the score *level*) against training step:
+
+.. code-block:: bash
+
+   bergson score_trajectory runs/my-magic             # -> runs/my-magic/score_vs_step.png
+   bergson score_trajectory runs/my-magic --window 5  # also overlay the step-norm curve
+
+It reads ``<run_path>/scores`` and ``<run_path>/config.yaml`` and writes
+``<run_path>/score_vs_step.png``. This is the visual companion to the
+metasmoothness score below: a smooth, gently-varying band is healthy, while a
+level that sweeps tens of decades or oscillates ("rings") flags a run whose
+attribution is not to be trusted. ``--window N`` additionally overlays the
+window-``N`` step-normalisation curve the level would be divided by, and the
+residual level after normalising (which should sit near 0).
+
+Requires the optional plotting dependency: ``pip install 'bergson[viz]'``.
+
 Metasmoothness
 ---------------
 

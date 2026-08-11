@@ -221,6 +221,18 @@ Training & Evaluation
        --dataset NeelNanda/pile-10k \
        --truncation
 
+.. autoclass:: bergson.__main__.Score_Trajectory
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+**Example:**
+
+.. code-block:: bash
+
+   bergson score_trajectory runs/my-magic
+   bergson score_trajectory runs/my-magic --window 5
+
 .. autoclass:: bergson.__main__.Validate
    :members:
    :undoc-members:
