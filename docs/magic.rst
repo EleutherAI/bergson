@@ -103,10 +103,11 @@ Requires the optional plotting dependency: ``pip install 'bergson[viz]'``.
 
 .. figure:: _static/score_trajectory_healthy.png
    :width: 100%
-   :alt: Per-step attribution-score level for a healthy SmolLM2-360M run.
+   :alt: Per-step attribution-score level for a healthy deep-ignorance MCQA run.
 
-   A healthy run (SmolLM2-360M): every step has a score and the level stays
-   within a ~6-decade band across all ~6.7k steps.
+   A healthy run (deep-ignorance strong-filter on MedMCQA — the ``magic``
+   example from the pipeline). The level holds a tight band near -6.5 dex for the
+   whole run, dipping only in the final few hundred steps.
 
 .. figure:: _static/score_trajectory_pythia.png
    :width: 100%
