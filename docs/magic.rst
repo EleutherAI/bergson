@@ -164,12 +164,9 @@ pythia-160m cells:
 So step-normalisation is **not a robust win** — one run improved, one was
 unchanged, one was clearly hurt. We don't ship it as a Bergson utility, but it is
 straightforward to implement yourself (divide each token's score by its step's
-level) if you suspect it might help on your run. Notably, the run where it helped
-is by far the least pathological — no dead steps, far less dynamic range, higher
-metasmoothness — so it may help more in less-extreme cases. Caveats: the two runs
-where it did not help are pythia-160m (numerically pathological for MAGIC), and
-every run is N=5 with no measured noise floor, so a null is ambiguous — treat the
-numbers as directional, not conclusive.
+level) if you suspect it might help on your run. We found that normalising more
+often helped when other signs pointed toward health — high metasmoothness test
+results, and scores that don't climb to NaN regions.
 
 Metasmoothness
 ---------------
