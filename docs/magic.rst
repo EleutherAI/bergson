@@ -99,6 +99,56 @@ residual level after normalising (which should sit near 0).
 
 Requires the optional plotting dependency: ``pip install 'bergson[viz]'``.
 
+.. figure:: _static/score_instability_pythia160m.png
+   :width: 100%
+   :alt: Per-step attribution-score level for a pythia-160m MAGIC run.
+
+   A real pythia-160m MAGIC run. The per-step score level sweeps **~37 orders of
+   magnitude** across training, and the leading ~1550 steps carry no score at all
+   (red band, back-filled from the first live step) — so a raw score at step 500
+   is not comparable to one at step 6000. The orange line is the level after
+   step-normalisation, which flattens it to ~0.
+
+Does normalising scores help?
+-----------------------------
+
+Because the level drifts so far, an obvious idea is to *step-normalise*: divide
+each token's score by its step's level before using the scores — which is what
+``--window`` previews. We tested whether drawing leave-subset-out quantiles from
+the normalised ranking predicts the measured query-loss change better than the
+raw ranking (a linear-datamodeling-score, LDS), on three pythia-160m cells:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 40 30
+
+   * - cell
+     - LDS Pearson (raw → normalised)
+     - verdict
+   * - ``p1_r256_30M``
+     - 0.731 → 0.810
+     - helped
+   * - ``pythia160_full``
+     - 0.850 → 0.839
+     - no change
+   * - ``sweep_b128``
+     - 0.647 → −0.046
+     - hurt (though effect-size spread tripled)
+
+.. figure:: _static/score_instability_b128.png
+   :width: 100%
+   :alt: Per-step attribution-score level for the sweep_b128 pythia-160m run.
+
+   ``sweep_b128``: the cleanest of the three trajectories (only ~5% dead steps),
+   yet still ~35 decades of range. Normalising its ranking made LDS *worse*.
+
+So step-normalisation is **not a robust win** — one cell improved, one was
+unchanged, one was clearly hurt. It is therefore offered only as the opt-in
+``score_trajectory --window`` overlay and is never applied to the saved scores.
+Caveats: these are pythia-160m (a model we found numerically pathological for
+MAGIC), N=5 per cell with no measured noise floor, so a null is ambiguous — treat
+the numbers as directional, not conclusive.
+
 Metasmoothness
 ---------------
 
