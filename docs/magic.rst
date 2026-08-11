@@ -118,9 +118,10 @@ Requires the optional plotting dependency: ``pip install 'bergson[viz]'``.
 Does normalising scores help?
 -----------------------------
 
-Because we train on shuffled documents, you might expect a token's score to be
-roughly consistent wherever it happens to land in training — but the level in
-fact drifts by many orders of magnitude (above). An obvious idea, then, is to
+If we train on shuffled documents (as is usual), you might expect a token's
+score to be roughly consistent wherever it happens to land in training — but the
+level sometimes drifts by many orders of magnitude (above). An obvious idea then
+is to
 *step-normalise*: divide each token's score by its step's level before using the
 scores (the curve ``score_trajectory --window`` overlays). We tested whether
 drawing leave-subset-out quantiles from the normalised ranking predicts the
