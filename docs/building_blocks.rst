@@ -142,8 +142,8 @@ After building, use ``bergson query`` to interactively search the index:
 .. note::
 
    Random projections (``--projection_dim > 0``) dramatically reduce per-example
-   storage. With no projection, storing per-example gradients is only practical 
-   for small models or small datasets. In contrast, aggregated build disk usage 
+   storage. With no projection, storing per-example gradients is only practical
+   for small models or small datasets. In contrast, aggregated build disk usage
    is constant.
 
 .. note::
