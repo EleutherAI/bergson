@@ -64,6 +64,7 @@ Load the gradients:
    :caption: Pipeline & Tools
 
    building_blocks
+   data-preprocessing
    gradient-collection
    preprocessing
    training
