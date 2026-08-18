@@ -1,0 +1,43 @@
+# Build a GPT-2 / WikiText leave-k-out re-train bank (single node): MAGIC
+# attribution plus 400 retrained leave-out models saved for later evaluation.
+
+# Run with `bergson examples/magic/gpt2_wikitext_bank.yaml`
+
+steps:
+  - magic:
+      run_path: runs/gpt2_wikitext_bank
+      model: gpt2
+      overwrite: true
+      cleanup_ckpts: false
+
+      data:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "train"
+        chunk_length: 0
+
+      query:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "test[0:1]"
+        chunk_length: 0
+
+      distributed:
+        nproc_per_node: 8
+        nnode: 1
+
+      eps_root: 1e-8
+
+      batch_size: 64
+      num_epochs: 4
+      lr_schedule:
+        lr_scheduler_type: polynomial
+        lr: 0.0008
+        lr_start: 1e-6
+        lr_end: 0.00008
+        warmup_steps: 0.25
+
+      subset_strategy: random
+      wandb_project: magic
+      num_subsets: 100
+      subset_fraction: 0.01
+      save_optimizer_state: True
+      save_retrained_models: True
