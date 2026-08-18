@@ -162,6 +162,7 @@ class MemmapTokenScoreWriter(ScoreWriter):
         dtype: torch.dtype = torch.float32,
         flush_interval: int = 64,
         overwrite: bool = False,
+        distributed: bool = True,
     ):
         self.path = path
         self.num_scores = num_scores
@@ -180,7 +181,8 @@ class MemmapTokenScoreWriter(ScoreWriter):
         np_dtype = convert_dtype_to_np(dtype)
         struct_dtype, struct_dtype_json = _score_struct_dtype(num_scores, np_dtype)
 
-        rank = dist.get_rank() if dist.is_initialized() else 0
+        synchronize = distributed and dist.is_initialized()
+        rank = dist.get_rank() if synchronize else 0
         if rank == 0 and (overwrite or not scores_file_path.exists()):
             print(f"Creating new token scores file: {scores_file_path}")
 
@@ -206,7 +208,7 @@ class MemmapTokenScoreWriter(ScoreWriter):
 
             np.save(path / "offsets.npy", self.offsets)
 
-        if dist.is_initialized():
+        if synchronize:
             dist.barrier()
 
         self.scores = np.memmap(
@@ -264,7 +266,12 @@ def save_token_scores(
     num_token_grads = np.diff(offsets).astype(np.int64)
 
     writer = MemmapTokenScoreWriter(
-        path, num_token_grads, num_scores, dtype=dtype, overwrite=True
+        path,
+        num_token_grads,
+        num_scores,
+        dtype=dtype,
+        overwrite=True,
+        distributed=False,
     )
     writer(
         list(range(len(num_token_grads))),
@@ -292,6 +299,7 @@ class MemmapSequenceScoreWriter(ScoreWriter):
         dtype: torch.dtype = torch.float32,
         flush_interval: int = 64,
         overwrite: bool = False,
+        distributed: bool = True,
     ):
         self.path = path
         self.num_scores = num_scores
@@ -306,7 +314,8 @@ class MemmapSequenceScoreWriter(ScoreWriter):
         np_dtype = convert_dtype_to_np(dtype)
         struct_dtype, struct_dtype_json = _score_struct_dtype(num_scores, np_dtype)
 
-        rank = dist.get_rank() if dist.is_initialized() else 0
+        synchronize = distributed and dist.is_initialized()
+        rank = dist.get_rank() if synchronize else 0
         if rank == 0 and (overwrite or not scores_file_path.exists()):
             print(f"Creating new scores file: {scores_file_path}")
 
@@ -332,7 +341,7 @@ class MemmapSequenceScoreWriter(ScoreWriter):
                     indent=2,
                 )
 
-        if dist.is_initialized():
+        if synchronize:
             dist.barrier()
 
         self.scores = np.memmap(
@@ -373,7 +382,7 @@ def save_sequence_scores(
     num_items, num_scores = scores.shape
 
     writer = MemmapSequenceScoreWriter(
-        path, num_items, num_scores, dtype=dtype, overwrite=True
+        path, num_items, num_scores, dtype=dtype, overwrite=True, distributed=False
     )
     writer(list(range(num_items)), numpy_to_tensor(np.ascontiguousarray(scores)))
     writer.flush()
