@@ -325,7 +325,7 @@ def validate_scores(
     if os.path.exists(subsets_path):
         with open(subsets_path) as f:
             subsets = [torch.tensor(s, dtype=torch.long) for s in json.load(f)]
-    elif run_cfg.subset_strategy == "random":
+    else:
         rng = torch.Generator().manual_seed(run_cfg.seed)
         if run_cfg.subset_fraction > 0:
             # Draw potentially overlapping samples
@@ -349,8 +349,6 @@ def validate_scores(
             subsets = list(perm.chunk(run_cfg.num_subsets))
             rng = random.Random(run_cfg.seed)
             rng.shuffle(subsets)
-    else:
-        raise ValueError(f"Unknown subset strategy: {run_cfg.subset_strategy}")
 
     start = run_cfg.subset_start
     stop = len(subsets) if run_cfg.subset_stop is None else run_cfg.subset_stop

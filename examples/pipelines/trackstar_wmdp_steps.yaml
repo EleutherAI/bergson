@@ -38,9 +38,9 @@ steps:
       index_path: runs/trackstar_wmdp_pieces/value_hessian
       output_path: runs/trackstar_wmdp_pieces/mixed_hessian
 
-  # Step 4/5: Reduce the query dataset to a single mean gradient,
+  # Step 4/5: Aggregate the query dataset into a single mean gradient,
   # preconditioning with the mixed hessian.
-  - reduce:
+  - build:
       index_cfg:
         run_path: runs/trackstar_wmdp_pieces/query
         overwrite: true

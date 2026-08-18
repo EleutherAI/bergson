@@ -32,6 +32,12 @@ Output files
 
 After a run completes, ``run_cfg.run_path`` contains:
 
+* ``config.yaml`` — the serialized configuration needed to replicate the run.
+* ``checkpoints/`` — forward-pass trainer checkpoints, plus
+  ``log_history.json`` (the per-step learning rates the schedule produced).
+  With the default ``cleanup_ckpts=True`` the backward pass deletes
+  checkpoints as it consumes them, but multi-query runs keep them for re-use.
+
 * ``scores/`` — a score directory, the same self-describing format the
   scoring pipeline writes. ``info.json`` records ``attribute_tokens`` and
   ``num_scores``, so consumers never infer the layout from the shape.
@@ -50,10 +56,15 @@ After a run completes, ``run_cfg.run_path`` contains:
   ``length - 1`` values, the positions ``weighted_causal_lm_ce`` can reach
   — and are unpacked back into the dense grid on load.
 
+* ``per_query/q{i}.pt`` — per-query runs only. The score tensor for query
+  document ``i``, written as soon as that query's backward finishes so an
+  interrupted run resumes without redoing completed queries. The trailing
+  query axis in ``scores/`` is these tensors stacked.
+
 * ``scores/doc_ids.npy`` — written for every per-token run, shape
-  ``(num_chunks, seq_len)`` matching the loaded scores row-for-row. Each
-  entry is the original (pre-shuffle) document id for that token position.
-  Downstream aggregation is one line:
+  ``(num_chunks, seq_len)`` matching the loaded scores. Each
+  entry is the original (pre-shuffle) document id for that token position,
+  so the scores can be aggregated over chunks:
 
   .. code-block:: python
 
@@ -62,8 +73,15 @@ After a run completes, ``run_cfg.run_path`` contains:
      scores, _ = load_scores_loss_signed("runs/magic/scores")
      doc_ids = torch.from_numpy(np.load("runs/magic/scores/doc_ids.npy"))
      num_docs = int(doc_ids.max()) + 1
-     per_doc = torch.zeros(num_docs, dtype=scores.dtype)
-     per_doc.scatter_add_(0, doc_ids.flatten(), scores.flatten())
+
+     # Trailing axis is the query axis on per-query runs, absent otherwise;
+     # reshaping to it keeps both cases on one path.
+     flat = scores.reshape(doc_ids.numel(), -1)
+     per_doc = torch.zeros(num_docs, flat.shape[1], dtype=flat.dtype)
+     per_doc.scatter_add_(0, doc_ids.flatten()[:, None].expand_as(flat), flat)
+
+  ``per_doc`` comes back as ``(num_docs, num_query_docs)``, or
+  ``(num_docs, 1)`` for a single-query run.
 
   When ``data.chunk_length > 0`` the ``doc_ids`` column comes from
   ``tokenize_and_chunk`` and chunks may pack multiple docs or split one
@@ -72,14 +90,23 @@ After a run completes, ``run_cfg.run_path`` contains:
   past the row's actual length carry zero MAGIC score and contribute
   nothing to the scatter-add.
 
-* ``config.yaml`` — serialized ``MagicConfig`` used for the run.
-* ``validation.csv`` — leave-subset-out validation results (if validation
-  was run).
+Models and optimizer state
+^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Metasmoothness
----------------
+* ``optimizer.pt`` — second moments of the trained optimizer state, when
+  ``save_optimizer_state`` is not ``"none"``.
+* ``retrained/base/`` and ``retrained/subset_{i}/`` — the fully-trained
+  model and each leave-subset-out retrain, with tokenizer, when
+  ``save_models=True``. ``retrained/base`` is the query baseline
+  ``evaluate_retrained`` reads; the ``subset_{i}`` retrains only exist for
+  a run that actually validates (``bergson validate``, or ``bergson magic
+  --skip_validation False``). (Commands outside the leave-k-out family —
+  plain ``bergson train`` — write the trained model to ``model/`` instead.)
 
-MAGIC is valid when the function you are differentiating through is metasmooth. There a few heuristics known to encourage metasmoothness:
+Smoothness
+----------
+
+MAGIC is valid when the model training function you differentiate through is smooth with respect to the data weightings (metasmooth). There a few heuristics known to encourage smoothness:
 
 * Use the Muon optimizer
 * Increase batch size
@@ -89,7 +116,7 @@ MAGIC is valid when the function you are differentiating through is metasmooth. 
 * QK norm
 * Tune weight decay
 
-Many of these methods boil down to "Identify and manage spikes in your training loss." You can measure your metasmoothness with ``bergson metasmoothness``.
+Many of these methods boil down to "Identify and manage spikes in your training loss." You can measure your smoothness with ``bergson metasmoothness``.
 
 Core components
 ^^^^^^^^^^^^^^^

@@ -58,8 +58,8 @@ The normalizer is applied during gradient collection, so the same ``--optimizer_
 
 .. code-block:: bash
 
-   # Reduce query dataset to a single mean gradient with optimizer normalization
-   bergson reduce runs/query \
+   # Aggregate query dataset into a single mean gradient with optimizer normalization
+   bergson build runs/query \
        --model EleutherAI/pythia-14m \
        --dataset NeelNanda/pile-10k \
        --truncation \
@@ -91,8 +91,8 @@ Unlike cosine similarity, inner product preserves gradient magnitude, so trainin
 
 .. code-block:: bash
 
-   # Reduce query dataset to a single mean gradient with optimizer normalization
-   bergson reduce runs/query \
+   # Aggregate query dataset into a single mean gradient with optimizer normalization
+   bergson build runs/query \
        --model EleutherAI/pythia-14m \
        --dataset NeelNanda/pile-10k \
        --truncation \
@@ -118,7 +118,7 @@ Randomly projected gradients and gradient autocorrelation matrix hessians
 
 Random projections approximately preserve inner products and cosine similarities (Johnson-Lindenstrauss) while reducing gradient dimensionality by orders of magnitude. Autocorrelation matrix hessians have flattened_gradient_dim^2 elements, so projecting each module to a few hundred or thousand dimensions makes these hessians tractable.
 
-``reduce`` aggregates all query gradients into a single vector (mean or sum) without storing per-example gradients. ``score`` then collects each training gradient on-the-fly and scores it against the precomputed query vector, avoiding the need to build or store a full training gradient index.
+``build --aggregation mean`` (or ``sum``) aggregates all query gradients into a single vector without storing per-example gradients. ``score`` then collects each training gradient on-the-fly and scores it against the precomputed query vector, avoiding the need to build or store a full training gradient index.
 
 .. code-block:: bash
 
@@ -128,9 +128,9 @@ Random projections approximately preserve inner products and cosine similarities
        --truncation \
        --projection_dim 32
 
-  # Hessian and reduce query dataset
+  # Hessian and aggregate query dataset
   # to a single mean gradient vector
-  bergson reduce runs/query \
+  bergson build runs/query \
       --model EleutherAI/pythia-14m \
       --dataset NeelNanda/pile-10k \
       --truncation \
@@ -138,7 +138,7 @@ Random projections approximately preserve inner products and cosine similarities
       --aggregation mean \
       --hessian_path runs/hessians
 
-  # Score training data against the reduced query
+  # Score training data against the aggregated query
   bergson score runs/scores \
       --query_path runs/query \
       --model EleutherAI/pythia-14m \
@@ -151,7 +151,7 @@ All commands must use the same ``--projection_dim`` and identical model configur
 
 .. note::
 
-   **Preprocessing order:** Optimizer normalization must be applied during gradient collection (set ``--optimizer_state`` at both ``reduce`` and ``score`` time). It cannot be applied after the mean-reduction in ``reduce`` - the normalization is non-linear so applying it to the mean gradient is not the same as normalizing each gradient then taking the mean.
+   **Preprocessing order:** Optimizer normalization must be applied during gradient collection (set ``--optimizer_state`` at both ``build`` and ``score`` time). It cannot be applied after the aggregation in ``build`` - the normalization is non-linear so applying it to the mean gradient is not the same as normalizing each gradient then taking the mean.
 
 Randomly projected gradients with unit normalization, hessians, build, and score
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

@@ -383,6 +383,14 @@ def setup_data_pipeline(
             ),
         )
 
+    # Pre-tokenized datasets may carry only `input_ids`, but batch allocation
+    # needs a `length` column.
+    if "length" not in ds.column_names:
+        ds = ds.map(
+            lambda batch: {"length": [len(ids) for ids in batch["input_ids"]]},
+            batched=True,
+        )
+
     # Suggest to the user that they turn on truncation
     if not data_cfg.truncation:
         max_doc_len = max(ds["length"])

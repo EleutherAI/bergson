@@ -460,9 +460,6 @@ class ValidationConfig(TrainingConfig, ABC):
     num_subsets: int = 100
     """Number of leave-k-out subsets for Spearman correlation."""
 
-    subset_strategy: Literal["random"] = "random"
-    """Strategy for selecting leave-k-out subsets for validation."""
-
     subset_weight: float = 0.0
     """Training weight assigned to each subset's documents during the retrain
     (the rest stay at 1.0). ``0.0`` (default) is standard leave-k-out removal."""

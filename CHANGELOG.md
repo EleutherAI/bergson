@@ -1,6 +1,20 @@
 # CHANGELOG
 
 
+## v0.26.0 (2026-08-07)
+
+### Features
+
+- **validate**: Retrain a slice of the subsets
+  ([`ab11f99`](https://github.com/EleutherAI/bergson/commit/ab11f9906df0e2ddc040df628a3e1fcd0b502972))
+
+subset_start/subset_stop select which of the deterministically drawn subsets a process retrains, so
+  independent single-GPU processes can split the work; at batch size 8 data-parallel retraining is
+  all-reduce-bound and slower than one GPU. Sliced runs write range-suffixed validation/summary
+  CSVs, absolute subset_<i> model dirs, and leave subsets.json and retrained/base to the process
+  that starts at 0.
+
+
 ## v0.25.1 (2026-08-06)
 
 ### Bug Fixes

@@ -1,15 +1,13 @@
-Pipeline Concepts
-=================
+Building Blocks
+===============
 
-Bergson's post-hoc attribution exposes three generic building blocks — ``build``, ``reduce``,
-and ``score`` — that together implement gradient-based data attribution. This page
-explains what each command does, what it produces, and when you should use each one.
-It also covers the supporting command ``hessian``.
+Bergson exposes generic building blocks like ``train``, ``build``, ``score`` and ``hessian`` that can be used to
+produce diverse attribution pipelines. This page explains some basic commands and how to assemble them into multi-step pipelines.
 
 Overview
 --------
 
-The three core commands run the same underlying gradient collection pipeline:
+Two core commands run the same underlying gradient collection pipeline:
 
 .. code-block:: text
 
@@ -17,28 +15,60 @@ The three core commands run the same underlying gradient collection pipeline:
 
 The difference between them is **what they do with the collected gradients**:
 
-- ``build`` writes a **per-example gradient** to an on-disk index.
-- ``reduce`` **aggregates** all gradients from a dataset into a single vector and writes it to an on-disk file.
-- ``score`` **computes similarity scores** by comparing gradients from one dataset against a pre-built query.
+- ``build`` writes each **per-example dataset gradient** to an on-disk index (gradient store). Aggregation configuration may be used to write a single final gradient instead.
+- ``score`` **computes influence scores** by comparing gradients from one dataset to a pre-built query. Aggregation configuration may be used to compress a multi-row query index into one.
 
-The supporting command ``hessian`` computes Hessian approximations
-(``autocorrelation`` — the gradient second-moment — ``kfac``, ``tkfac``, or
-``shampoo``, selected with the required ``--method`` flag) without collecting
-per-example gradients. Non-autocorrelation methods are stored as sharded
-covariance matrices.
+The supporting command ``hessian`` computes Hessian approximations which can be passed into score or used with a gradient store at query time (``autocorrelation`` — the gradient second-moment
+ — ``kfac``, ``tkfac``, or ``shampoo``, selected with the required ``--method`` flag).
+
+Pipeline
+--------
+
+You can define a pipeline in a YAML file like so:
+
+.. code-block:: yaml
+
+   run_path: runs/minimal
+
+   steps:
+     - build:
+         index_cfg:
+           run_path: runs/minimal/query
+           model: EleutherAI/pythia-14m
+           data:
+             dataset: NeelNanda/pile-10k
+             split: "train[:64]"
+             truncation: true
+         preprocess_cfg:
+           aggregation: mean
+
+     - score:
+         score_cfg:
+           query_path: runs/minimal/query
+         index_cfg:
+           run_path: runs/minimal/scores
+           model: EleutherAI/pythia-14m
+           data:
+             dataset: NeelNanda/pile-10k
+             split: "train[:64]"
+             truncation: true
+
+Run it with ``bergson pipeline.yaml``. Each step takes the same options as its
+CLI counterpart, but grouped into config sections rather than passed as flat
+flags. A finished run can be replayed with ``bergson <run_path>/config.yaml``.
 
 .. _build-command:
 
-``build`` — Build a Per-Example Gradient Index
------------------------------------------------
+``build`` — Build a Gradient Store
+-------------------------------------------
 
-``build`` runs every example in your dataset through the model, collects a gradient for
-each one, and stores the resulting vectors in a memory-mapped index on disk.
+``build`` runs every example in your dataset through the model, collects a gradient for each one, and stores the resulting vectors in a memory-mapped index on disk. The index is keyed by example and supports fast nearest-neighbour search via ``bergson query``. It's good for when you have enough disk space for the gradient store and want to run many serial queries.
 
-The index is keyed by example and supports fast nearest-neighbour search via
-``bergson query``.
+``build`` with ``--aggregation mean`` or ``sum`` accumulates every gradient into a **single row store**, discarding the per-example gradients. This is the usual way to produce a query for ``score``.
 
 **Typical use cases**
+
+Per-example (``--aggregation none``):
 
 - You want to check training influences on ad-hoc prompts
 - You want to find which training examples are most similar to a given query (e.g. an
@@ -47,13 +77,24 @@ The index is keyed by example and supports fast nearest-neighbour search via
 - You are using small datasets, or random projections (``--projection_dim > 0``) so each
   gradient is small enough to store individually.
 
+Aggregated (``--aggregation mean`` / ``sum``):
+
+- You want to run ``score`` against a whole dataset treated as one query.
+- You want the average influence of one dataset on another (e.g. finding which training
+  examples are relevant to an entire eval set).
+
 **What it produces**
 
 A directory at ``run_path`` containing:
 
-- ``gradients.bin`` — a memory-mapped binary file of per-example gradients.
-- ``info.json`` — metadata (num_grads, dtype structure, grad_sizes).
-- ``data.hf/`` — a HuggingFace dataset with per-example metadata and losses.
+- ``gradients.bin`` — a memory-mapped binary file of gradients: one row per token or sequence, or a
+  single aggregated row when ``--aggregation`` is set.
+- ``info.json`` — metadata (num_grads, dtype structure, grad_sizes). ``num_grads`` is 1
+  when aggregating, and ``attribute_tokens`` records the store's granularity.
+- ``offsets.npy`` — per-token stores only. Rows ``offsets[i]:offsets[i+1]`` are example
+  ``i``'s tokens, used by downstream readers.
+- ``data.hf/`` — a HuggingFace dataset with per-example metadata and losses, or a single
+  row carrying the query index when aggregating.
 - ``config.yaml`` — the run's config, replayable with ``bergson <path>``.
 - ``processor_config.yaml`` — gradient processor configuration.
 - ``normalizers.pth`` — normalizer state dicts.
@@ -61,7 +102,16 @@ A directory at ``run_path`` containing:
 - ``hessians_eigen.pth`` — eigendecompositions of hessians.
 - ``total_processed.pt`` — total number of samples processed.
 
-**Example**
+**Key options**
+
+- ``--aggregation none`` (default), ``mean``, or ``sum``: whether and how to aggregate
+  gradients into a single row.
+- ``--attribute_tokens``: store one gradient per token rather than per example.
+  Requires ``--aggregation none``.
+- ``--unit_normalize``: unit-normalize individual gradients, applied *before* aggregating.
+- ``--projection_dim``: random-projection size; ``0`` keeps the full gradient.
+
+**Example** — a per-example index
 
 .. code-block:: bash
 
@@ -77,54 +127,11 @@ After building, use ``bergson query`` to interactively search the index:
 
    bergson query --index runs/my-index
 
-.. note::
-
-   Random projections (``--projection_dim > 0``) dramatically reduce per-example
-   storage. With no projection (``--projection_dim 0``), storing per-example gradients
-   is only practical for small models or small datasets.
-
-.. _reduce-command:
-
-``reduce`` — Aggregate a Dataset into a Single Query Gradient
--------------------------------------------------------------
-
-``reduce`` collects per-example gradients and immediately **aggregates** them into a
-single representative vector (mean or sum). Only the aggregate is written to disk, not
-the individual per-example gradients.
-
-The resulting aggregate is typically used as the **query** for a subsequent ``score``
-run.
-
-**Typical use cases**
-
-- You want to run ``score`` on an aggregated dataset query.
-- You want to compute the average influence of a dataset on another dataset (e.g.
-  finding which training examples are relevant to an entire eval set).
-
-**What it produces**
-
-A directory at ``run_path`` containing:
-
-- ``gradients.bin`` — a single aggregated gradient vector (one row).
-- ``info.json`` — metadata (num_grads=1, dtype structure, grad_sizes).
-- ``data.hf/`` — a HuggingFace dataset (single row with query index).
-- ``config.yaml`` — the run's config, replayable with ``bergson <path>``.
-- ``processor_config.yaml`` — gradient processor configuration.
-- ``normalizers.pth`` — normalizer state dicts.
-- ``hessians.pth`` — fitted hessian matrices.
-- ``hessians_eigen.pth`` — eigendecompositions of hessians.
-- ``total_processed.pt`` — total number of samples processed.
-
-**Key options**
-
-- ``--aggregation mean`` (default) or ``--aggregation sum``: how to aggregate gradients.
-- ``--unit_normalize``: unit-normalize individual gradients *before* aggregating.
-
-**Example**
+**Example** — a single aggregated query gradient
 
 .. code-block:: bash
 
-   bergson reduce runs/my-query \
+   bergson build runs/my-query \
        --model EleutherAI/pythia-14m \
        --dataset NeelNanda/pile-10k \
        --truncation \
@@ -134,12 +141,18 @@ A directory at ``run_path`` containing:
 
 .. note::
 
-   ``--unit_normalize`` in ``reduce`` applies normalization *per example before*
-   aggregating, so each example contributes equally to the mean direction regardless of
-   gradient magnitude. This is different from normalizing the final aggregated vector
-   (which would have no effect on downstream ranking). When using hessians,
-   normalization must happen after preconditioning, which is done in ``score`` not
-   ``reduce``.
+   Random projections (``--projection_dim > 0``) dramatically reduce per-example
+   storage. With no projection, storing per-example gradients is only practical
+   for small models or small datasets. In contrast, aggregated build disk usage
+   is constant.
+
+.. note::
+
+   ``--unit_normalize`` applies normalization *per example before* aggregating, so each
+   example contributes equally to the mean direction regardless of gradient magnitude.
+   This is different from ``--normalize_aggregated_grad``, which normalizes the final
+   vector and has no effect on downstream ranking. When using hessians, normalization
+   must happen after preconditioning, which is done in ``score`` not ``build``.
 
 .. _score-command:
 
@@ -147,16 +160,15 @@ A directory at ``run_path`` containing:
 ----------------------------------------------------------------
 
 ``score`` computes a scalar influence score for every example in a dataset by comparing
-its gradient against a set of pre-computed **query gradients** loaded from disk.
+its gradient against a set of pre-computed **query gradients** loaded from disk. It's good if a gradient store would exceed your available disk space, such as if you are not using random project to compress gradients.
 
-The query gradients were previously produced by ``reduce`` (or ``build``). The scoring
-process in ``score`` applies preconditioning and normalization to the loaded query
-gradients before computing dot products.
+The query gradients were previously produced by ``build``, either per-example or
+aggregated into a single row. The scoring process in ``score`` applies preconditioning
+and normalization to the loaded query gradients before computing dot products.
 
 **Typical use cases**
 
-- You have a query index (from ``reduce`` or ``build``) and want to rank a dataset
-  by influence.
+- You have a query index (from ``build``) and want to rank a dataset by influence.
 - You don't need to store individual training gradients on disk — ``score`` computes
   and immediately discards each training gradient after comparing it.
 
@@ -261,23 +273,23 @@ The decision tree below covers the most common scenarios:
    Do you want to search a gradient index interactively (e.g. per-prompt)?
    ├── Yes → use build + query
    └── No  → Do you want to search using aggregated gradients?
-             ├── Yes → use reduce (for query) + score
+             ├── Yes → use build --aggregation mean (for query) + score
              └── No → use build + score
 
 **Using hessians**
 
 When using a Hessian approximation (autocorrelation / Adam second moments,
-KFAC, EK-FAC, etc.), preconditioning is applied in ``reduce`` and/or ``score``
+KFAC, EK-FAC, etc.), preconditioning is applied in ``build`` and/or ``score``
 depending on whether unit normalization is enabled. The recommended pipeline is:
 
 .. code-block:: text
 
    bergson hessian → fit hessians
-   bergson reduce  → aggregate query gradients (with preconditioning)
+   bergson build   → aggregate query gradients (with preconditioning)
    bergson score   → score training data (sometimes with preconditioning)
 
 Note: if you apply unit normalization, you need to apply hessians in both
-reduce and score.
+build and score.
 
 Worked Example: Query Influence with Hessians
 -----------------------------------------------------
@@ -295,11 +307,11 @@ using preconditioned cosine similarity.
        --truncation \
        --projection_dim 16
 
-**Step 2 — Reduce the eval set to a query gradient**
+**Step 2 — Aggregate the eval set into a query gradient**
 
 .. code-block:: bash
 
-   bergson reduce runs/eval-query \
+   bergson build runs/eval-query \
        --model EleutherAI/pythia-14m \
        --dataset NeelNanda/pile-10k \
        --truncation \

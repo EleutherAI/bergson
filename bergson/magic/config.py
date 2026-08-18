@@ -17,9 +17,9 @@ class MagicConfig(ValidationConfig):
     """Whether to compute attribution scores per token (instead of per sequence);
     the same toggle as ``IndexConfig.attribute_tokens``."""
 
-    skip_validation: bool = False
-    """Stop after computing and saving attribution scores, before the
-    leave-k-out retraining loop. Useful for score-only MAGIC runs."""
+    skip_validation: bool = True
+    """Set to False to run a leave-k-out retraining validation loop in the
+    same job."""
 
     # TODO(Lucia Quirke, December 2026): remove per_token backward compatibility.
     per_token: bool = False

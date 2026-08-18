@@ -5,12 +5,12 @@ Bergson exposes all functionality through subcommands of the ``bergson`` CLI:
 
 .. code-block:: bash
 
-   bergson {build,query,reduce,score,hessian,mix,trackstar,ekfac,approxunrolling,magic,train,metasmoothness,validate,recall,test_model_configuration} [OPTIONS]
+   bergson {build,query,score,hessian,mix,trackstar,ekfac,approxunrolling,magic,train,metasmoothness,validate,recall,test_model_configuration} [OPTIONS]
 
 The commands fall into four groups:
 
-**Building blocks** — ``build``, ``query``, ``reduce``, ``score``, ``hessian``, and ``mix``. ``build`` and ``query`` are designed for working with compressed gradients stored on disk and queried multiple times. ``reduce`` and ``score`` are designed for working with both compressed and uncompressed gradients primarily on GPUs, with a single predetermined query set: use ``reduce`` to accumulate a dataset into a single query gradient (mean or sum), and ``score`` to map over an arbitrarily large dataset, computing the gradient of each item and scoring it against precomputed query gradients. ``hessian`` computes Hessian statistics (KFAC, TKFAC, Shampoo, or gradient
-autocorrelation) independently of per-example gradient collection, and ``mix`` combines two autocorrelation hessians into one. See :doc:`pipeline`.
+**Building blocks** — ``build``, ``query``, ``score``, ``hessian``, and ``mix``. ``build`` and ``query`` are designed for working with compressed gradients stored on disk and queried multiple times. ``build`` and ``score`` are designed for working with both compressed and uncompressed gradients primarily on GPUs, with a single predetermined query set: use ``build --aggregation mean`` (or ``sum``) to accumulate a dataset into a single query gradient, and ``score`` to map over an arbitrarily large dataset, computing the gradient of each item and scoring it against precomputed query gradients. ``hessian`` computes Hessian statistics (KFAC, TKFAC, Shampoo, or gradient
+autocorrelation) independently of per-example gradient collection, and ``mix`` combines two autocorrelation hessians into one. See :doc:`building_blocks`.
 
 **Method pipelines** — ``trackstar``, ``ekfac``, and ``approxunrolling`` orchestrate
 building blocks into end-to-end attribution recipes (see :doc:`trackstar`, :doc:`influence-functions`, and :doc:`source`). ``magic`` attributes by backpropagating through training (see :doc:`magic`).
@@ -37,6 +37,18 @@ Building Blocks
        --dataset NeelNanda/pile-10k \
        --truncation
 
+**Example** — aggregating a dataset into a single query gradient:
+
+.. code-block:: bash
+
+   bergson build runs/my-query \
+       --model EleutherAI/pythia-14m \
+       --dataset NeelNanda/pile-10k \
+       --truncation \
+       --aggregation mean \
+       --unit_normalize \
+       --projection_dim 0
+
 .. autoclass:: bergson.__main__.Query
    :members:
    :undoc-members:
@@ -48,23 +60,6 @@ Building Blocks
 
    bergson query \
        --index runs/my-index
-
-.. autoclass:: bergson.__main__.Reduce
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-**Example:**
-
-.. code-block:: bash
-
-   bergson reduce runs/my-index \
-       --model EleutherAI/pythia-14m \
-       --dataset NeelNanda/pile-10k \
-       --truncation \
-       --aggregation mean \
-       --unit_normalize \
-       --projection_dim 0
 
 .. autoclass:: bergson.__main__.Score
    :members:
@@ -149,7 +144,7 @@ Method Pipelines
        --method kfac \
        --hessian_cfg.ev_correction true
 
-See ``examples/magic/compare/q3_ekfac.yaml`` for a complete pipeline
+See ``examples/magic/compare_wikitext/ekfac.yaml`` for a complete pipeline
 configuration.
 
 .. autoclass:: bergson.__main__.ApproxUnrolling

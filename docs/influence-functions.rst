@@ -29,4 +29,4 @@ Preconditioners
    * - Shampoo
      - ``bergson hessian <run_path> --method shampoo``
    * - Optimizer state (Adam / Adafactor)
-     - ``--optimizer_state <path>`` on ``build`` / ``reduce`` / ``score``
+     - ``--optimizer_state <path>`` on ``build`` / ``score``
