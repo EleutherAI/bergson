@@ -9,6 +9,11 @@ Most gradient collection for attribution happens on a single model checkpoint. F
 
 This will create a directory at ``<output_path>`` containing the gradients for each training sample in the specified dataset. The ``--model`` and ``--dataset`` arguments should be compatible with the Hugging Face ``transformers`` library. ``--dataset`` accepts a Hugging Face Hub dataset ID, a local ``.csv`` or ``.json``/``.jsonl`` file, or a directory produced by ``Dataset.save_to_disk``. By default it assumes that the dataset has a ``text`` column, but you can specify other columns using ``--prompt_column`` and optionally ``--completion_column``. The ``--help`` flag will show you all available options.
 
+Pre-tokenized datasets
+----------------------
+
+A dataset that already has an ``input_ids`` column is used as-is; the tokenizer is skipped. A ``length`` column is derived from ``input_ids`` when absent. An optional ``labels`` column restricts the loss to specific positions, e.g. assistant turns. ``--chunk_length`` applies to raw text and should stay at its default of 0.
+
 You can also use the library programmatically to build an index. The ``collect_gradients`` function is just a bit lower level than the CLI tool, and allows you to specify the model and dataset directly as arguments. The result is a HuggingFace dataset which contains a handful of new columns, including ``gradients``, which contains the gradients for each training sample. You can then use this dataset to compute attributions.
 
 At the lowest level of abstraction, the ``GradientCollector`` context manager allows you to efficiently collect gradients for *each individual example* in a batch during a backward pass, simultaneously randomly projecting the gradients to a lower-dimensional space to save memory. If you use Adafactor normalization we will do this in a very compute-efficient way which avoids computing the full gradient for each example before projecting it to the lower dimension. There are three main ways to consume the collected gradients:
