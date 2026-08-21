@@ -210,6 +210,156 @@ def report_multi_query_validation(
     print(f"Mean Spearman across {num_queries} queries: {np.mean(rhos):.4f}")
 
 
+def _filter_slice_size(pool: int, fraction: float) -> int:
+    """Number of documents to remove per query for the tail-filter estimator.
+
+    A fraction rather than a count, so the perturbation stays proportional
+    across dataset sizes. Always at least one document.
+    """
+    if not 0.0 < fraction <= 1.0:
+        raise ValueError(f"filter_fraction must be in (0, 1], got {fraction}")
+    return max(1, round(fraction * pool))
+
+
+def _select_filter_slice(
+    flat_scores: torch.Tensor,
+    valid_indices: torch.Tensor,
+    query_col: int,
+    k: int,
+    method: str,
+) -> torch.Tensor:
+    """Row indices of the slice to remove for one query.
+
+    ``load_scores_loss_signed`` signs scores so that **proponents are
+    negative** (they reduce query loss). Proponents are therefore the
+    *smallest* values and detractors the *largest* -- getting this backwards
+    silently inverts the estimator, so it is asserted by unit test.
+    """
+    if method == "filter-proponents":
+        largest = False
+    elif method == "filter-detractors":
+        largest = True
+    else:
+        raise ValueError(f"not a tail-filter method: {method}")
+
+    col = flat_scores[valid_indices, query_col]
+    chosen = torch.topk(col, min(k, len(col)), largest=largest).indices
+    return valid_indices[chosen]
+
+
+def _validate_filter(
+    run_cfg: ValidationConfig,
+    flat_scores: torch.Tensor,
+    multi_query: bool,
+    *,
+    global_rank: int,
+    rank: int,
+    world_size: int,
+    schedule: Callable,
+    stream: DataStream,
+    query_stream: DataStream,
+    baseline: float,
+    baseline_per_doc: torch.Tensor,
+    num_query_docs: int,
+    num_queries: int,
+    pad_count: int,
+    weight_pad_count: int,
+):
+    """Tail-filter estimator: retrain with one end of the score ranking removed.
+
+    For each query, the ``filter_fraction`` highest-ranked documents at the
+    selected end of that query's ranking are dropped, the model is retrained
+    once, and the query's loss change against the unablated baseline is
+    recorded. The mean over queries is the estimator's value.
+
+    Sign conventions, both easy to get backwards:
+
+    - ``load_scores_loss_signed`` signs scores so that **proponents are
+      negative** (they reduce query loss). Proponents are therefore the
+      *smallest* values and detractors the *largest*.
+    - The reported ``loss_change`` is ``filtered - baseline``, so a positive
+      value means removing the slice made the query harder. This is the
+      opposite sign to the ``diff`` column the LDS path writes.
+    """
+    if run_cfg.exclude_zero_scores:
+        valid_indices = torch.nonzero((flat_scores != 0).any(dim=1), as_tuple=True)[0]
+    else:
+        valid_indices = torch.arange(flat_scores.shape[0])
+
+    k = _filter_slice_size(len(valid_indices), run_cfg.filter_fraction)
+
+    csv_path = os.path.join(
+        run_cfg.run_path, f"{run_cfg.method.replace('-', '_')}.csv"
+    )
+    filter_csv = CSVWriter(
+        csv_path,
+        columns=["query", "n_removed", "baseline_loss", "filtered_loss", "loss_change"],
+        enabled=global_rank == 0,
+    )
+
+    hf_disable_pbar()
+    hf_set_verbosity_error()
+
+    changes = []
+    pbar = tqdm(range(num_queries), desc=run_cfg.method, disable=global_rank != 0)
+    for q in pbar:
+        removed = _select_filter_slice(flat_scores, valid_indices, q, k, run_cfg.method)
+
+        trainer, fwd_state, model = prepare_trainer(run_cfg, rank, schedule)
+        fwd_state.detach_()
+
+        stream.weights.fill_(1.0)
+        if pad_count:
+            if stream.weights.ndim == 1:
+                stream.weights.data[-weight_pad_count:] = 0.0
+            else:
+                stream.weights.data[-pad_count:] = 0.0
+        stream.weights.view(-1)[removed] = run_cfg.subset_weight
+
+        for x in stream:
+            fwd_state = trainer.step(
+                fwd_state,
+                x,
+                inplace=True,
+                fsdp=run_cfg.fsdp,
+                max_grad_norm=run_cfg.max_grad_norm,
+                grad_accum_steps=run_cfg.grad_accum_steps,
+            )
+
+        if multi_query:
+            with fwd_state.activate(model):
+                per_doc = per_doc_query_losses(model, query_stream, num_query_docs)
+            filtered_loss = per_doc[q].item()
+            base_loss = baseline_per_doc[q].item()
+        else:
+            with fwd_state.activate(model), torch.no_grad():
+                loss = torch.tensor(0.0, device=stream.weights.device)
+                for batch in query_stream:
+                    del batch["example_weight"]
+                    loss += model(**batch).loss.detach() / len(query_stream)
+            if world_size > 1:
+                dist.all_reduce(loss, op=dist.ReduceOp.AVG)
+            filtered_loss = loss.item()
+            base_loss = baseline
+
+        change = filtered_loss - base_loss
+        filter_csv.writerow(q, len(removed), base_loss, filtered_loss, change)
+
+        if global_rank == 0:
+            changes.append(change)
+            pbar.set_postfix({"mean_loss_change": float(np.mean(changes))})
+
+    filter_csv.close()
+    if global_rank == 0:
+        print(
+            f"{run_cfg.method}: mean loss change {float(np.mean(changes)):.6f} "
+            f"over {len(changes)} quer{'y' if len(changes) == 1 else 'ies'} "
+            f"({k} of {len(valid_indices)} docs removed per query, "
+            f"{run_cfg.filter_fraction:.3%})"
+        )
+        print(f"Saved tail-filter data to {csv_path}")
+
+
 def validate_scores(
     run_cfg: ValidationConfig,
     scores: torch.Tensor,
@@ -262,6 +412,26 @@ def validate_scores(
     # doc * seq_len + token positions for per-token scores.
     num_queries = scores.shape[-1] if multi_query else 1
     flat_scores = scores.reshape(-1, num_queries)
+
+    if run_cfg.method != "lds":
+        _validate_filter(
+            run_cfg,
+            flat_scores,
+            multi_query,
+            global_rank=global_rank,
+            rank=rank,
+            world_size=world_size,
+            schedule=schedule,
+            stream=stream,
+            query_stream=query_stream,
+            baseline=baseline,
+            baseline_per_doc=baseline_per_doc,
+            num_query_docs=num_query_docs,
+            num_queries=num_queries,
+            pad_count=pad_count,
+            weight_pad_count=weight_pad_count,
+        )
+        return
 
     if run_cfg.weight_lrs:
         # Gradient step on the data weights: retrain with w = 1 - lr * score
