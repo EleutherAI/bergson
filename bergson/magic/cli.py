@@ -185,12 +185,20 @@ def compute_per_query_magic_scores(
         del restored
 
         one = query_dataset.select([qi])
+        # The single-document query stream never needs the training batch width:
+        # padding is weight-0 and inert, but it still materialises
+        # batch x seq x vocab fp32 logits PER RANK (~26 GB at batch 256 for
+        # GPT-2) - fatal on 47.5 GB cards, and sharding cannot help because
+        # every rank pads the full width independently. Cap at 32 (CONTROLS:
+        # eval batch is a memory knob), rounded to a world-size multiple.
+        eval_bs = min(run_cfg.batch_size, 32)
+        eval_bs = max(world_size, eval_bs - eval_bs % world_size)
         one, n_one, one_pad, one_wpad = pad_dataset_to_batch_size(
-            one, run_cfg.batch_size, 1, f"Query {qi}", global_rank
+            one, eval_bs, 1, f"Query {qi}", global_rank
         )
         qstream = DataStream(
             one,
-            run_cfg.batch_size,
+            eval_bs,
             device=device,
             input_key=run_cfg.query.prompt_column,
             weight_shape=(n_one,),
