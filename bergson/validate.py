@@ -288,9 +288,7 @@ def _validate_filter(
 
     k = _filter_slice_size(len(valid_indices), run_cfg.filter_fraction)
 
-    csv_path = os.path.join(
-        run_cfg.run_path, f"{run_cfg.method.replace('-', '_')}.csv"
-    )
+    csv_path = os.path.join(run_cfg.run_path, f"{run_cfg.method.replace('-', '_')}.csv")
     filter_csv = CSVWriter(
         csv_path,
         columns=["query", "n_removed", "baseline_loss", "filtered_loss", "loss_change"],
