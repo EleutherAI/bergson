@@ -19,7 +19,7 @@ from torchopt.pytree import tree_iter
 
 from bergson.distributed import grad_tree
 from bergson.magic import BackwardState, DataStream, Trainer
-from bergson.magic.cli import compute_per_query_magic_scores
+from bergson.magic.cli import _eval_batch_size, compute_per_query_magic_scores
 from bergson.magic.config import MagicConfig
 from bergson.utils.math import weighted_causal_lm_ce
 
@@ -278,11 +278,14 @@ def test_chunked_query_set_rejected_for_per_query():
 def test_eval_batch_size_resolution():
     """The query-eval batch defaults to min(batch_size, 32) and never exceeds
     what the config pins; always a multiple of the world size."""
-    from types import SimpleNamespace
 
-    from bergson.magic.cli import _eval_batch_size
+    def cfg(batch_size: int, eval_batch_size: int = 0) -> MagicConfig:
+        return MagicConfig(
+            run_path="x",
+            batch_size=batch_size,
+            eval_batch_size=eval_batch_size,
+        )
 
-    cfg = lambda bs, ebs=0: SimpleNamespace(batch_size=bs, eval_batch_size=ebs)
     assert _eval_batch_size(cfg(512), 1) == 32  # the bs512 OOM case
     assert _eval_batch_size(cfg(512), 8) == 32
     assert _eval_batch_size(cfg(16), 1) == 16  # small batches unchanged

@@ -48,17 +48,15 @@ from ..utils.worker_utils import setup_data_pipeline
 from ..validate import validate_scores
 from .config import MagicConfig
 from .data_stream import DataStream, pad_dataset_to_batch_size
-
-
-def _eval_batch_size(run_cfg, world_size: int) -> int:
-    """The query-eval batch: cfg.eval_batch_size or min(batch_size, 32),
-    rounded down to a multiple of the world size (min: world_size)."""
-    bs = run_cfg.eval_batch_size or min(run_cfg.batch_size, 32)
-    return max(world_size, bs - bs % world_size)
-
-
 from .grad_accum import accumulate_grads
 from .trainer import BackwardState, TrainerState, prepare_trainer, write_lr_history
+
+
+def _eval_batch_size(run_cfg: TrainingConfig, world_size: int) -> int:
+    """The query-eval batch: ``cfg.eval_batch_size`` or ``min(batch_size, 32)``,
+    rounded down to a multiple of the world size (floor: ``world_size``)."""
+    bs = run_cfg.eval_batch_size or min(run_cfg.batch_size, 32)
+    return max(world_size, bs - bs % world_size)
 
 
 def compute_query_gradients(
@@ -174,6 +172,7 @@ def compute_per_query_magic_scores(
         if isinstance(buf, torch.Tensor) and buf.is_floating_point()
     ]
 
+    eval_bs = _eval_batch_size(run_cfg, world_size)
     per_query = []
     for qi in range(num_query_docs):
         qpath = os.path.join(scores_dir, f"q{qi}.pt")
@@ -191,7 +190,6 @@ def compute_per_query_magic_scores(
         del restored
 
         one = query_dataset.select([qi])
-        eval_bs = _eval_batch_size(run_cfg, world_size)
         one, n_one, one_pad, one_wpad = pad_dataset_to_batch_size(
             one, eval_bs, 1, f"Query {qi}", global_rank
         )
