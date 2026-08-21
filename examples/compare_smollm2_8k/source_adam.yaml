@@ -1,0 +1,111 @@
+# Adam-preconditioned SOURCE (Bae et al. 2024, App. C) scores for the
+# magic-trained model against the 50 held-out queries, validated against the
+# retrained models from magic.yaml. Uses evenly spaced interval checkpoints
+# including the final step_125; lr_list and step_size_list are inferred from
+# the run's log_history.json.
+
+# Run with `bergson examples/compare_smollm2_8k/source_adam.yaml`
+
+run_path: runs/compare_smollm2_8k/source_adam
+steps:
+  - train:
+      run_path: runs/compare_smollm2_8k/interval
+      model: gpt2
+      # Shared between source.yaml and source_adam.yaml; resumes instantly
+      # when the run exists.
+      resume: true
+
+      data:
+        dataset: runs/damping_transfer/data/smollm2_train_8k
+        prompt_column: text
+        truncation: true
+        chunk_length: 0
+
+      distributed:
+        nproc_per_node: 8
+        nnode: 1
+
+      batch_size: 256
+      # Bound forward and double-backward memory at 1024-token contexts; no
+      # trajectory change without dropout.
+      grad_accum_steps: 4
+      double_backward_batch_size: 4
+      num_epochs: 4
+      lr_schedule:
+        lr_scheduler_type: polynomial
+        lr: 0.0004
+        lr_start: 1e-6
+        lr_end: 0.00004
+        warmup_steps: 0.25
+
+      # 125 steps; interval 5 checkpoints every 5 steps plus the final state.
+      save_mode: interval
+      save_interval: 5
+      save_optimizer_state: all
+
+  - approxunrolling:
+      index_cfg:
+        run_path: runs/compare_smollm2_8k/source_adam
+        model: runs/compare_smollm2_8k/random/retrained/base
+        overwrite: true
+        precision: fp32
+        token_batch_size: 1024
+        # GPT-2 uses an nn.Linear for its LM head.
+        filter_modules: "lm_head"
+        distributed:
+          nproc_per_node: 8
+          nnode: 1
+        data:
+          dataset: runs/damping_transfer/data/smollm2_train_8k
+          prompt_column: text
+          truncation: true
+          chunk_length: 0
+
+      hessian_cfg:
+        method: kfac
+        hessian_dtype: fp32
+        ev_correction: true
+
+      approx_unrolling_cfg:
+        checkpoints:
+          - runs/compare_smollm2_8k/interval/checkpoints/step_20.ckpt
+          - runs/compare_smollm2_8k/interval/checkpoints/step_40.ckpt
+          - runs/compare_smollm2_8k/interval/checkpoints/step_60.ckpt
+          - runs/compare_smollm2_8k/interval/checkpoints/step_80.ckpt
+          - runs/compare_smollm2_8k/interval/checkpoints/step_100.ckpt
+          - runs/compare_smollm2_8k/interval/checkpoints/step_125.ckpt
+        segments: 3
+        use_adam_preconditioner: true
+        query:
+          dataset: runs/damping_transfer/data/smollm2_query_50
+          prompt_column: text
+          truncation: true
+          chunk_length: 0
+        # One score column per query, for per-query LDS.
+        query_aggregation: none
+
+  - validate:
+      run_path: runs/compare_smollm2_8k/validate_source_adam
+      model: gpt2
+      overwrite: true
+
+      scores: runs/compare_smollm2_8k/source_adam/scores
+      retrained_dir: runs/compare_smollm2_8k/random
+
+      data:
+        dataset: runs/damping_transfer/data/smollm2_train_8k
+        prompt_column: text
+        truncation: true
+        chunk_length: 0
+
+      query:
+        dataset: runs/damping_transfer/data/smollm2_query_50
+        prompt_column: text
+        truncation: true
+        chunk_length: 0
+
+      distributed:
+        nproc_per_node: 8
+        nnode: 1
+
+      batch_size: 32

@@ -1,0 +1,55 @@
+# Train GPT-2 on the first 8k SmolLM2-135M-10B docs (1024-token truncation),
+# computing per-query MAGIC scores for the 50 held-out queries and leave-k-out
+# validation over 100 random 1%-drop subsets. lr 4e-4 maximized empirical
+# metasmoothness (0.997) over {2e-4..1.6e-3}; the retrained models are saved
+# so every other yaml in this directory validates against the same family, and
+# the final Adam second moments are kept for trackstar_adam.yaml.
+
+# Run with `bergson examples/compare_smollm2_8k/magic.yaml`
+
+run_path: runs/compare_smollm2_8k/magic
+steps:
+  - magic:
+      run_path: runs/compare_smollm2_8k/random
+      model: gpt2
+      overwrite: true
+      resume: true
+      precision: fp32
+
+      data:
+        dataset: runs/damping_transfer/data/smollm2_train_8k
+        prompt_column: text
+        truncation: true
+        chunk_length: 0
+
+      query:
+        dataset: runs/damping_transfer/data/smollm2_query_50
+        prompt_column: text
+        truncation: true
+        chunk_length: 0
+
+      distributed:
+        nproc_per_node: 8
+        nnode: 1
+
+      batch_size: 256
+      # Bound forward and double-backward memory at 1024-token contexts; no
+      # trajectory change without dropout.
+      grad_accum_steps: 4
+      double_backward_batch_size: 4
+      num_epochs: 4
+      lr_schedule:
+        lr_scheduler_type: polynomial
+        lr: 0.0004
+        lr_start: 1e-6
+        lr_end: 0.00004
+        warmup_steps: 0.25
+
+      num_subsets: 100
+      subset_fraction: 0.01
+      # 0.26.0 changed the default to skip in-run validation.
+      skip_validation: false
+
+      save_models: true
+      save_optimizer_state: last
+      wandb_project: magic

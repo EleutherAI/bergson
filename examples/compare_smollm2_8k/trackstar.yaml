@@ -1,0 +1,64 @@
+# TrackStar scores for the magic-trained model against the 50 held-out
+# queries, validated against the retrained models from magic.yaml. No
+# optimizer normalization; see trackstar_adam.yaml.
+
+# Run with `bergson examples/compare_smollm2_8k/trackstar.yaml`
+
+run_path: runs/compare_smollm2_8k/trackstar
+steps:
+  - trackstar:
+      index_cfg:
+        projection_dim: 32
+        run_path: runs/compare_smollm2_8k/trackstar
+        model: runs/compare_smollm2_8k/random/retrained/base
+        overwrite: true
+        token_batch_size: 1024
+        # GPT-2 uses an nn.Linear for its LM head.
+        filter_modules: "lm_head"
+        distributed:
+          nproc_per_node: 8
+          nnode: 1
+        data:
+          dataset: runs/damping_transfer/data/smollm2_train_8k
+          prompt_column: text
+          truncation: true
+          chunk_length: 0
+
+      trackstar_cfg:
+        stats_sample_size: 8000
+        query:
+          dataset: runs/damping_transfer/data/smollm2_query_50
+          prompt_column: text
+          truncation: true
+          chunk_length: 0
+        preprocess_cfg:
+          unit_normalize: true
+          aggregation: none
+        score_cfg:
+          batch_size: 1024
+
+  - validate:
+      run_path: runs/compare_smollm2_8k/validate_trackstar
+      model: gpt2
+      overwrite: true
+
+      scores: runs/compare_smollm2_8k/trackstar/scores
+      retrained_dir: runs/compare_smollm2_8k/random
+
+      data:
+        dataset: runs/damping_transfer/data/smollm2_train_8k
+        prompt_column: text
+        truncation: true
+        chunk_length: 0
+
+      query:
+        dataset: runs/damping_transfer/data/smollm2_query_50
+        prompt_column: text
+        truncation: true
+        chunk_length: 0
+
+      distributed:
+        nproc_per_node: 8
+        nnode: 1
+
+      batch_size: 32

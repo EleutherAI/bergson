@@ -1,0 +1,74 @@
+# EK-FAC scores for the magic-trained model against the 50 held-out queries,
+# validated against the retrained models from magic.yaml.
+
+# Run with `bergson examples/compare_smollm2_8k/ekfac.yaml`
+
+run_path: runs/compare_smollm2_8k/ekfac
+steps:
+  - ekfac:
+      index_cfg:
+        run_path: runs/compare_smollm2_8k/ekfac
+        model: runs/compare_smollm2_8k/random/retrained/base
+        overwrite: true
+        token_batch_size: 1024
+        # Cap batch size in docs so the bin-packer doesn't produce large
+        # batches of very few tokens; EK-FAC gradients aren't compressed.
+        max_batch_size: 64
+        # GPT-2 uses an nn.Linear for its LM head.
+        filter_modules: "lm_head"
+        distributed:
+          nproc_per_node: 8
+          nnode: 1
+        data:
+          dataset: runs/damping_transfer/data/smollm2_train_8k
+          prompt_column: text
+          truncation: true
+          chunk_length: 0
+
+      hessian_cfg:
+        method: kfac
+        ev_correction: true
+
+      score_cfg:
+        batch_size: 1024
+        query_batch_size: 64
+
+      preprocess_cfg:
+        unit_normalize: false
+
+      hessian_pipeline_cfg:
+        query:
+          dataset: runs/damping_transfer/data/smollm2_query_50
+          prompt_column: text
+          truncation: true
+          chunk_length: 0
+        # One score column per query, for per-query LDS.
+        query_aggregation: none
+        inversion_cfg:
+          damping_factor: 0.1
+
+  - validate:
+      run_path: runs/compare_smollm2_8k/validate_ekfac
+      model: gpt2
+      overwrite: true
+
+      scores: runs/compare_smollm2_8k/ekfac/scores
+      retrained_dir: runs/compare_smollm2_8k/random
+
+      data:
+        dataset: runs/damping_transfer/data/smollm2_train_8k
+        prompt_column: text
+        truncation: true
+        chunk_length: 0
+
+      query:
+        dataset: runs/damping_transfer/data/smollm2_query_50
+        prompt_column: text
+        truncation: true
+        chunk_length: 0
+
+      distributed:
+        nproc_per_node: 8
+        nnode: 1
+
+      batch_size: 32
