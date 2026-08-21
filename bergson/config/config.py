@@ -412,6 +412,14 @@ class TrainingConfig(AttributionConfig, Serializable):
     under any split; ignored under dropout (``train_mode``), where the replay
     must reuse the forward's micro-batches."""
 
+    eval_batch_size: int = 0
+    """Batch size for query-loss and query-gradient evaluation. ``0`` selects
+    ``min(batch_size, 32)``. A memory knob only: query evaluation materialises
+    fp32 logits of ``batch x seq x vocab`` (~26 GB at batch 256 for GPT-2), and
+    zero-weight padding rows contribute nothing to the weighted mean, so the
+    eval batch never affects results — training batch is the science, eval
+    batch is the memory. Rounded down to a multiple of the world size."""
+
     resume: bool = False
     """Resume a previously interrupted run from the last checkpoint."""
 
