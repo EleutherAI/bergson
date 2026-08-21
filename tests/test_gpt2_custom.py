@@ -51,7 +51,9 @@ def test_mods_add_params_change_output_and_train(mod, param_frag, n_added):
     custom.train()
     loss = custom(x, labels=x).loss
     loss.backward()
-    grads = [p.grad for n, p in custom.named_parameters() if any(f in n for f in param_frag)]
+    grads = [
+        p.grad for n, p in custom.named_parameters() if any(f in n for f in param_frag)
+    ]
     assert grads and all(g is not None and g.abs().sum() > 0 for g in grads)
 
 
