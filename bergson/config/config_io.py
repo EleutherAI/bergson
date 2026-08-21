@@ -45,6 +45,7 @@ def _nccl_version() -> str | None:
     """
     try:
         import torch
+        import torch.cuda.nccl
 
         if torch.distributed.is_nccl_available():
             return ".".join(map(str, torch.cuda.nccl.version()))

@@ -279,6 +279,7 @@ def test_metadata_records_runtime_nccl_version():
     with pip metadata, which is why the loaded version is the one recorded.
     """
     import torch
+    import torch.cuda.nccl
 
     from bergson.config.config_io import make_metadata
 
