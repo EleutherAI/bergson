@@ -6,3 +6,5 @@
 | SOURCE-Adam | 0.169 | 0.138 | -0.134 | 0.459 | 18/50 |
 | TrackStar+Adam | 0.141 | 0.138 | -0.094 | 0.375 | 16/50 |
 | TrackStar | 0.133 | 0.140 | -0.097 | 0.353 | 13/50 |
+
+Note: SOURCE is more likely to beat EK-FAC in longer training runs
