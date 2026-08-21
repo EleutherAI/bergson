@@ -269,3 +269,23 @@ steps:
     _, cmd = steps[0]
     assert isinstance(cmd, Hessian)
     assert cmd.hessian_cfg.method == "autocorrelation"
+
+
+def test_metadata_records_runtime_nccl_version():
+    """Run metadata carries the NCCL version torch actually loaded.
+
+    NCCL selects the all-reduce algorithms, so its version is part of what
+    makes a multi-GPU run bit-reproducible; the runtime report can disagree
+    with pip metadata, which is why the loaded version is the one recorded.
+    """
+    import torch
+
+    from bergson.config.config_io import make_metadata
+
+    meta = make_metadata()
+    if torch.distributed.is_nccl_available():
+        parts = meta["nccl_version"].split(".")
+        assert len(parts) >= 2 and all(p.isdigit() for p in parts)
+        assert tuple(map(int, parts)) == tuple(torch.cuda.nccl.version())
+    else:
+        assert "nccl_version" not in meta

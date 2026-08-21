@@ -35,8 +35,26 @@ def _git_sha() -> str | None:
         return None
 
 
+def _nccl_version() -> str | None:
+    """Version of the NCCL library torch actually loaded, or ``None``.
+
+    Reported from the runtime (``torch.cuda.nccl.version()``), not package
+    metadata: the two can disagree, and NCCL selects the gradient all-reduce
+    algorithms, so its version is part of what makes a multi-GPU run
+    bit-reproducible.
+    """
+    try:
+        import torch
+
+        if torch.distributed.is_nccl_available():
+            return ".".join(map(str, torch.cuda.nccl.version()))
+    except Exception:
+        return None
+    return None
+
+
 def make_metadata() -> dict[str, Any]:
-    """Run metadata: version, time, git sha."""
+    """Run metadata: version, time, git sha, NCCL version."""
     try:
         version: str | None = _pkg_version("bergson")
     except PackageNotFoundError:
@@ -48,6 +66,9 @@ def make_metadata() -> dict[str, Any]:
     sha = _git_sha()
     if sha is not None:
         meta["git_sha"] = sha
+    nccl = _nccl_version()
+    if nccl is not None:
+        meta["nccl_version"] = nccl
     return meta
 
 
