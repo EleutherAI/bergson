@@ -19,9 +19,10 @@ from torchopt.pytree import tree_iter
 
 from bergson.distributed import grad_tree
 from bergson.magic import BackwardState, DataStream, Trainer
-from bergson.magic.cli import _eval_batch_size, compute_per_query_magic_scores
+from bergson.magic.cli import compute_per_query_magic_scores
 from bergson.magic.config import MagicConfig
 from bergson.utils.math import weighted_causal_lm_ce
+from bergson.validate import mean_query_loss, per_doc_query_losses
 
 TINY = "trl-internal-testing/tiny-Phi3ForCausalLM"
 
@@ -275,20 +276,30 @@ def test_chunked_query_set_rejected_for_per_query():
     MagicConfig(run_path="x", query_method="mean", query=DataConfig(chunk_length=32))
 
 
-def test_eval_batch_size_resolution():
-    """The query-eval batch defaults to min(batch_size, 32) and never exceeds
-    what the config pins; always a multiple of the world size."""
+@pytest.mark.parametrize("grad_accum_steps", [1, 2, 4])
+def test_query_eval_is_invariant_to_grad_accum(grad_accum_steps):
+    """``grad_accum_steps`` moves neither the per-document nor the aggregate
+    query loss."""
+    model = _model()
+    model.eval()
 
-    def cfg(batch_size: int, eval_batch_size: int = 0) -> MagicConfig:
-        return MagicConfig(
-            run_path="x",
-            batch_size=batch_size,
-            eval_batch_size=eval_batch_size,
-        )
+    # Unequal lengths, so a wrong micro-batch denominator shifts the aggregate
+    # rather than cancelling out.
+    ids = [list(range(10, 10 + n)) for n in (4, 7, 5, 8)]
+    query_ds = Dataset.from_dict({"input_ids": ids, "labels": ids})
+    stream = DataStream(query_ds, batch_size=4, device="cpu")
 
-    assert _eval_batch_size(cfg(512), 1) == 32  # the bs512 OOM case
-    assert _eval_batch_size(cfg(512), 8) == 32
-    assert _eval_batch_size(cfg(16), 1) == 16  # small batches unchanged
-    assert _eval_batch_size(cfg(512, 64), 4) == 64  # explicit override wins
-    assert _eval_batch_size(cfg(512, 30), 4) == 28  # rounded to world size
-    assert _eval_batch_size(cfg(512, 2), 4) == 4  # floor at world size
+    per_doc = per_doc_query_losses(model, stream, len(ids), grad_accum_steps)
+    aggregate = mean_query_loss(model, stream, grad_accum_steps)
+
+    reference_per_doc = per_doc_query_losses(model, stream, len(ids), 1)
+    reference_aggregate = mean_query_loss(model, stream, 1)
+
+    torch.testing.assert_close(per_doc, reference_per_doc)
+    torch.testing.assert_close(aggregate, reference_aggregate)
+
+    # Pin the aggregate to the token-weighted mean, not just to itself.
+    counts = torch.tensor([len(x) - 1 for x in ids], dtype=torch.float32)
+    torch.testing.assert_close(
+        aggregate, (per_doc * counts).sum() / counts.sum(), rtol=1e-5, atol=1e-6
+    )

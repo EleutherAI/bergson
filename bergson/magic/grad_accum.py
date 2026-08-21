@@ -12,7 +12,7 @@ draws from the CUDA generator); the snapshot helpers here are shared with the
 trainer for that reason.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator, Sequence
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -102,6 +102,40 @@ def split_batch(inputs: dict, n: int) -> list[dict]:
     return micro_batches
 
 
+def iter_microbatches(
+    model,
+    inputs: dict,
+    grad_accum_steps: int,
+    *,
+    model_keys: Sequence[str] | None = None,
+    rng_snapshots: list | None = None,
+) -> Iterator[tuple[dict, Any, float]]:
+    """Forward ``inputs`` micro-batch by micro-batch, yielding
+    ``(micro_batch, outputs, coef)``.
+
+    ``coef`` is the micro-batch's share of the full batch's loss denominator,
+    which ``weighted_causal_lm_ce`` divides by under "mean", so
+    ``sum(micro_loss * coef)`` recovers the full-batch loss and
+    ``sum(micro_grad * coef)`` the full-batch gradient.
+
+    ``model_keys`` restricts what is passed to the model; the yielded
+    ``micro_batch`` carries every key, sliced consistently. Pass
+    ``rng_snapshots`` to record each micro-batch's pre-forward RNG state for
+    replay (see :func:`microbatch_step_vjp`).
+    """
+    total_denom = loss_denom(inputs)
+    for micro_batch in split_batch(inputs, grad_accum_steps):
+        if rng_snapshots is not None:
+            rng_snapshots.append(rng_snapshot())
+        kwargs = (
+            micro_batch
+            if model_keys is None
+            else {k: micro_batch[k] for k in model_keys}
+        )
+        outputs = model(**kwargs)
+        yield micro_batch, outputs, loss_denom(micro_batch) / total_denom
+
+
 def accumulate_grads(
     model,
     params,
@@ -111,29 +145,17 @@ def accumulate_grads(
     create_graph: bool,
     rng_snapshots: list | None = None,
 ) -> tuple[dict, float]:
-    """Sum normalized per-micro-batch gradients into the full-batch gradient.
-
-    Each micro-batch's loss is normalized by its own token count; scaling by
-    ``denom_i / D`` (D = full-batch token count) makes the sum identical to the
-    full-batch gradient up to float associativity. Returns ``(grads, loss)``.
-
-    The caller seeds the RNG; the micro-batch forwards draw from it in order.
-    Pass ``rng_snapshots`` to record each micro-batch's pre-forward RNG state
-    so a later pass can replay the same draws (see :func:`microbatch_step_vjp`).
-    """
-    total_denom = loss_denom(inputs)
+    """Sum ``coef``-scaled per-micro-batch gradients into the full-batch
+    gradient. Returns ``(grads, loss)``."""
     grads: dict | None = None
     last_loss = 0.0
-    for micro_batch in split_batch(inputs, grad_accum_steps):
-        if rng_snapshots is not None:
-            rng_snapshots.append(rng_snapshot())
-        outputs = model(**micro_batch)
-
-        # Two output types are supported: HuggingFace (a dict/dataclass with a
-        # "loss" field) and "raw loss" (a scalar loss Tensor).
+    for _, outputs, coef in iter_microbatches(
+        model, inputs, grad_accum_steps, rng_snapshots=rng_snapshots
+    ):
+        # A HuggingFace output carries the loss in a field; a wrapped model
+        # returns the scalar itself.
         micro_loss = outputs.loss if hasattr(outputs, "loss") else outputs
         assert isinstance(micro_loss, torch.Tensor), "Loss must be a Tensor"
-        coef = loss_denom(micro_batch) / total_denom
         last_loss += float(micro_loss.detach()) * coef
         micro_grads = grad_tree(micro_loss * coef, params, create_graph=create_graph)
         if grads is None:

@@ -412,25 +412,6 @@ class TrainingConfig(AttributionConfig, Serializable):
     under any split; ignored under dropout (``train_mode``), where the replay
     must reuse the forward's micro-batches."""
 
-    eval_batch_size: int = 0
-    """Batch size for query-loss and query-gradient evaluation. ``0`` selects
-    ``min(batch_size, 32)``; rounded down to a multiple of the world size.
-
-    A training step bounds its activation peak by splitting each batch into
-    ``grad_accum_steps`` micro-batches, but the query-loss evaluators in
-    :mod:`bergson.validate` run a whole per-rank batch in one forward and add a
-    vocab-sized fp32 copy of the logits on top, so their peak tracks
-    ``batch_size`` no matter how large ``grad_accum_steps`` is. At 128 rows per
-    rank of 512-token GPT-2 sequences a training step peaks at 16 GiB with
-    ``grad_accum_steps=8`` while the query-loss forward peaks at 41 GiB.
-
-    Per-query MAGIC (``query_method="none"``) is unaffected by this knob: each
-    query batch is a single document repeated, so its mean is the document's own
-    loss at any batch size. Under an aggregate ``query_method`` the padding rows
-    are copies of the last query document that reach the loss, so the eval batch
-    shifts the aggregate query loss and gradient; pin ``eval_batch_size`` to
-    compare such a run against one recorded before this field existed."""
-
     resume: bool = False
     """Resume a previously interrupted run from the last checkpoint."""
 

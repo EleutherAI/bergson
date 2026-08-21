@@ -52,13 +52,6 @@ from .grad_accum import accumulate_grads
 from .trainer import BackwardState, TrainerState, prepare_trainer, write_lr_history
 
 
-def _eval_batch_size(run_cfg: TrainingConfig, world_size: int) -> int:
-    """The query-eval batch: ``cfg.eval_batch_size`` or ``min(batch_size, 32)``,
-    rounded down to a multiple of the world size (floor: ``world_size``)."""
-    bs = run_cfg.eval_batch_size or min(run_cfg.batch_size, 32)
-    return max(world_size, bs - bs % world_size)
-
-
 def compute_query_gradients(
     fwd_state: TrainerState,
     model: torch.nn.Module,
@@ -172,7 +165,6 @@ def compute_per_query_magic_scores(
         if isinstance(buf, torch.Tensor) and buf.is_floating_point()
     ]
 
-    eval_bs = _eval_batch_size(run_cfg, world_size)
     per_query = []
     for qi in range(num_query_docs):
         qpath = os.path.join(scores_dir, f"q{qi}.pt")
@@ -191,11 +183,11 @@ def compute_per_query_magic_scores(
 
         one = query_dataset.select([qi])
         one, n_one, one_pad, one_wpad = pad_dataset_to_batch_size(
-            one, eval_bs, 1, f"Query {qi}", global_rank
+            one, run_cfg.batch_size, 1, f"Query {qi}", global_rank
         )
         qstream = DataStream(
             one,
-            eval_bs,
+            run_cfg.batch_size,
             device=device,
             input_key=run_cfg.query.prompt_column,
             weight_shape=(n_one,),
@@ -493,23 +485,22 @@ def worker(
 
     # Pad query dataset to be divisible by batch_size (weight=0 for padding)
     num_real_query_docs = num_query_docs
-    eval_bs = _eval_batch_size(run_cfg, world_size)
     query_dataset, num_query_docs, query_pad_count, query_weight_pad_count = (
         pad_dataset_to_batch_size(
-            query_dataset, eval_bs, num_query_docs, "Query", global_rank
+            query_dataset, run_cfg.batch_size, num_query_docs, "Query", global_rank
         )
     )
-    if len(query_dataset) < eval_bs:
+    if len(query_dataset) < run_cfg.batch_size:
         raise ValueError(
             f"Query dataset has {len(query_dataset)} examples, fewer than "
-            f"eval batch {eval_bs}. Use a larger query split or "
-            f"smaller eval_batch_size."
+            f"batch_size={run_cfg.batch_size}. Use a larger query split or "
+            f"smaller batch_size."
         )
 
     # Compute query gradients
     query_stream = DataStream(
         query_dataset,
-        eval_bs,
+        run_cfg.batch_size,
         device=get_device(rank),
         input_key=run_cfg.query.prompt_column,
         weight_shape=(num_query_docs,),
