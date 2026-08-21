@@ -7,6 +7,8 @@
 
 # Run with `bergson examples/compare_smollm2_8k/magic.yaml`
 
+# LDS: 0.974
+
 run_path: runs/compare_smollm2_8k/magic
 steps:
   - magic:

@@ -6,6 +6,8 @@
 
 # Run with `bergson examples/compare_smollm2_8k/source.yaml`
 
+# LDS: 0.169
+
 run_path: runs/compare_smollm2_8k/source
 steps:
   - train:

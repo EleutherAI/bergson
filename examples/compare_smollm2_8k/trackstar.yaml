@@ -4,6 +4,8 @@
 
 # Run with `bergson examples/compare_smollm2_8k/trackstar.yaml`
 
+# LDS: 0.133
+
 run_path: runs/compare_smollm2_8k/trackstar
 steps:
   - trackstar:
