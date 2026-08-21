@@ -32,7 +32,11 @@ from transformers.utils.logging import (
 from .config.config import ValidationConfig
 from .config.config_io import save_run_config
 from .data import load_scores_loss_signed, pad_and_tensor
-from .magic.data_stream import DataStream, pad_dataset_to_batch_size
+from .magic.data_stream import (
+    DataStream,
+    mask_padded_rows,
+    pad_dataset_to_batch_size,
+)
 from .magic.grad_accum import iter_microbatches
 from .magic.trainer import TrainerState, prepare_trainer
 from .utils.csv_writer import CSVWriter
@@ -152,12 +156,18 @@ def mean_query_loss(
     grad_accum_steps: int = 1,
 ) -> torch.Tensor:
     total = torch.zeros((), device=query_stream.device)
+    live_batches = torch.zeros((), device=query_stream.device)
     with torch.no_grad():
         for batch in query_stream:
-            batch.pop("example_weight", None)
+            batch, live = mask_padded_rows(batch)
+            live_batches += float(live)
             for _, outputs, coef in iter_microbatches(model, batch, grad_accum_steps):
                 total += outputs.loss.detach() * coef
-    return total / len(query_stream)
+
+    if dist.is_initialized():
+        dist.all_reduce(total)
+        dist.all_reduce(live_batches)
+    return total / live_batches.clamp_min(1.0)
 
 
 def report_multi_query_validation(
@@ -214,7 +224,6 @@ def validate_scores(
     *,
     global_rank: int,
     rank: int,
-    world_size: int,
     schedule: Callable,
     stream: DataStream,
     query_stream: DataStream,
@@ -324,8 +333,6 @@ def validate_scores(
                     loss = mean_query_loss(
                         model, query_stream, run_cfg.grad_accum_steps
                     )
-                if world_size > 1:
-                    dist.all_reduce(loss, op=dist.ReduceOp.AVG)
                 diff = baseline - loss.item()
                 csv_writer.writerow(lr, diff, lr * predicted.mean().item())
                 if global_rank == 0:
@@ -472,9 +479,6 @@ def validate_scores(
 
         with fwd_state.activate(model):
             loss = mean_query_loss(model, query_stream, run_cfg.grad_accum_steps)
-
-        if world_size > 1:
-            dist.all_reduce(loss, op=dist.ReduceOp.AVG)
 
         diff = baseline - loss.item()
         score_sum = flat_scores[subset].sum().item()

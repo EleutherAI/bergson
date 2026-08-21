@@ -66,13 +66,15 @@ def weighted_causal_lm_ce(
     tok_loss = F.cross_entropy(
         shift_logits.view(-1, V),
         shift_labels.view(-1),
-        reduction="none" if needs_per_token else "mean",
+        reduction="none" if needs_per_token else "sum",
         ignore_index=ignore_index,
     )
 
-    # Implicitly assume the weights are all ones
+    # Implicitly assume the weights are all ones. Dividing by the clamped count
+    # is the "mean" reduction, except that a batch with nothing to supervise
+    # scores 0 rather than 0/0.
     if not needs_per_token:
-        return tok_loss
+        return tok_loss / (shift_labels != ignore_index).sum().clamp_min(1)
 
     tok_loss = tok_loss.view(B, T - 1)  # [B, T-1]
 

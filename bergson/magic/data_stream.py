@@ -5,6 +5,32 @@ from datasets import Dataset
 from ..data import pad_and_tensor
 
 
+def mask_padded_rows(batch: dict) -> tuple[dict, bool]:
+    """Remove ``example_weight`` from ``batch``, silencing its zero-weight rows.
+
+    Returns the batch and whether any row survived.
+
+    :func:`pad_dataset_to_batch_size` fills a batch by repeating the last row,
+    and the caller zeroes those rows' weights. Evaluation reads no weights, so
+    the copies would otherwise count as extra documents. The rows are masked
+    rather than dropped because FSDP's forward all-gather needs every rank to
+    run the same number of micro-batches.
+    """
+    weight = batch.pop("example_weight", None)
+    if weight is None:
+        return batch, True
+
+    live = weight != 0 if weight.ndim == 1 else (weight != 0).any(dim=1)
+    if bool(live.all()):
+        return batch, True
+
+    batch["labels"] = batch["labels"].masked_fill(~live[:, None], -100)
+    mask = batch.get("shift_loss_mask")
+    if mask is not None:
+        batch["shift_loss_mask"] = mask & live[:, None]
+    return batch, bool(live.any())
+
+
 def pad_dataset_to_batch_size(
     dataset: Dataset,
     batch_size: int,
