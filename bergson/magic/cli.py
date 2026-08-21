@@ -55,6 +55,8 @@ def _eval_batch_size(run_cfg, world_size: int) -> int:
     rounded down to a multiple of the world size (min: world_size)."""
     bs = run_cfg.eval_batch_size or min(run_cfg.batch_size, 32)
     return max(world_size, bs - bs % world_size)
+
+
 from .grad_accum import accumulate_grads
 from .trainer import BackwardState, TrainerState, prepare_trainer, write_lr_history
 

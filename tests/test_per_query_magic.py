@@ -283,9 +283,9 @@ def test_eval_batch_size_resolution():
     from bergson.magic.cli import _eval_batch_size
 
     cfg = lambda bs, ebs=0: SimpleNamespace(batch_size=bs, eval_batch_size=ebs)
-    assert _eval_batch_size(cfg(512), 1) == 32   # the bs512 OOM case
+    assert _eval_batch_size(cfg(512), 1) == 32  # the bs512 OOM case
     assert _eval_batch_size(cfg(512), 8) == 32
-    assert _eval_batch_size(cfg(16), 1) == 16    # small batches unchanged
+    assert _eval_batch_size(cfg(16), 1) == 16  # small batches unchanged
     assert _eval_batch_size(cfg(512, 64), 4) == 64  # explicit override wins
     assert _eval_batch_size(cfg(512, 30), 4) == 28  # rounded to world size
-    assert _eval_batch_size(cfg(512, 2), 4) == 4    # floor at world size
+    assert _eval_batch_size(cfg(512, 2), 4) == 4  # floor at world size
