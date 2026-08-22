@@ -3,6 +3,7 @@ import json
 import os
 import shutil
 import time
+from collections.abc import Sequence
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -363,6 +364,7 @@ def worker(
     score_path: str = "",
     validate: bool = False,
     baseline_model: str = "",
+    retrained_dir: Sequence[str] = (),
 ):
     if torch.cuda.is_available():
         torch.cuda.set_device(get_device_index(rank))
@@ -631,6 +633,7 @@ def worker(
         run_cfg,
         scores,
         multi_query,
+        retrained_dir=retrained_dir,
         global_rank=global_rank,
         rank=rank,
         schedule=schedule,
@@ -652,6 +655,7 @@ def run_magic(
     score_path: str = "",
     validate: bool = False,
     baseline_model: str = "",
+    retrained_dir: Sequence[str] = (),
 ):
     """Train ``run_cfg``, score the query set, and validate those scores."""
     if validate and not isinstance(run_cfg, ValidationConfig):
@@ -707,6 +711,7 @@ def run_magic(
             score_path,
             validate,
             baseline_model,
+            retrained_dir,
         ],
         run_cfg.distributed,
     )
