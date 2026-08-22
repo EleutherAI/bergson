@@ -3,6 +3,7 @@ import json
 import os
 import shutil
 import time
+import warnings
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -301,8 +302,14 @@ def attach_doc_ids_if_missing(dataset: Dataset) -> Dataset:
 def emit_trajectory_plot(run_path: str, scores: torch.Tensor, batch_size: int):
     """Plot the per-step score level beside the scores, if matplotlib is present."""
     out = str(Path(run_path) / "score_vs_step.png")
-    if plot_score_trajectory(scores.float().numpy(), batch_size, out):
-        print(f"Saved score trajectory plot to {out}")
+    try:
+        if plot_score_trajectory(scores.float().numpy(), batch_size, out):
+            print(f"Saved score trajectory plot to {out}")
+    except Exception as e:
+        warnings.warn(
+            f"Score trajectory plot failed ({type(e).__name__}: {e}); "
+            "the scores themselves are saved."
+        )
 
 
 def save_magic_scores(
