@@ -188,8 +188,8 @@ def compute_per_query_magic_scores(
         fwd_state.copy_(restored)
         del restored
 
-        # A one-document stream indexes its weights by row, not by doc id, and
-        # one row per rank is its full width: wider is zero-weight padding.
+        # A one-document stream indexes its weights by row, not by doc id.
+        # One row per rank; more rows are zero-weight padding.
         one = query_dataset.select([qi])
         if "doc_ids" in one.column_names:
             one = one.remove_columns("doc_ids")

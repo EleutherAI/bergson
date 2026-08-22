@@ -7,7 +7,7 @@ from ..data import pad_and_tensor
 
 def mask_padded_rows(batch: dict) -> tuple[dict, int]:
     """Remove ``example_weight`` and mask out the rows it zeroes, so all ranks
-    keep the same batch width. Returns the batch and its supervised token count.
+    keep the same batch size. Returns the batch and its supervised token count.
     """
     weight = batch.pop("example_weight", None)
     if weight is not None:
