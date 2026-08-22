@@ -7,6 +7,7 @@ corresponding CLI entrypoint.
 """
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import cast
 
 from simple_parsing import Serializable
@@ -132,8 +133,28 @@ class Magic(MagicConfig):
     """Run MAGIC attribution."""
 
     def execute(self):
-        """Run MAGIC attribution."""
+        """Run MAGIC attribution, then validate the scores unless skipped."""
         run_magic(self)
+        if self.skip_validation:
+            return
+
+        run_path = Path(self.run_path)
+        base = run_path / "retrained" / "base"
+        shared = {
+            k: v
+            for k, v in self.to_dict().items()
+            if k in ValidationConfig.__dataclass_fields__
+        }
+        Validate.from_dict(
+            shared
+            | {
+                "scores": str(run_path / "scores"),
+                "baseline_model": str(base) if base.exists() else "",
+                "resume": True,
+            }
+        ).execute()
+        # The validation step wrote its own config over this run's.
+        save_run_config(self, run_path)
 
 
 @dataclass
@@ -282,6 +303,9 @@ class Validate(ValidationConfig):
     models written with ``save_models=true``; multiple directories (a yaml list,
     or comma-separated on the CLI) average the query losses over the runs."""
 
+    baseline_model: str = ""
+    """Optional path to baseline model trained on the full dataset."""
+
     def execute(self):
         """Run the validation."""
         assert self.scores, "Path to attribution scores must be provided."
@@ -291,4 +315,9 @@ class Validate(ValidationConfig):
                 retrained_dir = retrained_dir.split(",")
             evaluate_retrained(self, retrained_dir, score_path=self.scores)
         else:
-            run_magic(self, score_path=self.scores)
+            run_magic(
+                self,
+                score_path=self.scores,
+                validate=True,
+                baseline_model=self.baseline_model,
+            )

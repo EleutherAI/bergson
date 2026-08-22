@@ -3,7 +3,7 @@ import json
 import os
 import shutil
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import numpy as np
@@ -361,6 +361,8 @@ def worker(
     num_query_docs: int,
     run_cfg: TrainingConfig,
     score_path: str = "",
+    validate: bool = False,
+    baseline_model: str = "",
 ):
     if torch.cuda.is_available():
         torch.cuda.set_device(get_device_index(rank))
@@ -429,45 +431,50 @@ def worker(
     schedule = run_cfg.lr_schedule.get_schedule(len(stream))
     torch.manual_seed(run_cfg.seed)
     torch.cuda.manual_seed_all(run_cfg.seed)
-    trainer, fwd_state, model = prepare_trainer(run_cfg, rank, schedule)
-
     ckpts_path = os.path.join(run_cfg.run_path, "checkpoints")
-    resume = run_cfg.resume
 
-    if global_rank == 0:
-        write_lr_history(ckpts_path, schedule, len(stream))
-
-    fwd_state = trainer.train(
-        fwd_state,
-        stream,
-        debug=run_cfg.debug,
-        inplace=True,
-        save_dir=ckpts_path,
-        save_mode=run_cfg.save_mode,
-        log_fn=log_fn,
-        resume=resume,
-        fsdp=run_cfg.fsdp,
-        max_grad_norm=run_cfg.max_grad_norm,
-        grad_accum_steps=run_cfg.grad_accum_steps,
-        optimizer_cfg=(
-            dict(
-                betas=(run_cfg.adam_beta1, run_cfg.adam_beta2),
-                eps=run_cfg.adam_eps,
-                eps_root=run_cfg.eps_root,
-            )
-            if run_cfg.save_optimizer_state == "all"
-            else None
-        ),
-        save_interval=run_cfg.save_interval,
-    )
-    # Called on every rank: FSDP moments are DTensors whose gather is a
-    # collective; rank 0 writes inside.
-    if run_cfg.save_optimizer_state != "none":
-        save_second_moments_as_optimizer_pt(
-            model,  # type: ignore[reportArgumentType]
-            fwd_state.opt_state,
-            os.path.join(run_cfg.run_path, "optimizer.pt"),
+    if baseline_model:
+        # The leave-k-out retrains still start from run_cfg.model.
+        trainer, fwd_state, model = prepare_trainer(
+            replace(run_cfg, model=baseline_model), rank, schedule
         )
+    else:
+        trainer, fwd_state, model = prepare_trainer(run_cfg, rank, schedule)
+
+        if global_rank == 0:
+            write_lr_history(ckpts_path, schedule, len(stream))
+
+        fwd_state = trainer.train(
+            fwd_state,
+            stream,
+            debug=run_cfg.debug,
+            inplace=True,
+            save_dir=ckpts_path,
+            save_mode=run_cfg.save_mode,
+            log_fn=log_fn,
+            resume=run_cfg.resume,
+            fsdp=run_cfg.fsdp,
+            max_grad_norm=run_cfg.max_grad_norm,
+            grad_accum_steps=run_cfg.grad_accum_steps,
+            optimizer_cfg=(
+                dict(
+                    betas=(run_cfg.adam_beta1, run_cfg.adam_beta2),
+                    eps=run_cfg.adam_eps,
+                    eps_root=run_cfg.eps_root,
+                )
+                if run_cfg.save_optimizer_state == "all"
+                else None
+            ),
+            save_interval=run_cfg.save_interval,
+        )
+        # Called on every rank: FSDP moments are DTensors whose gather is a
+        # collective; rank 0 writes inside.
+        if run_cfg.save_optimizer_state != "none":
+            save_second_moments_as_optimizer_pt(
+                model,  # type: ignore[reportArgumentType]
+                fwd_state.opt_state,
+                os.path.join(run_cfg.run_path, "optimizer.pt"),
+            )
 
     # A sliced run leaves the shared baseline to the process that starts at 0.
     trails_slice = isinstance(run_cfg, ValidationConfig) and run_cfg.subset_start != 0
@@ -617,7 +624,7 @@ def worker(
 
     stream.requires_grad = False
 
-    if isinstance(run_cfg, MagicConfig) and run_cfg.skip_validation:
+    if not validate:
         return
 
     validate_scores(
@@ -639,7 +646,17 @@ def worker(
     )
 
 
-def run_magic(run_cfg: TrainingConfig, *, score_path: str = ""):
+def run_magic(
+    run_cfg: TrainingConfig,
+    *,
+    score_path: str = "",
+    validate: bool = False,
+    baseline_model: str = "",
+):
+    """Train ``run_cfg``, score the query set, and validate those scores."""
+    if validate and not isinstance(run_cfg, ValidationConfig):
+        raise TypeError("validation requires a ValidationConfig")
+
     run_path = Path(run_cfg.run_path)
     is_main_node = int(os.environ.get("SLURM_PROCID", 0)) == 0
     multi_node = run_cfg.distributed.nnode > 1
@@ -681,7 +698,16 @@ def run_magic(run_cfg: TrainingConfig, *, score_path: str = ""):
     launch_distributed_run(
         "run_magic",
         worker,
-        [train_ds, query_ds, train_n, query_n, run_cfg, score_path],
+        [
+            train_ds,
+            query_ds,
+            train_n,
+            query_n,
+            run_cfg,
+            score_path,
+            validate,
+            baseline_model,
+        ],
         run_cfg.distributed,
     )
 
