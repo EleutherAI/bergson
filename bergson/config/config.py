@@ -180,7 +180,7 @@ class ModelConfig(ABC):
     """HF Model kwargs for in the format 'arg1=val1,arg2=val2'."""
 
     logit_scale: float = 1.0
-    """Multiply the language-model head's output logits by this factor."""
+    """Multiply the output logits by this factor."""
 
 
 @dataclass
