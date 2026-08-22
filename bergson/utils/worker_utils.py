@@ -126,6 +126,27 @@ def extract_peft_target_modules(model) -> set[str]:
     return target_modules
 
 
+def apply_logit_scale(model, scale: float):
+    """Scale the output logits of ``model`` in place, via a forward hook.
+
+    A hook rather than a wrapper module so the model stays a plain
+    ``PreTrainedModel``: FSDP, PEFT and ``save_pretrained`` all continue to see
+    the architecture they expect. The hook is not persisted by
+    ``save_pretrained``, which is correct -- the scale belongs to the run
+    config, and every load path re-applies it from there.
+    """
+    if scale == 1.0:
+        return model
+
+    head = model.get_output_embeddings()
+    if head is None:
+        raise ValueError(
+            f"logit_scale={scale} was requested but {type(model).__name__} has no "
+            "output embeddings to hook; it is not a causal language model."
+        )
+    head.register_forward_hook(lambda _module, _inputs, output: output * scale)
+    return model
+
 def setup_model_and_peft(
     cfg: ModelConfig,
     device_map_auto: bool = False,
@@ -199,6 +220,7 @@ def setup_model_and_peft(
         revision=cfg.revision,
         **model_kwargs,
     )
+    apply_logit_scale(model, getattr(cfg, "logit_scale", 1.0))
     loss_reduction = getattr(cfg, "loss_reduction", "mean")
     model.loss_function = partial(weighted_causal_lm_ce, reduction=loss_reduction)
     target_modules = None
