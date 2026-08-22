@@ -16,10 +16,15 @@ Run each config with `PYTHONPATH=$PWD python -m bergson <config>`, in order:
 Step 2 runs before step 3 because it exports the trainer checkpoints to the
 HF format both steps load.
 
-| Method | LDS (mean Spearman over 481 queries, 95% CI) |
-|--------|----------------------------------------------|
-| EK-FAC IF | 0.468 ± 0.015 |
-| SOURCE | 0.476 ± 0.015 |
+LDS, the mean Spearman correlation over 481 validation queries ± 95% CI:
 
-Query losses averaged over the five retrain seeds; kronfluence reports 0.44
-for EK-FAC IF on its own five-seed ground truth.
+| Ground truth | EK-FAC IF | SOURCE |
+|--------------|-----------|--------|
+| single seed | 0.418 ± 0.016 | 0.429 ± 0.015 |
+| 5-seed averaged | 0.468 ± 0.015 | 0.476 ± 0.015 |
+
+The 5-seed ground truth averages each query's loss over the five retrain seeds
+before correlating; the seeds share the same 100 subsets. Under it SOURCE beats
+IF on 308/481 queries, Wilcoxon p = 2.3e-11. EK-FAC spread across the five
+single-seed ground truths is 0.4142–0.4183; kronfluence reports 0.44 for EK-FAC
+IF on its own five-seed ground truth.
