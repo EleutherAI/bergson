@@ -88,6 +88,19 @@ def hessian_pipeline(
             query_cfg.run_path = query_path
             query_cfg.data = hessian_pipeline_cfg.query
             query_cfg.projection_dim = 0
+
+            # Query aggregation is not compatible with query-side token
+            # attribution: aggregating collapses per-token query gradients
+            # into a single target gradient, so a per-token query index is
+            # invalid. Build a per-example query instead. Mirrors the same
+            # guard in cli/trackstar.py's query build step.
+            if aggregation != "none" and query_cfg.attribute_tokens:
+                print(
+                    "Query aggregation is not compatible with query-side "
+                    "token attribution; building a per-example query instead."
+                )
+                query_cfg.attribute_tokens = False
+
             _validate(query_cfg)
 
             query_preprocess_cfg = PreprocessConfig(aggregation=aggregation)
