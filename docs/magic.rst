@@ -103,6 +103,53 @@ Models and optimizer state
   --skip_validation False``). (Commands outside the leave-k-out family —
   plain ``bergson train`` — write the trained model to ``model/`` instead.)
 
+Score trajectory
+----------------
+
+A MAGIC run processes the shuffled training documents in batches of
+``batch_size`` — batch ``s`` is optimizer step ``s`` — so the saved scores group
+back into per-step buckets. ``bergson score_trajectory`` plots the per-step
+median ``log10|score|`` (the score *level*) against training step:
+
+.. code-block:: bash
+
+   bergson score_trajectory runs/my-magic   # -> runs/my-magic/score_vs_step.png
+
+It reads ``<run_path>/scores`` and ``<run_path>/config.yaml`` and writes
+``<run_path>/score_vs_step.png``. A smooth, gently-varying band is healthy; a
+level that sweeps tens of decades or oscillates ("rings") flags a run whose
+attribution may not be trustworthy. It is a direct view of score behaviour and
+complements the metasmoothness check (below): the two are related but distinct —
+a high metasmoothness score does not guarantee a stable level.
+
+Requires the optional plotting dependency: ``pip install 'bergson[viz]'``.
+
+.. figure:: _static/score_trajectory_healthy.png
+   :width: 100%
+   :alt: Per-step attribution-score level for a healthy deep-ignorance MCQA run.
+
+   A healthy run (deep-ignorance strong-filter on MedMCQA — the ``magic``
+   example from the pipeline). The level holds a tight band near -6.5 dex for the
+   whole run, dipping only in the final few hundred steps.
+
+.. figure:: _static/score_trajectory_pythia.png
+   :width: 100%
+   :alt: Per-step attribution-score level for a pathological pythia-160m run.
+
+   A pathological run (pythia-160m): the level sweeps **~37 orders of magnitude**,
+   and the first ~1550 steps produce no score at all (red band) — so a raw score
+   at step 500 is not comparable to one at step 6000.
+
+.. figure:: _static/score_trajectory_r32.png
+   :width: 100%
+   :alt: Per-step attribution-score level for a high-metasmoothness deep-ignorance run.
+
+   High metasmoothness does not guarantee a stable score level. This
+   deep-ignorance r32 run scores **0.99** on the ``bergson metasmoothness`` test
+   — about as metasmooth as a run gets — yet its level still drifts ~7 decades
+   and rings periodically (the regular dips). So check the trajectory even when
+   the metasmoothness score looks good.
+
 Smoothness
 ----------
 
