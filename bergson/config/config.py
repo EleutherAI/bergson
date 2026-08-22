@@ -486,22 +486,19 @@ class ValidationConfig(TrainingConfig, ABC):
     """One past the last subset index to retrain; ``None`` means ``num_subsets``."""
 
     subset_fraction: float = 0.0
-    """Fraction of data filtered during a retrain. When 0.0, the dataset is
-    randomly partitioned into ``num_subsets`` disjoint subsets. Otherwise
-    each subset is sampled independently without replacement within a
-    subset, but with replacement across subsets, and contains
-    ``round(subset_fraction * pool)`` documents — e.g. 0.05 filters 5 percent
-    of documents per subset."""
+    """Fraction of data filtered during a retrain. When > 0 subsets are sampled 
+    independently without replacement within a subset, but with replacement 
+    across subsets, and contain ``round(subset_fraction * pool)`` documents
+    — e.g. 0.05 filters 5 percent of documents per subset. When 0.0, the 
+    dataset is randomly partitioned into ``num_subsets`` disjoint subsets
+    for ```lds```, or for a filter-* method the size is 1 / num_subsets."""
 
     method: Literal["lds", "filter-proponents", "filter-detractors"] = "lds"
-    """Validation estimator.
-
-    The ``lds`` method filters ```num_subsets``` random subsets of the data and
+    """``lds`` filters ```num_subsets``` random subsets of the data and
     correlates the query loss change with the summed attribution scores.
-
-    The ``filter`` methods filter either the top- or bottom-scoring
+    ``filter`` methods filter either the top- or bottom-scoring
     ``subset_fraction`` of data, then retrain and measure the query loss
-    change. Suitable for comparison with a random subset filter re-train."""
+    change, suitable for comparison with a random subset filter re-train."""
 
 
 @dataclass

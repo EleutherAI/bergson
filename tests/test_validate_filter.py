@@ -57,13 +57,20 @@ def test_unknown_method_rejected():
     ],
 )
 def test_slice_size_is_a_fraction_of_the_pool(pool, fraction, expected):
-    assert _filter_slice_size(pool, fraction) == expected
+    assert _filter_slice_size(pool, fraction, 100) == expected
 
 
-@pytest.mark.parametrize("fraction", [0.0, -0.1, 1.5])
+@pytest.mark.parametrize("num_subsets,expected", [(100, 10), (10, 100), (4, 250)])
+def test_zero_fraction_matches_a_leave_k_out_chunk(num_subsets, expected):
+    """subset_fraction 0.0 means the LDS path chunks the pool, so the matched
+    removal is one chunk."""
+    assert _filter_slice_size(1000, 0.0, num_subsets) == expected
+
+
+@pytest.mark.parametrize("fraction", [-0.1, 1.5])
 def test_slice_size_rejects_out_of_range_fractions(fraction):
-    with pytest.raises(ValueError, match="filter_fraction must be in"):
-        _filter_slice_size(100, fraction)
+    with pytest.raises(ValueError, match="subset_fraction must be in"):
+        _filter_slice_size(100, fraction, 100)
 
 
 def test_slice_size_clamped_to_pool():

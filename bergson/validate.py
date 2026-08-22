@@ -210,20 +210,6 @@ def report_multi_query_validation(
     print(f"Mean Spearman across {num_queries} queries: {np.mean(rhos):.4f}")
 
 
-def _filter_slice_size(pool: int, fraction: float, num_subsets: int) -> int:
-    """Number of documents to remove per query for the tail-filter estimator.
-
-    A fraction rather than a count, so the perturbation stays proportional
-    across dataset sizes. Always at least one document. ``subset_fraction``
-    of 0.0 means the LDS path chunks the pool into ``num_subsets``
-    non-overlapping subsets, so the matching removal is ``1 / num_subsets``.
-    """
-    if fraction == 0.0:
-        fraction = 1 / num_subsets
-    if not 0.0 < fraction <= 1.0:
-        raise ValueError(f"subset_fraction must be in [0, 1], got {fraction}")
-    return max(1, round(fraction * pool))
-
 
 def _select_filter_slice(
     flat_scores: torch.Tensor,
@@ -232,7 +218,7 @@ def _select_filter_slice(
     k: int,
     method: str,
 ) -> torch.Tensor:
-    """Row indices of the slice to remove for one query.
+    """Get row indices of the documents to remove for one query.
 
     ``load_scores_loss_signed`` signs scores so that **proponents are
     negative** (they reduce query loss). Proponents are therefore the
@@ -244,7 +230,7 @@ def _select_filter_slice(
     elif method == "filter-detractors":
         largest = True
     else:
-        raise ValueError(f"not a tail-filter method: {method}")
+        raise ValueError(f"Not a tail-filter method: {method}")
 
     col = flat_scores[valid_indices, query_col]
     chosen = torch.topk(col, min(k, len(col)), largest=largest).indices
@@ -269,30 +255,23 @@ def _validate_filter(
     pad_count: int,
     weight_pad_count: int,
 ):
-    """Tail-filter estimator: retrain with one end of the score ranking removed.
+    """Retrain with documents corresponding to one end of the score ranking 
+    filtered.
 
-    For each query, the ``subset_fraction`` highest-ranked documents at the
-    selected end of that query's ranking are dropped, the model is retrained
-    once, and the query's loss change against the unablated baseline is
-    recorded. The mean over queries is the estimator's value.
-
-    Sign conventions, both easy to get backwards:
-
-    - ``load_scores_loss_signed`` signs scores so that **proponents are
-      negative** (they reduce query loss). Proponents are therefore the
-      *smallest* values and detractors the *largest*.
-    - The reported ``loss_change`` is ``filtered - baseline``, so a positive
-      value means removing the slice made the query harder. This is the
-      opposite sign to the ``diff`` column the LDS path writes.
+    Note that ``load_scores_loss_signed`` signs such that proponents are
+    negative (reduce query loss), and that a positive ``loss_change`` means
+    the filter worsened query performance. This is the opposite sign to the 
+    LDS ``diff`` column.
     """
     if run_cfg.exclude_zero_scores:
         valid_indices = torch.nonzero((flat_scores != 0).any(dim=1), as_tuple=True)[0]
     else:
         valid_indices = torch.arange(flat_scores.shape[0])
 
-    k = _filter_slice_size(
-        len(valid_indices), run_cfg.subset_fraction, run_cfg.num_subsets
-    )
+    # Get filtered subset size
+    if run_cfg.subset_fraction == 0.0:
+        run_cfg.subset_fraction = 1 / run_cfg.num_subsets
+    k = max(1, round(run_cfg.subset_fraction * len(valid_indices)))
 
     csv_path = os.path.join(run_cfg.run_path, f"{run_cfg.method.replace('-', '_')}.csv")
     filter_csv = CSVWriter(
