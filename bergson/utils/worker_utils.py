@@ -147,6 +147,7 @@ def apply_logit_scale(model, scale: float):
     head.register_forward_hook(lambda _module, _inputs, output: output * scale)
     return model
 
+
 def setup_model_and_peft(
     cfg: ModelConfig,
     device_map_auto: bool = False,
