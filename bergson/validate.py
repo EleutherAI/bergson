@@ -148,19 +148,19 @@ def per_doc_query_losses(
 def mean_query_loss(
     model: torch.nn.Module, query_stream: DataStream, grad_accum_steps: int = 1
 ) -> torch.Tensor:
-    """Mean loss over the query stream's batches, reduced across ranks."""
+    """Mean loss over the query stream, reduced across ranks."""
     total = torch.zeros((), device=query_stream.device)
-    live_batches = torch.zeros((), device=query_stream.device)
+    tokens = torch.zeros((), device=query_stream.device)
     with torch.no_grad():
         for batch in query_stream:
-            batch, live = mask_padded_rows(batch)
-            live_batches += float(live)
+            batch, n_tokens = mask_padded_rows(batch)
+            tokens += n_tokens
             for micro in split_batch(batch, grad_accum_steps):
-                total += model(**micro).loss * loss_denom(micro) / loss_denom(batch)
+                total += model(**micro).loss * loss_denom(micro)
     if dist.is_initialized():
         dist.all_reduce(total)
-        dist.all_reduce(live_batches)
-    return total / live_batches
+        dist.all_reduce(tokens)
+    return total / tokens
 
 
 def report_multi_query_validation(

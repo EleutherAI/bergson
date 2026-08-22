@@ -14,7 +14,10 @@ from transformers import AutoConfig, AutoModelForCausalLM
 
 from bergson.distributed import grad_tree
 from bergson.magic import BackwardState, DataStream, Trainer
+from bergson.magic.cli import compute_query_gradients
+from bergson.magic.data_stream import pad_dataset_to_batch_size
 from bergson.utils.math import weighted_causal_lm_ce
+from bergson.validate import mean_query_loss, per_doc_query_losses
 
 
 def _make_model():
@@ -267,3 +270,59 @@ def test_ddp_matches_single_process():
         rtol=1e-3,
         msg="DDP attribution scores diverged from single-process",
     )
+
+
+def _padded_query_eval(device):
+    """Query loss, per-document losses and mean query gradient of a 3-document
+    query set padded to 4 rows, so on two ranks one rank's shard is half pad."""
+    model = _make_model().to(device)
+    _, fwd_state = Trainer.initialize(model, torchopt.adamw(1e-4))
+    model.eval()
+    docs = _make_dataset().select(range(3))
+    padded, n_docs, _, weight_pad = pad_dataset_to_batch_size(docs, 4, 3, "Q", 0)
+    stream = DataStream(padded, 4, device=device, weight_shape=(n_docs,))
+    stream.weights.data[-weight_pad:] = 0.0
+    grads, loss = compute_query_gradients(fwd_state, model, stream)
+    with fwd_state.activate(model):
+        per_doc = per_doc_query_losses(model, stream, n_docs)[:3]
+        mean = mean_query_loss(model, stream)
+    return {k: g.cpu() for k, g in grads.items()}, loss, per_doc.cpu(), mean.cpu()
+
+
+def _padded_query_worker(rank, world_size, port, result_dict):
+    try:
+        torch.cuda.set_device(rank)
+        dist.init_process_group(
+            "cpu:gloo,cuda:nccl",
+            init_method=f"tcp://localhost:{port}",
+            rank=rank,
+            world_size=world_size,
+            device_id=torch.device(f"cuda:{rank}"),
+        )
+        result_dict[rank] = _padded_query_eval(f"cuda:{rank}")
+    finally:
+        if dist.is_initialized():
+            dist.destroy_process_group()
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.device_count() < 2,
+    reason="Need >= 2 GPUs for DDP test",
+)
+def test_padded_query_eval_matches_single_process():
+    """Every rank returns the single-process query loss, per-document losses and
+    mean query gradient, even when part of its shard is zero-weight padding."""
+    expected = _padded_query_eval("cuda:0")
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        port = s.getsockname()[1]
+    result_dict = mp.Manager().dict()
+    mp.spawn(_padded_query_worker, args=(2, port, result_dict), nprocs=2, join=True)
+
+    for rank in range(2):
+        grads, loss, per_doc, mean = result_dict[rank]
+        assert loss == pytest.approx(expected[1], rel=1e-5)
+        torch.testing.assert_close(per_doc, expected[2])
+        torch.testing.assert_close(mean, expected[3])
+        for name, g in expected[0].items():
+            torch.testing.assert_close(grads[name], g, atol=1e-6, rtol=1e-4)

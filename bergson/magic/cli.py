@@ -73,10 +73,15 @@ def compute_query_gradients(
 
     with fwd_state.activate(model) as params:
         for batch in tqdm(query_stream, desc="Query", disable=not main):
-            batch, live = mask_padded_rows(batch)
-            denom += int(live)
+            batch, n_tokens = mask_padded_rows(batch)
+            denom += n_tokens
             grads, loss = accumulate_grads(
-                model, params, batch, grad_accum_steps, create_graph=False
+                model,
+                params,
+                batch,
+                grad_accum_steps,
+                create_graph=False,
+                loss_scale=n_tokens,
             )
 
             if grad_accum is None:
@@ -85,7 +90,7 @@ def compute_query_gradients(
                 for k, g in grads.items():
                     grad_accum[k] += g.detach()
 
-            loss_accum += loss
+            loss_accum += loss * n_tokens
 
     assert grad_accum is not None, "Query stream was empty"
 
@@ -94,7 +99,7 @@ def compute_query_gradients(
         dist.all_reduce(denom_t)
         denom = int(denom_t.item())
 
-    if method == "mean":
+    if method != "sum":
         for k in grad_accum:
             grad_accum[k] /= denom
 

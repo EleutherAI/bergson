@@ -110,6 +110,7 @@ def accumulate_grads(
     *,
     create_graph: bool,
     rng_snapshots: list | None = None,
+    loss_scale: float = 1.0,
 ) -> tuple[dict, float]:
     """Sum normalized per-micro-batch gradients into the full-batch gradient.
 
@@ -135,7 +136,9 @@ def accumulate_grads(
         assert isinstance(micro_loss, torch.Tensor), "Loss must be a Tensor"
         coef = loss_denom(micro_batch) / total_denom
         last_loss += float(micro_loss.detach()) * coef
-        micro_grads = grad_tree(micro_loss * coef, params, create_graph=create_graph)
+        micro_grads = grad_tree(
+            micro_loss * coef * loss_scale, params, create_graph=create_graph
+        )
         if grads is None:
             grads = dict(micro_grads)
         else:
