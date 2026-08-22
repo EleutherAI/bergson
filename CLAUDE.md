@@ -2,6 +2,8 @@ Always test your changes. Ensure your scripts or CLI commands run without issues
 
 Compare comments to human-written examples in the codebase and match style: imperative summary line, second paragraph only for a mechanism you can't derive.
 
+Don't coin terms or use jargon. Don't write code or comments containing specialized terms not already in the codebase without permission.
+
 ## Project Structure and Conventions
 
 Consider writing a new CLI tool if you add a standalone, complex feature used in more than one place.

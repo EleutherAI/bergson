@@ -31,7 +31,7 @@ from transformers.utils.logging import (
 )
 
 from .config.config import ValidationConfig
-from .config.config_io import read_config, save_run_config
+from .config.config_io import get_config_field, save_run_config
 from .data import load_scores_loss_signed, pad_and_tensor
 from .magic.data_stream import DataStream, mask_padded_rows, pad_dataset_to_batch_size
 from .magic.grad_accum import loss_denom, split_batch
@@ -211,66 +211,42 @@ def report_multi_query_validation(
     print(f"Mean Spearman across {num_queries} queries: {np.mean(rhos):.4f}")
 
 
-def _bank_config_field(bank_dir: Path, field: str):
-    """Value of ``field`` in a bank's saved run config, or ``None`` if absent."""
-    try:
-        doc = read_config(bank_dir)
-    except (OSError, ValueError):
-        return None
-    for step in doc.get("steps", []):
-        for cmd in step.values():
-            if cmd and field in cmd:
-                return cmd[field]
-    return None
-
-
-def load_baseline_bank_subsets(
-    run_cfg: ValidationConfig, dirs: list[Path], k: int
+def load_and_validate_subsets_match(
+    run_cfg: ValidationConfig, dirs: list[Path], num_filtered: int
 ) -> list[torch.Tensor]:
-    """Load a bank's removal sets, rejecting one the filter cannot match."""
-    subsets: list[list[int]] | None = None
+    """Load a list of subsets filtered during re-training runs.
+    Validate subsets and that they match."""
+    first_dir_subsets: list[list[int]] | None = None
     for d in dirs:
-        if not (d / "retrained" / "base").exists():
-            raise FileNotFoundError(
-                f"{d / 'retrained' / 'base'} not found; the random filters' "
-                "loss change is measured against the bank's no-leave-out model"
-            )
-        path = d / "subsets.json"
-        if not path.exists():
-            raise FileNotFoundError(
-                f"{path} not found; retrained_dir must point at a run directory "
-                "written with save_models=true"
-            )
-        with open(path) as f:
-            found = json.load(f)
-        if subsets is None:
-            subsets = found
-        elif found != subsets:
+        assert (d / "retrained" / "base").exists(), f"Retrain bank {d} not valid."
+        with open(d / "subsets.json") as f:
+            dir_subsets = json.load(f)
+
+        if first_dir_subsets is None:
+            first_dir_subsets = dir_subsets
+        assert dir_subsets == first_dir_subsets, f"Bank {d} doesn't match others."
+
+        sizes = sorted({len(x) for x in dir_subsets})
+        # LDS chunks the pool, so its sizes differ by at most one.
+        if max(abs(n - num_filtered) for n in sizes) > 1:
             raise ValueError(
-                f"{path} lists different removal sets to {dirs[0] / 'subsets.json'}; "
-                "averaging query losses over banks requires the same subsets"
-            )
-        sizes = sorted({len(x) for x in found})
-        if max(abs(n - k) for n in sizes) > 1:
-            raise ValueError(
-                f"{path} removes {sizes} docs per subset but the filter removes "
-                f"{k}; a different removal size is not a comparable baseline. Set "
-                "subset_fraction (or num_subsets, when it is 0) to match the bank."
+                f"{d} removes {sizes} docs per subset but the filter removes "
+                f"{num_filtered}; set subset_fraction to match."
             )
         for field, ours in [
             ("model", run_cfg.model),
             ("subset_weight", run_cfg.subset_weight),
             ("exclude_zero_scores", run_cfg.exclude_zero_scores),
         ]:
-            theirs = _bank_config_field(d, field)
+            theirs = get_config_field(d, field)
             if theirs is not None and theirs != ours:
                 raise ValueError(
                     f"{d} was written with {field}={theirs!r} but this run uses "
                     f"{ours!r}; the bank is not a comparable baseline"
                 )
 
-    assert subsets is not None
-    return [torch.tensor(x, dtype=torch.long) for x in subsets]
+    assert first_dir_subsets is not None
+    return [torch.tensor(x, dtype=torch.long) for x in first_dir_subsets]
 
 
 def load_bank_losses(
@@ -285,12 +261,10 @@ def load_bank_losses(
     query_losses_per_doc: Callable[[torch.nn.Module], torch.Tensor],
     write_cache: bool = True,
 ) -> tuple[float, torch.Tensor, torch.Tensor]:
-    """Query losses of every banked model, averaged over ``dirs``.
+    """Query losses of every banked model. Averaged over ``dirs``.
 
-    ``per_subset`` is ``[num_subsets, num_real_query_docs]`` for multi-query,
-    else ``[num_subsets]``. ``retrained/base`` gives the baseline; absent it
-    the baseline stays 0 (correlation-safe). The losses do not depend on the
-    scores, so each dir caches them for later methods on the same bank.
+    The baselines are 0 if ``retrained/base`` is not present - this
+    is correlation-safe. Query losses are cached under each bank.
     """
 
     def compute(models_root: Path) -> tuple[float, torch.Tensor, torch.Tensor]:
@@ -352,22 +326,7 @@ def load_bank_losses(
 def _baseline_subsets(
     run_cfg: ValidationConfig, valid_indices: torch.Tensor, k: int
 ) -> list[torch.Tensor]:
-    """Random removal sets of ``k`` documents to compare the filter against.
-
-    A ``subsets`` path pairs the baseline with an existing LDS run's draws.
-    """
-    path = run_cfg.subsets
-    if path and os.path.exists(path):
-        with open(path) as f:
-            subsets = [torch.tensor(x, dtype=torch.long) for x in json.load(f)]
-        sizes = sorted({len(x) for x in subsets})
-        if max(abs(n - k) for n in sizes) > 1:
-            raise ValueError(
-                f"{path} removes {sizes} docs per subset but the filter removes "
-                f"{k}; a different removal size is not a comparable baseline"
-            )
-        return subsets[: run_cfg.num_subsets]
-
+    """Random removal sets of ``k`` documents to compare the filter against."""
     rng = torch.Generator().manual_seed(run_cfg.seed)
     return [
         valid_indices[torch.randperm(len(valid_indices), generator=rng)[:k]]
@@ -420,7 +379,7 @@ def _select_filter_slice(
     flat_scores: torch.Tensor,
     valid_indices: torch.Tensor,
     query_col: int,
-    k: int,
+    num_filtered: int,
     method: str,
 ) -> torch.Tensor:
     """Get row indices of the documents to remove for one query.
@@ -438,11 +397,11 @@ def _select_filter_slice(
         raise ValueError(f"{method} is not a tail-filter method")
 
     col = flat_scores[valid_indices, query_col]
-    chosen = torch.topk(col, min(k, len(col)), largest=largest).indices
+    chosen = torch.topk(col, min(num_filtered, len(col)), largest=largest).indices
     return valid_indices[chosen]
 
 
-def _validate_filter(
+def tail_filter_retrain(
     run_cfg: ValidationConfig,
     flat_scores: torch.Tensor,
     multi_query: bool,
@@ -481,7 +440,7 @@ def _validate_filter(
                 "no leave-k-out chunk size for the filter to match"
             )
         run_cfg.subset_fraction = 1 / run_cfg.num_subsets
-    k = max(1, round(run_cfg.subset_fraction * pool))
+    num_filtered = max(1, round(run_cfg.subset_fraction * pool))
 
     baseline_vec = (
         baseline_per_doc[:num_queries] if multi_query else torch.tensor([baseline])
@@ -537,7 +496,9 @@ def _validate_filter(
     filter_changes = torch.zeros(num_queries)
     pbar = tqdm(range(num_queries), desc=run_cfg.method, disable=global_rank != 0)
     for q in pbar:
-        removed = _select_filter_slice(flat_scores, valid_indices, q, k, run_cfg.method)
+        removed = _select_filter_slice(
+            flat_scores, valid_indices, q, num_filtered, run_cfg.method
+        )
         losses = retrain_and_eval(removed)
 
         base_loss = baseline_vec[q].item()
@@ -556,14 +517,16 @@ def _validate_filter(
         print(
             f"{run_cfg.method}: mean loss change {filter_changes.mean():.6f} "
             f"over {num_queries} quer{'y' if num_queries == 1 else 'ies'} "
-            f"({k} of {pool} docs removed per query, {k / pool:.3%})"
+            f"({num_filtered} of {pool} docs removed per query, "
+            f"{num_filtered / pool:.3%})"
         )
         print(f"Saved tail-filter data to {csv_path}")
 
-    # A random filter ignores the scores, so one retrain serves every query.
+    # Load existing baseline if it exists - a random filter retrain.
+    # Otherwise compute the baseline.
     dirs = [Path(d) for d in retrained_dir]
     if dirs:
-        subsets = load_baseline_bank_subsets(run_cfg, dirs, k)
+        subsets = load_and_validate_subsets_match(run_cfg, dirs, num_filtered)
         bank_base, bank_base_per_doc, per_subset = load_bank_losses(
             run_cfg,
             dirs,
@@ -581,9 +544,9 @@ def _validate_filter(
         random_losses = per_subset.reshape(len(subsets), num_queries)
         source = "bank " + ", ".join(str(d) for d in dirs)
     elif run_cfg.num_subsets > 0:
-        subsets = _baseline_subsets(run_cfg, valid_indices, k)
+        subsets = _baseline_subsets(run_cfg, valid_indices, num_filtered)
         if global_rank == 0:
-            print(f"Retraining {len(subsets)} random baseline subsets of {k} docs")
+            print(f"Retraining {len(subsets)} random subsets of {num_filtered} docs")
         random_baseline = baseline_vec
         random_losses = torch.stack(
             [
@@ -596,7 +559,7 @@ def _validate_filter(
         if global_rank == 0:
             print(
                 "No random baseline: set num_subsets > 0, or retrained_dir to a "
-                "bank of random-subset retrains"
+                "path to random-subset retrains"
             )
         return
 
@@ -628,7 +591,12 @@ def _validate_filter(
     random_csv.close()
 
     _report_filter_baseline(
-        run_cfg.run_path, run_cfg.method, filter_changes, random_changes, k, source
+        run_cfg.run_path,
+        run_cfg.method,
+        filter_changes,
+        random_changes,
+        num_filtered,
+        source,
     )
 
 
@@ -687,7 +655,7 @@ def validate_scores(
     flat_scores = scores.reshape(-1, num_queries)
 
     if run_cfg.method != "lds":
-        _validate_filter(
+        tail_filter_retrain(
             run_cfg,
             flat_scores,
             multi_query,

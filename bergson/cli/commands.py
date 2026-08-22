@@ -315,15 +315,14 @@ class Validate(ValidationConfig):
     def execute(self):
         """Run the validation."""
         assert self.scores, "Path to attribution scores must be provided."
-        dirs = self.retrained_dirs
-        # A filter-* run always retrains its score-based filter.
-        if dirs and self.method == "lds":
-            evaluate_retrained(self, dirs, score_path=self.scores)
+
+        if self.retrained_dirs and self.method == "lds":
+            evaluate_retrained(self, self.retrained_dirs, score_path=self.scores)
         else:
             run_magic(
                 self,
                 score_path=self.scores,
                 validate=True,
                 baseline_model=self.baseline_model,
-                retrained_dir=dirs,
+                retrained_dir=self.retrained_dirs,
             )

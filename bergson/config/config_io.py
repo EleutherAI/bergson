@@ -177,6 +177,19 @@ def load_subconfig(
     return None
 
 
+def get_config_field(dir: Path, field: str):
+    """Value of ``field`` in a saved run config."""
+    try:
+        doc = read_config(dir)
+    except (OSError, ValueError):
+        return None
+    for step in doc.get("steps", []):
+        for cmd in step.values():
+            if cmd and field in cmd:
+                return cmd[field]
+    return None
+
+
 def expand_matrix(cmd_dict: dict) -> list[dict]:
     """Expand a step's ``matrix`` mapping into one config per grid cell.
 

@@ -5,10 +5,9 @@ import pytest
 import torch
 
 from bergson.validate import (
-    _baseline_subsets,
     _report_filter_baseline,
     _select_filter_slice,
-    load_baseline_bank_subsets,
+    load_and_validate_subsets_match,
 )
 
 # Scores follow the load_scores_loss_signed convention: negative reduces query
@@ -80,53 +79,24 @@ def _bank(tmp_path, subsets, name="bank", base=True, **cfg_overrides):
     return root
 
 
-def test_baseline_subsets_are_random_removals_of_the_filtered_size(tmp_path):
-    cfg = _cfg(tmp_path, num_subsets=4, seed=0)
-    subsets = _baseline_subsets(cfg, torch.arange(50), k=7)
-    assert [len(s) for s in subsets] == [7, 7, 7, 7]
-    assert all(len(set(s.tolist())) == 7 for s in subsets)  # no repeats within
-    assert len({tuple(sorted(s.tolist())) for s in subsets}) > 1  # not identical
-
-
-def test_baseline_subsets_reuse_a_saved_draw(tmp_path):
-    """An LDS run's subsets.json pairs the baseline with its draws."""
-    path = tmp_path / "subsets.json"
-    with open(path, "w") as f:
-        json.dump([[0, 1], [2, 3], [4, 5]], f)
-
-    cfg = _cfg(tmp_path, num_subsets=2, subsets=str(path))
-    subsets = _baseline_subsets(cfg, torch.arange(6), k=2)
-    assert [s.tolist() for s in subsets] == [[0, 1], [2, 3]]  # truncated to 2
-
-
-def test_baseline_subsets_reject_a_mismatched_saved_draw(tmp_path):
-    path = tmp_path / "subsets.json"
-    with open(path, "w") as f:
-        json.dump([[0, 1], [2, 3]], f)
-
-    cfg = _cfg(tmp_path, num_subsets=2, subsets=str(path))
-    with pytest.raises(ValueError, match="not a comparable baseline"):
-        _baseline_subsets(cfg, torch.arange(6), k=5)
-
-
 def test_bank_of_the_same_removal_size_is_accepted(tmp_path):
     """The LDS default partitions the pool, so chunk sizes differ by one."""
     root = _bank(tmp_path, [[0, 1, 2], [3, 4], [5, 6]])
-    subsets = load_baseline_bank_subsets(_cfg(tmp_path), [root], k=2)
+    subsets = load_and_validate_subsets_match(_cfg(tmp_path), [root], num_filtered=2)
     assert [s.tolist() for s in subsets] == [[0, 1, 2], [3, 4], [5, 6]]
 
 
 def test_bank_of_a_different_removal_size_is_rejected(tmp_path):
     root = _bank(tmp_path, [[0, 1], [2, 3]])
-    with pytest.raises(ValueError, match="not a comparable baseline"):
-        load_baseline_bank_subsets(_cfg(tmp_path), [root], k=10)
+    with pytest.raises(ValueError, match="set subset_fraction to match"):
+        load_and_validate_subsets_match(_cfg(tmp_path), [root], num_filtered=10)
 
 
 def test_bank_without_a_base_model_is_rejected(tmp_path):
     """Loss changes are measured against the bank's own no-leave-out model."""
     root = _bank(tmp_path, [[0, 1]], base=False)
-    with pytest.raises(FileNotFoundError, match="retrained/base"):
-        load_baseline_bank_subsets(_cfg(tmp_path), [root], k=2)
+    with pytest.raises(AssertionError, match="not valid"):
+        load_and_validate_subsets_match(_cfg(tmp_path), [root], num_filtered=2)
 
 
 @pytest.mark.parametrize(
@@ -135,14 +105,14 @@ def test_bank_without_a_base_model_is_rejected(tmp_path):
 def test_bank_trained_with_different_settings_is_rejected(tmp_path, field, value):
     root = _bank(tmp_path, [[0, 1]], **{field: value})
     with pytest.raises(ValueError, match=field):
-        load_baseline_bank_subsets(_cfg(tmp_path), [root], k=2)
+        load_and_validate_subsets_match(_cfg(tmp_path), [root], num_filtered=2)
 
 
 def test_averaged_banks_must_share_their_removal_sets(tmp_path):
     a = _bank(tmp_path, [[0, 1]], name="a")
     b = _bank(tmp_path, [[2, 3]], name="b")
-    with pytest.raises(ValueError, match="different removal sets"):
-        load_baseline_bank_subsets(_cfg(tmp_path), [a, b], k=2)
+    with pytest.raises(AssertionError, match="doesn't match others"):
+        load_and_validate_subsets_match(_cfg(tmp_path), [a, b], num_filtered=2)
 
 
 def test_filter_is_ranked_against_the_random_draws(tmp_path):
