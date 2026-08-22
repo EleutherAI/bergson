@@ -210,14 +210,18 @@ def report_multi_query_validation(
     print(f"Mean Spearman across {num_queries} queries: {np.mean(rhos):.4f}")
 
 
-def _filter_slice_size(pool: int, fraction: float) -> int:
+def _filter_slice_size(pool: int, fraction: float, num_subsets: int) -> int:
     """Number of documents to remove per query for the tail-filter estimator.
 
     A fraction rather than a count, so the perturbation stays proportional
-    across dataset sizes. Always at least one document.
+    across dataset sizes. Always at least one document. ``subset_fraction``
+    of 0.0 means the LDS path chunks the pool into ``num_subsets``
+    non-overlapping subsets, so the matching removal is ``1 / num_subsets``.
     """
+    if fraction == 0.0:
+        fraction = 1 / num_subsets
     if not 0.0 < fraction <= 1.0:
-        raise ValueError(f"filter_fraction must be in (0, 1], got {fraction}")
+        raise ValueError(f"subset_fraction must be in [0, 1], got {fraction}")
     return max(1, round(fraction * pool))
 
 
@@ -267,7 +271,7 @@ def _validate_filter(
 ):
     """Tail-filter estimator: retrain with one end of the score ranking removed.
 
-    For each query, the ``filter_fraction`` highest-ranked documents at the
+    For each query, the ``subset_fraction`` highest-ranked documents at the
     selected end of that query's ranking are dropped, the model is retrained
     once, and the query's loss change against the unablated baseline is
     recorded. The mean over queries is the estimator's value.
@@ -286,7 +290,9 @@ def _validate_filter(
     else:
         valid_indices = torch.arange(flat_scores.shape[0])
 
-    k = _filter_slice_size(len(valid_indices), run_cfg.filter_fraction)
+    k = _filter_slice_size(
+        len(valid_indices), run_cfg.subset_fraction, run_cfg.num_subsets
+    )
 
     csv_path = os.path.join(run_cfg.run_path, f"{run_cfg.method.replace('-', '_')}.csv")
     filter_csv = CSVWriter(
@@ -353,7 +359,7 @@ def _validate_filter(
             f"{run_cfg.method}: mean loss change {float(np.mean(changes)):.6f} "
             f"over {len(changes)} quer{'y' if len(changes) == 1 else 'ies'} "
             f"({k} of {len(valid_indices)} docs removed per query, "
-            f"{run_cfg.filter_fraction:.3%})"
+            f"{k / len(valid_indices):.3%})"
         )
         print(f"Saved tail-filter data to {csv_path}")
 

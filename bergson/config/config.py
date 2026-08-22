@@ -486,36 +486,22 @@ class ValidationConfig(TrainingConfig, ABC):
     """One past the last subset index to retrain; ``None`` means ``num_subsets``."""
 
     subset_fraction: float = 0.0
-    """When > 0, each of the ``num_subsets`` leave-k-out subsets is an
-    independent draw (without replacement within a subset, overlapping across
-    subsets) of ``round(subset_fraction * pool)`` docs from the validation
-    pool — e.g. 0.05 drops 5 percent of the data per subset."""
+    """Fraction of data filtered during a retrain. When 0.0, the dataset is
+    randomly partitioned into ``num_subsets`` disjoint subsets. Otherwise
+    each subset is sampled independently without replacement within a
+    subset, but with replacement across subsets, and contains
+    ``round(subset_fraction * pool)`` documents — e.g. 0.05 filters 5 percent
+    of documents per subset."""
 
     method: Literal["lds", "filter-proponents", "filter-detractors"] = "lds"
     """Validation estimator.
 
-    ``lds`` (default) is leave-k-out linear datamodelling: retrain on many
-    random subsets and correlate the query loss change with the summed
-    attribution scores.
+    The ``lds`` method filters ```num_subsets``` random subsets of the data and
+    correlates the query loss change with the summed attribution scores.
 
-    The ``filter-*`` methods are the tail-filter estimator: for each query,
-    remove the ``filter_fraction`` slice at one end of that query's score
-    ranking, retrain once, and measure the query's loss change against the
-    unablated baseline. ``filter-proponents`` removes the documents the
-    scores say help the query most (performance suppression);
-    ``filter-detractors`` removes the ones they say hurt it most.
-
-    Tail-filter values are meaningful only *relative* to another method's
-    number on the same config -- a larger loss change means the attribution
-    method identified the influential documents better. No absolute meaning
-    is claimed. The matched control is a random removal of the same size,
-    which a leave-k-out bank already provides: its subsets are random
-    ``subset_fraction`` removals, so their loss changes are the reference."""
-
-    filter_fraction: float = 0.01
-    """Fraction of the scored documents to remove per query when ``method``
-    is one of the ``filter-*`` estimators. A fraction, not a count, so the
-    perturbation stays proportional across dataset sizes."""
+    The ``filter`` methods filter either the top- or bottom-scoring
+    ``subset_fraction`` of data, then retrain and measure the query loss
+    change. Suitable for comparison with a random subset filter re-train."""
 
 
 @dataclass
