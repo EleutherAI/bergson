@@ -113,15 +113,11 @@ def iter_microbatches(
     """Forward ``inputs`` micro-batch by micro-batch, yielding
     ``(micro_batch, outputs, coef)``.
 
-    Each micro-batch's loss is a mean over its own supervised tokens. ``coef``
-    is that micro-batch's share of the whole batch's supervised tokens, so
+    ``coef`` is the micro-batch's share of the batch's supervised tokens, so
     ``sum(micro_loss * coef)`` is the full-batch loss and ``sum(micro_grad *
-    coef)`` the full-batch gradient.
-
-    ``model_keys`` restricts what is passed to the model; the yielded
-    ``micro_batch`` carries every key, sliced consistently. Pass
-    ``rng_snapshots`` a list to record each micro-batch's pre-forward RNG
-    state, which a later pass needs to replay the same random draws.
+    coef)`` the full-batch gradient. ``model_keys`` restricts what reaches the
+    model; ``rng_snapshots`` records each micro-batch's pre-forward RNG state
+    for replaying its random draws.
     """
     total_denom = loss_denom(inputs)
     for micro_batch in split_batch(inputs, grad_accum_steps):

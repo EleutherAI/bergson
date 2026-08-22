@@ -6,13 +6,12 @@ from ..data import pad_and_tensor
 
 
 def mask_padded_rows(batch: dict) -> tuple[dict, bool]:
-    """Remove ``batch``'s ``example_weight`` and silence the rows it gives zero
-    weight, returning the batch and whether any row survived.
+    """Remove ``batch``'s ``example_weight`` and silence the rows it zeroes,
+    returning the batch and whether any row survived.
 
-    A batch is padded to a fixed width by repeating a real document, so leaving
-    those rows supervised would count that document many times over. They are
-    masked out with ``-100`` labels rather than removed, so that the batch keeps
-    a width every rank agrees on, as FSDP's forward all-gather requires.
+    Padding repeats a real document to reach a fixed width. Masking those rows
+    with ``-100`` labels keeps them out of the loss while keeping the width
+    every rank agrees on, as FSDP's forward all-gather requires.
     """
     weight = batch.pop("example_weight", None)
     if weight is None:
