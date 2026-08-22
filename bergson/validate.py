@@ -210,7 +210,6 @@ def report_multi_query_validation(
     print(f"Mean Spearman across {num_queries} queries: {np.mean(rhos):.4f}")
 
 
-
 def _select_filter_slice(
     flat_scores: torch.Tensor,
     valid_indices: torch.Tensor,
@@ -230,7 +229,7 @@ def _select_filter_slice(
     elif method == "filter-detractors":
         largest = True
     else:
-        raise ValueError(f"Not a tail-filter method: {method}")
+        raise ValueError(f"{method} is not a tail-filter method")
 
     col = flat_scores[valid_indices, query_col]
     chosen = torch.topk(col, min(k, len(col)), largest=largest).indices
@@ -255,12 +254,12 @@ def _validate_filter(
     pad_count: int,
     weight_pad_count: int,
 ):
-    """Retrain with documents corresponding to one end of the score ranking 
+    """Retrain with documents corresponding to one end of the score ranking
     filtered.
 
     Note that ``load_scores_loss_signed`` signs such that proponents are
     negative (reduce query loss), and that a positive ``loss_change`` means
-    the filter worsened query performance. This is the opposite sign to the 
+    the filter worsened query performance. This is the opposite sign to the
     LDS ``diff`` column.
     """
     if run_cfg.exclude_zero_scores:
