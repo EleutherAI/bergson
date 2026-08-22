@@ -177,21 +177,10 @@ class ModelConfig(ABC):
     Use | to separate list values, e.g. target_modules=q_proj|k_proj|v_proj."""
 
     model_kwargs: str = ""
+    """HF Model kwargs for in the format 'arg1=val1,arg2=val2'."""
 
     logit_scale: float = 1.0
-    """Multiply the language-model head's output logits by this factor.
-
-    ``1.0`` (default) leaves the model untouched. Values below 1 flatten the
-    softmax, which is the ablation axis this exists for -- the temperature the
-    model is effectively trained and scored at.
-
-    Applied by a forward hook on the output embedding, so it holds for every
-    path that produces logits: training loss, per-document query losses, and
-    evaluation of banked leave-k-out models. A scale that applied only during
-    training would silently corrupt the attribution ground truth, because the
-    bank's query losses would be measured at a different temperature than the
-    model was trained at."""
-    """HF Model kwargs for in the format 'arg1=val1,arg2=val2'."""
+    """Multiply the language-model head's output logits by this factor."""
 
 
 @dataclass

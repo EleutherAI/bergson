@@ -83,9 +83,6 @@ def _load_banked_model(
         model = PeftModel.from_pretrained(base, out_dir)
     else:
         model = AutoModelForCausalLM.from_pretrained(out_dir, **load_kwargs)
-    # Banked models bypass setup_model_and_peft, so the scale must be re-applied
-    # here too -- otherwise the bank's query losses are measured at a different
-    # temperature than the models were trained at.
     apply_logit_scale(model, getattr(run_cfg, "logit_scale", 1.0))
     return model.to(device)  # type: ignore
 
