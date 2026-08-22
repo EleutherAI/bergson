@@ -127,14 +127,6 @@ def extract_peft_target_modules(model) -> set[str]:
 
 
 def apply_logit_scale(model, scale: float):
-    """Scale the output logits of ``model`` in place, via a forward hook.
-
-    A hook rather than a wrapper module so the model stays a plain
-    ``PreTrainedModel``: FSDP, PEFT and ``save_pretrained`` all continue to see
-    the architecture they expect. The hook is not persisted by
-    ``save_pretrained``, which is correct -- the scale belongs to the run
-    config, and every load path re-applies it from there.
-    """
     if scale == 1.0:
         return model
 
