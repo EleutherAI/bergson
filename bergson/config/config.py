@@ -486,10 +486,10 @@ class ValidationConfig(TrainingConfig, ABC):
     """One past the last subset index to retrain; ``None`` means ``num_subsets``."""
 
     subset_fraction: float = 0.0
-    """Fraction of data filtered during a retrain. When > 0 subsets are sampled 
-    independently without replacement within a subset, but with replacement 
+    """Fraction of data filtered during a retrain. When > 0 subsets are sampled
+    independently without replacement within a subset, but with replacement
     across subsets, and contain ``round(subset_fraction * pool)`` documents
-    — e.g. 0.05 filters 5 percent of documents per subset. When 0.0, the 
+    — e.g. 0.05 filters 5 percent of documents per subset. When 0.0, the
     dataset is randomly partitioned into ``num_subsets`` disjoint subsets
     for ```lds```, or for a filter-* method the size is 1 / num_subsets."""
 
