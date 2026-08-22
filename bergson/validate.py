@@ -232,8 +232,8 @@ def load_baseline_bank_subsets(
     for d in dirs:
         if not (d / "retrained" / "base").exists():
             raise FileNotFoundError(
-                f"{d / 'retrained' / 'base'} not found; the random arm's loss "
-                "change is measured against the bank's own no-leave-out model"
+                f"{d / 'retrained' / 'base'} not found; the random filters' "
+                "loss change is measured against the bank's no-leave-out model"
             )
         path = d / "subsets.json"
         if not path.exists():
@@ -352,7 +352,7 @@ def load_bank_losses(
 def _baseline_subsets(
     run_cfg: ValidationConfig, valid_indices: torch.Tensor, k: int
 ) -> list[torch.Tensor]:
-    """Random removal sets of ``k`` documents for the filter baseline arm.
+    """Random removal sets of ``k`` documents to compare the filter against.
 
     A ``subsets`` path pairs the baseline with an existing LDS run's draws.
     """
@@ -383,7 +383,7 @@ def _report_filter_baseline(
     k: int,
     source: str,
 ):
-    """Print and save the filter arm's loss change against the random arm."""
+    """Print and save the filter's loss change against the random filters'."""
     n, num_queries = random_changes.shape
     print(
         f"Random baseline ({n} subsets of {k} docs, {source}): "
@@ -462,9 +462,9 @@ def _validate_filter(
 ):
     """Retrain with one tail of the score ranking filtered out.
 
-    A random arm removing the same number of documents runs alongside it,
+    Random filters removing the same number of documents run alongside it,
     retrained here or read from a bank; ``num_subsets = 0`` and no bank skips
-    it. ``load_scores_loss_signed`` signs proponents negative (they reduce
+    them. ``load_scores_loss_signed`` signs proponents negative (they reduce
     query loss), so a positive ``loss_change`` means the filter worsened query
     performance -- the opposite sign to the LDS ``diff`` column.
     """
@@ -560,7 +560,7 @@ def _validate_filter(
         )
         print(f"Saved tail-filter data to {csv_path}")
 
-    # The random arm ignores the scores, so one retrain serves every query.
+    # A random filter ignores the scores, so one retrain serves every query.
     dirs = [Path(d) for d in retrained_dir]
     if dirs:
         subsets = load_baseline_bank_subsets(run_cfg, dirs, k)
@@ -575,14 +575,16 @@ def _validate_filter(
             query_losses_per_doc=lambda m: eval_losses(m.eval()),
             write_cache=global_rank == 0,
         )
-        arm_baseline = bank_base_per_doc if multi_query else torch.tensor([bank_base])
+        random_baseline = (
+            bank_base_per_doc if multi_query else torch.tensor([bank_base])
+        )
         random_losses = per_subset.reshape(len(subsets), num_queries)
         source = "bank " + ", ".join(str(d) for d in dirs)
     elif run_cfg.num_subsets > 0:
         subsets = _baseline_subsets(run_cfg, valid_indices, k)
         if global_rank == 0:
             print(f"Retraining {len(subsets)} random baseline subsets of {k} docs")
-        arm_baseline = baseline_vec
+        random_baseline = baseline_vec
         random_losses = torch.stack(
             [
                 retrain_and_eval(x)
@@ -601,7 +603,7 @@ def _validate_filter(
     if global_rank != 0:
         return
 
-    random_changes = random_losses - arm_baseline
+    random_changes = random_losses - random_baseline
     random_csv = CSVWriter(
         os.path.join(run_cfg.run_path, "random_filter.csv"),
         columns=[
@@ -619,7 +621,7 @@ def _validate_filter(
                 i,
                 q,
                 len(subset),
-                arm_baseline[q].item(),
+                random_baseline[q].item(),
                 random_losses[i, q].item(),
                 random_changes[i, q].item(),
             )

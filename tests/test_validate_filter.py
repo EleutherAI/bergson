@@ -206,8 +206,8 @@ def test_a_filter_run_compares_against_random_filters(tmp_path):
     assert all(1 <= int(r["rank"]) <= 3 for r in summary)
 
 
-def test_a_bank_gives_the_same_random_arm_as_retraining_it(tmp_path):
-    """The bank's models are the retrains, so both arms must agree."""
+def test_a_bank_gives_the_same_random_filters_as_retraining_them(tmp_path):
+    """The bank's models are those retrains, so the two must agree."""
     from bergson.cli.commands import Magic, Validate
 
     shared = _e2e_shared(tmp_path)

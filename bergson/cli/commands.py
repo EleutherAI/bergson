@@ -308,7 +308,6 @@ class Validate(ValidationConfig):
 
     @property
     def retrained_dirs(self) -> list[str]:
-        """``retrained_dir`` normalized to a list of paths."""
         if isinstance(self.retrained_dir, str):
             return [d for d in self.retrained_dir.split(",") if d]
         return list(self.retrained_dir)
@@ -317,7 +316,7 @@ class Validate(ValidationConfig):
         """Run the validation."""
         assert self.scores, "Path to attribution scores must be provided."
         dirs = self.retrained_dirs
-        # A filter-* run always retrains its score-dependent arm.
+        # A filter-* run always retrains its score-based filter.
         if dirs and self.method == "lds":
             evaluate_retrained(self, dirs, score_path=self.scores)
         else:
