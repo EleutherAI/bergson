@@ -98,10 +98,10 @@ def per_doc_query_losses(
 ) -> torch.Tensor:
     """Compute the mean cross-entropy loss of each query document.
 
-    Iterates over the query stream (sharded across ranks the same way training
-    batches are), scatter-adds per-token losses into per-document sums via
-    ``doc_ids``, and all-reduces so every rank returns the same ``[num_docs]``
-    tensor. Rows without a ``doc_ids`` column are one document per row.
+    Each rank walks its own shard of the query stream, scatter-adds per-token
+    losses into per-document sums via ``doc_ids``, and all-reduces, so every
+    rank returns the same ``[num_docs]`` tensor. Rows without a ``doc_ids``
+    column are one document per row.
     """
     device = query_stream.device
     loss_sums = torch.zeros(num_docs, device=device)
@@ -155,6 +155,11 @@ def mean_query_loss(
     query_stream: DataStream,
     grad_accum_steps: int = 1,
 ) -> torch.Tensor:
+    """Mean loss over the query stream's batches, reduced across ranks.
+
+    Batches left entirely unsupervised by padding are excluded rather than
+    averaged in as zero.
+    """
     total = torch.zeros((), device=query_stream.device)
     live_batches = torch.zeros((), device=query_stream.device)
     with torch.no_grad():

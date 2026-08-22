@@ -70,9 +70,8 @@ def weighted_causal_lm_ce(
         ignore_index=ignore_index,
     )
 
-    # Implicitly assume the weights are all ones. Dividing by the clamped count
-    # is the "mean" reduction, except that a batch with nothing to supervise
-    # scores 0 rather than 0/0.
+    # Implicitly assume the weights are all ones. The clamp makes a batch with
+    # nothing to supervise score 0 rather than 0/0.
     if not needs_per_token:
         return tok_loss / (shift_labels != ignore_index).sum().clamp_min(1)
 

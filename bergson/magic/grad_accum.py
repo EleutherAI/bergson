@@ -113,15 +113,15 @@ def iter_microbatches(
     """Forward ``inputs`` micro-batch by micro-batch, yielding
     ``(micro_batch, outputs, coef)``.
 
-    ``coef`` is the micro-batch's share of the full batch's loss denominator,
-    which ``weighted_causal_lm_ce`` divides by under "mean", so
-    ``sum(micro_loss * coef)`` recovers the full-batch loss and
-    ``sum(micro_grad * coef)`` the full-batch gradient.
+    Each micro-batch's loss is a mean over its own supervised tokens. ``coef``
+    is that micro-batch's share of the whole batch's supervised tokens, so
+    ``sum(micro_loss * coef)`` is the full-batch loss and ``sum(micro_grad *
+    coef)`` the full-batch gradient.
 
     ``model_keys`` restricts what is passed to the model; the yielded
     ``micro_batch`` carries every key, sliced consistently. Pass
-    ``rng_snapshots`` to record each micro-batch's pre-forward RNG state for
-    replay (see :func:`microbatch_step_vjp`).
+    ``rng_snapshots`` a list to record each micro-batch's pre-forward RNG
+    state, which a later pass needs to replay the same random draws.
     """
     total_denom = loss_denom(inputs)
     for micro_batch in split_batch(inputs, grad_accum_steps):
@@ -145,8 +145,11 @@ def accumulate_grads(
     create_graph: bool,
     rng_snapshots: list | None = None,
 ) -> tuple[dict, float]:
-    """Sum ``coef``-scaled per-micro-batch gradients into the full-batch
-    gradient. Returns ``(grads, loss)``."""
+    """Sum the gradients of ``inputs``' micro-batches, each scaled by its share
+    of the batch's supervised tokens, into the full-batch gradient.
+
+    Returns ``(grads, loss)``.
+    """
     grads: dict | None = None
     last_loss = 0.0
     for _, outputs, coef in iter_microbatches(
