@@ -458,7 +458,9 @@ class ValidationConfig(TrainingConfig, ABC):
     ``none`` will perform one backward per query."""
 
     num_subsets: int = 100
-    """Number of leave-k-out subsets for Spearman correlation."""
+    """Number of leave-k-out subsets for Spearman correlation, or for a
+    filter-* method the number of random filters it is compared against;
+    ``0`` skips them, as does a bank of retrained models."""
 
     subset_weight: float = 0.0
     """Training weight assigned to each subset's documents during the retrain
@@ -498,7 +500,7 @@ class ValidationConfig(TrainingConfig, ABC):
     correlates the query loss change with the summed attribution scores.
     ``filter`` methods filter either the top- or bottom-scoring
     ``subset_fraction`` of data, then retrain and measure the query loss
-    change, suitable for comparison with a random subset filter re-train."""
+    change against ``num_subsets`` random filters of the same size."""
 
 
 @dataclass

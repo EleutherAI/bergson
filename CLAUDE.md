@@ -1,5 +1,7 @@
 Always test your changes. Ensure your scripts or CLI commands run without issues for 3 minutes+ (at minimum). If you find an error unrelated to your task, at minimum communicate the exact error when you have completed your task and offer to investigate and fix it.
 
+Compare comments to human-written examples in the codebase and match style: imperative summary line, second paragraph only for a mechanism you can't derive. 
+
 ## Project Structure and Conventions
 
 Consider writing a new CLI tool if you add a standalone, complex feature used in more than one place.
