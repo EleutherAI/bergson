@@ -6,25 +6,16 @@ from ..data import pad_and_tensor
 
 
 def mask_padded_rows(batch: dict) -> tuple[dict, bool]:
-    """Remove ``batch``'s ``example_weight`` and silence the rows it zeroes,
-    returning the batch and whether any row survived.
-
-    Padding repeats a real document to reach a fixed width. Masking those rows
-    with ``-100`` labels keeps them out of the loss while keeping the width
-    every rank agrees on, as FSDP's forward all-gather requires.
+    """Remove ``example_weight`` and mask out the rows it zeroes, so all ranks
+    keep the same batch width. Returns the batch and whether any row is left.
     """
     weight = batch.pop("example_weight", None)
     if weight is None:
         return batch, True
-
-    live = weight != 0 if weight.ndim == 1 else (weight != 0).any(dim=1)
-    if bool(live.all()):
-        return batch, True
-
+    live = (weight != 0).reshape(len(weight), -1).any(dim=1)
     batch["labels"] = batch["labels"].masked_fill(~live[:, None], -100)
-    mask = batch.get("shift_loss_mask")
-    if mask is not None:
-        batch["shift_loss_mask"] = mask & live[:, None]
+    if "shift_loss_mask" in batch:
+        batch["shift_loss_mask"] = batch["shift_loss_mask"] & live[:, None]
     return batch, bool(live.any())
 
 

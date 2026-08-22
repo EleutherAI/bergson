@@ -93,7 +93,6 @@ def compute_query_gradients(
         denom_t = torch.tensor(denom, device=current_device())
         dist.all_reduce(denom_t)
         denom = int(denom_t.item())
-    denom = max(denom, 1)
 
     if method == "mean":
         for k in grad_accum:
@@ -184,17 +183,17 @@ def compute_per_query_magic_scores(
         fwd_state.copy_(restored)
         del restored
 
+        # A one-document stream indexes its weights by row, not by doc id, and
+        # one row per rank is its full width: wider is zero-weight padding.
         one = query_dataset.select([qi])
-        # One document does not need the training batch width, and every rank
-        # pads to it independently, so sharding does not bring the logits down.
-        eval_bs = min(run_cfg.batch_size, 32)
-        eval_bs = max(world_size, eval_bs - eval_bs % world_size)
+        if "doc_ids" in one.column_names:
+            one = one.remove_columns("doc_ids")
         one, n_one, one_pad, one_wpad = pad_dataset_to_batch_size(
-            one, eval_bs, 1, f"Query {qi}", global_rank
+            one, world_size, 1, f"Query {qi}", global_rank
         )
         qstream = DataStream(
             one,
-            eval_bs,
+            world_size,
             device=device,
             input_key=run_cfg.query.prompt_column,
             weight_shape=(n_one,),

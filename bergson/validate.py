@@ -32,12 +32,8 @@ from transformers.utils.logging import (
 from .config.config import ValidationConfig
 from .config.config_io import save_run_config
 from .data import load_scores_loss_signed, pad_and_tensor
-from .magic.data_stream import (
-    DataStream,
-    mask_padded_rows,
-    pad_dataset_to_batch_size,
-)
-from .magic.grad_accum import iter_microbatches
+from .magic.data_stream import DataStream, mask_padded_rows, pad_dataset_to_batch_size
+from .magic.grad_accum import loss_denom, split_batch
 from .magic.trainer import TrainerState, prepare_trainer
 from .utils.csv_writer import CSVWriter
 from .utils.utils import get_device, simple_parse_kwargs_string
@@ -98,10 +94,10 @@ def per_doc_query_losses(
 ) -> torch.Tensor:
     """Compute the mean cross-entropy loss of each query document.
 
-    Each rank walks its own shard of the query stream, scatter-adds per-token
-    losses into per-document sums via ``doc_ids``, and all-reduces, so every
-    rank returns the same ``[num_docs]`` tensor. Rows without a ``doc_ids``
-    column are one document per row.
+    Iterates over the query stream (sharded across ranks the same way training
+    batches are), scatter-adds per-token losses into per-document sums via
+    ``doc_ids``, and all-reduces so every rank returns the same ``[num_docs]``
+    tensor. Rows without a ``doc_ids`` column are one document per row.
     """
     device = query_stream.device
     loss_sums = torch.zeros(num_docs, device=device)
@@ -123,12 +119,11 @@ def per_doc_query_losses(
                 doc_ids = rows_t[:, None].expand(-1, x.shape[1])
 
             inputs = {"input_ids": x, "labels": y, "doc_ids": doc_ids}
-            for micro, outputs, _ in iter_microbatches(
-                model, inputs, grad_accum_steps, model_keys=("input_ids",)
-            ):
+            for micro in split_batch(inputs, grad_accum_steps):
+                logits = model(input_ids=micro["input_ids"]).logits
                 shifted_labels = micro["labels"][:, 1:]
                 token_loss = F.cross_entropy(
-                    outputs.logits[:, :-1].flatten(0, 1).float(),
+                    logits[:, :-1].flatten(0, 1).float(),
                     shifted_labels.flatten(),
                     reduction="none",
                     ignore_index=-100,
@@ -151,28 +146,21 @@ def per_doc_query_losses(
 
 
 def mean_query_loss(
-    model: torch.nn.Module,
-    query_stream: DataStream,
-    grad_accum_steps: int = 1,
+    model: torch.nn.Module, query_stream: DataStream, grad_accum_steps: int = 1
 ) -> torch.Tensor:
-    """Mean loss over the query stream's batches, reduced across ranks.
-
-    Batches left entirely unsupervised by padding are excluded rather than
-    averaged in as zero.
-    """
+    """Mean loss over the query stream's batches, reduced across ranks."""
     total = torch.zeros((), device=query_stream.device)
     live_batches = torch.zeros((), device=query_stream.device)
     with torch.no_grad():
         for batch in query_stream:
             batch, live = mask_padded_rows(batch)
             live_batches += float(live)
-            for _, outputs, coef in iter_microbatches(model, batch, grad_accum_steps):
-                total += outputs.loss.detach() * coef
-
+            for micro in split_batch(batch, grad_accum_steps):
+                total += model(**micro).loss * loss_denom(micro) / loss_denom(batch)
     if dist.is_initialized():
         dist.all_reduce(total)
         dist.all_reduce(live_batches)
-    return total / live_batches.clamp_min(1.0)
+    return total / live_batches
 
 
 def report_multi_query_validation(

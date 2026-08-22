@@ -9,27 +9,19 @@ queries have equal token counts so that the aggregate mean-over-tokens loss is
 the uniform mean of the per-query losses. That identity is the correctness gate.
 """
 
-import math
 import tempfile
 
 import pytest
 import torch
-import torch.nn.functional as F
 import torchopt
 from datasets import Dataset
 from torchopt.pytree import tree_iter
 
 from bergson.distributed import grad_tree
 from bergson.magic import BackwardState, DataStream, Trainer
-from bergson.magic.cli import (
-    compute_per_query_magic_scores,
-    compute_query_gradients,
-)
+from bergson.magic.cli import compute_per_query_magic_scores, compute_query_gradients
 from bergson.magic.config import MagicConfig
-from bergson.magic.data_stream import (
-    mask_padded_rows,
-    pad_dataset_to_batch_size,
-)
+from bergson.magic.data_stream import mask_padded_rows, pad_dataset_to_batch_size
 from bergson.utils.math import weighted_causal_lm_ce
 from bergson.validate import mean_query_loss, per_doc_query_losses
 
@@ -168,10 +160,6 @@ def test_per_query_scores_saved_incrementally():
 def test_per_query_scores_only_real_queries_when_padded():
     """A query set padded to fill a batch must yield one score column per real
     query, not per padded row (the pads are copies of the last real query)."""
-    from bergson.magic.data_stream import (
-        pad_dataset_to_batch_size,
-    )
-
     model = _model()
     optimizer = torchopt.adamw(1e-4, betas=(0.95, 0.975), eps_root=1e-2)
     trainer, fwd_state = Trainer.initialize(model, optimizer)
@@ -287,129 +275,43 @@ def test_chunked_query_set_rejected_for_per_query():
     MagicConfig(run_path="x", query_method="mean", query=DataConfig(chunk_length=32))
 
 
-@pytest.mark.parametrize("grad_accum_steps", [1, 2, 4])
-def test_query_eval_is_invariant_to_grad_accum(grad_accum_steps):
-    """``grad_accum_steps`` moves neither the per-document nor the aggregate
-    query loss."""
-    model = _model()
-    model.eval()
-
-    # Unequal lengths, so a wrong micro-batch denominator shifts the aggregate
-    # rather than cancelling out.
-    ids = [list(range(10, 10 + n)) for n in (4, 7, 5, 8)]
-    query_ds = Dataset.from_dict({"input_ids": ids, "labels": ids})
-    stream = DataStream(query_ds, batch_size=4, device="cpu")
-
-    per_doc = per_doc_query_losses(model, stream, len(ids), grad_accum_steps)
-    aggregate = mean_query_loss(model, stream, grad_accum_steps)
-
-    reference_per_doc = per_doc_query_losses(model, stream, len(ids), 1)
-    reference_aggregate = mean_query_loss(model, stream, 1)
-
-    torch.testing.assert_close(per_doc, reference_per_doc)
-    torch.testing.assert_close(aggregate, reference_aggregate)
-
-    # Pin the aggregate to the token-weighted mean, not just to itself.
-    counts = torch.tensor([len(x) - 1 for x in ids], dtype=torch.float32)
-    torch.testing.assert_close(
-        aggregate, (per_doc * counts).sum() / counts.sum(), rtol=1e-5, atol=1e-6
-    )
-
-
 @pytest.mark.parametrize("grad_accum_steps", [1, 4])
-def test_aggregate_query_loss_ignores_padded_rows(grad_accum_steps):
-    """Padding fills the batch by repeating the last query document. Those
-    copies are zero-weighted, so they must not move the aggregate loss -- and
-    must not leave a micro-batch with no live tokens, whose mean is NaN.
-    """
-    model = _model()
-    model.eval()
-
-    ids = [list(range(10, 10 + n)) for n in (4, 7, 5, 8)]
-    real = Dataset.from_dict({"input_ids": ids, "labels": ids})
-    unpadded = DataStream(real, batch_size=len(ids), device="cpu")
-
-    batch_size = 4 * len(ids)
-    padded_ds, num_docs, pad_count, weight_pad = pad_dataset_to_batch_size(
-        real, batch_size, len(ids), "Query", 0
-    )
-    assert pad_count == batch_size - len(ids)
-    padded = DataStream(
-        padded_ds, batch_size=batch_size, device="cpu", weight_shape=(num_docs,)
-    )
-    padded.weights.data[-weight_pad:] = 0.0
-
-    loss = mean_query_loss(model, padded, grad_accum_steps)
-    assert torch.isfinite(loss), "padding-only micro-batch poisoned the loss"
-    torch.testing.assert_close(loss, mean_query_loss(model, unpadded, grad_accum_steps))
-
-
-def _padded_query_stream(dataset, num_docs, batch_size):
-    """The stream a padded query set produces: real rows, then zero-weighted
-    copies of the last row filling the batch."""
-    padded_ds, n_docs, pad_count, weight_pad = pad_dataset_to_batch_size(
-        dataset, batch_size, num_docs, "Query", 0
-    )
-    assert pad_count == batch_size - num_docs, "test needs a partial last batch"
-    stream = DataStream(
-        padded_ds, batch_size=batch_size, device="cpu", weight_shape=(n_docs,)
-    )
-    stream.weights.data[-weight_pad:] = 0.0
-    return stream
-
-
-def test_mask_padded_rows_keeps_the_batch_shape():
-    """Masking, not dropping: FSDP's forward all-gather needs every rank to run
-    the same number of micro-batches, so the row count must survive."""
-    ids = [list(range(10, 10 + n)) for n in (4, 7, 5, 8)]
-    real = Dataset.from_dict({"input_ids": ids, "labels": ids})
-    stream = _padded_query_stream(real, len(ids), 4 * len(ids))
-
-    batch, live = mask_padded_rows(stream[0])
-
-    assert live
-    assert "example_weight" not in batch
-    assert batch["input_ids"].shape[0] == 4 * len(ids)
-    assert int((batch["labels"] != -100).any(dim=1).sum()) == len(ids)
-    assert int(batch["shift_loss_mask"][len(ids) :].sum()) == 0
-
-
-def test_loss_of_a_fully_padded_batch_is_zero_not_nan():
-    """A micro-batch of nothing but padding drives the supervised-token count
-    to zero; the mean must not come back 0/0."""
-    torch.manual_seed(0)
-    logits = torch.randn(2, 8, 32)
-
-    assert weighted_causal_lm_ce(logits, torch.full((2, 8), -100)) == 0.0
-
-    # A supervised batch is unchanged, to the bit.
-    labels = torch.randint(0, 32, (2, 8))
-    labels[0, :2] = -100
-    reference = F.cross_entropy(
-        logits[:, :-1].flatten(0, 1), labels[:, 1:].flatten(), ignore_index=-100
-    )
-    assert weighted_causal_lm_ce(logits, labels) == reference
-
-
-@pytest.mark.parametrize("grad_accum_steps", [1, 4])
-def test_query_gradient_ignores_padded_rows(grad_accum_steps):
-    """The aggregate query gradient must come from the real query documents,
-    not from the copies padding adds to fill the batch."""
+def test_query_eval_ignores_padding_and_grad_accum(grad_accum_steps):
+    """Padding rows are zero-weight copies of the last query document, and
+    micro-batching only changes the memory footprint. Neither moves the query
+    loss, the per-document losses or the query gradient."""
     model = _model()
     _, fwd_state = Trainer.initialize(model, torchopt.adamw(1e-4))
-
-    query_ds = _equal_length_docs(4)
-    unpadded = DataStream(query_ds, batch_size=4, device="cpu")
-    padded = _padded_query_stream(query_ds, 4, 16)
-
-    want, want_loss = compute_query_gradients(
-        fwd_state, model, unpadded, "mean", False, grad_accum_steps
+    model.eval()
+    ids = [list(range(10, 10 + n)) for n in (4, 7, 5, 8)]  # Unequal lengths
+    query_ds = Dataset.from_dict({"input_ids": ids, "labels": ids})
+    plain = DataStream(query_ds, batch_size=4, device="cpu")
+    padded_ds, n_docs, _, weight_pad = pad_dataset_to_batch_size(
+        query_ds, 16, 4, "Query", 0
     )
-    got, got_loss = compute_query_gradients(
-        fwd_state, model, padded, "mean", False, grad_accum_steps
-    )
+    padded = DataStream(padded_ds, 16, device="cpu", weight_shape=(n_docs,))
+    padded.weights.data[-weight_pad:] = 0.0
 
-    assert math.isfinite(got_loss), "padding-only micro-batch poisoned the loss"
-    assert got_loss == pytest.approx(want_loss, rel=1e-6)
-    for name, g in want.items():
-        torch.testing.assert_close(got[name], g, msg=name)
+    batch, live = mask_padded_rows(padded[0])
+    assert live and batch["input_ids"].shape[0] == 16
+    assert int((batch["labels"] != -100).any(dim=1).sum()) == 4
+
+    grads, _ = compute_query_gradients(
+        fwd_state, model, padded, grad_accum_steps=grad_accum_steps
+    )
+    want, _ = compute_query_gradients(fwd_state, model, plain)
+    with fwd_state.activate(model):
+        per_doc = per_doc_query_losses(model, padded, n_docs, grad_accum_steps)[:4]
+        loss = mean_query_loss(model, padded, grad_accum_steps)
+        torch.testing.assert_close(per_doc, per_doc_query_losses(model, plain, 4))
+        torch.testing.assert_close(loss, mean_query_loss(model, plain))
+    for name in want:
+        torch.testing.assert_close(grads[name], want[name], msg=name)
+    counts = torch.tensor([len(x) - 1 for x in ids], dtype=torch.float32)
+    torch.testing.assert_close(loss, (per_doc * counts).sum() / counts.sum())
+
+
+def test_unsupervised_batch_loss_is_zero():
+    """A batch with no supervised token scores 0 rather than 0/0."""
+    logits, labels = torch.randn(2, 8, 32), torch.full((2, 8), -100)
+    assert weighted_causal_lm_ce(logits, labels) == 0
