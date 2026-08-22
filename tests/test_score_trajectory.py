@@ -62,28 +62,18 @@ def _make_run(tmp_path: Path, bs: int, n_steps: int, dead_steps: int = 0) -> Pat
     return run
 
 
-def test_plot_score_trajectory_writes_png(tmp_path):
-    run = _make_run(tmp_path, bs=4, n_steps=20)
+@pytest.mark.parametrize("dead_steps", [0, 5])
+def test_plot_score_trajectory_writes_png(tmp_path, dead_steps):
+    """A run plots to the default path or to ``out``, dead leading steps or not."""
+    run = _make_run(tmp_path, bs=4, n_steps=20, dead_steps=dead_steps)
     assert batch_size_from_config(str(run)) == 4
 
-    out = plot_score_trajectory(str(run))
-    assert out == str(run / "score_vs_step.png")
-    assert Path(out).exists() and Path(out).stat().st_size > 0
+    default = Path(plot_score_trajectory(str(run)))
+    assert default == run / "score_vs_step.png" and default.stat().st_size > 0
 
-
-def test_plot_score_trajectory_custom_out(tmp_path):
-    run = _make_run(tmp_path, bs=4, n_steps=20)
-    out = tmp_path / "custom.png"
-    got = plot_score_trajectory(str(run), out=str(out))
-    assert got == str(out)
-    assert out.exists() and out.stat().st_size > 0
-
-
-def test_plot_score_trajectory_with_leading_dead_steps(tmp_path):
-    """Leading all-NaN steps get marked rather than plotted as absence."""
-    run = _make_run(tmp_path, bs=4, n_steps=20, dead_steps=5)
-    out = plot_score_trajectory(str(run), out=str(tmp_path / "dead.png"))
-    assert Path(out).exists() and Path(out).stat().st_size > 0
+    custom = tmp_path / "custom.png"
+    assert plot_score_trajectory(str(run), out=str(custom)) == str(custom)
+    assert custom.stat().st_size > 0
 
 
 def test_plot_score_trajectory_all_dead(tmp_path):
