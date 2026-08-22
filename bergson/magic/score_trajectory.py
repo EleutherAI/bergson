@@ -14,10 +14,6 @@ import warnings
 
 import numpy as np
 
-MATPLOTLIB_HINT = (
-    "Hint: run `pip install matplotlib` for an optional trajectory plot of scores"
-)
-
 
 def has_matplotlib() -> bool:
     """Whether the optional plotting dependency is importable."""

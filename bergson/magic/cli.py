@@ -49,7 +49,7 @@ from ..validate import validate_scores
 from .config import MagicConfig
 from .data_stream import DataStream, mask_padded_rows, pad_dataset_to_batch_size
 from .grad_accum import accumulate_grads
-from .score_trajectory import MATPLOTLIB_HINT, has_matplotlib, plot_score_trajectory
+from .score_trajectory import has_matplotlib, plot_score_trajectory
 from .trainer import BackwardState, TrainerState, prepare_trainer, write_lr_history
 
 
@@ -688,7 +688,10 @@ def run_magic(
 
     if is_main_node:
         if not has_matplotlib():
-            print(MATPLOTLIB_HINT)
+            print(
+                "Hint: run `pip install matplotlib` for an optional "
+                "trajectory plot of scores"
+            )
 
         if run_path.exists() and not run_cfg.resume:
             if run_cfg.overwrite:
