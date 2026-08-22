@@ -243,7 +243,6 @@ def _validate_filter(
     *,
     global_rank: int,
     rank: int,
-    world_size: int,
     schedule: Callable,
     stream: DataStream,
     query_stream: DataStream,
@@ -314,13 +313,8 @@ def _validate_filter(
             filtered_loss = per_doc[q].item()
             base_loss = baseline_per_doc[q].item()
         else:
-            with fwd_state.activate(model), torch.no_grad():
-                loss = torch.tensor(0.0, device=stream.weights.device)
-                for batch in query_stream:
-                    del batch["example_weight"]
-                    loss += model(**batch).loss.detach() / len(query_stream)
-            if world_size > 1:
-                dist.all_reduce(loss, op=dist.ReduceOp.AVG)
+            with fwd_state.activate(model):
+                loss = mean_query_loss(model, query_stream, run_cfg.grad_accum_steps)
             filtered_loss = loss.item()
             base_loss = baseline
 
@@ -402,7 +396,6 @@ def validate_scores(
             multi_query,
             global_rank=global_rank,
             rank=rank,
-            world_size=world_size,
             schedule=schedule,
             stream=stream,
             query_stream=query_stream,
