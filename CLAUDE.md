@@ -1,3 +1,5 @@
+https://developers.google.com/style/timeless-documentation
+
 Always test your changes. Ensure your scripts or CLI commands run without issues for 3 minutes+ (at minimum). If you find an error unrelated to your task, at minimum communicate the exact error when you have completed your task and offer to investigate and fix it.
 
 ## Project Structure and Conventions
