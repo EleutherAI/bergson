@@ -48,7 +48,7 @@ from ..utils.worker_utils import setup_data_pipeline
 from ..validate import validate_scores
 from .config import MagicConfig
 from .data_stream import DataStream, mask_padded_rows, pad_dataset_to_batch_size
-from .grad_accum import accumulate_grads
+from .grad_accum import accumulate_grads, loss_denom
 from .trainer import BackwardState, TrainerState, prepare_trainer, write_lr_history
 
 
@@ -67,32 +67,39 @@ def compute_query_gradients(
     """
     grad_accum: dict[str, torch.Tensor] | None = None
     loss_accum = 0.0
-    denom = 0
+    denom = 0.0
 
     main = not dist.is_initialized() or dist.get_rank() == 0
 
     with fwd_state.activate(model) as params:
         for batch in tqdm(query_stream, desc="Query", disable=not main):
             batch, live = mask_padded_rows(batch)
-            denom += int(live)
             grads, loss = accumulate_grads(
                 model, params, batch, grad_accum_steps, create_graph=False
             )
 
+            # A batch reports the mean over its own label tokens, so weighting
+            # by that count turns the accumulation into a sum over the query
+            # set. Averaging the batch means instead would let a partial last
+            # batch count as much as a full one, putting the batch width into
+            # the query gradient. A dead batch contributes an exact zero.
+            weight = loss_denom(batch) if live else 0.0
+            denom += weight
+
             if grad_accum is None:
-                grad_accum = {k: g.detach().clone() for k, g in grads.items()}
+                grad_accum = {k: g.detach() * weight for k, g in grads.items()}
             else:
                 for k, g in grads.items():
-                    grad_accum[k] += g.detach()
+                    grad_accum[k] += g.detach() * weight
 
-            loss_accum += loss
+            loss_accum += loss * weight
 
     assert grad_accum is not None, "Query stream was empty"
 
     if dist.is_initialized():
         denom_t = torch.tensor(denom, device=current_device())
         dist.all_reduce(denom_t)
-        denom = int(denom_t.item())
+        denom = float(denom_t.item())
 
     if method == "mean":
         for k in grad_accum:

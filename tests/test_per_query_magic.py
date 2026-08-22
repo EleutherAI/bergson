@@ -311,6 +311,49 @@ def test_query_eval_ignores_padding_and_grad_accum(grad_accum_steps):
     torch.testing.assert_close(loss, (per_doc * counts).sum() / counts.sum())
 
 
+@pytest.mark.parametrize("grad_accum_steps", [1, 3])
+def test_aggregate_query_reduction_ignores_batch_width(grad_accum_steps):
+    """The aggregate query loss and gradient reduce over the query set, not
+    over the batching. Splitting the same documents across several batches --
+    the last of them partial -- must not move either, which averaging the
+    per-batch means would: a batch holding one document would count as much as
+    a batch holding four."""
+    model = _model()
+    _, fwd_state = Trainer.initialize(model, torchopt.adamw(1e-4))
+    model.eval()
+
+    # Unequal lengths, so a per-batch mean is not the per-token mean.
+    ids = [list(range(10, 10 + n)) for n in (4, 9, 5, 8, 6)]
+    query_ds = Dataset.from_dict({"input_ids": ids, "labels": ids})
+
+    # One batch holding everything: the reduction has nothing to get wrong.
+    whole = DataStream(query_ds, batch_size=len(ids), device="cpu")
+
+    # The same documents over three batches, the last one 1 real + 1 padding.
+    split_ds, n_docs, _, weight_pad = pad_dataset_to_batch_size(
+        query_ds, 2, len(ids), "Query", 0
+    )
+    split = DataStream(split_ds, 2, device="cpu", weight_shape=(n_docs,))
+    split.weights.data[-weight_pad:] = 0.0
+    assert len(split) == 3
+
+    with fwd_state.activate(model):
+        want_loss = mean_query_loss(model, whole)
+        got_loss = mean_query_loss(model, split, grad_accum_steps)
+        per_doc = per_doc_query_losses(model, whole, len(ids))
+
+    counts = torch.tensor([len(x) - 1 for x in ids], dtype=torch.float32)
+    torch.testing.assert_close(want_loss, (per_doc * counts).sum() / counts.sum())
+    torch.testing.assert_close(got_loss, want_loss)
+
+    want_grads, _ = compute_query_gradients(fwd_state, model, whole)
+    got_grads, _ = compute_query_gradients(
+        fwd_state, model, split, grad_accum_steps=grad_accum_steps
+    )
+    for name in want_grads:
+        torch.testing.assert_close(got_grads[name], want_grads[name], msg=name)
+
+
 def test_unsupervised_batch_loss_is_zero():
     """A batch with no supervised token scores 0 rather than 0/0."""
     logits, labels = torch.randn(2, 8, 32), torch.full((2, 8), -100)
