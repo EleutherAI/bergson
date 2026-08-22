@@ -1,46 +1,27 @@
 """Per-step attribution-score magnitude, plotted against training step.
 
 A MAGIC run takes the shuffled training documents ``batch_size`` at a time, so
-grouping the saved scores into ``batch_size``-row blocks gives one value per
-optimizer step. ``bergson score_trajectory <run>`` plots the batch-median of
-``log10|score|`` -- the score *level* -- against step and writes
-``score_vs_step.png``. The level can sweep many orders of magnitude when a run
-is not healthy; see the MAGIC docs.
+grouping the scores into ``batch_size``-row blocks gives one value per optimizer
+step. Every run that saves scores also writes ``score_vs_step.png`` beside them:
+the batch-median of ``log10|score|`` -- the score *level* -- against step. The
+level can sweep many orders of magnitude when a run is not healthy; see the
+MAGIC docs.
 """
 
+import importlib.util
 import os
 import warnings
 
 import numpy as np
 
-from ..config.config_io import read_config
-from ..data import load_scores_loss_signed
+MATPLOTLIB_HINT = (
+    "Hint: run `pip install matplotlib` for an optional trajectory plot of scores"
+)
 
 
-def batch_size_from_config(run_path: str) -> int:
-    """Read the MAGIC ``batch_size`` from a run's ``config.yaml``.
-
-    Every step is searched, and a ``magic`` step wins: a run directory written
-    by a pipeline holds the whole pipeline's steps, so the first one need not be
-    the step that produced the scores.
-    """
-    steps = read_config(run_path)["steps"]
-    fallback = None
-    for step in steps:
-        for name, cmd_dict in step.items():
-            batch_size = (cmd_dict or {}).get("batch_size")
-            if batch_size is None:
-                continue
-            if name.lower() == "magic":
-                return int(batch_size)
-            if fallback is None:
-                fallback = int(batch_size)
-    if fallback is None:
-        raise ValueError(
-            f"No step in {run_path}/config.yaml has a `batch_size`; run_path "
-            "must point at a finished MAGIC run directory."
-        )
-    return fallback
+def has_matplotlib() -> bool:
+    """Whether the optional plotting dependency is importable."""
+    return importlib.util.find_spec("matplotlib") is not None
 
 
 def per_step_level(scores: np.ndarray, batch_size: int) -> np.ndarray:
@@ -63,47 +44,32 @@ def per_step_level(scores: np.ndarray, batch_size: int) -> np.ndarray:
         )
 
 
-def plot_score_trajectory(run_path: str, *, out: str | None = None) -> str:
-    """Write ``<run_path>/score_vs_step.png`` for a finished MAGIC run.
+def plot_score_trajectory(scores: np.ndarray, batch_size: int, out: str) -> str | None:
+    """Write ``out``, the per-step score level against training step.
 
-    Reads ``<run_path>/scores`` and ``<run_path>/config.yaml``. Returns the
-    output path.
+    Returns the path written, or ``None`` when matplotlib is missing or the
+    scores hold nothing to plot -- the scores themselves are already saved, so a
+    run must not fail here.
     """
-    # matplotlib is an optional (``bergson[viz]``) dependency, so it is imported
-    # here rather than at module top: importing this module must not require it.
-    try:
-        import matplotlib
+    if not has_matplotlib():
+        return None
 
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-    except ImportError as e:  # pragma: no cover - depends on install extras
-        raise ImportError(
-            "score_trajectory needs matplotlib; install it with "
-            "`pip install matplotlib` or `pip install 'bergson[viz]'`."
-        ) from e
+    import matplotlib
 
-    run_path = str(run_path)
-    scores, _ = load_scores_loss_signed(os.path.join(run_path, "scores"))
-    scores = np.asarray(scores.detach().cpu().numpy(), dtype=np.float64)
-    batch_size = batch_size_from_config(run_path)
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
 
-    lvl_raw = per_step_level(scores, batch_size)
-    ns = len(lvl_raw)
-    if ns == 0:
-        raise ValueError(
-            f"{run_path}/scores has fewer than batch_size={batch_size} rows; "
-            "nothing to plot."
-        )
-    finite = np.isfinite(lvl_raw)
-    live = int(finite.sum())
-    if live == 0:
-        raise ValueError(f"{run_path}/scores is all zero / non-finite.")
+    lvl = per_step_level(scores, batch_size)
+    finite = np.isfinite(lvl)
+    ns, live = len(lvl), int(finite.sum())
+    if not live:
+        return None
     steps = np.arange(ns)
 
     fig, ax = plt.subplots(figsize=(13, 5))
     ax.scatter(
         steps,
-        lvl_raw,
+        lvl,
         s=4,
         c="#9ecae1",
         alpha=0.55,
@@ -125,8 +91,8 @@ def plot_score_trajectory(run_path: str, *, out: str | None = None) -> str:
             color="#a50f15",
         )
 
-    rng = float(np.nanmax(lvl_raw) - np.nanmin(lvl_raw))
-    name = os.path.basename(os.path.normpath(run_path))
+    rng = float(np.nanmax(lvl) - np.nanmin(lvl))
+    name = os.path.basename(os.path.dirname(os.path.normpath(out)))
     ax.set_title(
         f"{name}   batch_size={batch_size}, {ns} steps, "
         f"{100 * live / ns:.1f}% live, {rng:.1f} decades of range"
@@ -137,7 +103,6 @@ def plot_score_trajectory(run_path: str, *, out: str | None = None) -> str:
     ax.grid(alpha=0.15)
     fig.tight_layout()
 
-    out = out or os.path.join(run_path, "score_vs_step.png")
     fig.savefig(out, dpi=130, bbox_inches="tight")
     plt.close(fig)
     return out

@@ -49,6 +49,7 @@ from ..validate import validate_scores
 from .config import MagicConfig
 from .data_stream import DataStream, mask_padded_rows, pad_dataset_to_batch_size
 from .grad_accum import accumulate_grads
+from .score_trajectory import MATPLOTLIB_HINT, has_matplotlib, plot_score_trajectory
 from .trainer import BackwardState, TrainerState, prepare_trainer, write_lr_history
 
 
@@ -297,12 +298,24 @@ def attach_doc_ids_if_missing(dataset: Dataset) -> Dataset:
     )
 
 
+def emit_trajectory_plot(run_path: str, scores: torch.Tensor, batch_size: int):
+    """Plot the per-step score level beside the scores, if matplotlib is present."""
+    out = str(Path(run_path) / "score_vs_step.png")
+    try:
+        if plot_score_trajectory(scores.float().numpy(), batch_size, out):
+            print(f"Saved score trajectory plot to {out}")
+    except Exception as e:
+        # The scores are already saved; a plotting failure must not end the run.
+        print(f"Could not plot the score trajectory: {e}")
+
+
 def save_magic_scores(
     run_path: str,
     scores: torch.Tensor,
     train_dataset: Dataset,
     pad_count: int,
     per_token: bool,
+    batch_size: int,
 ) -> str:
     """Write MAGIC scores as a score directory under ``<run_path>/scores``.
 
@@ -315,6 +328,7 @@ def save_magic_scores(
         arr = scores.float().numpy()
         save_sequence_scores(path, arr if arr.ndim > 1 else arr[:, None])
         print(f"Saved attribution scores to {path}")
+        emit_trajectory_plot(run_path, scores, batch_size)
         return str(path)
 
     num_token_grads = compute_num_token_grads(train_dataset)
@@ -336,6 +350,7 @@ def save_magic_scores(
     save_token_scores(path, flat, offsets)
     np.save(path / "doc_ids.npy", doc_ids)
     print(f"Saved attribution scores to {path}")
+    emit_trajectory_plot(run_path, scores, batch_size)
     return str(path)
 
 
@@ -563,7 +578,12 @@ def worker(
             print(f"Baseline loss: {baseline}")
             print(f"Score summary: {describe(scores.flatten())}")
             score_path = save_magic_scores(
-                run_cfg.run_path, scores, train_dataset, pad_count, bool(per_token)
+                run_cfg.run_path,
+                scores,
+                train_dataset,
+                pad_count,
+                bool(per_token),
+                run_cfg.batch_size,
             )
     elif not score_path:
         # Sanity check
@@ -617,7 +637,12 @@ def worker(
             print(f"Score summary: {summ}")
 
             score_path = save_magic_scores(
-                run_cfg.run_path, scores, train_dataset, pad_count, bool(per_token)
+                run_cfg.run_path,
+                scores,
+                train_dataset,
+                pad_count,
+                bool(per_token),
+                run_cfg.batch_size,
             )
     else:
         scores, multi_query = load_scores_loss_signed(score_path)
@@ -662,6 +687,9 @@ def run_magic(
     multi_node = run_cfg.distributed.nnode > 1
 
     if is_main_node:
+        if not has_matplotlib():
+            print(MATPLOTLIB_HINT)
+
         if run_path.exists() and not run_cfg.resume:
             if run_cfg.overwrite:
                 shutil.rmtree(run_path)

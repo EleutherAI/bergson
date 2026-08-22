@@ -108,13 +108,14 @@ Score trajectory
 
 A MAGIC run processes the shuffled training documents in batches of
 ``batch_size``, so batch ``s`` is optimizer step ``s`` and the saved scores group
-back into per-step buckets. ``bergson score_trajectory`` plots the per-step
-median ``log10|score|`` against training step:
+back into per-step buckets. Every run that saves scores writes
+``<run_path>/score_vs_step.png`` beside them: the per-step median
+``log10|score|`` against training step. It needs matplotlib, which is optional --
+a run without it prints a hint at startup and skips the plot.
 
 .. code-block:: bash
 
-   pip install 'bergson[viz]'               # matplotlib, an optional extra
-   bergson score_trajectory runs/my-magic   # -> runs/my-magic/score_vs_step.png
+   pip install 'bergson[plot]'
 
 A tight, gently-varying band is healthy. A level that sweeps tens of decades, or
 that dips periodically, means a score at one step is not comparable to a score at

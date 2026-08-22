@@ -1407,7 +1407,9 @@ def test_save_magic_scores_round_trips_the_grid(tmp_path, num_scores):
     grid = torch.arange(int(np.prod(shape)), dtype=torch.float32).reshape(shape)
     grid[:, seq_len - 1] = 0.0  # the column weighted_causal_lm_ce never reaches
 
-    save_magic_scores(str(tmp_path), grid, data, pad_count=0, per_token=True)
+    save_magic_scores(
+        str(tmp_path), grid, data, pad_count=0, per_token=True, batch_size=1
+    )
     loaded, multi_query = load_scores_loss_signed(str(tmp_path / "scores"))
 
     assert multi_query == (num_scores > 1)
