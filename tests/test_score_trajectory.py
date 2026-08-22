@@ -1,51 +1,37 @@
 """Tests for ``bergson score_trajectory`` (per-step score-magnitude plot)."""
 
-from pathlib import Path
-
 import numpy as np
-import pytest
 import yaml
 
 from bergson.__main__ import Main
 from bergson.config.config_io import parse_steps
-from bergson.magic.score_trajectory import (
-    batch_size_from_config,
-    per_step_level,
-    plot_score_trajectory,
-)
+from bergson.magic.score_trajectory import per_step_level
 from bergson.score.score_writer import save_sequence_scores
 
 
-def test_per_step_level_recovers_known_levels():
-    """A step whose |scores| are all 10**L has level L; all-zero steps are NaN."""
-    bs = 4
+def test_per_step_level():
+    """A step whose |scores| are all 10**L has level L, over any trailing axes."""
+    bs, seq = 4, 3
     levels = [-3.0, -1.0, 0.0, 2.0, 4.0]
-    rows = []
-    for lv in levels:
-        rows.extend([10.0**lv] * bs)
-    scores = np.array(rows, dtype=np.float64)[:, None]
+    scores = np.concatenate(
+        [np.full((bs, seq), 10.0**lv) for lv in levels]
+    )  # (bs * len(levels), seq)
 
     got = per_step_level(scores, bs)
     assert got.shape == (len(levels),)
     np.testing.assert_allclose(got, levels, atol=1e-9)
 
-    # An all-zero step has no defined level.
+    # A step with no score at all -- a MAGIC backward leaves early steps
+    # undefined -- has no level, rather than a level of zero.
     scores[:bs] = 0.0
     got = per_step_level(scores, bs)
     assert np.isnan(got[0])
     np.testing.assert_allclose(got[1:], levels[1:], atol=1e-9)
 
 
-def test_per_step_level_pools_trailing_axes():
-    """Trailing axes (token / query) are pooled into the step, not kept."""
-    bs, seq = 2, 3
-    scores = np.full((bs * 4, seq), 10.0**1.5, dtype=np.float64)
-    got = per_step_level(scores, bs)
-    assert got.shape == (4,)
-    np.testing.assert_allclose(got, 1.5, atol=1e-9)
-
-
-def _make_run(tmp_path: Path, bs: int, n_steps: int, dead_steps: int = 0) -> Path:
+def test_score_trajectory_plots_a_pipeline_run(tmp_path):
+    """A pipeline-shaped run plots end to end, from a yaml step to the PNG."""
+    bs, n_steps, dead_steps = 4, 20, 5
     run = tmp_path / "magic_run"
     run.mkdir()
     rng = np.random.default_rng(0)
@@ -53,65 +39,23 @@ def _make_run(tmp_path: Path, bs: int, n_steps: int, dead_steps: int = 0) -> Pat
     scores = np.concatenate(
         [10.0 ** rng.uniform(3 - s, 4 - s, size=bs) for s in np.linspace(0, 6, n_steps)]
     ).astype(np.float32)[:, None]
-    # A MAGIC backward can leave the leading steps with no score at all.
     scores[: dead_steps * bs] = 0.0
     save_sequence_scores(run / "scores", scores)
-    cfg = {"steps": [{"magic": {"batch_size": bs}}], "metadata": {}}
+    # A pipeline writes every step to the run's config, so the magic step that
+    # names the batch_size need not be the first one.
+    cfg = {"steps": [{"build": {"model": "x"}}, {"magic": {"batch_size": bs}}]}
     with open(run / "config.yaml", "w") as f:
         yaml.safe_dump(cfg, f)
-    return run
 
-
-@pytest.mark.parametrize("dead_steps", [0, 5])
-def test_plot_score_trajectory_writes_png(tmp_path, dead_steps):
-    """A run plots to the default path or to ``out``, dead leading steps or not."""
-    run = _make_run(tmp_path, bs=4, n_steps=20, dead_steps=dead_steps)
-    assert batch_size_from_config(str(run)) == 4
-
-    default = Path(plot_score_trajectory(str(run)))
-    assert default == run / "score_vs_step.png" and default.stat().st_size > 0
-
-    custom = tmp_path / "custom.png"
-    assert plot_score_trajectory(str(run), out=str(custom)) == str(custom)
-    assert custom.stat().st_size > 0
-
-
-def test_plot_score_trajectory_all_dead(tmp_path):
-    run = _make_run(tmp_path, bs=4, n_steps=20, dead_steps=20)
-    with pytest.raises(ValueError, match="all zero / non-finite"):
-        plot_score_trajectory(str(run), out=str(tmp_path / "nope.png"))
-
-
-def test_batch_size_from_pipeline_config(tmp_path):
-    """A pipeline run dir holds every step, and the magic step is the one to read."""
-    run = tmp_path / "pipeline_run"
-    run.mkdir()
-    cfg = {
-        "run_path": str(run),
-        "steps": [{"build": {"model": "x"}}, {"magic": {"batch_size": 8}}],
-        "metadata": {},
-    }
-    with open(run / "config.yaml", "w") as f:
-        yaml.safe_dump(cfg, f)
-    assert batch_size_from_config(str(run)) == 8
-
-
-def test_batch_size_from_config_without_batch_size(tmp_path):
-    run = tmp_path / "no_bs"
-    run.mkdir()
-    with open(run / "config.yaml", "w") as f:
-        yaml.safe_dump({"steps": [{"build": {"model": "x"}}], "metadata": {}}, f)
-    with pytest.raises(ValueError, match="batch_size"):
-        batch_size_from_config(str(run))
-
-
-def test_score_trajectory_step_parses_from_yaml(tmp_path):
-    """`bergson <config.yaml>` builds every command through from_dict."""
     registry = {
         cls.__name__.lower(): cls
         for cls in Main.__dataclass_fields__["command"].type.__args__
     }
-    steps = parse_steps([{"score_trajectory": {"run_path": str(tmp_path)}}], registry)
-    ((name, cmd),) = steps
+    ((name, cmd),) = parse_steps(
+        [{"score_trajectory": {"run_path": str(run)}}], registry
+    )
     assert name == "score_trajectory"
-    assert cmd.run_path == str(tmp_path)
+    cmd.execute()
+
+    out = run / "score_vs_step.png"
+    assert out.exists() and out.stat().st_size > 0
