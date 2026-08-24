@@ -101,7 +101,6 @@ def hessian_pipeline(
 
             ckpt_models = list(hessian_pipeline_cfg.query_model_paths)
             if len(ckpt_models) > 1:
-                # Build the query gradient at each checkpoint, then average.
                 parts = []
                 for i, model_path in enumerate(ckpt_models):
                     part_cfg = deepcopy(query_cfg)

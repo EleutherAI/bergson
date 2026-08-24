@@ -493,15 +493,8 @@ def load_data_string(
 def average_gradient_indices(sources: list[Path | str], dest: Path | str) -> None:
     """Average several gradient indices elementwise into a new index at ``dest``.
 
-    Every source must agree on row count, module layout and dtype -- they are
-    the same query set evaluated at different model checkpoints, so a mismatch
-    means the indices are not comparable and averaging them would be silently
-    wrong.
-
-    The accumulation is done in float64 regardless of the stored dtype: these
-    are sums of k values that may differ in the last bits, and accumulating in
-    a low-precision store dtype would discard exactly the differences being
-    averaged.
+    Accumulates in float64 whatever the store dtype: the sources differ only in
+    their last bits, which a low-precision accumulator would discard.
     """
     srcs = [Path(s) for s in sources]
     if not srcs:
