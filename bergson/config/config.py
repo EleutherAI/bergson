@@ -449,6 +449,20 @@ class MetasmoothnessConfig(TrainingConfig):
 @dataclass
 class ValidationConfig(TrainingConfig, ABC):
     """Config for leave-k-out validation of attribution scores."""
+    ckpt_avg_k: int = 1
+    """Average the query gradient over the last ``k`` trajectory checkpoints.
+
+    ``1`` (default) uses the final state only and is bit-identical to the
+    previous behaviour. Larger ``k`` averages the query gradient computed at
+    each of the last ``k`` saved checkpoints.
+
+    NOTE the checkpoints averaged over are the ones the trainer actually
+    SAVED, which under ``save_mode="log"`` are exponentially spaced -- the
+    "last 4" may span a wide stretch of training rather than four adjacent
+    steps. Use ``save_mode="interval"`` with a small ``save_interval`` if
+    closely-spaced states are wanted.
+    """
+
 
     query: DataConfig = field(
         default_factory=lambda: DataConfig(split="train"),
