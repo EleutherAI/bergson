@@ -503,18 +503,18 @@ def average_gradient_indices(sources: list[Path | str], dest: Path | str) -> Non
     a low-precision store dtype would discard exactly the differences being
     averaged.
     """
-    sources = [Path(s) for s in sources]
-    if not sources:
+    srcs = [Path(s) for s in sources]
+    if not srcs:
         raise ValueError("average_gradient_indices needs at least one source")
-    dest = Path(dest)
+    dst = Path(dest)
 
     infos = []
-    for src in sources:
+    for src in srcs:
         with (src / "info.json").open() as f:
             infos.append(json.load(f))
 
     first = infos[0]
-    for src, info in zip(sources[1:], infos[1:]):
+    for src, info in zip(srcs[1:], infos[1:]):
         if info["num_grads"] != first["num_grads"]:
             raise ValueError(
                 f"{src} has {info['num_grads']} rows, expected {first['num_grads']}"
@@ -523,21 +523,21 @@ def average_gradient_indices(sources: list[Path | str], dest: Path | str) -> Non
             raise ValueError(f"{src} has a different module layout")
 
     acc = None
-    for src in sources:
+    for src in srcs:
         arr = np.asarray(load_gradients(src), dtype=np.float64)
         acc = arr.copy() if acc is None else acc + arr
     assert acc is not None
-    acc /= len(sources)
+    acc /= len(srcs)
 
-    dest.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(sources[0] / "info.json", dest / "info.json")
+    dst.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(srcs[0] / "info.json", dst / "info.json")
     for extra in ("preprocess_cfg.json", "offsets.npy"):
-        if (sources[0] / extra).exists():
-            shutil.copy2(sources[0] / extra, dest / extra)
+        if (srcs[0] / extra).exists():
+            shutil.copy2(srcs[0] / extra, dst / extra)
 
     out = np.memmap(
-        dest / "gradients.bin",
-        dtype=load_gradients(sources[0]).dtype,
+        dst / "gradients.bin",
+        dtype=load_gradients(srcs[0]).dtype,
         mode="w+",
         shape=acc.shape,
     )
