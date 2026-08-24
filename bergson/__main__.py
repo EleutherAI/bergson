@@ -78,6 +78,15 @@ def run_config(config_path: str, command_registry: dict[str, type]) -> None:
         cmd.execute()
 
 
+def _looks_like_config(arg: str) -> bool:
+    """Whether an argument is meant as a config path rather than a subcommand.
+
+    Subcommand names are bare words; config paths carry a YAML suffix or a
+    directory separator.
+    """
+    return arg.endswith((".yaml", ".yml")) or os.sep in arg
+
+
 def main():
     """Parse CLI arguments and dispatch to the selected subcommand.
 
@@ -99,12 +108,20 @@ def main():
     # Config-file mode: accept a YAML file as the sole argument.
     # Leading command words (e.g. `bergson build run/config.yaml`) are ignored.
     config_path: str | None = None
-    if len(args) == 1 and os.path.isfile(args[0]):
+    if len(args) == 1:
         config_path = args[0]
-    elif len(args) == 2 and os.path.isfile(args[1]):
+    elif len(args) == 2:
         config_path = args[1]
 
-    if config_path is not None:
+    if config_path is not None and _looks_like_config(config_path):
+        # Decide on the argument's shape, not on whether the file happens to
+        # exist. Testing os.path.isfile here means a missing config falls
+        # through to argparse, which reports it as
+        #     error: argument prog.command: invalid choice: '/path/to/run.yaml'
+        # That reads as a bad subcommand and hides the actual problem.
+        if not os.path.isfile(config_path):
+            raise SystemExit(f"bergson: no such config file: {config_path}")
+
         run_config(config_path, command_registry)
         return
 
