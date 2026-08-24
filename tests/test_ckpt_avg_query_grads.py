@@ -1,67 +1,48 @@
-"""Tests for query-gradient averaging over the last k trajectory checkpoints."""
-
 import os
 
 import pytest
 
-from bergson.magic.cli import _last_k_checkpoint_paths, compute_query_gradients_averaged
+import bergson.magic.cli as cli
 
 
-def _make_ckpts(root, steps):
-    for n in steps:
-        os.makedirs(os.path.join(root, f"step_{n}.ckpt"))
-    # Non-checkpoint entries in the same directory must be ignored.
-    open(os.path.join(root, "log_history.json"), "w").close()
-    os.makedirs(os.path.join(root, "not_a_step"))
+class FakeState:
+    def __init__(self):
+        self.step = "final"
+        self.log = []
+
+    def load(self, path):
+        self.step = os.path.basename(path)
+
+    def to(self, device):
+        return "snapshot"
+
+    def copy_(self, other):
+        self.log.append(other)
+        self.step = "final"
 
 
-def test_orders_numerically_not_lexically(tmp_path):
-    _make_ckpts(tmp_path, [2, 10, 40, 125])
-    got = [os.path.basename(p) for p in _last_k_checkpoint_paths(str(tmp_path), 3)]
-    # Lexical ordering would put step_40 last and drop step_125.
-    assert got == ["step_10.ckpt", "step_40.ckpt", "step_125.ckpt"]
+def test_averages_last_k_and_restores_state(tmp_path, monkeypatch):
+    for n in (2, 10, 40, 125):
+        os.makedirs(tmp_path / f"step_{n}.ckpt")
+    state = FakeState()
+    compute = cli.compute_query_gradients
+    steps = []
+
+    def fake(fwd_state, *args):
+        steps.append(fwd_state.step)
+        return {"w": len(steps)}, float(len(steps))
+
+    monkeypatch.setattr(cli, "compute_query_gradients", fake)
+    grads, loss = compute(state, None, None, ckpts_path=str(tmp_path), ckpt_avg_k=2)
+
+    assert steps == ["step_40.ckpt", "step_125.ckpt"]
+    assert grads == {"w": 1.5} and loss == 1.5
+    assert state.step == "final" and state.log == ["snapshot"]
 
 
-def test_returns_oldest_first(tmp_path):
-    _make_ckpts(tmp_path, [1, 2, 3])
-    got = [os.path.basename(p) for p in _last_k_checkpoint_paths(str(tmp_path), 3)]
-    assert got == ["step_1.ckpt", "step_2.ckpt", "step_3.ckpt"]
-
-
-def test_missing_directory_is_empty(tmp_path):
-    assert _last_k_checkpoint_paths(str(tmp_path / "nope"), 4) == []
-
-
-def test_k_greater_than_available_returns_all(tmp_path):
-    _make_ckpts(tmp_path, [5, 6])
-    assert len(_last_k_checkpoint_paths(str(tmp_path), 99)) == 2
-
-
-def test_k_of_one_delegates_without_touching_checkpoints():
-    """k<=1 must not read the checkpoint dir at all, so the default path is unchanged."""
-    sentinel_grads = {"w": object()}
-    calls = []
-
-    def fake_compute(fwd_state, model, query_stream, method, fsdp, grad_accum_steps):
-        calls.append((method, fsdp, grad_accum_steps))
-        return sentinel_grads, 1.25
-
-    import bergson.magic.cli as cli
-
-    orig = cli.compute_query_gradients
-    cli.compute_query_gradients = fake_compute
-    try:
-        grads, loss = compute_query_gradients_averaged(
-            None, None, None, "/definitely/does/not/exist", 1, "mean", False, 3
+def test_too_few_checkpoints_raises(tmp_path):
+    os.makedirs(tmp_path / "step_1.ckpt")
+    with pytest.raises(ValueError, match="only 1 checkpoints"):
+        cli.compute_query_gradients(
+            FakeState(), None, None, ckpts_path=str(tmp_path), ckpt_avg_k=2
         )
-    finally:
-        cli.compute_query_gradients = orig
-
-    assert grads is sentinel_grads and loss == 1.25
-    assert calls == [("mean", False, 3)]
-
-
-def test_too_few_checkpoints_raises_with_actionable_message(tmp_path):
-    _make_ckpts(tmp_path, [1, 2])
-    with pytest.raises(RuntimeError, match="needs 4 saved checkpoints"):
-        compute_query_gradients_averaged(None, None, None, str(tmp_path), 4)

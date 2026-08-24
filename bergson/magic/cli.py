@@ -1,7 +1,6 @@
 import gc
 import json
 import os
-import re
 import shutil
 import time
 from collections.abc import Sequence
@@ -32,7 +31,11 @@ from transformers.utils.logging import (
 
 from ..config.config import TrainingConfig, ValidationConfig
 from ..config.config_io import save_run_config
-from ..data import compute_num_token_grads, load_scores_loss_signed
+from ..data import (
+    compute_num_token_grads,
+    load_scores_loss_signed,
+    sorted_checkpoints,
+)
 from ..distributed import launch_distributed_run
 from ..score.score_writer import save_sequence_scores, save_token_scores
 from ..utils.load_from_optimizer import (
@@ -54,74 +57,6 @@ from .grad_accum import accumulate_grads
 from .trainer import BackwardState, TrainerState, prepare_trainer, write_lr_history
 
 
-def _last_k_checkpoint_paths(ckpts_path: str, k: int) -> list[str]:
-    """Return up to ``k`` highest-step ``step_<N>.ckpt`` paths, oldest first."""
-    if not os.path.isdir(ckpts_path):
-        return []
-    found: list[tuple[int, str]] = []
-    for name in os.listdir(ckpts_path):
-        m = re.match(r"step_(\d+)\.ckpt$", name)
-        if m:
-            found.append((int(m.group(1)), os.path.join(ckpts_path, name)))
-    found.sort()
-    return [path for _, path in found[-k:]]
-
-
-def compute_query_gradients_averaged(
-    fwd_state: TrainerState,
-    model: torch.nn.Module,
-    query_stream: DataStream,
-    ckpts_path: str,
-    ckpt_avg_k: int = 1,
-    method: str = "mean",
-    fsdp: bool = False,
-    grad_accum_steps: int = 1,
-) -> tuple[dict[str, torch.Tensor], float]:
-    """Query gradients averaged over the last ``ckpt_avg_k`` saved checkpoints.
-
-    ``ckpt_avg_k <= 1`` delegates to :func:`compute_query_gradients` unchanged,
-    so the default path is bit-identical to the previous behaviour.
-    """
-    if ckpt_avg_k <= 1:
-        return compute_query_gradients(
-            fwd_state, model, query_stream, method, fsdp, grad_accum_steps
-        )
-
-    paths = _last_k_checkpoint_paths(ckpts_path, ckpt_avg_k)
-    if len(paths) < ckpt_avg_k:
-        raise RuntimeError(
-            f"ckpt_avg_k={ckpt_avg_k} needs {ckpt_avg_k} saved checkpoints under "
-            f"{ckpts_path!r}, found {len(paths)}. Note save_mode='log' keeps only "
-            "O(log steps) checkpoints; use save_mode='interval' with a small "
-            "save_interval to keep enough."
-        )
-
-    # Snapshot the final state: the reverse pass downstream needs it, not
-    # whichever checkpoint we happen to load last.
-    saved = fwd_state.to("cpu")
-    accum: dict[str, torch.Tensor] | None = None
-    loss_accum = 0.0
-    try:
-        for path in paths:
-            fwd_state.load(path)
-            grads, loss = compute_query_gradients(
-                fwd_state, model, query_stream, method, fsdp, grad_accum_steps
-            )
-            if accum is None:
-                accum = {k: g.clone() for k, g in grads.items()}
-            else:
-                for k, g in grads.items():
-                    accum[k] += g
-            loss_accum += loss
-    finally:
-        fwd_state.copy_(saved)
-
-    assert accum is not None
-    for k in accum:
-        accum[k] /= len(paths)
-    return accum, loss_accum / len(paths)
-
-
 def compute_query_gradients(
     fwd_state: TrainerState,
     model: torch.nn.Module,
@@ -129,12 +64,40 @@ def compute_query_gradients(
     method: str = "mean",
     fsdp: bool = False,
     grad_accum_steps: int = 1,
+    ckpts_path: str | None = None,
+    ckpt_avg_k: int = 1,
 ) -> tuple[dict[str, torch.Tensor], float]:
     """Compute reduced query gradients over the query dataset.
 
     Iterates over the query stream, computing per-batch parameter gradients
-    and reducing them (mean or sum) into a single gradient dict.
+    and reducing them (mean or sum) into a single gradient dict. If
+    ``ckpt_avg_k > 1``, the result is averaged over the last ``ckpt_avg_k``
+    checkpoints in ``ckpts_path`` and ``fwd_state`` is left unchanged.
     """
+    if ckpt_avg_k > 1:
+        assert ckpts_path is not None
+        paths = [p for _, p in sorted_checkpoints(ckpts_path)[-ckpt_avg_k:]]
+        if len(paths) < ckpt_avg_k:
+            raise ValueError(
+                f"ckpt_avg_k={ckpt_avg_k} but only {len(paths)} checkpoints "
+                f"saved under {ckpts_path}"
+            )
+
+        final = fwd_state.to("cpu")
+        grads, loss = {}, 0.0
+        try:
+            for path in paths:
+                fwd_state.load(path)
+                g, l = compute_query_gradients(
+                    fwd_state, model, query_stream, method, fsdp, grad_accum_steps
+                )
+                grads = {k: grads[k] + v for k, v in g.items()} if grads else g
+                loss += l
+        finally:
+            fwd_state.copy_(final)
+
+        return {k: v / len(paths) for k, v in grads.items()}, loss / len(paths)
+
     grad_accum: dict[str, torch.Tensor] | None = None
     loss_accum = 0.0
     denom = 0
@@ -598,15 +561,15 @@ def worker(
         # query_stream.weights is always 1D (weight_shape=(num_query_docs,))
         query_stream.weights.data[-query_weight_pad_count:] = 0.0
 
-    query_grads, baseline = compute_query_gradients_averaged(
+    query_grads, baseline = compute_query_gradients(
         fwd_state,
         model,
         query_stream,
-        ckpts_path,
-        getattr(run_cfg, "ckpt_avg_k", 1),
         run_cfg.query_method,
         run_cfg.fsdp,
         run_cfg.grad_accum_steps,
+        ckpts_path,
+        run_cfg.ckpt_avg_k,
     )
 
     multi_query = False
