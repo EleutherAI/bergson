@@ -1,6 +1,7 @@
 import time
 from contextlib import contextmanager
 from copy import deepcopy
+from pathlib import Path
 
 from ..build import build
 from ..cli.commands import Build, Score
@@ -96,7 +97,28 @@ def hessian_pipeline(
                 Build(query_cfg, query_preprocess_cfg),
                 query_cfg.partial_run_path,
             )
-            build(query_cfg, query_preprocess_cfg)
+
+            ckpt_models = list(hessian_pipeline_cfg.query_model_paths)
+            if len(ckpt_models) > 1:
+                # Build the query gradient at each checkpoint, then average.
+                from ..data import average_gradient_indices
+
+                parts = []
+                for i, model_path in enumerate(ckpt_models):
+                    part_cfg = deepcopy(query_cfg)
+                    part_cfg.model = model_path
+                    part_cfg.run_path = f"{query_path}__ckpt{i}"
+                    _validate(part_cfg)
+                    build(part_cfg, query_preprocess_cfg)
+                    parts.append(Path(part_cfg.run_path))
+                print(
+                    f"  averaging query gradients over {len(parts)} checkpoints"
+                )
+                average_gradient_indices(parts, Path(query_path))
+            else:
+                if ckpt_models:
+                    query_cfg.model = ckpt_models[0]
+                build(query_cfg, query_preprocess_cfg)
 
     # ── Step 2: Fit Hessian factors on training data ──────────────────────
     print(f"Step 2/4: Fitting {method} factors on training data...")

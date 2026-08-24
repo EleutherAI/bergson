@@ -905,6 +905,20 @@ class HessianConfig(Serializable):
 class HessianPipelineConfig:
     """Config for the Hessian-preconditioned influence pipeline."""
 
+    query_model_paths: list[str] = field(default_factory=list)
+    """Average the query gradient over these model checkpoints.
+
+    Empty (default) builds the query gradient once from ``index_cfg.model``,
+    which is the previous behaviour exactly. With two or more paths the query
+    gradient is built once per checkpoint and averaged elementwise, giving the
+    EK-FAC counterpart of ``ValidationConfig.ckpt_avg_k``.
+
+    Paths must be loadable the same way ``index_cfg.model`` is (a HF model
+    directory or hub name). The MAGIC trainer writes its trajectory as
+    ``TrainerState`` dcp checkpoints, which are NOT that format -- export them
+    first rather than pointing this at ``checkpoints/step_*.ckpt``.
+    """
+
     query: DataConfig = field(default_factory=DataConfig)
     """Query dataset specification."""
 

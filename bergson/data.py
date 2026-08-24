@@ -489,6 +489,64 @@ def load_data_string(
     return ds
 
 
+def average_gradient_indices(sources: list[Path | str], dest: Path | str) -> None:
+    """Average several gradient indices elementwise into a new index at ``dest``.
+
+    Every source must agree on row count, module layout and dtype -- they are
+    the same query set evaluated at different model checkpoints, so a mismatch
+    means the indices are not comparable and averaging them would be silently
+    wrong.
+
+    The accumulation is done in float64 regardless of the stored dtype: these
+    are sums of k values that may differ in the last bits, and accumulating in
+    a low-precision store dtype would discard exactly the differences being
+    averaged.
+    """
+    import json
+    import shutil
+
+    sources = [Path(s) for s in sources]
+    if not sources:
+        raise ValueError("average_gradient_indices needs at least one source")
+    dest = Path(dest)
+
+    infos = []
+    for src in sources:
+        with (src / "info.json").open() as f:
+            infos.append(json.load(f))
+
+    first = infos[0]
+    for src, info in zip(sources[1:], infos[1:]):
+        if info["num_grads"] != first["num_grads"]:
+            raise ValueError(
+                f"{src} has {info['num_grads']} rows, expected {first['num_grads']}"
+            )
+        if info["grad_sizes"] != first["grad_sizes"]:
+            raise ValueError(f"{src} has a different module layout")
+
+    acc = None
+    for src in sources:
+        arr = np.asarray(load_gradients(src), dtype=np.float64)
+        acc = arr.copy() if acc is None else acc + arr
+    assert acc is not None
+    acc /= len(sources)
+
+    dest.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(sources[0] / "info.json", dest / "info.json")
+    for extra in ("preprocess_cfg.json", "offsets.npy"):
+        if (sources[0] / extra).exists():
+            shutil.copy2(sources[0] / extra, dest / extra)
+
+    out = np.memmap(
+        dest / "gradients.bin",
+        dtype=load_gradients(sources[0]).dtype,
+        mode="w+",
+        shape=acc.shape,
+    )
+    out[:] = acc.astype(out.dtype)
+    out.flush()
+
+
 def load_gradients(root_dir: Path | str) -> np.memmap:
     """Map the gradients stored in `root_dir` into memory as a flat
     ``(num_grads, total_grad_dim)`` array, with modules laid out in
