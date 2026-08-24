@@ -70,9 +70,9 @@ def compute_query_gradients(
     """Compute reduced query gradients over the query dataset.
 
     Iterates over the query stream, computing per-batch parameter gradients
-    and reducing them (mean or sum) into a single gradient dict. If
-    ``ckpt_avg_k > 1``, the result is averaged over the last ``ckpt_avg_k``
-    checkpoints in ``ckpts_path`` and ``fwd_state`` is left unchanged.
+    and reducing them into a single gradient dict. If ``ckpt_avg_k > 1``, the
+    result is averaged over the last ``ckpt_avg_k`` checkpoints in
+    ``ckpts_path``.
     """
     if ckpt_avg_k > 1:
         assert ckpts_path is not None
