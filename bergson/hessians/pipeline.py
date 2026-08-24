@@ -13,6 +13,7 @@ from ..config.config import (
     ScoreConfig,
 )
 from ..config.config_io import save_run_config
+from ..data import average_gradient_indices
 from ..distributed import launch_distributed_run
 from ..score.score import score_dataset
 from ..utils.step_state import prepare_step
@@ -101,8 +102,6 @@ def hessian_pipeline(
             ckpt_models = list(hessian_pipeline_cfg.query_model_paths)
             if len(ckpt_models) > 1:
                 # Build the query gradient at each checkpoint, then average.
-                from ..data import average_gradient_indices
-
                 parts = []
                 for i, model_path in enumerate(ckpt_models):
                     part_cfg = deepcopy(query_cfg)
@@ -111,9 +110,7 @@ def hessian_pipeline(
                     _validate(part_cfg)
                     build(part_cfg, query_preprocess_cfg)
                     parts.append(Path(part_cfg.run_path))
-                print(
-                    f"  averaging query gradients over {len(parts)} checkpoints"
-                )
+                print(f"  averaging query gradients over {len(parts)} checkpoints")
                 average_gradient_indices(parts, Path(query_path))
             else:
                 if ckpt_models:

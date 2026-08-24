@@ -4,6 +4,7 @@ import math
 import os
 import random
 import re
+import shutil
 from multiprocessing import cpu_count
 from pathlib import Path
 from typing import Any, Iterator, Sequence
@@ -502,9 +503,6 @@ def average_gradient_indices(sources: list[Path | str], dest: Path | str) -> Non
     a low-precision store dtype would discard exactly the differences being
     averaged.
     """
-    import json
-    import shutil
-
     sources = [Path(s) for s in sources]
     if not sources:
         raise ValueError("average_gradient_indices needs at least one source")
