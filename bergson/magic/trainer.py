@@ -138,7 +138,6 @@ def next_save_index(
     """
     match save_mode:
         case "final":
-            # Only the post-training state; the caller writes it after the loop.
             return n
         case "all":
             # Save every step
@@ -625,10 +624,7 @@ class Trainer:
         if save_dir is not None:
             os.makedirs(save_dir, exist_ok=True)
 
-        # Always save the first state -- except under 'final', where the whole
-        # point is that nothing is written until training ends. The loop below
-        # only ever compares i < n against next_save, so seeding it with n
-        # suppresses every in-loop save.
+        # Save the first state unless mode is 'final'.
         n = len(data)
         next_save = n if save_mode == "final" else 0
 

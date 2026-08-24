@@ -382,11 +382,7 @@ class TrainingConfig(AttributionConfig, Serializable):
       O(sqrt N) space and O(N) time.
     - 'interval' saves every `save_interval` steps, plus the final state. Not
       supported by MAGIC.
-    - 'final' saves ONLY the post-training state: no trajectory, O(1) space.
-      Use it for runs that retrain purely to measure something about the
-      resulting model -- tail-filter validation, held-out evaluation, ablation
-      sweeps -- where the trajectory is written and never read. Like
-      'interval', it is not usable by MAGIC, which needs the trajectory.
+    - 'final' only saves the final state. Not usable with MAGIC.
 
     The original MAGIC paper used 'log', but 'sqrt' is often a better choice when disk
     space is not a concern.
