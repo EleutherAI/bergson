@@ -104,7 +104,9 @@ def main():
     elif len(args) == 2:
         config_path = args[1]
 
-    looks_like_config_file = (config_path.endswith((".yaml", ".yml")) or os.sep in config_path)
+    looks_like_config_file = (
+        config_path.endswith((".yaml", ".yml")) or os.sep in config_path
+    )
 
     if config_path is not None and looks_like_config_file:
         if not os.path.isfile(config_path):
