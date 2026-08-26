@@ -24,9 +24,13 @@ from bergson.utils.utils import dist_backend, dist_device_id, get_device_index
 # dataset, so past the timeout the watchdog aborts a run that is making normal
 # progress -- observed at 64k documents where 32k with the same config passes.
 #
+# Measured: on a 64k-document row the rank-0 section runs for OVER 110 MINUTES
+# (observed still healthy at 114 min, rank 0 at 100% GPU and rank 1 at 0%). An
+# hour is not enough for that, so the default is 3 h.
+#
 # torch has no environment override for this (it is an init_process_group
 # argument), so it is set here and exposed via BERGSON_DIST_TIMEOUT_MIN.
-DIST_TIMEOUT = timedelta(minutes=float(os.environ.get("BERGSON_DIST_TIMEOUT_MIN", 60)))
+DIST_TIMEOUT = timedelta(minutes=float(os.environ.get("BERGSON_DIST_TIMEOUT_MIN", 180)))
 
 
 def init_dist(rank: int, local_rank: int, world_size: int) -> None:
