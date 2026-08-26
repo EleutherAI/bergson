@@ -29,6 +29,8 @@ from transformers.utils.logging import (
     set_verbosity_error as hf_set_verbosity_error,
 )
 
+from bergson.distributed import DIST_TIMEOUT
+
 from ..config.config import TrainingConfig, ValidationConfig
 from ..config.config_io import save_run_config
 from ..data import (
@@ -55,7 +57,6 @@ from .config import MagicConfig
 from .data_stream import DataStream, mask_padded_rows, pad_dataset_to_batch_size
 from .grad_accum import accumulate_grads
 from .trainer import BackwardState, TrainerState, prepare_trainer, write_lr_history
-from bergson.distributed import DIST_TIMEOUT
 
 
 def compute_query_gradients(

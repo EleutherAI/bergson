@@ -14,7 +14,6 @@ from torch.distributed.elastic.multiprocessing import DefaultLogsSpecs, start_pr
 from bergson.config.config import DistributedConfig
 from bergson.utils.utils import dist_backend, dist_device_id, get_device_index
 
-
 # Collective timeout for every process group bergson creates.
 #
 # NCCL's 10-minute default assumes ranks reach each collective at roughly the
