@@ -15,6 +15,21 @@ from bergson.config.config import DistributedConfig
 from bergson.utils.utils import dist_backend, dist_device_id, get_device_index
 
 
+# Collective timeout for every process group bergson creates.
+#
+# NCCL's 10-minute default assumes ranks reach each collective at roughly the
+# same time. bergson has sections where they do not: after the gradient loop in
+# run_with_collector_hooks, rank 0 runs process_autocorrelation_matrices and
+# writes the Hessians, while every other rank is already blocked in the
+# following dist.all_reduce(total_processed). That rank-0 work grows with the
+# dataset, so past the timeout the watchdog aborts a run that is making normal
+# progress -- observed at 64k documents where 32k with the same config passes.
+#
+# torch has no environment override for this (it is an init_process_group
+# argument), so it is set here and exposed via BERGSON_DIST_TIMEOUT_MIN.
+DIST_TIMEOUT = timedelta(minutes=float(os.environ.get("BERGSON_DIST_TIMEOUT_MIN", 60)))
+
+
 def init_dist(rank: int, local_rank: int, world_size: int) -> None:
     """Pin CUDA device and (if multi-rank) join the NCCL group set up by
     ``launch_distributed_run`` via MASTER_ADDR/MASTER_PORT env vars."""
@@ -28,7 +43,7 @@ def init_dist(rank: int, local_rank: int, world_size: int) -> None:
             init_method=f"tcp://{addr}:{port}",
             device_id=dist_device_id(local_rank),
             rank=rank,
-            timeout=timedelta(hours=1),
+            timeout=DIST_TIMEOUT,
             world_size=world_size,
         )
 
@@ -55,6 +70,7 @@ def parent_barrier(dist_config: DistributedConfig) -> None:
         "gloo",
         init_method=f"tcp://{master_addr}:{master_port}",
         rank=dist_config._node_rank,
+        timeout=DIST_TIMEOUT,
         world_size=dist_config.nnode,
     )
     dist.barrier()
