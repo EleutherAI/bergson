@@ -469,6 +469,20 @@ class ValidationConfig(TrainingConfig, ABC):
     filter-* method the number of random filters it is compared against;
     ``0`` skips them, as does a bank of retrained models."""
 
+    controls: Literal["auto", "load", "retrain", "skip"] = "auto"
+    """Where the random-control baseline comes from.
+
+    ``auto`` keeps the historical precedence: load from ``retrained_dir`` if it is
+    set, else retrain ``num_subsets`` in-process, else skip. The other values state
+    the intent and fail loudly when it cannot be met.
+
+    Worth stating explicitly because controls are retrained PER PROCESS. The
+    controls are N trained models for the whole run, and scoring them against every
+    query is only forward passes -- so splitting a filter across S shards and
+    letting each retrain its own turns N controls into N*S trainings. Build them
+    once and point every shard's ``retrained_dir`` at the result
+    (``controls: load``) instead."""
+
     subset_weight: float = 0.0
     """Training weight assigned to each subset's documents during the retrain
     (the rest stay at 1.0). ``0.0`` (default) is standard leave-k-out removal."""

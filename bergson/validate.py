@@ -526,6 +526,22 @@ def tail_filter_retrain(
     # Load existing baseline if it exists - a random filter retrain.
     # Otherwise compute the baseline.
     dirs = [Path(d) for d in retrained_dir]
+
+    # Resolve where the random controls come from. `auto` is the historical
+    # precedence; an explicit value is checked so a config cannot silently get a
+    # different baseline than it asks for.
+    mode = getattr(run_cfg, "controls", "auto")
+    if mode == "load" and not dirs:
+        raise ValueError(
+            "controls: load requires retrained_dir to point at retrained subsets"
+        )
+    if mode == "retrain":
+        if run_cfg.num_subsets <= 0:
+            raise ValueError("controls: retrain requires num_subsets > 0")
+        dirs = []
+    elif mode == "skip":
+        dirs = []
+
     if dirs:
         subsets = load_and_validate_subsets_match(run_cfg, dirs, num_filtered)
         bank_base, bank_base_per_doc, per_subset = load_bank_losses(
@@ -544,10 +560,16 @@ def tail_filter_retrain(
         )
         random_losses = per_subset.reshape(len(subsets), num_queries)
         source = "bank " + ", ".join(str(d) for d in dirs)
-    elif run_cfg.num_subsets > 0:
+    elif mode != "skip" and run_cfg.num_subsets > 0:
         subsets = _baseline_subsets(run_cfg, valid_indices, num_filtered)
         if global_rank == 0:
             print(f"Retraining {len(subsets)} random subsets of {num_filtered} docs")
+            print(
+                f"  note: these {len(subsets)} control retrains are per process. "
+                "If this run is one shard of a sharded filter, every other shard "
+                "is retraining its own copy. Build them once and set "
+                "retrained_dir (controls: load) to share them."
+            )
         random_baseline = baseline_vec
         random_losses = torch.stack(
             [
@@ -561,6 +583,7 @@ def tail_filter_retrain(
             print(
                 "No random baseline: set num_subsets > 0, or retrained_dir to a "
                 "path to random-subset retrains"
+                + (" (controls: skip was requested)" if mode == "skip" else "")
             )
         return
 
