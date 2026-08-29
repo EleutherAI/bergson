@@ -28,6 +28,21 @@ def apply_dtensor_patch():
     _PATCHED = True
 
 
+def _ctx_backward_dtypes(ctx):
+    """Read the backward dtypes off a Redistribute autograd ctx.
+
+    torch <= 2.12 stores them as `backward_dtype` / `original_dtype`; torch
+    2.13 renamed them to `bwd_op_dtype` / `bwd_out_dtype`.
+    """
+    backward_dtype = getattr(ctx, "backward_dtype", None)
+    if backward_dtype is None:
+        backward_dtype = getattr(ctx, "bwd_op_dtype", None)
+    original_dtype = getattr(ctx, "original_dtype", None)
+    if original_dtype is None:
+        original_dtype = getattr(ctx, "bwd_out_dtype", None)
+    return backward_dtype, original_dtype
+
+
 def _patch_redistribute():
     import torch.distributed.tensor._api as dtensor
     from torch.distributed.tensor._dtensor_spec import DTensorSpec, TensorMeta
@@ -149,12 +164,13 @@ def _patch_redistribute():
         @staticmethod
         def backward(ctx, *grad_outputs):  # type: ignore[override]
             grad2_output = grad_outputs[0]
+            backward_dtype, original_dtype = _ctx_backward_dtypes(ctx)
             output_dtensor = NestedRedistribute.apply(
                 grad2_output,
                 ctx.current_spec,
                 ctx.async_op,
-                ctx.backward_dtype,
-                ctx.original_dtype,
+                backward_dtype,
+                original_dtype,
             )
 
             return (output_dtensor, None, None, None, None)
@@ -162,12 +178,13 @@ def _patch_redistribute():
     @staticmethod
     def _new_redistribute_backward(ctx, grad_output):
         previous_spec = ctx.current_spec
+        backward_dtype, original_dtype = _ctx_backward_dtypes(ctx)
         output_dtensor = NestedRedistribute.apply(
             grad_output,
             previous_spec,
             ctx.async_op,
-            ctx.backward_dtype,
-            ctx.original_dtype,
+            backward_dtype,
+            original_dtype,
         )
         return (output_dtensor, None, None, None, None, None)
 
