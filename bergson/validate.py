@@ -577,11 +577,13 @@ def tail_filter_retrain(
         source = "retrained here"
     else:
         if global_rank == 0:
-            print(
-                "No random baseline: set num_subsets > 0, or retrained_dir to a "
-                "path to random-subset retrains"
-                + (" (controls: skip was requested)" if mode == "skip" else "")
-            )
+            if mode == "skip":
+                print("Skipping random baseline (controls: skip)")
+            else:
+                print(
+                    "No random baseline: set num_subsets > 0, or retrained_dir "
+                    "to a path to random-subset retrains"
+                )
         return
 
     if global_rank != 0:
