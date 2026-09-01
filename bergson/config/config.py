@@ -473,9 +473,7 @@ class ValidationConfig(TrainingConfig, ABC):
     """Where the random-control baseline comes from.
 
     ``auto`` loads from ``retrained_dir`` if set, else retrains ``num_subsets``
-    in-process. The other values state the intent and fail loudly
-    when it cannot be met. Controls are retrained per process, so sharded runs
-    should build them once and share them via ``retrained_dir``."""
+    in-process."""
 
     subset_weight: float = 0.0
     """Training weight assigned to each subset's documents during the retrain
