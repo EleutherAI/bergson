@@ -470,10 +470,8 @@ class ValidationConfig(TrainingConfig, ABC):
     ``0`` skips them, as does a bank of retrained models."""
 
     controls: Literal["auto", "load", "retrain", "skip"] = "auto"
-    """Where the random-control baseline comes from.
-
-    ``auto`` loads from ``retrained_dir`` if set, else retrains ``num_subsets``
-    in-process."""
+    """Where the random-control baseline comes from. ``auto`` loads from
+    ``retrained_dir`` if set, else retrains ``num_subsets`` in-process."""
 
     subset_weight: float = 0.0
     """Training weight assigned to each subset's documents during the retrain
