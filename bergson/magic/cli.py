@@ -36,7 +36,7 @@ from ..data import (
     load_scores_loss_signed,
     sorted_checkpoints,
 )
-from ..distributed import launch_distributed_run
+from ..distributed import DIST_TIMEOUT, launch_distributed_run
 from ..score.score_writer import save_sequence_scores, save_token_scores
 from ..utils.load_from_optimizer import (
     save_second_moments_as_optimizer_pt,
@@ -415,6 +415,7 @@ def worker(
             init_method=f"tcp://{addr}:{port}",
             device_id=dist_device_id(rank),
             rank=global_rank,
+            timeout=DIST_TIMEOUT,
             world_size=world_size,
         )
 

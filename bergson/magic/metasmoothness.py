@@ -21,7 +21,7 @@ import torch.distributed as dist
 from transformers import AutoTokenizer
 
 from ..config.config import MetasmoothnessConfig
-from ..distributed import launch_distributed_run
+from ..distributed import DIST_TIMEOUT, launch_distributed_run
 from ..utils.utils import dist_backend, dist_device_id, get_device, get_device_index
 from ..utils.worker_utils import setup_data_pipeline
 from .cli import attach_doc_ids_if_missing, shuffled_epochs
@@ -67,6 +67,7 @@ def metasmoothness_worker(
             init_method=f"tcp://{addr}:{port}",
             device_id=dist_device_id(rank),
             rank=global_rank,
+            timeout=DIST_TIMEOUT,
             world_size=world_size,
         )
 

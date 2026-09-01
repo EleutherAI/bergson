@@ -1,6 +1,5 @@
 import os
 import shutil
-from datetime import timedelta
 
 import torch
 import torch.distributed as dist
@@ -10,6 +9,7 @@ from bergson.collection import collect_gradients
 from bergson.config.config import IndexConfig, PreprocessConfig
 from bergson.data import allocate_batches
 from bergson.distributed import (
+    DIST_TIMEOUT,
     cap_world_size_to_dataset,
     launch_distributed_run,
     parent_barrier,
@@ -69,7 +69,7 @@ def build_worker(
             init_method=f"tcp://{addr}:{port}",
             device_id=dist_device_id(local_rank),
             rank=rank,
-            timeout=timedelta(minutes=30),
+            timeout=DIST_TIMEOUT,
             world_size=world_size,
         )
 

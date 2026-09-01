@@ -1,7 +1,6 @@
 import json
 import os
 import shutil
-from datetime import timedelta
 from pathlib import Path
 
 import numpy as np
@@ -18,6 +17,7 @@ from bergson.data import (
     load_gradients,
 )
 from bergson.distributed import (
+    DIST_TIMEOUT,
     cap_world_size_to_dataset,
     launch_distributed_run,
     parent_barrier,
@@ -299,7 +299,7 @@ def score_worker(
             init_method=f"tcp://{addr}:{port}",
             device_id=dist_device_id(local_rank),
             rank=rank,
-            timeout=timedelta(hours=1),
+            timeout=DIST_TIMEOUT,
             world_size=world_size,
         )
 

@@ -14,6 +14,11 @@ from torch.distributed.elastic.multiprocessing import DefaultLogsSpecs, start_pr
 from bergson.config.config import DistributedConfig
 from bergson.utils.utils import dist_backend, dist_device_id, get_device_index
 
+# Collective timeout for every Bergson process group. Large to accommodate
+# single-rank Hessian save operations, which can take upwards of an hour for
+# large models.
+DIST_TIMEOUT = timedelta(minutes=float(os.environ.get("BERGSON_DIST_TIMEOUT_MIN", 180)))
+
 
 def init_dist(rank: int, local_rank: int, world_size: int) -> None:
     """Pin CUDA device and (if multi-rank) join the NCCL group set up by
@@ -28,7 +33,7 @@ def init_dist(rank: int, local_rank: int, world_size: int) -> None:
             init_method=f"tcp://{addr}:{port}",
             device_id=dist_device_id(local_rank),
             rank=rank,
-            timeout=timedelta(hours=1),
+            timeout=DIST_TIMEOUT,
             world_size=world_size,
         )
 
@@ -55,6 +60,7 @@ def parent_barrier(dist_config: DistributedConfig) -> None:
         "gloo",
         init_method=f"tcp://{master_addr}:{master_port}",
         rank=dist_config._node_rank,
+        timeout=DIST_TIMEOUT,
         world_size=dist_config.nnode,
     )
     dist.barrier()
