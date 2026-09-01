@@ -4,11 +4,12 @@ These tests exercise parsing only — they never call `.execute()`, so they
 need no GPU and no model downloads.
 """
 
+import sys
 from typing import get_args
 
 import pytest
 
-from bergson.__main__ import Build, Hessian, Main
+from bergson.__main__ import Build, Hessian, Main, main
 from bergson.config.config import HessianConfig, IndexConfig, PreprocessConfig
 from bergson.config.config_io import (
     load_subconfig,
@@ -290,3 +291,28 @@ def test_metadata_records_runtime_nccl_version():
         assert tuple(map(int, parts)) == tuple(torch.cuda.nccl.version())
     else:
         assert "nccl_version" not in meta
+
+
+def test_missing_config_path_reports_the_path(tmp_path, monkeypatch, capsys):
+    """A config path that does not exist names itself, rather than argparse's
+    ``invalid choice``, which reads as a bad subcommand and hides the cause."""
+    missing = str(tmp_path / "run" / "tune.yaml")
+    monkeypatch.setattr(sys, "argv", ["bergson", missing])
+
+    with pytest.raises(SystemExit) as excinfo:
+        main()
+
+    message = str(excinfo.value)
+    assert missing in message, message
+    assert "invalid choice" not in message, message
+
+
+def test_bare_unknown_command_still_goes_to_argparse(monkeypatch):
+    """A bare word is a subcommand, so an unknown one keeps argparse's error."""
+    monkeypatch.setattr(sys, "argv", ["bergson", "definitely-not-a-command"])
+
+    with pytest.raises(SystemExit) as excinfo:
+        main()
+
+    # argparse exits 2 on a usage error; the config branch raises with a message.
+    assert excinfo.value.code == 2

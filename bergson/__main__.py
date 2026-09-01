@@ -99,12 +99,17 @@ def main():
     # Config-file mode: accept a YAML file as the sole argument.
     # Leading command words (e.g. `bergson build run/config.yaml`) are ignored.
     config_path: str | None = None
-    if len(args) == 1 and os.path.isfile(args[0]):
+    if len(args) == 1:
         config_path = args[0]
-    elif len(args) == 2 and os.path.isfile(args[1]):
+    elif len(args) == 2:
         config_path = args[1]
 
-    if config_path is not None:
+    if config_path is not None and (
+        config_path.endswith((".yaml", ".yml")) or os.sep in config_path
+    ):
+        if not os.path.isfile(config_path):
+            raise SystemExit(f"bergson: no such config file: {config_path}")
+
         run_config(config_path, command_registry)
         return
 
