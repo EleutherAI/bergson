@@ -527,9 +527,7 @@ def tail_filter_retrain(
     # Otherwise compute the baseline.
     dirs = [Path(d) for d in retrained_dir]
 
-    # Resolve where the random controls come from. `auto` is the historical
-    # precedence; an explicit value is checked so a config cannot silently get a
-    # different baseline than it asks for.
+    # Resolve the control source; explicit modes fail loudly when unmet.
     mode = getattr(run_cfg, "controls", "auto")
     if mode == "load" and not dirs:
         raise ValueError(
@@ -565,10 +563,8 @@ def tail_filter_retrain(
         if global_rank == 0:
             print(f"Retraining {len(subsets)} random subsets of {num_filtered} docs")
             print(
-                f"  note: these {len(subsets)} control retrains are per process. "
-                "If this run is one shard of a sharded filter, every other shard "
-                "is retraining its own copy. Build them once and set "
-                "retrained_dir (controls: load) to share them."
+                "  note: control retrains are per process; sharded runs should "
+                "build them once and share via retrained_dir (controls: load)"
             )
         random_baseline = baseline_vec
         random_losses = torch.stack(

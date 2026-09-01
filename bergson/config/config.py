@@ -472,16 +472,10 @@ class ValidationConfig(TrainingConfig, ABC):
     controls: Literal["auto", "load", "retrain", "skip"] = "auto"
     """Where the random-control baseline comes from.
 
-    ``auto`` keeps the historical precedence: load from ``retrained_dir`` if it is
-    set, else retrain ``num_subsets`` in-process, else skip. The other values state
-    the intent and fail loudly when it cannot be met.
-
-    Worth stating explicitly because controls are retrained PER PROCESS. The
-    controls are N trained models for the whole run, and scoring them against every
-    query is only forward passes -- so splitting a filter across S shards and
-    letting each retrain its own turns N controls into N*S trainings. Build them
-    once and point every shard's ``retrained_dir`` at the result
-    (``controls: load``) instead."""
+    ``auto`` loads from ``retrained_dir`` if set, else retrains ``num_subsets``
+    in-process, else skips. The other values state the intent and fail loudly
+    when it cannot be met. Controls are retrained per process, so sharded runs
+    should build them once and share them via ``retrained_dir``."""
 
     subset_weight: float = 0.0
     """Training weight assigned to each subset's documents during the retrain
