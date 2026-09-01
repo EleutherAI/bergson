@@ -561,9 +561,11 @@ def tail_filter_retrain(
     elif mode != "skip" and run_cfg.num_subsets > 0:
         subsets = _baseline_subsets(run_cfg, valid_indices, num_filtered)
         if global_rank == 0:
-            print(
-                "No retrain dir detected. Random selection controls will be retrained."
-            )
+            if mode == "auto":
+                print(
+                    "No retrain dir detected. "
+                    "Random selection controls will be retrained."
+                )
             print(f"Retraining {len(subsets)} random subsets of {num_filtered} docs")
         random_baseline = baseline_vec
         random_losses = torch.stack(
