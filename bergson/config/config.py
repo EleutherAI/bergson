@@ -473,7 +473,7 @@ class ValidationConfig(TrainingConfig, ABC):
     """Where the random-control baseline comes from.
 
     ``auto`` loads from ``retrained_dir`` if set, else retrains ``num_subsets``
-    in-process, else skips. The other values state the intent and fail loudly
+    in-process. The other values state the intent and fail loudly
     when it cannot be met. Controls are retrained per process, so sharded runs
     should build them once and share them via ``retrained_dir``."""
 
