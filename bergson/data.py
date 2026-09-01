@@ -4,6 +4,7 @@ import math
 import os
 import random
 import re
+import shutil
 from multiprocessing import cpu_count
 from pathlib import Path
 from typing import Any, Iterator, Sequence
@@ -487,6 +488,54 @@ def load_data_string(
 
     ds = assert_type(Dataset, ds)
     return ds
+
+
+def average_gradient_indices(sources: list[Path | str], dest: Path | str) -> None:
+    """Average several gradient indices elementwise into a new index at ``dest``.
+
+    Accumulates in float64 whatever the store dtype: the sources differ only in
+    their last bits, which a low-precision accumulator would discard.
+    """
+    srcs = [Path(s) for s in sources]
+    if not srcs:
+        raise ValueError("average_gradient_indices needs at least one source")
+    dst = Path(dest)
+
+    infos = []
+    for src in srcs:
+        with (src / "info.json").open() as f:
+            infos.append(json.load(f))
+
+    first = infos[0]
+    for src, info in zip(srcs[1:], infos[1:]):
+        if info["num_grads"] != first["num_grads"]:
+            raise ValueError(
+                f"{src} has {info['num_grads']} rows, expected {first['num_grads']}"
+            )
+        if info["grad_sizes"] != first["grad_sizes"]:
+            raise ValueError(f"{src} has a different module layout")
+
+    acc = None
+    for src in srcs:
+        arr = np.asarray(load_gradients(src), dtype=np.float64)
+        acc = arr.copy() if acc is None else acc + arr
+    assert acc is not None
+    acc /= len(srcs)
+
+    dst.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(srcs[0] / "info.json", dst / "info.json")
+    for extra in ("preprocess_cfg.json", "offsets.npy"):
+        if (srcs[0] / extra).exists():
+            shutil.copy2(srcs[0] / extra, dst / extra)
+
+    out = np.memmap(
+        dst / "gradients.bin",
+        dtype=load_gradients(srcs[0]).dtype,
+        mode="w+",
+        shape=acc.shape,
+    )
+    out[:] = acc.astype(out.dtype)
+    out.flush()
 
 
 def load_gradients(root_dir: Path | str) -> np.memmap:

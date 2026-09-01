@@ -909,6 +909,10 @@ class HessianConfig(Serializable):
 class HessianPipelineConfig:
     """Config for the Hessian-preconditioned influence pipeline."""
 
+    query_model_paths: list[str] = field(default_factory=list)
+    """Average the query gradient over these model checkpoints instead of the
+    index_cfg.model default."""
+
     query: DataConfig = field(default_factory=DataConfig)
     """Query dataset specification."""
 
