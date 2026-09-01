@@ -527,7 +527,7 @@ def tail_filter_retrain(
     # Otherwise compute the baseline.
     dirs = [Path(d) for d in retrained_dir]
 
-    # Resolve the control source; explicit modes fail loudly when unmet.
+    # Resolve the control source.
     mode = getattr(run_cfg, "controls", "auto")
     if mode == "load" and not dirs:
         raise ValueError(
