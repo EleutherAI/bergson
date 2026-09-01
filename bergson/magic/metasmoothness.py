@@ -20,8 +20,6 @@ import torch
 import torch.distributed as dist
 from transformers import AutoTokenizer
 
-from bergson.distributed import DIST_TIMEOUT
-
 from ..config.config import MetasmoothnessConfig
 from ..distributed import DIST_TIMEOUT, launch_distributed_run
 from ..utils.utils import dist_backend, dist_device_id, get_device, get_device_index

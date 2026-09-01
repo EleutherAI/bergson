@@ -29,8 +29,6 @@ from transformers.utils.logging import (
     set_verbosity_error as hf_set_verbosity_error,
 )
 
-from bergson.distributed import DIST_TIMEOUT
-
 from ..config.config import TrainingConfig, ValidationConfig
 from ..config.config_io import save_run_config
 from ..data import (
