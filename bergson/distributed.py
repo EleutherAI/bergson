@@ -14,12 +14,9 @@ from torch.distributed.elastic.multiprocessing import DefaultLogsSpecs, start_pr
 from bergson.config.config import DistributedConfig
 from bergson.utils.utils import dist_backend, dist_device_id, get_device_index
 
-# Collective timeout for every process group bergson creates.
-#
-# After the gradient loop, rank 0 processes and saves the Hessians while the
-# other ranks wait in an all_reduce; that work passes 110 minutes at 64k
-# documents, so short timeouts kill healthy runs. torch has no environment
-# override for the collective timeout, hence BERGSON_DIST_TIMEOUT_MIN.
+# Collective timeout for every Bergson process group. Large to accommodate
+# single-rank Hessian save operations, which can take upwards of an hour for
+# large models.
 DIST_TIMEOUT = timedelta(minutes=float(os.environ.get("BERGSON_DIST_TIMEOUT_MIN", 180)))
 
 
