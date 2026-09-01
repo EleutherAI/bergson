@@ -526,6 +526,20 @@ def tail_filter_retrain(
     # Load existing baseline if it exists - a random filter retrain.
     # Otherwise compute the baseline.
     dirs = [Path(d) for d in retrained_dir]
+
+    # Resolve the control source.
+    mode = getattr(run_cfg, "controls", "auto")
+    if mode == "load" and not dirs:
+        raise ValueError(
+            "controls: load requires retrained_dir to point at retrained subsets"
+        )
+    if mode == "retrain":
+        if run_cfg.num_subsets <= 0:
+            raise ValueError("controls: retrain requires num_subsets > 0")
+        dirs = []
+    elif mode == "skip":
+        dirs = []
+
     if dirs:
         subsets = load_and_validate_subsets_match(run_cfg, dirs, num_filtered)
         bank_base, bank_base_per_doc, per_subset = load_bank_losses(
@@ -544,9 +558,14 @@ def tail_filter_retrain(
         )
         random_losses = per_subset.reshape(len(subsets), num_queries)
         source = "bank " + ", ".join(str(d) for d in dirs)
-    elif run_cfg.num_subsets > 0:
+    elif mode != "skip" and run_cfg.num_subsets > 0:
         subsets = _baseline_subsets(run_cfg, valid_indices, num_filtered)
         if global_rank == 0:
+            if mode == "auto":
+                print(
+                    "No retrain dir detected. "
+                    "Random selection controls will be retrained."
+                )
             print(f"Retraining {len(subsets)} random subsets of {num_filtered} docs")
         random_baseline = baseline_vec
         random_losses = torch.stack(
@@ -558,10 +577,13 @@ def tail_filter_retrain(
         source = "retrained here"
     else:
         if global_rank == 0:
-            print(
-                "No random baseline: set num_subsets > 0, or retrained_dir to a "
-                "path to random-subset retrains"
-            )
+            if mode == "skip":
+                print("Skipping random baseline (controls: skip)")
+            else:
+                print(
+                    "No random baseline: set num_subsets > 0, or retrained_dir "
+                    "to a path to random-subset retrains"
+                )
         return
 
     if global_rank != 0:

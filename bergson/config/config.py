@@ -469,6 +469,10 @@ class ValidationConfig(TrainingConfig, ABC):
     filter-* method the number of random filters it is compared against;
     ``0`` skips them, as does a bank of retrained models."""
 
+    controls: Literal["auto", "load", "retrain", "skip"] = "auto"
+    """Where the random-control baseline comes from. ``auto`` loads from
+    ``retrained_dir`` if set, else retrains ``num_subsets`` controls."""
+
     subset_weight: float = 0.0
     """Training weight assigned to each subset's documents during the retrain
     (the rest stay at 1.0). ``0.0`` (default) is standard leave-k-out removal."""
