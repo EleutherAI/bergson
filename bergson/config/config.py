@@ -95,6 +95,13 @@ class InversionConfig(Serializable):
     damping_factor: float = 0.1
     """Damping / truncation strength, relative to the mean eigenvalue."""
 
+    apply_batch_size: int = 32
+    """Query gradients moved on-device and preconditioned at a time in the
+    inverse application. Numerically exact under any value; only peak GPU
+    memory changes. The default loads every query column of a 20-query,
+    1.5B-parameter run at once (~45 GB) and OOMs a 48 GB card — set 1-4
+    there."""
+
 
 @dataclass
 class DistributedConfig(Serializable):
