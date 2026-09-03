@@ -7,6 +7,7 @@ loss increase is correlated against the summed attribution scores of the
 left-out documents.
 """
 
+import csv
 import hashlib
 import json
 import os
@@ -501,6 +502,17 @@ def tail_filter_retrain(
     hf_set_verbosity_error()
 
     csv_path = os.path.join(run_cfg.run_path, f"{method.name.replace('-', '_')}.csv")
+    # Crash resume
+    completed: dict[int, tuple[int, float, float, float]] = {}
+    if os.path.exists(csv_path):
+        with open(csv_path) as f:
+            for row in csv.DictReader(f):
+                completed[int(row["query"])] = (
+                    int(row["n_removed"]),
+                    float(row["baseline_loss"]),
+                    float(row["filtered_loss"]),
+                    float(row["loss_change"]),
+                )
     filter_csv = CSVWriter(
         csv_path,
         columns=["query", "n_removed", "baseline_loss", "filtered_loss", "loss_change"],
@@ -508,8 +520,16 @@ def tail_filter_retrain(
     )
 
     filter_changes = torch.zeros(num_queries)
+    for query, row in sorted(completed.items()):
+        if query >= num_queries:
+            continue
+        n_removed, baseline_loss, filtered_loss, loss_change = row
+        filter_csv.writerow(query, n_removed, baseline_loss, filtered_loss, loss_change)
+        filter_changes[query] = loss_change
     pbar = tqdm(range(num_queries), desc=method.name, disable=global_rank != 0)
     for q in pbar:
+        if q in completed:
+            continue
         removed = _select_filter_slice(
             flat_scores, valid_indices, q, num_filtered, method.name
         )
