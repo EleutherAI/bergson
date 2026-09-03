@@ -9,6 +9,7 @@ queries have equal token counts so that the aggregate mean-over-tokens loss is
 the uniform mean of the per-query losses. That identity is the correctness gate.
 """
 
+import os
 import tempfile
 
 import pytest
@@ -309,6 +310,94 @@ def test_query_eval_ignores_padding_and_grad_accum(grad_accum_steps):
         torch.testing.assert_close(grads[name], want[name], msg=name)
     counts = torch.tensor([len(x) - 1 for x in ids], dtype=torch.float32)
     torch.testing.assert_close(loss, (per_doc * counts).sum() / counts.sum())
+
+
+def _per_query_resume_setup(tmp_path, num_docs=6, n_query=2):
+    """Train a small trajectory and return a runner for per-query scoring that
+    always starts from the final trained state (as the CLI's resume path does
+    after re-running the forward)."""
+    model = _model()
+    optimizer = torchopt.adamw(1e-4, betas=(0.95, 0.975), eps_root=1e-2)
+    trainer, fwd_state = Trainer.initialize(model, optimizer)
+    stream = DataStream(_equal_length_docs(num_docs), batch_size=1, device="cpu")
+    query_ds = _equal_length_docs(n_query, start=100)
+
+    ckpts = str(tmp_path / "checkpoints")
+    fwd_state = trainer.train(fwd_state, stream, inplace=True, save_dir=ckpts)
+    final_state = fwd_state.to("cpu").detach_()
+
+    def run(run_path, resume):
+        run_cfg = MagicConfig(
+            run_path=str(run_path),
+            query_method="none",
+            backward_save_every=1,
+            resume=resume,
+        )
+        run_cfg.query.prompt_column = "input_ids"
+        fwd_state.detach_()
+        fwd_state.copy_(final_state)
+        stream.requires_grad = True
+        return compute_per_query_magic_scores(
+            trainer,
+            ckpts,
+            stream,
+            fwd_state,
+            model,
+            query_ds,
+            num_query_docs=n_query,
+            run_cfg=run_cfg,
+            world_size=1,
+            global_rank=0,
+            pad_count=0,
+            weight_pad_count=0,
+        )
+
+    return trainer, ckpts, run
+
+
+def test_per_query_backward_resumes_mid_query(tmp_path, monkeypatch, capsys):
+    """A preempted per-query backward resumes from its last saved state instead
+    of redoing the whole walk, and reproduces the uninterrupted scores."""
+    trainer, ckpts, run = _per_query_resume_setup(tmp_path)
+    clean = run(tmp_path / "clean", resume=False)
+
+    # Preempt query 0 after its second mid-backward save.
+    orig_save = Trainer.save_backward_state
+    saves = []
+
+    def crashing(self, *args, **kwargs):
+        orig_save(self, *args, **kwargs)
+        saves.append(args[1])
+        if len(saves) == 2:
+            raise RuntimeError("preempted")
+
+    monkeypatch.setattr(Trainer, "save_backward_state", crashing)
+    with pytest.raises(RuntimeError, match="preempted"):
+        run(tmp_path / "crashed", resume=True)
+    monkeypatch.setattr(Trainer, "save_backward_state", orig_save)
+
+    state_file = os.path.join(ckpts, "backward_q0_rank0.pt")
+    assert os.path.exists(state_file), "interruption must leave a state file"
+    capsys.readouterr()
+
+    resumed = run(tmp_path / "crashed", resume=True)
+    assert "Resuming backward pass" in capsys.readouterr().out
+    assert not os.path.exists(state_file), "state file must be cleaned on success"
+    torch.testing.assert_close(resumed, clean)
+
+
+def test_per_query_backward_ignores_corrupt_state(tmp_path, capsys):
+    """An unreadable backward state file falls back to a fresh backward with a
+    warning instead of crashing the run."""
+    _, ckpts, run = _per_query_resume_setup(tmp_path, num_docs=3, n_query=1)
+    clean = run(tmp_path / "clean", resume=False)
+
+    with open(os.path.join(ckpts, "backward_q0_rank0.pt"), "wb") as f:
+        f.write(b"not a checkpoint")
+    scores = run(tmp_path / "corrupt", resume=True)
+
+    assert "Ignoring unreadable backward state" in capsys.readouterr().out
+    torch.testing.assert_close(scores, clean)
 
 
 def test_unsupervised_batch_loss_is_zero():
