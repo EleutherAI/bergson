@@ -184,10 +184,9 @@ def compute_per_query_magic_scores(
 
     The backward is linear in the cotangent, so this is exact; the forward runs
     once and every query reuses its checkpoints (``cleanup=False``). Per-query
-    scores are written incrementally to ``<run_path>/per_query/q{i}.pt`` so a
-    crash or preemption only loses the in-flight query (resume redoes the
-    forward but skips finished queries), and the final state is restored before
-    each query since the backward walks it back down the trajectory.
+    scores are written incrementally to ``<run_path>/per_query/q{i}.pt``. The
+    final state is restored before each query so the next query can
+    backpropagate through the same trajectory.
     """
     main = global_rank == 0
     device = stream.weights.device
@@ -259,10 +258,13 @@ def compute_per_query_magic_scores(
             debug=run_cfg.debug,
             inplace=True,
             fsdp=run_cfg.fsdp,
+            resume=run_cfg.resume,
+            save_every=run_cfg.backward_save_every,
             save_mode=run_cfg.save_mode,
             max_grad_norm=run_cfg.max_grad_norm,
             grad_accum_steps=run_cfg.grad_accum_steps,
             double_backward_batch_size=run_cfg.double_backward_batch_size,
+            state_prefix=f"backward_q{qi}",
         )
         if world_size > 1:
             dist.all_reduce(bwd_state.weight_grads, op=dist.ReduceOp.SUM)

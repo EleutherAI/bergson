@@ -788,6 +788,7 @@ class Trainer:
         max_grad_norm: float | None = None,
         grad_accum_steps: int = 1,
         double_backward_batch_size: int | None = None,
+        state_prefix: str = "backward",
     ) -> BackwardState:
         """Run a backward pass through the training trajectory saved at `ckpt_dir`.
 
@@ -812,7 +813,7 @@ class Trainer:
                 been processed.
             save_every: If > 0, save the backward state every N steps to allow resuming
                 from interruptions. Backward checkpoints are saved in `ckpt_dir` with
-                the name `backward_rank{rank}.pt`.
+                the name `{state_prefix}_rank{rank}.pt`.
             save_mode: The save mode that was used during the forward trajectory, which
                 determines how checkpoints are spaced and thus how the backward pass
                 should step forward through the trajectory when replaying.
@@ -825,6 +826,7 @@ class Trainer:
                 step uses the two-stage micro-VJP (`Trainer.metagrad_step`).
             double_backward_batch_size: Max sequences per double-backward graph in the
                 micro-VJP; see `TrainingConfig.double_backward_batch_size`.
+            state_prefix: Filename prefix for the saved backward state.
 
         Returns:
             The final backward state after processing the entire trajectory.
@@ -839,12 +841,34 @@ class Trainer:
         main = not dist.is_initialized() or dist.get_rank() == 0
         rank = dist.get_rank() if dist.is_initialized() else 0
 
-        bwd_ckpt_path = os.path.join(ckpt_dir, f"backward_rank{rank}.pt")
+        bwd_ckpt_path = os.path.join(ckpt_dir, f"{state_prefix}_rank{rank}.pt")
 
+        loaded = None
         if resume and os.path.exists(bwd_ckpt_path):
-            bwd_state, ckpt_list, expected_idx, last_idx = self.load_backward_state(
+            loaded = self.load_backward_state(
                 bwd_ckpt_path, ckpt_list, data.device, main
             )
+
+        # Ranks must resume from the same step or the replayed collectives
+        # deadlock; states must match.
+        if dist.is_initialized():
+            resume_step = torch.tensor(
+                [loaded[2] if loaded is not None else -1],
+                device=data.device,
+                dtype=torch.long,
+            )
+            lo, hi = resume_step.clone(), resume_step.clone()
+            dist.all_reduce(lo, op=dist.ReduceOp.MIN)
+            dist.all_reduce(hi, op=dist.ReduceOp.MAX)
+            if lo.item() != hi.item():
+                raise RuntimeError(
+                    f"Backward state in {ckpt_dir} disagrees across ranks "
+                    f"(steps {lo.item()}..{hi.item()}); another run may hold it. "
+                    "Delete the state files to start the backward over."
+                )
+
+        if loaded is not None:
+            bwd_state, ckpt_list, expected_idx, last_idx = loaded
         else:
             expected_idx, _ = ckpt_list[-1]
             last_idx = expected_idx
