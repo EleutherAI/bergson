@@ -134,6 +134,7 @@ def hessian_pipeline(
             ev_correction=hessian_cfg.ev_correction,
             projection_dim=index_cfg.projection_dim,
             projection_type=index_cfg.projection_type,
+            apply_batch_size=hessian_pipeline_cfg.inversion_cfg.apply_batch_size,
         )
         launch_distributed_run(
             "apply_hessian",
