@@ -113,7 +113,11 @@ def hessian_pipeline(
 
     # ── Step 2: Fit Hessian factors on training data ──────────────────────
     print(f"Step 2/4: Fitting {method} factors on training data...")
-    if not _step_complete(hessian_path, resume):
+    # Check the path the fit actually promotes (`hessian/<method>`), not the
+    # parent directory: creating `hessian/<method>.part` also creates
+    # `hessian/`, so checking the parent classifies an interrupted fit as
+    # complete and step 3 crashes on (or silently misreads) missing factors.
+    if not _step_complete(f"{hessian_path}/{method}", resume):
         with _timed("step2_fit_hessian", durations):
             hessian_index_cfg = deepcopy(index_cfg)
             # approximate_hessians writes to this exact path; step 3 reads it
