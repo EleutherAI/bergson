@@ -488,6 +488,21 @@ def tail_filter_retrain(
     hf_set_verbosity_error()
 
     csv_path = os.path.join(run_cfg.run_path, f"{run_cfg.method.replace('-', '_')}.csv")
+    # Crash resume: queries already measured are re-emitted and their retrains
+    # skipped. Read on EVERY rank so the distributed retrain loop stays in
+    # step across ranks.
+    _done: dict[int, tuple] = {}
+    if os.path.exists(csv_path):
+        import csv as _csvmod
+
+        with open(csv_path) as _f:
+            for _r in _csvmod.DictReader(_f):
+                _done[int(_r["query"])] = (
+                    int(_r["n_removed"]),
+                    float(_r["baseline_loss"]),
+                    float(_r["filtered_loss"]),
+                    float(_r["loss_change"]),
+                )
     filter_csv = CSVWriter(
         csv_path,
         columns=["query", "n_removed", "baseline_loss", "filtered_loss", "loss_change"],
@@ -495,8 +510,15 @@ def tail_filter_retrain(
     )
 
     filter_changes = torch.zeros(num_queries)
+    for _q in sorted(_done):
+        if _q < num_queries:
+            _n, _b, _fl, _c = _done[_q]
+            filter_csv.writerow(_q, _n, _b, _fl, _c)
+            filter_changes[_q] = _c
     pbar = tqdm(range(num_queries), desc=run_cfg.method, disable=global_rank != 0)
     for q in pbar:
+        if q in _done:
+            continue
         removed = _select_filter_slice(
             flat_scores, valid_indices, q, num_filtered, run_cfg.method
         )
