@@ -1,5 +1,6 @@
 import gc
 import json
+import math
 import os
 import shutil
 import time
@@ -184,10 +185,14 @@ def compute_per_query_magic_scores(
 
     The backward is linear in the cotangent, so this is exact; the forward runs
     once and every query reuses its checkpoints (``cleanup=False``). Per-query
-    scores are written incrementally to ``<run_path>/per_query/q{i}.pt`` so a
-    crash or preemption only loses the in-flight query (resume redoes the
-    forward but skips finished queries), and the final state is restored before
-    each query since the backward walks it back down the trajectory.
+    scores are written incrementally to ``<run_path>/per_query/q{i}.pt``, and
+    each in-flight backward checkpoints its state (``backward_q{i}_rank{r}.pt``
+    in the checkpoint dir) every ``backward_save_every`` steps — by default
+    about once per rematerialization segment — so a crash or preemption loses
+    at most one segment of the in-flight query (resume redoes the forward,
+    skips finished queries, and picks the interrupted backward up from its last
+    saved state). The final state is restored before each query since the
+    backward walks it back down the trajectory.
     """
     main = global_rank == 0
     device = stream.weights.device
@@ -204,6 +209,13 @@ def compute_per_query_magic_scores(
         for buf in tree_iter(fwd_state.opt_state)
         if isinstance(buf, torch.Tensor) and buf.is_floating_point()
     ]
+
+    # One backward here can run for days, so checkpoint its state even when the
+    # config doesn't ask for a cadence: the sqrt save-mode segment length keeps
+    # the loss from an interruption to about one rematerialization segment.
+    save_every = run_cfg.backward_save_every
+    if save_every <= 0:
+        save_every = max(1, math.isqrt(max(final_state.batch_index, 1)))
 
     per_query = []
     for qi in range(num_query_docs):
@@ -259,10 +271,13 @@ def compute_per_query_magic_scores(
             debug=run_cfg.debug,
             inplace=True,
             fsdp=run_cfg.fsdp,
+            resume=run_cfg.resume,
+            save_every=save_every,
             save_mode=run_cfg.save_mode,
             max_grad_norm=run_cfg.max_grad_norm,
             grad_accum_steps=run_cfg.grad_accum_steps,
             double_backward_batch_size=run_cfg.double_backward_batch_size,
+            state_prefix=f"backward_q{qi}",
         )
         if world_size > 1:
             dist.all_reduce(bwd_state.weight_grads, op=dist.ReduceOp.SUM)

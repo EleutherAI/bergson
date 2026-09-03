@@ -8,7 +8,9 @@ class MagicConfig(ValidationConfig):
     """Special config for MAGIC attribution."""
 
     backward_save_every: int = 0
-    """How often (in steps) to save backward state for resume."""
+    """How often (in steps) to save backward state for resume. 0 disables saving
+    for the aggregate-query backward; per-query backwards instead fall back to
+    saving about once per rematerialization segment."""
 
     cleanup_ckpts: bool = True
     """Whether to delete all but the last checkpoint during the backward pass."""
