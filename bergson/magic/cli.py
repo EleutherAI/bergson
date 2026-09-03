@@ -205,6 +205,25 @@ def compute_per_query_magic_scores(
         if isinstance(buf, torch.Tensor) and buf.is_floating_point()
     ]
 
+    # The backward silently attributes only whatever trajectory it can read:
+    # if checkpoints disappear mid-run (a purged shared directory, dangling
+    # symlinks), later queries produce near-empty score vectors with no error.
+    # Snapshot the trajectory listing and verify it before every query.
+    traj_ckpts = sorted(n for n in orig_ckpts if n.startswith("step_"))
+
+    def _verify_trajectory():
+        missing = [
+            n
+            for n in traj_ckpts
+            if not os.path.exists(os.path.join(ckpts_path, n))
+        ]
+        if missing:
+            raise FileNotFoundError(
+                f"{len(missing)}/{len(traj_ckpts)} trajectory checkpoints "
+                f"missing from {ckpts_path} (e.g. {missing[:3]}); refusing to "
+                "score queries against a truncated trajectory"
+            )
+
     per_query = []
     for qi in range(num_query_docs):
         qpath = os.path.join(scores_dir, f"q{qi}.pt")
@@ -238,6 +257,7 @@ def compute_per_query_magic_scores(
         )
         if one_pad:
             qstream.weights.data[-one_wpad:] = 0.0
+        _verify_trajectory()
         qgrads, _ = compute_query_gradients(
             fwd_state, model, qstream, "mean", run_cfg.fsdp, run_cfg.grad_accum_steps
         )
@@ -271,7 +291,10 @@ def compute_per_query_magic_scores(
         if pad_count:
             s = s[:-weight_pad_count] if s.ndim == 1 else s[:-pad_count]
         if main:
-            torch.save(s, qpath)
+            # Atomic write: a run killed mid-save must not leave a partial
+            # file under the name the resume check accepts as complete.
+            torch.save(s, qpath + ".tmp")
+            os.replace(qpath + ".tmp", qpath)
         per_query.append(s)
 
         # Free per-query state and any temp checkpoints the backward wrote.
