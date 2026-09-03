@@ -213,9 +213,7 @@ def compute_per_query_magic_scores(
 
     def _verify_trajectory():
         missing = [
-            n
-            for n in traj_ckpts
-            if not os.path.exists(os.path.join(ckpts_path, n))
+            n for n in traj_ckpts if not os.path.exists(os.path.join(ckpts_path, n))
         ]
         if missing:
             raise FileNotFoundError(
