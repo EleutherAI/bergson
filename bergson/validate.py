@@ -513,6 +513,11 @@ def tail_filter_retrain(
                     float(row["filtered_loss"]),
                     float(row["loss_change"]),
                 )
+    if completed and not run_cfg.resume and global_rank == 0:
+        print(
+            "Warning: resuming from existing progress. "
+            "Pass --overwrite to start a fresh run."
+        )
     filter_csv = CSVWriter(
         csv_path,
         columns=["query", "n_removed", "baseline_loss", "filtered_loss", "loss_change"],
