@@ -102,6 +102,10 @@ class InversionConfig(Serializable):
     damping_factor: float = 0.1
     """Damping / truncation strength, relative to the mean eigenvalue."""
 
+    apply_batch_size: int = 32
+    """Query gradients moved on-device and preconditioned at a time in the
+    inverse application."""
+
 
 @dataclass
 class DistributedConfig(Serializable):
