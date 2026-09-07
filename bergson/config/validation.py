@@ -35,11 +35,6 @@ def tagged_subgroups(choices: Mapping[str, type[T]], *, default: str, tag: str) 
     )
 
 
-def _positive_count(count: int):
-    if count <= 0:
-        raise ValueError("count must be positive; use controls: {source: skip} to skip")
-
-
 @dataclass
 class RandomSubsets(Serializable):
     """LDS observations, generated independently of attribution scores."""
@@ -54,7 +49,6 @@ class RandomSubsets(Serializable):
     """Optional subsets.json to reuse instead of sampling."""
 
     def __post_init__(self):
-        _positive_count(self.count)
         if self.sampling not in ("partition", "random"):
             raise ValueError("sampling must be partition or random")
         if not 0 < self.fraction <= 1:
@@ -79,9 +73,6 @@ class RandomControls(Serializable):
     count: int = 3
     sampling_seed: int = 42
 
-    def __post_init__(self):
-        _positive_count(self.count)
-
 
 @dataclass
 class ControlBank(SubsetBank):
@@ -89,11 +80,6 @@ class ControlBank(SubsetBank):
 
     count: int | None = 3
     """Number of bank entries to evaluate; None uses all entries."""
-
-    def __post_init__(self):
-        super().__post_init__()
-        if self.count is not None:
-            _positive_count(self.count)
 
 
 @dataclass
