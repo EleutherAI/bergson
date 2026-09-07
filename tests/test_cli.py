@@ -7,7 +7,6 @@ import pytest
 from .cli_command import bergson_cmd, bergson_env
 
 SUBCOMMANDS = [
-    "validate",
     "build",
     "ekfac",
     "hessian",

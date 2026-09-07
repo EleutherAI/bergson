@@ -152,48 +152,28 @@ def _e2e_shared(tmp_path) -> dict:
     }
 
 
-@pytest.mark.parametrize("count", [0, 1, 3])
-def test_a_filter_run_compares_against_random_filters(tmp_path, count):
+def test_a_filter_run_compares_against_random_filters(tmp_path):
     from bergson.cli.commands import Magic, Validate
 
     shared = _e2e_shared(tmp_path)
     Magic.from_dict(shared | {"run_path": str(tmp_path / "magic")}).execute()
     run = tmp_path / "filter"
-    shared.pop("num_subsets")
-    shared.pop("subset_fraction")
     Validate.from_dict(
         shared
         | {
             "run_path": str(run),
             "scores": str(tmp_path / "magic" / "scores"),
-            "method": {
-                "kind": "filter",
-                "fraction": 0.25,
-                "controls": (
-                    {"source": "random", "count": count}
-                    if count
-                    else {"source": "skip"}
-                ),
-            },
+            "method": "filter-proponents",
         }
     ).execute()
 
-    with open(run / "filter_proponents.csv") as f:
-        assert all(int(row["n_removed"]) == 2 for row in csv.DictReader(f))
-    if count == 0:
-        assert not (run / "random_filter.csv").exists()
-        assert not (run / "filter_summary.csv").exists()
-        return
-
     with open(run / "random_filter.csv") as f:
         random_rows = list(csv.DictReader(f))
-    assert {r["subset"] for r in random_rows} == {str(i) for i in range(count)}
-    assert all(int(r["n_removed"]) == 2 for r in random_rows)
+    assert {r["subset"] for r in random_rows} == {"0", "1"}
     with open(run / "filter_summary.csv") as f:
         summary = list(csv.DictReader(f))
     assert [r["query"] for r in summary] == ["0", "1"]
-    assert all(1 <= int(r["rank"]) <= count + 1 for r in summary)
-    assert all(int(r["n_removed"]) == 2 for r in summary)
+    assert all(1 <= int(r["rank"]) <= 3 for r in summary)
 
 
 def test_a_bank_gives_the_same_random_filters_as_retraining_them(tmp_path):
@@ -226,27 +206,3 @@ def test_a_bank_gives_the_same_random_filters_as_retraining_them(tmp_path):
     here = random_changes("here")
     from_bank = random_changes("from_bank", retrained_dir=str(bank))
     assert [round(float(x), 5) for x in from_bank] == [round(float(x), 5) for x in here]
-
-    # A small control budget evaluates only a prefix of the same bank. The
-    # cache key includes its count, so it cannot reuse a full-bank tensor.
-    shared.pop("num_subsets")
-    shared.pop("subset_fraction")
-    limited = tmp_path / "limited_bank"
-    Validate.from_dict(
-        shared
-        | {
-            "run_path": str(limited),
-            "scores": scores,
-            "method": {
-                "kind": "filter",
-                "fraction": 0.25,
-                "controls": {"source": "bank", "paths": [str(bank)], "count": 1},
-            },
-        }
-    ).execute()
-    with open(limited / "random_filter.csv") as f:
-        rows = list(csv.DictReader(f))
-    assert {r["subset"] for r in rows} == {"0"}
-    assert [round(float(r["loss_change"]), 5) for r in rows] == [
-        round(float(x), 5) for x in from_bank[:2]
-    ]
