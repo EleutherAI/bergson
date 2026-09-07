@@ -96,8 +96,6 @@ class FilterConfig(Serializable):
     controls: ControlsConfig = field(default_factory=ControlsConfig)
 
     def __post_init__(self):
-        if self.direction not in ("proponents", "detractors"):
-            raise ValueError("direction must be proponents or detractors")
         if not 0 < self.fraction <= 1:
             raise ValueError("filter fraction must be in (0, 1]")
 

@@ -441,8 +441,6 @@ def tail_filter_retrain(
         valid_indices = torch.arange(flat_scores.shape[0])
 
     pool = len(valid_indices)
-    if not pool:
-        raise ValueError("Cannot filter an empty eligible removal pool")
     num_filtered = max(1, round(method.fraction * pool))
 
     # Resolve and validate bank metadata before any ranked retraining.
