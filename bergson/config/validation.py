@@ -3,7 +3,7 @@
 import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Literal, TypeVar, Union
+from typing import Literal, TypeVar
 
 from simple_parsing import Serializable, field, subgroups
 
@@ -36,9 +36,24 @@ def tagged_subgroups(choices: Mapping[str, type[T]], *, default: str, tag: str) 
 
 
 @dataclass
-class RandomSubsets(Serializable):
-    """LDS observations, generated independently of attribution scores."""
+class ControlsConfig(Serializable):
+    """Random-removal comparisons for filtering."""
 
+    kind: Literal["retrain", "bank", "none"] = field(
+        default="retrain", alias="controls"
+    )
+    count: int | None = 3
+    """Number of controls; None evaluates every entry in a bank."""
+    paths: list[str] = field(default_factory=list)
+    """Retrain bank directories, used with kind: bank."""
+    sampling_seed: int = 42
+
+
+@dataclass
+class LDSConfig(Serializable):
+    """Correlate subset score sums with retrained query loss changes."""
+
+    subsets: Literal["retrain", "bank"] = "retrain"
     count: int = 100
     sampling: Literal["partition", "random"] = "partition"
     """Partition the pool, or draw count independent fixed-size subsets."""
@@ -47,61 +62,18 @@ class RandomSubsets(Serializable):
     sampling_seed: int = 42
     manifest: str = ""
     """Optional subsets.json to reuse instead of sampling."""
-
-    def __post_init__(self):
-        if self.sampling not in ("partition", "random"):
-            raise ValueError("sampling must be partition or random")
-        if not 0 < self.fraction <= 1:
-            raise ValueError("fraction must be in (0, 1]")
-
-
-@dataclass
-class SubsetBank(Serializable):
-    """Existing LDS retrains; corresponding subsets across paths are averaged."""
-
     paths: list[str] = field(default_factory=list)
-
-    def __post_init__(self):
-        if not self.paths or any(not p for p in self.paths):
-            raise ValueError("bank source requires non-empty paths")
-
-
-@dataclass
-class RandomControls(Serializable):
-    """Random filtering comparisons, matched to the experiment's removal size."""
-
-    count: int = 3
-    sampling_seed: int = 42
-
-
-@dataclass
-class ControlBank(SubsetBank):
-    """Evaluate the first count bank entries."""
-
-    count: int | None = 3
-    """Number of bank entries to evaluate; None uses all entries."""
-
-
-@dataclass
-class NoControls(Serializable):
-    """Skip random-control evaluation."""
-
-
-@dataclass
-class LDSConfig(Serializable):
-    """Correlate subset score sums with retrained query loss changes."""
-
-    subsets: Union[RandomSubsets, SubsetBank] = tagged_subgroups(
-        {"random": RandomSubsets, "bank": SubsetBank},
-        default="random",
-        tag="source",
-    )
+    """Retrain bank directories, used with subsets: bank."""
     start: int = 0
     """First subset to evaluate/retrain, for sharding an LDS run."""
     stop: int | None = None
     """Exclusive final subset index; None uses the full list."""
 
     def __post_init__(self):
+        if self.sampling not in ("partition", "random"):
+            raise ValueError("sampling must be partition or random")
+        if not 0 < self.fraction <= 1:
+            raise ValueError("fraction must be in (0, 1]")
         if self.start < 0 or (self.stop is not None and self.stop <= self.start):
             raise ValueError("LDS requires 0 <= start < stop")
 
@@ -113,11 +85,7 @@ class FilterConfig(Serializable):
     direction: Literal["proponents", "detractors"] = "proponents"
     fraction: float = 0.05
     """Fraction of the eligible data to remove."""
-    controls: Union[RandomControls, ControlBank, NoControls] = tagged_subgroups(
-        {"random": RandomControls, "bank": ControlBank, "skip": NoControls},
-        default="random",
-        tag="source",
-    )
+    controls: ControlsConfig = field(default_factory=ControlsConfig)
 
     def __post_init__(self):
         if self.direction not in ("proponents", "detractors"):
@@ -168,7 +136,7 @@ def migrate_validation_config(obj: dict) -> dict:
         return obj
     warnings.warn(
         "Flat validation options are deprecated; use a nested method config "
-        "with kind and source tags",
+        "with a kind tag",
         FutureWarning,
         stacklevel=3,
     )
@@ -184,21 +152,15 @@ def migrate_validation_config(obj: dict) -> dict:
         if old.get("weight_lrs") and not paths:
             obj["method"] = {"kind": "weight_step", "lrs": old["weight_lrs"]}
         else:
-            source = (
-                {"source": "bank", "paths": paths}
-                if paths
-                else {
-                    "source": "random",
-                    "count": count,
-                    "sampling": "random" if fraction > 0 else "partition",
-                    "fraction": fraction if fraction > 0 else 0.05,
-                    "sampling_seed": sampling_seed,
-                    "manifest": old.get("subsets", ""),
-                }
-            )
             obj["method"] = {
                 "kind": "lds",
-                "subsets": source,
+                "subsets": "bank" if paths else "retrain",
+                "paths": paths,
+                "count": count,
+                "sampling": "random" if fraction > 0 else "partition",
+                "fraction": fraction if fraction > 0 else 0.05,
+                "sampling_seed": sampling_seed,
+                "manifest": old.get("subsets", ""),
                 "start": old.get("subset_start", 0),
                 "stop": old.get("subset_stop"),
             }
@@ -217,17 +179,17 @@ def migrate_validation_config(obj: dict) -> dict:
         if mode == "retrain" and count <= 0:
             raise ValueError("controls: retrain requires num_subsets > 0")
         if mode == "skip":
-            controls = {"source": "skip"}
+            controls = {"kind": "none"}
         elif paths and mode != "retrain":
-            controls = {"source": "bank", "paths": paths, "count": None}
+            controls = {"kind": "bank", "paths": paths, "count": None}
         elif count > 0:
             controls = {
-                "source": "random",
+                "kind": "retrain",
                 "count": count,
                 "sampling_seed": sampling_seed,
             }
         else:
-            controls = {"source": "skip"}
+            controls = {"kind": "none"}
         obj["method"] = {
             "kind": "filter",
             "direction": method.removeprefix("filter-"),

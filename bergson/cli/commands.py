@@ -31,7 +31,7 @@ from ..config.config import (
     ValidationConfig,
 )
 from ..config.config_io import save_run_config
-from ..config.validation import LDSConfig, SubsetBank
+from ..config.validation import LDSConfig
 from ..diagnose import DiagnoseConfig, diagnose
 from ..hessians.hessian_approximations import approximate_hessians
 from ..magic import MagicConfig, run_magic
@@ -306,10 +306,8 @@ class Validate(ValidationConfig):
         """Run the validation."""
         assert self.scores, "Path to attribution scores must be provided."
 
-        if isinstance(self.method, LDSConfig) and isinstance(
-            self.method.subsets, SubsetBank
-        ):
-            evaluate_retrained(self, self.method.subsets.paths, score_path=self.scores)
+        if isinstance(self.method, LDSConfig) and self.method.subsets == "bank":
+            evaluate_retrained(self, self.method.paths, score_path=self.scores)
         else:
             run_magic(
                 self,

@@ -14,9 +14,9 @@ Validation experiments
 ----------------------
 
 ``validate`` and MAGIC's optional validation use one method-specific config.
-Training and query settings remain shared. LDS has a ``subsets`` source;
-filtering has an optional ``controls`` source. CLI help shows the selected
-method's arguments.
+Training and query settings remain shared. LDS holds its subset settings;
+filtering has a ``controls`` config. CLI help shows the selected method's
+arguments.
 
 Filtering
 ~~~~~~~~~
@@ -30,15 +30,16 @@ default to three retrains.
    bergson validate runs/filter --scores runs/magic/scores \
        --method filter --direction proponents --fraction 0.05 --count 3
    bergson validate runs/filter-only --scores runs/magic/scores \
-       --method filter --fraction 0.05 --controls skip
+       --method filter --fraction 0.05 --controls none
    bergson validate runs/filter-bank --scores runs/magic/scores \
        --method filter --fraction 0.05 --controls bank --paths runs/bank --count 2
 
 ``--direction detractors`` removes the opposite end of the score ranking.
 Bank controls evaluate the first ``count`` entries. Multiple ``--paths`` average
-corresponding bank entries. Their removal sets must match across banks, and their removal sizes and
-training settings must be comparable with the filtering experiment. Bank counts
-larger than the available entries are rejected; YAML ``count: null`` uses all.
+corresponding bank entries. Their removal sets must match across banks, and
+their removal sizes and training settings must be comparable with the filtering
+experiment. Bank counts larger than the available entries are rejected; YAML
+``count: null`` uses all.
 
 Equivalent YAML:
 
@@ -53,12 +54,12 @@ Equivalent YAML:
            direction: proponents
            fraction: 0.05
            controls:
-             source: random
+             kind: retrain
              count: 3
              sampling_seed: 42
 
-Use ``controls: {source: skip}`` to omit the comparison, or
-``controls: {source: bank, paths: [runs/bank], count: 2}`` to reuse retrains.
+Use ``controls: {kind: none}`` to omit the comparison, or
+``controls: {kind: bank, paths: [runs/bank], count: 2}`` to reuse retrains.
 A random control is a new random removal set; ``sampling_seed`` controls those
 sets. The shared training ``seed`` controls training randomness.
 
@@ -84,20 +85,19 @@ data:
          scores: runs/magic/scores
          method:
            kind: lds
-           subsets:
-             source: random
-             sampling: random
-             fraction: 0.05
-             count: 100
-             sampling_seed: 42
+           subsets: retrain
+           sampling: random
+           fraction: 0.05
+           count: 100
+           sampling_seed: 42
            start: 0
            stop: null
 
 ``sampling: partition`` divides the pool by ``count``. With ``sampling: random``,
-``fraction`` sets the removal size. ``manifest`` can point to an existing ``subsets.json``; otherwise
-an existing manifest in the run directory is reused. ``start`` and ``stop``
-select a range for sharded retraining or evaluation. A bank source is written
-as ``subsets: {source: bank, paths: [runs/bank]}``.
+``fraction`` sets the removal size. ``manifest`` can point to an existing
+``subsets.json``; otherwise an existing manifest in the run directory is reused.
+``start`` and ``stop`` select a range for sharded retraining or evaluation. To evaluate a bank, set
+``subsets: bank`` and ``paths: [runs/bank]`` in the LDS method config.
 
 Weight steps and migration
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -109,13 +109,12 @@ Weight-step validation is a separate method:
 Existing flat YAML configs remain readable with a deprecation warning. Migration
 preserves their old defaults, including filtering's implicit ``1 / num_subsets``
 removal fraction, training-seed-based subset sampling, and use of every bank
-entry. Newly saved configs use ``kind`` and ``source`` tags to identify the
-selected method and source. Mixing legacy flat
-options with a nested method config is rejected.
+entry. Newly saved configs use a ``kind`` tag to identify the selected method.
+Mixing legacy flat options with a nested method config is rejected.
 
 CLI invocations and direct Python construction should use the new method configs:
 ``--num_subsets`` becomes ``--count``, ``--subset_fraction`` becomes ``--fraction``
 (with ``--sampling random`` for LDS), and ``--retrained_dir`` becomes the selected
 bank source's ``--paths``. The old ``--method filter-proponents`` becomes
 ``--method filter --direction proponents``. The legacy global ``controls`` modes
-are replaced by the filtering-only ``--controls random/bank/skip`` selector.
+are replaced by the filtering ``--controls retrain/bank/none`` selector.

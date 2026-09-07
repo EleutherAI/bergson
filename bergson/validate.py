@@ -32,12 +32,9 @@ from transformers.utils.logging import (
 from .config.config import ValidationConfig
 from .config.config_io import get_config_field, save_run_config
 from .config.validation import (
-    ControlBank,
+    ControlsConfig,
     FilterConfig,
     LDSConfig,
-    NoControls,
-    RandomControls,
-    RandomSubsets,
     WeightStepConfig,
 )
 from .data import load_scores_loss_signed, pad_and_tensor
@@ -333,13 +330,13 @@ def load_bank_losses(
 
 
 def _baseline_subsets(
-    controls: RandomControls, valid_indices: torch.Tensor, k: int
+    controls: ControlsConfig, valid_indices: torch.Tensor, k: int
 ) -> list[torch.Tensor]:
     """Random removal sets of ``k`` documents to compare the filter against."""
     rng = torch.Generator().manual_seed(controls.sampling_seed)
     return [
         valid_indices[torch.randperm(len(valid_indices), generator=rng)[:k]]
-        for _ in range(controls.count)
+        for _ in range(controls.count or 0)
     ]
 
 
@@ -430,7 +427,7 @@ def tail_filter_retrain(
     """Retrain with one tail of the score ranking filtered out.
 
     Random filters removing the same number of documents run alongside it,
-    retrained here or read from a bank; ``source: skip`` omits them.
+    retrained here or read from a bank; ``kind: none`` omits them.
     ``load_scores_loss_signed`` signs proponents negative (they reduce
     query loss), so a positive ``loss_change`` means the filter worsened query
     performance -- the opposite sign to the LDS ``diff`` column.
@@ -451,7 +448,7 @@ def tail_filter_retrain(
     # Resolve and validate bank metadata before any ranked retraining.
     dirs = []
     subsets = []
-    if isinstance(controls, ControlBank):
+    if controls.kind == "bank":
         dirs = [Path(d) for d in controls.paths]
         subsets = load_and_validate_subsets_match(run_cfg, dirs, num_filtered)
         if controls.count is not None:
@@ -541,7 +538,7 @@ def tail_filter_retrain(
         )
         print(f"Saved tail-filter data to {csv_path}")
 
-    if isinstance(controls, ControlBank):
+    if controls.kind == "bank":
         bank_base, bank_base_per_doc, per_subset = load_bank_losses(
             run_cfg,
             dirs,
@@ -558,7 +555,7 @@ def tail_filter_retrain(
         )
         random_losses = per_subset.reshape(len(subsets), num_queries)
         source = "bank " + ", ".join(str(d) for d in dirs)
-    elif isinstance(controls, RandomControls):
+    elif controls.kind == "retrain":
         subsets = _baseline_subsets(controls, valid_indices, num_filtered)
         if global_rank == 0:
             print(f"Retraining {len(subsets)} random subsets of {num_filtered} docs")
@@ -571,9 +568,8 @@ def tail_filter_retrain(
         )
         source = "retrained here"
     else:
-        assert isinstance(controls, NoControls)
         if global_rank == 0:
-            print("Skipping random baseline (controls source: skip)")
+            print("Skipping random baseline (controls kind: none)")
         return
 
     if global_rank != 0:
@@ -768,24 +764,23 @@ def validate_scores(
 
     method = run_cfg.method
     assert isinstance(method, LDSConfig)
-    sampling = method.subsets
-    if not isinstance(sampling, RandomSubsets):
+    if method.subsets == "bank":
         raise ValueError("LDS bank sources must use evaluate_retrained")
-    subsets_path = sampling.manifest or os.path.join(run_cfg.run_path, "subsets.json")
+    subsets_path = method.manifest or os.path.join(run_cfg.run_path, "subsets.json")
     if os.path.exists(subsets_path):
         with open(subsets_path) as f:
             subsets = [torch.tensor(s, dtype=torch.long) for s in json.load(f)]
     else:
-        rng = torch.Generator().manual_seed(sampling.sampling_seed)
-        if sampling.sampling == "random":
+        rng = torch.Generator().manual_seed(method.sampling_seed)
+        if method.sampling == "random":
             # Draw potentially overlapping samples
-            subset_size = max(1, round(sampling.fraction * len(valid_indices)))
+            subset_size = max(1, round(method.fraction * len(valid_indices)))
 
             subsets = [
                 valid_indices[
                     torch.randperm(len(valid_indices), generator=rng)[:subset_size]
                 ]
-                for _ in range(sampling.count)
+                for _ in range(method.count)
             ]
         else:
             # Draw non-overlapping samples
@@ -796,8 +791,8 @@ def validate_scores(
             # the final correlation since all subsets are eventually evaluated,
             # but prevents the early subsets from being biased towards higher
             # or lower scores.
-            subsets = list(perm.chunk(sampling.count))
-            rng = random.Random(sampling.sampling_seed)
+            subsets = list(perm.chunk(method.count))
+            rng = random.Random(method.sampling_seed)
             rng.shuffle(subsets)
 
     start = run_cfg.method.start

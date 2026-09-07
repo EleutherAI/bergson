@@ -22,24 +22,16 @@ from .config import (
     ValidationConfig,
 )
 from .validation import (
-    ControlBank,
+    ControlsConfig,
     FilterConfig,
     LDSConfig,
-    NoControls,
-    RandomControls,
-    RandomSubsets,
-    SubsetBank,
     WeightStepConfig,
 )
 
 __all__ = [
-    "ControlBank",
+    "ControlsConfig",
     "FilterConfig",
     "LDSConfig",
-    "NoControls",
-    "RandomControls",
-    "RandomSubsets",
-    "SubsetBank",
     "WeightStepConfig",
     "ApproxUnrollingConfig",
     "AttentionConfig",
