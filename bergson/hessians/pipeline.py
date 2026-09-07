@@ -113,7 +113,7 @@ def hessian_pipeline(
 
     # ── Step 2: Fit Hessian factors on training data ──────────────────────
     print(f"Step 2/4: Fitting {method} factors on training data...")
-    if not _step_complete(hessian_path, resume):
+    if not _step_complete(f"{hessian_path}/{method}", resume):
         with _timed("step2_fit_hessian", durations):
             hessian_index_cfg = deepcopy(index_cfg)
             # approximate_hessians writes to this exact path; step 3 reads it
