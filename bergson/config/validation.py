@@ -42,10 +42,14 @@ class ControlsConfig(Serializable):
     kind: Literal["retrain", "bank", "none"] = field(
         default="retrain", alias="controls"
     )
+    """Where the random filters come from: retrained here, read from a bank of
+    runs written with ``save_models=true``, or skipped entirely."""
     count: int | None = 3
-    """Number of controls; None evaluates every entry in a bank."""
+    """Number of random filters the ranked filter is compared against;
+    ``None`` evaluates every entry in a bank."""
     paths: list[str] = field(default_factory=list)
-    """Retrain bank directories, used with kind: bank."""
+    """Run directories of random-filter re-trained models, used with
+    ``kind: bank``; multiple directories average the query losses over the runs."""
 
 
 @dataclass
@@ -53,18 +57,28 @@ class LDSConfig(Serializable):
     """Correlate subset score sums with retrained query loss changes."""
 
     subsets: Literal["retrain", "bank"] = "retrain"
+    """Where the leave-k-out models come from: retrained here, or read from a
+    bank of runs written with ``save_models=true``."""
     count: int = 100
+    """Number of leave-k-out subsets for the Spearman correlation."""
     fraction: float = 0.0
-    """Zero partitions the pool into count subsets; a positive value draws
-    count random subsets containing this fraction of the pool."""
+    """Fraction of data filtered during a retrain. When > 0 subsets are sampled
+    independently without replacement within a subset, but with replacement
+    across subsets, and contain ``round(fraction * pool)`` documents — e.g. 0.05
+    filters 5 percent of documents per subset. When 0.0, the dataset is randomly
+    partitioned into ``count`` disjoint subsets."""
     manifest: str = ""
-    """Optional subsets.json to reuse instead of sampling."""
+    """Path to a subsets.json to reuse; defaults to ``<run_path>/subsets.json``."""
     paths: list[str] = field(default_factory=list)
-    """Retrain bank directories, used with subsets: bank."""
+    """Run directories of leave-k-out re-trained models, used with
+    ``subsets: bank``; multiple directories (a yaml list, or comma-separated on
+    the CLI) average the query losses over the runs."""
     start: int = 0
-    """First subset to evaluate/retrain, for sharding an LDS run."""
+    """First subset index to retrain. With ``stop``, splits the retraining
+    across independent processes; the subsets are drawn from ``seed``, so every
+    process agrees on the full list."""
     stop: int | None = None
-    """Exclusive final subset index; None uses the full list."""
+    """One past the last subset index to retrain; ``None`` means ``count``."""
 
     def __post_init__(self):
         if self.start < 0 or (self.stop is not None and self.stop <= self.start):
@@ -76,6 +90,7 @@ class FilterConfig(Serializable):
     """Remove one ranked tail and optionally compare with random removals."""
 
     direction: Literal["proponents", "detractors"] = "proponents"
+    """Which end of the score ranking to filter out."""
     fraction: float = 0.01
     """Fraction of the eligible data to remove."""
     controls: ControlsConfig = field(default_factory=ControlsConfig)
@@ -96,6 +111,9 @@ class WeightStepConfig(Serializable):
     """Compare weight-gradient steps with their first-order predictions."""
 
     lrs: list[float] = field(default_factory=lambda: [1.0])
+    """Gradient step on the data weights: for each lr, retrain once with doc
+    weights ``1 - lr * score`` (mean over query columns) instead of leave-k-out
+    subsets, and compare the query loss change to its first-order prediction."""
 
     def __post_init__(self):
         if not self.lrs:

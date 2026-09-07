@@ -112,7 +112,8 @@ entry. Newly saved configs use a ``kind`` tag to identify the selected method.
 Mixing legacy flat options with a nested method config is rejected.
 
 CLI invocations and direct Python construction should use the new method configs:
-``--num_subsets`` becomes ``--count``, ``--subset_fraction`` becomes ``--fraction``,
-and ``--retrained_dir`` becomes the selected bank source's ``--paths``. The old ``--method filter-proponents`` becomes
+``--num_subsets`` becomes ``--count``, ``--subset_fraction`` becomes
+``--fraction``, and ``--retrained_dir`` becomes the selected bank source's
+``--paths``. The old ``--method filter-proponents`` becomes
 ``--method filter --direction proponents``. The legacy global ``controls`` modes
 are replaced by the filtering ``--controls retrain/bank/none`` selector.

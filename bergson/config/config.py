@@ -472,7 +472,8 @@ class ValidationConfig(TrainingConfig, ABC):
     ``none`` will perform one backward per query."""
 
     subset_weight: float = 0.0
-    """Weight assigned to removed documents; zero means full removal."""
+    """Training weight assigned to each subset's documents during the retrain
+    (the rest stay at 1.0). ``0.0`` (default) is standard leave-k-out removal."""
 
     exclude_zero_scores: bool = False
     """When True, drop doc_ids with score == 0 from the validation
