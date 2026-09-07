@@ -204,6 +204,23 @@ def compute_per_query_magic_scores(
         if isinstance(buf, torch.Tensor) and buf.is_floating_point()
     ]
 
+    # Ensure all backward states are present on-disk before each query.
+    traj_ckpts = sorted(n for n in orig_ckpts if n.startswith("step_"))
+
+    def assert_ckpts_exist():
+        # `.metadata` is written last, so the resume path treats a checkpoint
+        # without one as incomplete.
+        missing = [
+            n
+            for n in traj_ckpts
+            if not os.path.exists(os.path.join(ckpts_path, n, ".metadata"))
+        ]
+        if missing:
+            raise FileNotFoundError(
+                f"{len(missing)}/{len(traj_ckpts)} trajectory checkpoints "
+                f"missing from {ckpts_path} (e.g. {missing[:3]}); exiting."
+            )
+
     per_query = []
     for qi in range(num_query_docs):
         qpath = os.path.join(scores_dir, f"q{qi}.pt")
@@ -237,6 +254,7 @@ def compute_per_query_magic_scores(
         )
         if one_pad:
             qstream.weights.data[-one_wpad:] = 0.0
+        assert_ckpts_exist()
         qgrads, _ = compute_query_gradients(
             fwd_state, model, qstream, "mean", run_cfg.fsdp, run_cfg.grad_accum_steps
         )
@@ -273,7 +291,9 @@ def compute_per_query_magic_scores(
         if pad_count:
             s = s[:-weight_pad_count] if s.ndim == 1 else s[:-pad_count]
         if main:
-            torch.save(s, qpath)
+            # Atomic write
+            torch.save(s, qpath + ".tmp")
+            os.replace(qpath + ".tmp", qpath)
         per_query.append(s)
 
         # Free per-query state and any temp checkpoints the backward wrote.
