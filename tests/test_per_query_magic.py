@@ -9,6 +9,7 @@ queries have equal token counts so that the aggregate mean-over-tokens loss is
 the uniform mean of the per-query losses. That identity is the correctness gate.
 """
 
+import functools
 import os
 import tempfile
 
@@ -29,17 +30,42 @@ from bergson.validate import mean_query_loss, per_doc_query_losses
 TINY = "trl-internal-testing/tiny-Phi3ForCausalLM"
 
 
+VOCAB = 128
+"""Vocabulary for the test model. The stock config's 32k logits, not its
+8-dim hidden state, dominate the double-backward; ids here stay under 128."""
+
+
+@functools.cache
+def _config():
+    from transformers import AutoConfig
+
+    cfg = AutoConfig.from_pretrained(TINY)
+    cfg.vocab_size = VOCAB
+    cfg.num_hidden_layers = 1
+    for token in ("pad_token_id", "bos_token_id", "eos_token_id"):
+        if (tid := getattr(cfg, token, None)) is not None and tid >= VOCAB:
+            setattr(cfg, token, 0)
+    return cfg
+
+
 def _model():
-    from transformers import AutoConfig, AutoModelForCausalLM
+    from transformers import AutoModelForCausalLM
 
     torch.manual_seed(0)
-    cfg = AutoConfig.from_pretrained(TINY)
     m = AutoModelForCausalLM.from_config(
-        cfg, torch_dtype=torch.float32, attn_implementation="eager"
+        _config(), torch_dtype=torch.float32, attn_implementation="eager"
     )
     m.loss_function = weighted_causal_lm_ce
     m.requires_grad_(True)
     return m
+
+
+def _saved_model(tmp_path) -> str:
+    """The same model on disk, for the paths that load it by name."""
+    path = tmp_path / "tiny_model"
+    if not path.exists():
+        _model().save_pretrained(path, safe_serialization=True)
+    return str(path)
 
 
 def _equal_length_docs(n, seqlen=5, start=1):
@@ -223,7 +249,7 @@ def _per_query_run(tmp_path, attribute_tokens: bool, num_docs=5, seq_len=8, n_qu
     run_path = tmp_path / ("tok" if attribute_tokens else "doc")
     run_cfg = MagicConfig(
         run_path=str(run_path),
-        model="EleutherAI/pythia-14m",
+        model=_saved_model(tmp_path),
         data=DataConfig(dataset="unused", chunk_length=seq_len),
         query=DataConfig(dataset="unused"),
         batch_size=4,
