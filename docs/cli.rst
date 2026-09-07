@@ -237,7 +237,7 @@ Training & Evaluation
        --data.truncation \
        --query.dataset NeelNanda/pile-10k \
        --query.split "train[:8]" \
-       --num_subsets 10
+       --count 10
 
 .. autoclass:: bergson.__main__.Recall
    :members:
