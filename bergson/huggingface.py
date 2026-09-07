@@ -373,7 +373,7 @@ class GradientCollectorCallback(TrainerCallback):
 
         if dist.is_initialized():
             # Gather training order from all processes
-            all_orders = [None] * dist.get_world_size()
+            all_orders: list[list[dict] | None] = [None] * dist.get_world_size()
             dist.all_gather_object(all_orders, self.order)
 
             # Only rank 0 saves the merged data
