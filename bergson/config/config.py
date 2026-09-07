@@ -3,12 +3,19 @@ import os
 from abc import ABC
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Union
 
 import torch
 from simple_parsing import Serializable, field
 
 from ..hessians.inversion import Inversion
+from .validation import (
+    FilterConfig,
+    LDSConfig,
+    WeightStepConfig,
+    migrate_validation_config,
+    tagged_subgroups,
+)
 
 SaveMode = Literal["all", "sqrt", "log", "interval", "final"]
 
@@ -464,54 +471,24 @@ class ValidationConfig(TrainingConfig, ABC):
     """How query gradients are combined before the MAGIC backward.
     ``none`` will perform one backward per query."""
 
-    num_subsets: int = 100
-    """Number of leave-k-out subsets for Spearman correlation, or for a
-    filter-* method the number of random filters it is compared against;
-    ``0`` skips them, as does a bank of retrained models."""
-
-    controls: Literal["auto", "load", "retrain", "skip"] = "auto"
-    """Where the random-control baseline comes from. ``auto`` loads from
-    ``retrained_dir`` if set, else retrains ``num_subsets`` controls."""
-
     subset_weight: float = 0.0
-    """Training weight assigned to each subset's documents during the retrain
-    (the rest stay at 1.0). ``0.0`` (default) is standard leave-k-out removal."""
-
-    weight_lrs: list[float] = field(default_factory=list)
-    """Gradient step on the data weights: for each lr, retrain once with doc
-    weights ``1 - lr * score`` (mean over query columns) instead of leave-k-out
-    subsets, and compare the query loss change to its first-order prediction."""
+    """Weight assigned to removed documents; zero means full removal."""
 
     exclude_zero_scores: bool = False
-    """When True, drop doc_ids with score == 0 from the validation
-    permutation. These scores may be produced by items with fewer than
-    2 tokens."""
+    """Exclude rows whose attribution scores are all zero from the removal pool."""
 
-    subsets: str = ""
-    """Path to a subsets.json to reuse; defaults to ``<run_path>/subsets.json``."""
+    method: Union[LDSConfig, FilterConfig, WeightStepConfig] = tagged_subgroups(
+        {"lds": LDSConfig, "filter": FilterConfig, "weight-step": WeightStepConfig},
+        default="lds",
+        tag="kind",
+    )
+    """Validation experiment; only its own sampling/control options are exposed."""
 
-    subset_start: int = 0
-    """First subset index to retrain. With ``subset_stop``, splits the
-    retraining across independent processes; the subsets are drawn from
-    ``seed``, so every process agrees on the full list."""
-
-    subset_stop: int | None = None
-    """One past the last subset index to retrain; ``None`` means ``num_subsets``."""
-
-    subset_fraction: float = 0.0
-    """Fraction of data filtered during a retrain. When > 0 subsets are sampled
-    independently without replacement within a subset, but with replacement
-    across subsets, and contain ``round(subset_fraction * pool)`` documents
-    — e.g. 0.05 filters 5 percent of documents per subset. When 0.0, the
-    dataset is randomly partitioned into ``num_subsets`` disjoint subsets
-    for ```lds```, or for a filter-* method the size is 1 / num_subsets."""
-
-    method: Literal["lds", "filter-proponents", "filter-detractors"] = "lds"
-    """``lds`` filters ```num_subsets``` random subsets of the data and
-    correlates the query loss change with the summed attribution scores.
-    ``filter`` methods filter either the top- or bottom-scoring
-    ``subset_fraction`` of data, then retrain and measure the query loss
-    change against ``num_subsets`` random filters of the same size."""
+    @classmethod
+    def from_dict(cls, obj, drop_extra_fields=None):
+        return super().from_dict(
+            migrate_validation_config(obj), drop_extra_fields=drop_extra_fields
+        )
 
 
 @dataclass

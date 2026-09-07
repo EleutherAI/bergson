@@ -3,7 +3,6 @@ import json
 import os
 import shutil
 import time
-from collections.abc import Sequence
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -31,6 +30,7 @@ from transformers.utils.logging import (
 
 from ..config.config import TrainingConfig, ValidationConfig
 from ..config.config_io import save_run_config
+from ..config.validation import LDSConfig
 from ..data import (
     compute_num_token_grads,
     load_scores_loss_signed,
@@ -396,7 +396,6 @@ def worker(
     score_path: str = "",
     validate: bool = False,
     baseline_model: str = "",
-    retrained_dir: Sequence[str] = (),
 ):
     if torch.cuda.is_available():
         torch.cuda.set_device(get_device_index(rank))
@@ -511,7 +510,11 @@ def worker(
             )
 
     # A sliced run leaves the shared baseline to the process that starts at 0.
-    trails_slice = isinstance(run_cfg, ValidationConfig) and run_cfg.subset_start != 0
+    trails_slice = (
+        isinstance(run_cfg, ValidationConfig)
+        and isinstance(run_cfg.method, LDSConfig)
+        and run_cfg.method.start != 0
+    )
     if run_cfg.save_models and global_rank == 0 and not trails_slice:
         # For the leave-k-out family the trained model is the query baseline
         # that evaluate_retrained reads from retrained/base.
@@ -667,7 +670,6 @@ def worker(
         run_cfg,
         scores,
         multi_query,
-        retrained_dir=retrained_dir,
         global_rank=global_rank,
         rank=rank,
         schedule=schedule,
@@ -689,7 +691,6 @@ def run_magic(
     score_path: str = "",
     validate: bool = False,
     baseline_model: str = "",
-    retrained_dir: Sequence[str] = (),
 ):
     """Train ``run_cfg``, score the query set, and validate those scores."""
     if validate and not isinstance(run_cfg, ValidationConfig):
@@ -745,7 +746,6 @@ def run_magic(
             score_path,
             validate,
             baseline_model,
-            retrained_dir,
         ],
         run_cfg.distributed,
     )

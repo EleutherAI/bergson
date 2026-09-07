@@ -21,8 +21,26 @@ from .config import (
     TrainingConfig,
     ValidationConfig,
 )
+from .validation import (
+    ControlBank,
+    FilterConfig,
+    LDSConfig,
+    NoControls,
+    RandomControls,
+    RandomSubsets,
+    SubsetBank,
+    WeightStepConfig,
+)
 
 __all__ = [
+    "ControlBank",
+    "FilterConfig",
+    "LDSConfig",
+    "NoControls",
+    "RandomControls",
+    "RandomSubsets",
+    "SubsetBank",
+    "WeightStepConfig",
     "ApproxUnrollingConfig",
     "AttentionConfig",
     "AttributionConfig",

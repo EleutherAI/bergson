@@ -100,3 +100,22 @@ def test_validation_needs_a_validation_config(tmp_path):
     cfg = TrainingConfig(run_path=str(tmp_path), model=MODEL)
     with pytest.raises(TypeError, match="ValidationConfig"):
         run_magic(cfg, validate=True)
+
+
+def test_weight_step_method_runs_without_lds_subsets(tmp_path):
+    shared = _datasets(tmp_path)
+    magic_run = tmp_path / "magic"
+    Magic.from_dict(shared | {"run_path": str(magic_run)}).execute()
+    shared.pop("num_subsets")
+    run = tmp_path / "weight-step"
+    Validate.from_dict(
+        shared
+        | {
+            "run_path": str(run),
+            "scores": str(magic_run / "scores"),
+            "method": {"kind": "weight-step", "lrs": [0.01]},
+        }
+    ).execute()
+    assert (run / "weight_step.csv").exists()
+    assert not (run / "validation.csv").exists()
+    assert not (run / "subsets.json").exists()

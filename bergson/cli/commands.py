@@ -31,6 +31,7 @@ from ..config.config import (
     ValidationConfig,
 )
 from ..config.config_io import save_run_config
+from ..config.validation import LDSConfig, SubsetBank
 from ..diagnose import DiagnoseConfig, diagnose
 from ..hessians.hessian_approximations import approximate_hessians
 from ..magic import MagicConfig, run_magic
@@ -298,31 +299,21 @@ class Validate(ValidationConfig):
     scores: str = ""
     """Path to saved attribution scores for validation."""
 
-    retrained_dir: str | list[str] = ""
-    """Optional: evaluate on existing run directories of leave-k-out re-trained
-    models written with ``save_models=true``; multiple directories (a yaml list,
-    or comma-separated on the CLI) average the query losses over the runs."""
-
     baseline_model: str = ""
     """Optional path to baseline model trained on the full dataset."""
-
-    @property
-    def retrained_dirs(self) -> list[str]:
-        if isinstance(self.retrained_dir, str):
-            return [d for d in self.retrained_dir.split(",") if d]
-        return list(self.retrained_dir)
 
     def execute(self):
         """Run the validation."""
         assert self.scores, "Path to attribution scores must be provided."
 
-        if self.retrained_dirs and self.method == "lds":
-            evaluate_retrained(self, self.retrained_dirs, score_path=self.scores)
+        if isinstance(self.method, LDSConfig) and isinstance(
+            self.method.subsets, SubsetBank
+        ):
+            evaluate_retrained(self, self.method.subsets.paths, score_path=self.scores)
         else:
             run_magic(
                 self,
                 score_path=self.scores,
                 validate=True,
                 baseline_model=self.baseline_model,
-                retrained_dir=self.retrained_dirs,
             )
