@@ -63,8 +63,8 @@ class HookCollectorBase(ContextDecorator, ABC):
         - forward_hook(): Process activations during forward pass
         - backward_hook(): Process gradients during backward pass
 
-    Subclasses that accumulate across batches may also implement
-    ``fit_state``/``load_fit_state`` to become resumable.
+    Subclasses that accumulate over batches can implement
+    ``fit_state`` and ``load_fit_state`` to enable --resume.
     """
 
     def fit_state(self) -> dict[str, Tensor] | None:
@@ -874,35 +874,37 @@ class CollectorComputer:
         )
 
     def _load_fit_state(self, state_name: str, resume: bool) -> tuple[int, int]:
-        """Restore the collector's accumulators. Returns (cursor, tokens)."""
+        """Restore the collector's accumulators. Returns (resume_batches, tokens)."""
         path = self._fit_state_path(state_name)
         if not resume or not os.path.exists(path):
-            assert_ranks_agree(0, self.device, f"{state_name} cursor")
+            assert_ranks_agree(0, self.device, f"{state_name} progress")
             return 0, 0
 
         saved = torch.load(path, map_location=self.device, weights_only=True)
-        # A different batch plan makes the cursor meaningless.
+        # A different batch plan makes the saved progress meaningless.
         if saved["num_batches"] != len(self.batches):
             raise RuntimeError(
                 f"{path} was written for {saved['num_batches']} batches but this "
                 f"run has {len(self.batches)}; delete it to start over."
             )
-        cursor = int(saved["cursor"])
+        resume_batches = int(saved["resume_batches"])
         # The hooks all-reduce per batch, so ranks resuming at different
-        # cursors would pair up different documents.
-        assert_ranks_agree(cursor, self.device, f"{state_name} cursor")
+        # batches would pair up different documents.
+        assert_ranks_agree(resume_batches, self.device, f"{state_name} progress")
         self.collector.load_fit_state(saved["accumulators"])
-        self.logger.info(f"Resuming {state_name} from batch {cursor}")
-        return cursor, int(saved["total_processed"])
+        self.logger.info(f"Resuming {state_name} from batch {resume_batches}")
+        return resume_batches, int(saved["total_processed"])
 
-    def _save_fit_state(self, state_name: str, cursor: int, total_processed) -> None:
+    def _save_fit_state(
+        self, state_name: str, resume_batches: int, total_processed
+    ) -> None:
         accumulators = self.collector.fit_state()
         if accumulators is None:
             return
         path = self._fit_state_path(state_name)
         torch.save(
             {
-                "cursor": cursor,
+                "resume_batches": resume_batches,
                 "total_processed": int(total_processed.item()),
                 "num_batches": len(self.batches),
                 "accumulators": accumulators,

@@ -185,7 +185,7 @@ def hessian_worker(
         "batches": batches,
     }
 
-    collect_hessians(**kwargs, state_name="fit_state")
+    collect_hessians(**kwargs)
 
     dist.barrier() if dist.is_initialized() else None
 
@@ -222,7 +222,7 @@ def hessian_worker(
     )
 
     if hessian_cfg.ev_correction:
-        collect_hessians(**kwargs, ev_correction=True, state_name="correction_state")
+        collect_hessians(**kwargs, ev_correction=True)
 
 
 def collect_hessians(
@@ -237,7 +237,6 @@ def collect_hessians(
     ev_correction: bool = False,
     eigen_path: str | None = None,
     output_subdir: str = "eigenvalue_correction_sharded",
-    state_name: str | None = None,
 ):
     """
     Compute Hessian approximations using the hooks specified in the collector.
@@ -255,6 +254,7 @@ def collect_hessians(
         "processor": GradientProcessor(include_bias=index_cfg.include_bias),
         "dtype": hessian_dtype,
     }
+    state_name = "correction_state" if ev_correction else "fit_state"
     desc = f"Approximating Hessians with {hessian_cfg.method}"
     if ev_correction:
         collector = LambdaCollector(

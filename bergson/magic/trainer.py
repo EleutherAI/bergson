@@ -24,6 +24,7 @@ from tqdm.auto import tqdm
 
 from ..config.config import SaveMode, TrainingConfig
 from ..data import sorted_checkpoints
+from ..distributed import assert_ranks_agree
 from ..utils.utils import get_device
 from ..utils.worker_utils import setup_model_and_peft
 from .data_stream import DataStream
@@ -851,21 +852,8 @@ class Trainer:
 
         # Ranks must resume from the same step or the replayed collectives
         # deadlock; states must match.
-        if dist.is_initialized():
-            resume_step = torch.tensor(
-                [loaded[2] if loaded is not None else -1],
-                device=data.device,
-                dtype=torch.long,
-            )
-            lo, hi = resume_step.clone(), resume_step.clone()
-            dist.all_reduce(lo, op=dist.ReduceOp.MIN)
-            dist.all_reduce(hi, op=dist.ReduceOp.MAX)
-            if lo.item() != hi.item():
-                raise RuntimeError(
-                    f"Backward state in {ckpt_dir} disagrees across ranks "
-                    f"(steps {lo.item()}..{hi.item()}); another run may hold it. "
-                    "Delete the state files to start the backward over."
-                )
+        resume_step = loaded[2] if loaded is not None else -1
+        assert_ranks_agree(resume_step, data.device, f"Backward state in {ckpt_dir}")
 
         if loaded is not None:
             bwd_state, ckpt_list, expected_idx, last_idx = loaded

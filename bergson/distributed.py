@@ -30,8 +30,8 @@ def assert_ranks_agree(value: int, device, what: str) -> None:
     dist.all_reduce(hi, op=dist.ReduceOp.MAX)
     if lo.item() != hi.item():
         raise RuntimeError(
-            f"{what} disagrees across ranks ({lo.item()}..{hi.item()}); "
-            "delete the state files to start over."
+            f"{what} disagrees across ranks ({lo.item()}..{hi.item()}); another "
+            "run may hold it. Delete the state files to start over."
         )
 
 
