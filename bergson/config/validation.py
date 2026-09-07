@@ -1,13 +1,16 @@
 """Method-specific validation experiments and their serialized discriminators."""
 
 import warnings
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Literal, Union
+from typing import Literal, TypeVar, Union
 
 from simple_parsing import Serializable, field, subgroups
 
+T = TypeVar("T", bound=Serializable)
 
-def tagged_subgroups(choices: dict[str, Any], *, default: str, tag: str):
+
+def tagged_subgroups(choices: Mapping[str, type[T]], *, default: str, tag: str) -> T:
     """Preserve subgroup identity across CLI parsing and YAML round trips.
 
     SimpleParsing's default Union decoder tries alternatives in order and can
@@ -27,7 +30,9 @@ def tagged_subgroups(choices: dict[str, Any], *, default: str, tag: str):
             raise ValueError(f"Expected {tag} in {list(choices)}, got {key!r}")
         return choices[key].from_dict(payload, drop_extra_fields=False)
 
-    return subgroups(choices, default=default, encoding_fn=encode, decoding_fn=decode)
+    return subgroups(
+        dict(choices), default=default, encoding_fn=encode, decoding_fn=decode
+    )
 
 
 def _positive_count(count: int):
