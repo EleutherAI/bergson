@@ -35,11 +35,10 @@ steps:
         lr_end: 0.00008
         warmup_steps: 0.25
 
-      subset_strategy: random
       wandb_project: magic
       method:
         kind: lds
         count: 100
         fraction: 0.01
-      save_optimizer_state: True
-      save_retrained_models: True
+      save_optimizer_state: last
+      save_models: True
