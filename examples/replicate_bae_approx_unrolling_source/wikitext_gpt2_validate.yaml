@@ -9,12 +9,15 @@ steps:
     model: gpt2
     overwrite: true
     scores: runs/wikitext_repro/if_scores/scores
-    retrained_dir:
-    - runs/wikitext_repro/retrain_seed1004
-    - runs/wikitext_repro/retrain_seed1005
-    - runs/wikitext_repro/retrain_seed1006
-    - runs/wikitext_repro/retrain_seed1007
-    - runs/wikitext_repro/retrain_seed1008
+    method:
+      kind: lds
+      subsets: bank
+      paths:
+      - runs/wikitext_repro/retrain_seed1004
+      - runs/wikitext_repro/retrain_seed1005
+      - runs/wikitext_repro/retrain_seed1006
+      - runs/wikitext_repro/retrain_seed1007
+      - runs/wikitext_repro/retrain_seed1008
     batch_size: 64
     data: &id001
       dataset: EleutherAI/bergson-wikitext-2-4656-chunks
@@ -29,12 +32,15 @@ steps:
     model: gpt2
     overwrite: true
     scores: runs/wikitext_repro/source_scores/scores
-    retrained_dir:
-    - runs/wikitext_repro/retrain_seed1004
-    - runs/wikitext_repro/retrain_seed1005
-    - runs/wikitext_repro/retrain_seed1006
-    - runs/wikitext_repro/retrain_seed1007
-    - runs/wikitext_repro/retrain_seed1008
+    method:
+      kind: lds
+      subsets: bank
+      paths:
+      - runs/wikitext_repro/retrain_seed1004
+      - runs/wikitext_repro/retrain_seed1005
+      - runs/wikitext_repro/retrain_seed1006
+      - runs/wikitext_repro/retrain_seed1007
+      - runs/wikitext_repro/retrain_seed1008
     batch_size: 64
     data: *id001
     query: *id002

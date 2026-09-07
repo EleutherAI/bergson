@@ -47,8 +47,10 @@ steps:
         lr_end: 0.00004
         warmup_steps: 0.25
 
-      num_subsets: 100
-      subset_fraction: 0.01
+      method:
+        kind: lds
+        count: 100
+        fraction: 0.01
       # 0.26.0 changed the default to skip in-run validation.
       skip_validation: false
 

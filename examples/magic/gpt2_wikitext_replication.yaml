@@ -48,8 +48,10 @@ steps:
         warmup_steps: 0.25
 
       skip_validation: false
-      num_subsets: 100
-      subset_fraction: 0.01
+      method:
+        kind: lds
+        count: 100
+        fraction: 0.01
 
       wandb_project: magic
       save_optimizer_state: last

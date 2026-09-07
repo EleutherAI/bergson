@@ -37,7 +37,9 @@ steps:
 
       subset_strategy: random
       wandb_project: magic
-      num_subsets: 100
-      subset_fraction: 0.01
+      method:
+        kind: lds
+        count: 100
+        fraction: 0.01
       save_optimizer_state: True
       save_retrained_models: True

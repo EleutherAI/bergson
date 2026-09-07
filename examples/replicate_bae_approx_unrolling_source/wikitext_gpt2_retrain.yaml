@@ -35,8 +35,11 @@ steps:
       lr_scheduler_type: constant
       lr: 3.0e-05
     train_mode: true
-    num_subsets: 100
-    subset_fraction: 0.5
+    method:
+      kind: lds
+      count: 100
+      fraction: 0.5
+      manifest: runs/wikitext_repro/retrain_seed1004/subsets.json
     save_models: true
     matrix:
       seed:
@@ -45,4 +48,3 @@ steps:
       - 1006
       - 1007
       - 1008
-    subsets: runs/wikitext_repro/retrain_seed1004/subsets.json

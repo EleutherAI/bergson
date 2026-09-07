@@ -16,7 +16,7 @@ Usage:
         --query.split "train[:1]"
 """
 
-from bergson.config import DataConfig, LRScheduleConfig
+from bergson.config import DataConfig, LDSConfig, LRScheduleConfig
 from bergson.magic import MagicConfig, run_magic
 
 
@@ -35,7 +35,7 @@ def main():
         ),
         batch_size=8,
         lr_schedule=LRScheduleConfig(lr=1e-5, warmup_steps=10),
-        num_subsets=100,
+        method=LDSConfig(count=100),
         seed=42,
     )
     run_magic(run_cfg)

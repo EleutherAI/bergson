@@ -91,7 +91,11 @@ steps:
       overwrite: true
 
       scores: runs/compare_smollm2_8k/source/scores
-      retrained_dir: runs/compare_smollm2_8k/random
+      method:
+        kind: lds
+        subsets: bank
+        paths:
+          - runs/compare_smollm2_8k/random
 
       data:
         dataset: runs/damping_transfer/data/smollm2_train_8k
