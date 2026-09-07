@@ -1,5 +1,5 @@
 # Build a GPT-2 / WikiText leave-k-out re-train bank (single node): MAGIC
-# attribution plus 400 retrained leave-out models saved for later evaluation.
+# attribution plus 100 retrained leave-out models saved for later evaluation.
 
 # Run with `bergson examples/magic/gpt2_wikitext_bank.yaml`
 
