@@ -13,11 +13,6 @@ To evaluate attributions of large models that cannot be re-trained many times, w
 Validation experiments
 ----------------------
 
-``validate`` and MAGIC's optional validation use one method-specific config.
-Training and query settings remain shared. LDS holds its subset settings;
-filtering has a ``controls`` config. CLI help shows the selected method's
-arguments.
-
 Filtering
 ~~~~~~~~~
 
@@ -36,10 +31,7 @@ default to three retrains.
 
 ``--direction detractors`` removes the opposite end of the score ranking.
 Bank controls evaluate the first ``count`` entries. Multiple ``--paths`` average
-corresponding bank entries. Their removal sets must match across banks, and
-their removal sizes and training settings must be comparable with the filtering
-experiment. Bank counts larger than the available entries are rejected; YAML
-``count: null`` uses all.
+corresponding bank entries.
 
 Equivalent YAML:
 
@@ -59,8 +51,6 @@ Equivalent YAML:
 
 Use ``controls: {kind: none}`` to omit the comparison, or
 ``controls: {kind: bank, paths: [runs/bank], count: 2}`` to reuse retrains.
-A random control is a new random removal set. The shared ``seed`` controls
-subset selection and training randomness.
 
 LDS
 ~~~
@@ -90,30 +80,12 @@ data:
            start: 0
            stop: null
 
-``fraction: 0`` divides the pool into ``count`` subsets. A positive ``fraction``
-draws ``count`` independent random subsets of that size. Subset selection uses
-the shared training ``seed``. ``manifest`` can point to an existing
-``subsets.json``; otherwise an existing manifest in the run directory is reused.
 ``start`` and ``stop`` select a range for sharded retraining or evaluation.
-To evaluate a bank, set ``subsets: bank`` and ``paths: [runs/bank]`` in the LDS
-method config.
+To evaluate using an existing bank of retrained models, set ``subsets: bank``
+and ``paths: [runs/bank]`` in the LDS method config.
 
-Weight steps and migration
-~~~~~~~~~~~~~~~~~~~~~~~~~~
+Weight steps
+~~~~~~~~~~~~
 
-Weight-step validation is a separate method:
 ``--method weight_step --lrs 0.1 0.2``, or
 ``method: {kind: weight_step, lrs: [0.1, 0.2]}`` in YAML.
-
-Existing flat YAML configs remain readable with a deprecation warning. Migration
-preserves their old defaults, including filtering's implicit ``1 / num_subsets``
-removal fraction, training-seed-based subset sampling, and use of every bank
-entry. Newly saved configs use a ``kind`` tag to identify the selected method.
-Mixing legacy flat options with a nested method config is rejected.
-
-CLI invocations and direct Python construction should use the new method configs:
-``--num_subsets`` becomes ``--count``, ``--subset_fraction`` becomes
-``--fraction``, and ``--retrained_dir`` becomes the selected bank source's
-``--paths``. The old ``--method filter-proponents`` becomes
-``--method filter --direction proponents``. The legacy global ``controls`` modes
-are replaced by the filtering ``--controls retrain/bank/none`` selector.
