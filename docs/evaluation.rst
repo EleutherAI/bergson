@@ -15,15 +15,15 @@ Validation experiments
 
 ``validate`` and MAGIC's optional validation use one method-specific config.
 Training and query settings remain shared. LDS has a ``subsets`` source;
-filtering has an optional ``controls`` source. Only the selected method's
-arguments appear in CLI help.
+filtering has an optional ``controls`` source. CLI help shows the selected
+method's arguments.
 
 Filtering
 ~~~~~~~~~
 
 Remove a ranked fraction of the data and compare its query loss change with
 random removals of the same size. The fraction defaults to 0.05; random controls
-default to three retrains. Changing the control count never changes the fraction.
+default to three retrains.
 
 .. code-block:: bash
 
@@ -35,9 +35,8 @@ default to three retrains. Changing the control count never changes the fraction
        --method filter --fraction 0.05 --controls bank --paths runs/bank --count 2
 
 ``--direction detractors`` removes the opposite end of the score ranking.
-Bank controls evaluate the first ``count`` entries, selected independently of
-losses or attribution scores. Multiple ``--paths`` average corresponding bank
-entries. Their removal sets must match across banks, and their removal sizes and
+Bank controls evaluate the first ``count`` entries. Multiple ``--paths`` average
+corresponding bank entries. Their removal sets must match across banks, and their removal sizes and
 training settings must be comparable with the filtering experiment. Bank counts
 larger than the available entries are rejected; YAML ``count: null`` uses all.
 
@@ -61,13 +60,14 @@ Equivalent YAML:
 Use ``controls: {source: skip}`` to omit the comparison, or
 ``controls: {source: bank, paths: [runs/bank], count: 2}`` to reuse retrains.
 A random control is a new random removal set; ``sampling_seed`` controls those
-sets, while the shared training ``seed`` controls training randomness.
+sets. The shared training ``seed`` controls training randomness.
 
 LDS
 ~~~
 
-LDS defaults to a random partition into 100 subsets. To instead sample 100
-independent removals, each containing five percent of the eligible data:
+LDS defaults to a random partition into 100 subsets. The following command
+samples 100 independent removals, each containing five percent of the eligible
+data:
 
 .. code-block:: bash
 
@@ -93,8 +93,8 @@ independent removals, each containing five percent of the eligible data:
            start: 0
            stop: null
 
-``sampling: partition`` divides the pool by ``count`` and does not use
-``fraction``. ``manifest`` can point to an existing ``subsets.json``; otherwise
+``sampling: partition`` divides the pool by ``count``. With ``sampling: random``,
+``fraction`` sets the removal size. ``manifest`` can point to an existing ``subsets.json``; otherwise
 an existing manifest in the run directory is reused. ``start`` and ``stop``
 select a range for sharded retraining or evaluation. A bank source is written
 as ``subsets: {source: bank, paths: [runs/bank]}``.
@@ -109,8 +109,8 @@ Weight-step validation is a separate method:
 Existing flat YAML configs remain readable with a deprecation warning. Migration
 preserves their old defaults, including filtering's implicit ``1 / num_subsets``
 removal fraction, training-seed-based subset sampling, and use of every bank
-entry. Newly saved configs contain explicit ``kind`` and ``source`` tags so a
-filter config cannot be mistaken for LDS when reloaded. Mixing legacy flat
+entry. Newly saved configs use ``kind`` and ``source`` tags to identify the
+selected method and source. Mixing legacy flat
 options with a nested method config is rejected.
 
 CLI invocations and direct Python construction should use the new method configs:

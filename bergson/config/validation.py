@@ -8,7 +8,7 @@ from simple_parsing import Serializable, field, subgroups
 
 
 def tagged_subgroups(choices: dict[str, Any], *, default: str, tag: str):
-    """Use CLI subgroups without losing their identity in YAML round trips.
+    """Preserve subgroup identity across CLI parsing and YAML round trips.
 
     SimpleParsing's default Union decoder tries alternatives in order and can
     silently discard fields. Decode only the explicitly selected concrete type.
@@ -80,7 +80,7 @@ class RandomControls(Serializable):
 
 @dataclass
 class ControlBank(SubsetBank):
-    """Use the first count bank entries, chosen independently of their losses."""
+    """Evaluate the first count bank entries."""
 
     count: int | None = 3
     """Number of bank entries to evaluate; None uses all entries."""
@@ -93,7 +93,7 @@ class ControlBank(SubsetBank):
 
 @dataclass
 class NoControls(Serializable):
-    """Measure the ranked removal without a random comparison."""
+    """Skip random-control evaluation."""
 
 
 @dataclass
@@ -121,7 +121,7 @@ class FilterConfig(Serializable):
 
     direction: Literal["proponents", "detractors"] = "proponents"
     fraction: float = 0.05
-    """Fraction removed, independent of the control count."""
+    """Fraction of the eligible data to remove."""
     controls: Union[RandomControls, ControlBank, NoControls] = tagged_subgroups(
         {"random": RandomControls, "bank": ControlBank, "skip": NoControls},
         default="random",
