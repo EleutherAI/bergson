@@ -46,7 +46,6 @@ class ControlsConfig(Serializable):
     """Number of controls; None evaluates every entry in a bank."""
     paths: list[str] = field(default_factory=list)
     """Retrain bank directories, used with kind: bank."""
-    sampling_seed: int = 42
 
 
 @dataclass
@@ -55,11 +54,9 @@ class LDSConfig(Serializable):
 
     subsets: Literal["retrain", "bank"] = "retrain"
     count: int = 100
-    sampling: Literal["partition", "random"] = "partition"
-    """Partition the pool, or draw count independent fixed-size subsets."""
-    fraction: float = 0.05
-    """Removal fraction for random sampling; partition uses count equal chunks."""
-    sampling_seed: int = 42
+    fraction: float = 0.0
+    """Zero partitions the pool into count subsets; a positive value draws
+    count random subsets containing this fraction of the pool."""
     manifest: str = ""
     """Optional subsets.json to reuse instead of sampling."""
     paths: list[str] = field(default_factory=list)
@@ -70,10 +67,6 @@ class LDSConfig(Serializable):
     """Exclusive final subset index; None uses the full list."""
 
     def __post_init__(self):
-        if self.sampling not in ("partition", "random"):
-            raise ValueError("sampling must be partition or random")
-        if not 0 < self.fraction <= 1:
-            raise ValueError("fraction must be in (0, 1]")
         if self.start < 0 or (self.stop is not None and self.stop <= self.start):
             raise ValueError("LDS requires 0 <= start < stop")
 
@@ -83,7 +76,7 @@ class FilterConfig(Serializable):
     """Remove one ranked tail and optionally compare with random removals."""
 
     direction: Literal["proponents", "detractors"] = "proponents"
-    fraction: float = 0.05
+    fraction: float = 0.01
     """Fraction of the eligible data to remove."""
     controls: ControlsConfig = field(default_factory=ControlsConfig)
 
@@ -132,7 +125,7 @@ def migrate_validation_config(obj: dict) -> dict:
                 f"Cannot mix nested method with legacy fields: {sorted(legacy)}"
             )
         return obj
-    if method is None and not legacy and obj.get("seed", 42) == 42:
+    if method is None and not legacy:
         return obj
     warnings.warn(
         "Flat validation options are deprecated; use a nested method config "
@@ -147,7 +140,6 @@ def migrate_validation_config(obj: dict) -> dict:
     paths = old.get("retrained_dir", [])
     if isinstance(paths, str):
         paths = [p for p in paths.split(",") if p]
-    sampling_seed = obj.get("seed", 42)
     if method == "lds":
         if old.get("weight_lrs") and not paths:
             obj["method"] = {"kind": "weight_step", "lrs": old["weight_lrs"]}
@@ -157,9 +149,7 @@ def migrate_validation_config(obj: dict) -> dict:
                 "subsets": "bank" if paths else "retrain",
                 "paths": paths,
                 "count": count,
-                "sampling": "random" if fraction > 0 else "partition",
-                "fraction": fraction if fraction > 0 else 0.05,
-                "sampling_seed": sampling_seed,
+                "fraction": fraction,
                 "manifest": old.get("subsets", ""),
                 "start": old.get("subset_start", 0),
                 "stop": old.get("subset_stop"),
@@ -186,7 +176,6 @@ def migrate_validation_config(obj: dict) -> dict:
             controls = {
                 "kind": "retrain",
                 "count": count,
-                "sampling_seed": sampling_seed,
             }
         else:
             controls = {"kind": "none"}

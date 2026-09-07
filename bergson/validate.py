@@ -330,10 +330,10 @@ def load_bank_losses(
 
 
 def _baseline_subsets(
-    controls: ControlsConfig, valid_indices: torch.Tensor, k: int
+    controls: ControlsConfig, valid_indices: torch.Tensor, k: int, seed: int
 ) -> list[torch.Tensor]:
     """Random removal sets of ``k`` documents to compare the filter against."""
-    rng = torch.Generator().manual_seed(controls.sampling_seed)
+    rng = torch.Generator().manual_seed(seed)
     return [
         valid_indices[torch.randperm(len(valid_indices), generator=rng)[:k]]
         for _ in range(controls.count or 0)
@@ -556,7 +556,7 @@ def tail_filter_retrain(
         random_losses = per_subset.reshape(len(subsets), num_queries)
         source = "bank " + ", ".join(str(d) for d in dirs)
     elif controls.kind == "retrain":
-        subsets = _baseline_subsets(controls, valid_indices, num_filtered)
+        subsets = _baseline_subsets(controls, valid_indices, num_filtered, run_cfg.seed)
         if global_rank == 0:
             print(f"Retraining {len(subsets)} random subsets of {num_filtered} docs")
         random_baseline = baseline_vec
@@ -771,8 +771,8 @@ def validate_scores(
         with open(subsets_path) as f:
             subsets = [torch.tensor(s, dtype=torch.long) for s in json.load(f)]
     else:
-        rng = torch.Generator().manual_seed(method.sampling_seed)
-        if method.sampling == "random":
+        rng = torch.Generator().manual_seed(run_cfg.seed)
+        if method.fraction > 0:
             # Draw potentially overlapping samples
             subset_size = max(1, round(method.fraction * len(valid_indices)))
 
@@ -792,7 +792,7 @@ def validate_scores(
             # but prevents the early subsets from being biased towards higher
             # or lower scores.
             subsets = list(perm.chunk(method.count))
-            rng = random.Random(method.sampling_seed)
+            rng = random.Random(run_cfg.seed)
             rng.shuffle(subsets)
 
     start = run_cfg.method.start

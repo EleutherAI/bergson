@@ -24,7 +24,7 @@ def test_filter_cli_survives_yaml_roundtrip(tmp_path):
             "1",
         ]
     ).prog.command
-    assert cfg.method == FilterConfig(fraction=0.05, controls=ControlsConfig(count=1))
+    assert cfg.method == FilterConfig(fraction=0.01, controls=ControlsConfig(count=1))
 
     save_run_config(cfg, tmp_path)
     restored = parse_steps(read_config(tmp_path)["steps"], {"validate": Validate})[0][1]
@@ -42,9 +42,8 @@ def test_legacy_filter_preserves_removal_size_and_sampling_seed():
                 "seed": 9,
             }
         )
-    assert cfg.method == FilterConfig(
-        fraction=1 / 3, controls=ControlsConfig(count=3, sampling_seed=9)
-    )
+    assert cfg.method == FilterConfig(fraction=1 / 3, controls=ControlsConfig(count=3))
+    assert cfg.seed == 9
     payload = cfg.to_dict()
     assert payload["method"]["kind"] == "filter"
     assert "num_subsets" not in payload

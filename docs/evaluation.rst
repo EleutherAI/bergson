@@ -22,7 +22,7 @@ Filtering
 ~~~~~~~~~
 
 Remove a ranked fraction of the data and compare its query loss change with
-random removals of the same size. The fraction defaults to 0.05; random controls
+random removals of the same size. The fraction defaults to 0.01; random controls
 default to three retrains.
 
 .. code-block:: bash
@@ -56,12 +56,11 @@ Equivalent YAML:
            controls:
              kind: retrain
              count: 3
-             sampling_seed: 42
 
 Use ``controls: {kind: none}`` to omit the comparison, or
 ``controls: {kind: bank, paths: [runs/bank], count: 2}`` to reuse retrains.
-A random control is a new random removal set; ``sampling_seed`` controls those
-sets. The shared training ``seed`` controls training randomness.
+A random control is a new random removal set. The shared ``seed`` controls
+subset selection and training randomness.
 
 LDS
 ~~~
@@ -73,7 +72,7 @@ data:
 .. code-block:: bash
 
    bergson validate runs/lds --scores runs/magic/scores \
-       --method lds --sampling random --fraction 0.05 --count 100
+       --method lds --fraction 0.05 --count 100
    bergson validate runs/lds-bank --scores runs/magic/scores \
        --method lds --subsets bank --paths runs/bank
 
@@ -86,18 +85,18 @@ data:
          method:
            kind: lds
            subsets: retrain
-           sampling: random
            fraction: 0.05
            count: 100
-           sampling_seed: 42
            start: 0
            stop: null
 
-``sampling: partition`` divides the pool by ``count``. With ``sampling: random``,
-``fraction`` sets the removal size. ``manifest`` can point to an existing
+``fraction: 0`` divides the pool into ``count`` subsets. A positive ``fraction``
+draws ``count`` independent random subsets of that size. Subset selection uses
+the shared training ``seed``. ``manifest`` can point to an existing
 ``subsets.json``; otherwise an existing manifest in the run directory is reused.
-``start`` and ``stop`` select a range for sharded retraining or evaluation. To evaluate a bank, set
-``subsets: bank`` and ``paths: [runs/bank]`` in the LDS method config.
+``start`` and ``stop`` select a range for sharded retraining or evaluation.
+To evaluate a bank, set ``subsets: bank`` and ``paths: [runs/bank]`` in the LDS
+method config.
 
 Weight steps and migration
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -113,8 +112,7 @@ entry. Newly saved configs use a ``kind`` tag to identify the selected method.
 Mixing legacy flat options with a nested method config is rejected.
 
 CLI invocations and direct Python construction should use the new method configs:
-``--num_subsets`` becomes ``--count``, ``--subset_fraction`` becomes ``--fraction``
-(with ``--sampling random`` for LDS), and ``--retrained_dir`` becomes the selected
-bank source's ``--paths``. The old ``--method filter-proponents`` becomes
+``--num_subsets`` becomes ``--count``, ``--subset_fraction`` becomes ``--fraction``,
+and ``--retrained_dir`` becomes the selected bank source's ``--paths``. The old ``--method filter-proponents`` becomes
 ``--method filter --direction proponents``. The legacy global ``controls`` modes
 are replaced by the filtering ``--controls retrain/bank/none`` selector.
