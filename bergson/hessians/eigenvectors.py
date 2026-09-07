@@ -181,6 +181,12 @@ class LambdaCollector(HookCollectorBase):
                 device="cpu", non_blocking=False
             )
 
+    def fit_state(self) -> dict[str, Tensor]:
+        return dict(self.eigenvalue_corrections)
+
+    def load_fit_state(self, state: dict[str, Tensor]) -> None:
+        self.eigenvalue_corrections = {k: v.cpu() for k, v in state.items()}
+
     def process_batch(self, indices: list[int], **kwargs) -> None:
         """No per-batch processing needed for lambda collection."""
         pass

@@ -6,6 +6,8 @@ from abc import ABC, abstractmethod
 from contextlib import ContextDecorator, nullcontext
 from dataclasses import astuple, dataclass, field
 from fnmatch import fnmatchcase
+from itertools import islice
+from pathlib import Path
 from typing import Callable, Literal, Mapping, Optional
 
 import numpy as np
@@ -30,6 +32,7 @@ from transformers import PreTrainedModel
 
 from bergson.config import AttentionConfig, HessianConfig, IndexConfig
 from bergson.data import compute_num_token_grads, pad_and_tensor
+from bergson.distributed import assert_ranks_agree
 from bergson.gradients import (
     AdafactorNormalizer,
     AdamNormalizer,
@@ -59,7 +62,18 @@ class HookCollectorBase(ContextDecorator, ABC):
         - teardown(): Clean up and save results
         - forward_hook(): Process activations during forward pass
         - backward_hook(): Process gradients during backward pass
+
+    Subclasses that accumulate across batches may also implement
+    ``fit_state``/``load_fit_state`` to become resumable.
     """
+
+    def fit_state(self) -> dict[str, Tensor] | None:
+        """This rank's accumulators, or None when the collector is not resumable."""
+        return None
+
+    def load_fit_state(self, state: dict[str, Tensor]) -> None:
+        """Restore accumulators saved by ``fit_state``."""
+        raise NotImplementedError
 
     model: nn.Module
     """ The model to attach forward and backward hooks to. """
@@ -854,9 +868,55 @@ class CollectorComputer:
 
         return prof
 
+    def _fit_state_path(self, state_name: str) -> str:
+        return os.path.join(
+            self.cfg.partial_run_path, f"{state_name}_rank{self.rank}.pt"
+        )
+
+    def _load_fit_state(self, state_name: str, resume: bool) -> tuple[int, int]:
+        """Restore the collector's accumulators. Returns (cursor, tokens)."""
+        path = self._fit_state_path(state_name)
+        if not resume or not os.path.exists(path):
+            assert_ranks_agree(0, self.device, f"{state_name} cursor")
+            return 0, 0
+
+        saved = torch.load(path, map_location=self.device, weights_only=True)
+        # A different batch plan makes the cursor meaningless.
+        if saved["num_batches"] != len(self.batches):
+            raise RuntimeError(
+                f"{path} was written for {saved['num_batches']} batches but this "
+                f"run has {len(self.batches)}; delete it to start over."
+            )
+        cursor = int(saved["cursor"])
+        # The hooks all-reduce per batch, so ranks resuming at different
+        # cursors would pair up different documents.
+        assert_ranks_agree(cursor, self.device, f"{state_name} cursor")
+        self.collector.load_fit_state(saved["accumulators"])
+        self.logger.info(f"Resuming {state_name} from batch {cursor}")
+        return cursor, int(saved["total_processed"])
+
+    def _save_fit_state(self, state_name: str, cursor: int, total_processed) -> None:
+        accumulators = self.collector.fit_state()
+        if accumulators is None:
+            return
+        path = self._fit_state_path(state_name)
+        torch.save(
+            {
+                "cursor": cursor,
+                "total_processed": int(total_processed.item()),
+                "num_batches": len(self.batches),
+                "accumulators": accumulators,
+            },
+            path + ".tmp",
+        )
+        os.replace(path + ".tmp", path)
+
     def run_with_collector_hooks(
         self,
         desc: Optional[str] = None,
+        state_name: str | None = None,
+        save_every: int = 0,
+        resume: bool = False,
     ):
         """
         Run the main computation loop over all batches.
@@ -867,14 +927,25 @@ class CollectorComputer:
 
         Args:
             desc: Optional description string for the tqdm progress bar.
+            state_name: Filename stem for this pass's fit state.
+            save_every: Documents between fit-state saves; 0 disables saving.
+            resume: Continue from a saved fit state when one is present.
         """
-        total_processed = torch.tensor(0, device=self.device)
+        if state_name is not None and self.collector.fit_state() is not None:
+            state = state_name
+            start, resumed_tokens = self._load_fit_state(state, resume)
+        else:
+            state, start, resumed_tokens = None, 0, 0
+        total_processed = torch.tensor(resumed_tokens, device=self.device)
+        since_save = 0
         prof = self._setup_profiler()
         step = 0
         with prof:
-            for indices in tqdm(
-                self.batches,
+            for done, indices in tqdm(
+                islice(enumerate(self.batches), start, None),
                 desc=f"Computing {desc}",
+                initial=start,
+                total=len(self.batches),
             ):
                 batch = self.data[indices]
 
@@ -910,7 +981,14 @@ class CollectorComputer:
 
                 self.collector.process_batch(indices, losses=losses)
 
+                since_save += len(indices)
+                if state is not None and save_every > 0 and since_save >= save_every:
+                    self._save_fit_state(state, done + 1, total_processed)
+                    since_save = 0
+
         self.collector.teardown()
+        if state is not None:
+            Path(self._fit_state_path(state)).unlink(missing_ok=True)
 
         if dist.is_initialized():
             dist.all_reduce(total_processed, op=dist.ReduceOp.SUM)

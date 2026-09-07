@@ -892,6 +892,12 @@ class HessianConfig(Serializable):
     """Whether to use dataset labels for Hessian (empirical Fisher) approximation.
     If false, the model predictions will be used."""
 
+    fit_save_every: int = 0
+    """How many documents between fit-state saves. 0 disables saving."""
+
+    resume: bool = False
+    """Resume an interrupted fit from its saved state."""
+
 
 @dataclass
 class HessianPipelineConfig:

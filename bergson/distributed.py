@@ -20,6 +20,21 @@ from bergson.utils.utils import dist_backend, dist_device_id, get_device_index
 DIST_TIMEOUT = timedelta(minutes=float(os.environ.get("BERGSON_DIST_TIMEOUT_MIN", 180)))
 
 
+def assert_ranks_agree(value: int, device, what: str) -> None:
+    """Raise unless every rank passes the same ``value``."""
+    if not dist.is_initialized():
+        return
+    t = torch.tensor([value], device=device, dtype=torch.long)
+    lo, hi = t.clone(), t.clone()
+    dist.all_reduce(lo, op=dist.ReduceOp.MIN)
+    dist.all_reduce(hi, op=dist.ReduceOp.MAX)
+    if lo.item() != hi.item():
+        raise RuntimeError(
+            f"{what} disagrees across ranks ({lo.item()}..{hi.item()}); "
+            "delete the state files to start over."
+        )
+
+
 def init_dist(rank: int, local_rank: int, world_size: int) -> None:
     """Pin CUDA device and (if multi-rank) join the NCCL group set up by
     ``launch_distributed_run`` via MASTER_ADDR/MASTER_PORT env vars."""

@@ -94,6 +94,18 @@ class CovarianceCollector(HookCollectorBase):
         # Accumulate
         S_cov_po.add_(update_slice_po)
 
+    def fit_state(self) -> dict[str, Tensor]:
+        return {
+            **{f"A/{k}": v for k, v in self.A_cov_dict.items()},
+            **{f"S/{k}": v for k, v in self.S_cov_dict.items()},
+        }
+
+    def load_fit_state(self, state: dict[str, Tensor]) -> None:
+        for key, value in state.items():
+            prefix, name = key.split("/", 1)
+            target = self.A_cov_dict if prefix == "A" else self.S_cov_dict
+            target[name].copy_(value.to(target[name].device))
+
     def process_batch(self, indices: list[int], **kwargs) -> None:
         """No per-batch processing needed for covariance collection."""
         pass
