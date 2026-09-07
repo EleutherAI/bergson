@@ -54,7 +54,11 @@ steps:
       overwrite: true
 
       scores: runs/compare_wikitext/ekfac/scores
-      retrained_dir: runs/compare_wikitext/random
+      method:
+        kind: lds
+        subsets: bank
+        paths:
+          - runs/compare_wikitext/random
 
       data:
         dataset: EleutherAI/bergson-wikitext-512-chunks

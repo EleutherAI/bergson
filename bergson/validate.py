@@ -11,7 +11,6 @@ import hashlib
 import json
 import os
 import random
-from collections.abc import Sequence
 from pathlib import Path
 from typing import Callable
 
@@ -32,6 +31,12 @@ from transformers.utils.logging import (
 
 from .config.config import ValidationConfig
 from .config.config_io import get_config_field, save_run_config
+from .config.validation import (
+    ControlsConfig,
+    FilterConfig,
+    LDSConfig,
+    WeightStepConfig,
+)
 from .data import load_scores_loss_signed, pad_and_tensor
 from .magic.data_stream import DataStream, mask_padded_rows, pad_dataset_to_batch_size
 from .magic.grad_accum import loss_denom, split_batch
@@ -232,7 +237,7 @@ def load_and_validate_subsets_match(
         if max(abs(n - num_filtered) for n in sizes) > 1:
             raise ValueError(
                 f"{d} removes {sizes} docs per subset but the filter removes "
-                f"{num_filtered}; set subset_fraction to match."
+                f"{num_filtered}; set method.fraction to match."
             )
         for field, ours in [
             ("model", run_cfg.model),
@@ -325,13 +330,13 @@ def load_bank_losses(
 
 
 def _baseline_subsets(
-    run_cfg: ValidationConfig, valid_indices: torch.Tensor, k: int
+    controls: ControlsConfig, valid_indices: torch.Tensor, k: int, seed: int
 ) -> list[torch.Tensor]:
     """Random removal sets of ``k`` documents to compare the filter against."""
-    rng = torch.Generator().manual_seed(run_cfg.seed)
+    rng = torch.Generator().manual_seed(seed)
     return [
         valid_indices[torch.randperm(len(valid_indices), generator=rng)[:k]]
-        for _ in range(run_cfg.num_subsets)
+        for _ in range(controls.count or 0)
     ]
 
 
@@ -418,30 +423,38 @@ def tail_filter_retrain(
     num_queries: int,
     pad_count: int,
     weight_pad_count: int,
-    retrained_dir: Sequence[str],
 ):
     """Retrain with one tail of the score ranking filtered out.
 
     Random filters removing the same number of documents run alongside it,
-    retrained here or read from a bank; ``num_subsets = 0`` and no bank skips
-    them. ``load_scores_loss_signed`` signs proponents negative (they reduce
+    retrained here or read from a bank; ``kind: none`` omits them.
+    ``load_scores_loss_signed`` signs proponents negative (they reduce
     query loss), so a positive ``loss_change`` means the filter worsened query
     performance -- the opposite sign to the LDS ``diff`` column.
     """
+    method = run_cfg.method
+    assert isinstance(method, FilterConfig)
+    controls = method.controls
     if run_cfg.exclude_zero_scores:
         valid_indices = torch.nonzero((flat_scores != 0).any(dim=1), as_tuple=True)[0]
     else:
         valid_indices = torch.arange(flat_scores.shape[0])
 
     pool = len(valid_indices)
-    if run_cfg.subset_fraction == 0.0:
-        if run_cfg.num_subsets <= 0:
-            raise ValueError(
-                "subset_fraction must be positive when num_subsets is 0: there is "
-                "no leave-k-out chunk size for the filter to match"
-            )
-        run_cfg.subset_fraction = 1 / run_cfg.num_subsets
-    num_filtered = max(1, round(run_cfg.subset_fraction * pool))
+    num_filtered = max(1, round(method.fraction * pool))
+
+    # Resolve and validate bank metadata before any ranked retraining.
+    dirs = []
+    subsets = []
+    if controls.kind == "bank":
+        dirs = [Path(d) for d in controls.paths]
+        subsets = load_and_validate_subsets_match(run_cfg, dirs, num_filtered)
+        if controls.count is not None:
+            if controls.count > len(subsets):
+                raise ValueError("control count exceeds the number of bank subsets")
+            subsets = subsets[: controls.count]
+        if not subsets:
+            raise ValueError("Control bank contains no subsets")
 
     baseline_vec = (
         baseline_per_doc[:num_queries] if multi_query else torch.tensor([baseline])
@@ -487,7 +500,7 @@ def tail_filter_retrain(
     hf_disable_pbar()
     hf_set_verbosity_error()
 
-    csv_path = os.path.join(run_cfg.run_path, f"{run_cfg.method.replace('-', '_')}.csv")
+    csv_path = os.path.join(run_cfg.run_path, f"{method.name.replace('-', '_')}.csv")
     filter_csv = CSVWriter(
         csv_path,
         columns=["query", "n_removed", "baseline_loss", "filtered_loss", "loss_change"],
@@ -495,10 +508,10 @@ def tail_filter_retrain(
     )
 
     filter_changes = torch.zeros(num_queries)
-    pbar = tqdm(range(num_queries), desc=run_cfg.method, disable=global_rank != 0)
+    pbar = tqdm(range(num_queries), desc=method.name, disable=global_rank != 0)
     for q in pbar:
         removed = _select_filter_slice(
-            flat_scores, valid_indices, q, num_filtered, run_cfg.method
+            flat_scores, valid_indices, q, num_filtered, method.name
         )
         losses = retrain_and_eval(removed)
 
@@ -516,18 +529,14 @@ def tail_filter_retrain(
     filter_csv.close()
     if global_rank == 0:
         print(
-            f"{run_cfg.method}: mean loss change {filter_changes.mean():.6f} "
+            f"{method.name}: mean loss change {filter_changes.mean():.6f} "
             f"over {num_queries} quer{'y' if num_queries == 1 else 'ies'} "
             f"({num_filtered} of {pool} docs removed per query, "
             f"{num_filtered / pool:.3%})"
         )
         print(f"Saved tail-filter data to {csv_path}")
 
-    # Load existing baseline if it exists - a random filter retrain.
-    # Otherwise compute the baseline.
-    dirs = [Path(d) for d in retrained_dir]
-    if dirs:
-        subsets = load_and_validate_subsets_match(run_cfg, dirs, num_filtered)
+    if controls.kind == "bank":
         bank_base, bank_base_per_doc, per_subset = load_bank_losses(
             run_cfg,
             dirs,
@@ -544,8 +553,8 @@ def tail_filter_retrain(
         )
         random_losses = per_subset.reshape(len(subsets), num_queries)
         source = "bank " + ", ".join(str(d) for d in dirs)
-    elif run_cfg.num_subsets > 0:
-        subsets = _baseline_subsets(run_cfg, valid_indices, num_filtered)
+    elif controls.kind == "retrain":
+        subsets = _baseline_subsets(controls, valid_indices, num_filtered, run_cfg.seed)
         if global_rank == 0:
             print(f"Retraining {len(subsets)} random subsets of {num_filtered} docs")
         random_baseline = baseline_vec
@@ -558,10 +567,7 @@ def tail_filter_retrain(
         source = "retrained here"
     else:
         if global_rank == 0:
-            print(
-                "No random baseline: set num_subsets > 0, or retrained_dir to a "
-                "path to random-subset retrains"
-            )
+            print("Skipping random baseline (controls kind: none)")
         return
 
     if global_rank != 0:
@@ -593,7 +599,7 @@ def tail_filter_retrain(
 
     _report_filter_baseline(
         run_cfg.run_path,
-        run_cfg.method,
+        method.name,
         filter_changes,
         random_changes,
         num_filtered,
@@ -618,7 +624,6 @@ def validate_scores(
     query_weight_pad_count: int,
     pad_count: int,
     weight_pad_count: int,
-    retrained_dir: Sequence[str] = (),
 ):
     """Validate attribution scores via leave-subset-out retraining.
 
@@ -655,7 +660,7 @@ def validate_scores(
     num_queries = scores.shape[-1] if multi_query else 1
     flat_scores = scores.reshape(-1, num_queries)
 
-    if run_cfg.method != "lds":
+    if isinstance(run_cfg.method, FilterConfig):
         tail_filter_retrain(
             run_cfg,
             flat_scores,
@@ -671,11 +676,10 @@ def validate_scores(
             num_queries=num_queries,
             pad_count=pad_count,
             weight_pad_count=weight_pad_count,
-            retrained_dir=retrained_dir,
         )
         return
 
-    if run_cfg.weight_lrs:
+    if isinstance(run_cfg.method, WeightStepConfig):
         # Gradient step on the data weights: retrain with w = 1 - lr * score
         # for each lr and compare the query loss change to the first-order
         # prediction lr * <s_q, s_step>.
@@ -692,7 +696,7 @@ def validate_scores(
             enabled=global_rank == 0,
         )
 
-        for lr in run_cfg.weight_lrs:
+        for lr in run_cfg.method.lrs:
             trainer, fwd_state, model = prepare_trainer(run_cfg, rank, schedule)
             fwd_state.detach_()
 
@@ -756,21 +760,25 @@ def validate_scores(
     else:
         valid_indices = torch.arange(flat_scores.shape[0])
 
-    subsets_path = run_cfg.subsets or os.path.join(run_cfg.run_path, "subsets.json")
+    method = run_cfg.method
+    assert isinstance(method, LDSConfig)
+    if method.subsets == "bank":
+        raise ValueError("LDS bank sources must use evaluate_retrained")
+    subsets_path = method.manifest or os.path.join(run_cfg.run_path, "subsets.json")
     if os.path.exists(subsets_path):
         with open(subsets_path) as f:
             subsets = [torch.tensor(s, dtype=torch.long) for s in json.load(f)]
     else:
         rng = torch.Generator().manual_seed(run_cfg.seed)
-        if run_cfg.subset_fraction > 0:
+        if method.fraction > 0:
             # Draw potentially overlapping samples
-            subset_size = max(1, round(run_cfg.subset_fraction * len(valid_indices)))
+            subset_size = max(1, round(method.fraction * len(valid_indices)))
 
             subsets = [
                 valid_indices[
                     torch.randperm(len(valid_indices), generator=rng)[:subset_size]
                 ]
-                for _ in range(run_cfg.num_subsets)
+                for _ in range(method.count)
             ]
         else:
             # Draw non-overlapping samples
@@ -781,12 +789,12 @@ def validate_scores(
             # the final correlation since all subsets are eventually evaluated,
             # but prevents the early subsets from being biased towards higher
             # or lower scores.
-            subsets = list(perm.chunk(run_cfg.num_subsets))
+            subsets = list(perm.chunk(method.count))
             rng = random.Random(run_cfg.seed)
             rng.shuffle(subsets)
 
-    start = run_cfg.subset_start
-    stop = len(subsets) if run_cfg.subset_stop is None else run_cfg.subset_stop
+    start = run_cfg.method.start
+    stop = len(subsets) if run_cfg.method.stop is None else run_cfg.method.stop
     sliced = (start, stop) != (0, len(subsets))
 
     csv_name = f"validation_{start}_{stop}.csv" if sliced else "validation.csv"
@@ -948,6 +956,7 @@ def evaluate_retrained(
     ``save_models=true`` and evaluates attribution scores. No training
     happens so evaluation is cheap.
     """
+    assert isinstance(run_cfg.method, LDSConfig)
     assert score_path, "evaluate_retrained requires precomputed --scores"
     dirs = [
         Path(d)
@@ -1047,8 +1056,8 @@ def evaluate_retrained(
     else:
         print(f"Baseline query loss (no leave-out): {baseline}")
 
-    start = run_cfg.subset_start
-    stop = len(subsets) if run_cfg.subset_stop is None else run_cfg.subset_stop
+    start = run_cfg.method.start
+    stop = len(subsets) if run_cfg.method.stop is None else run_cfg.method.stop
     sliced = (start, stop) != (0, len(subsets))
 
     csv_name = f"validation_{start}_{stop}.csv" if sliced else "validation.csv"

@@ -88,7 +88,7 @@ def test_bank_of_the_same_removal_size_is_accepted(tmp_path):
 
 def test_bank_of_a_different_removal_size_is_rejected(tmp_path):
     root = _bank(tmp_path, [[0, 1], [2, 3]])
-    with pytest.raises(ValueError, match="set subset_fraction to match"):
+    with pytest.raises(ValueError, match="set method.fraction to match"):
         load_and_validate_subsets_match(_cfg(tmp_path), [root], num_filtered=10)
 
 

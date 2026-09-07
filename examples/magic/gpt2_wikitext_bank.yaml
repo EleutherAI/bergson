@@ -1,5 +1,5 @@
 # Build a GPT-2 / WikiText leave-k-out re-train bank (single node): MAGIC
-# attribution plus 400 retrained leave-out models saved for later evaluation.
+# attribution plus 100 retrained leave-out models saved for later evaluation.
 
 # Run with `bergson examples/magic/gpt2_wikitext_bank.yaml`
 
@@ -35,9 +35,10 @@ steps:
         lr_end: 0.00008
         warmup_steps: 0.25
 
-      subset_strategy: random
       wandb_project: magic
-      num_subsets: 100
-      subset_fraction: 0.01
-      save_optimizer_state: True
-      save_retrained_models: True
+      method:
+        kind: lds
+        count: 100
+        fraction: 0.01
+      save_optimizer_state: last
+      save_models: True

@@ -12,6 +12,7 @@ import pytest
 import torch
 
 from bergson.config import DataConfig, DistributedConfig, LRScheduleConfig
+from bergson.config.validation import LDSConfig
 from bergson.data import load_scores_loss_signed
 from bergson.magic.cli import MagicConfig, run_magic
 
@@ -64,7 +65,7 @@ def magic_cfg(
         batch_size=8,
         num_epochs=1,
         overwrite=True,
-        num_subsets=2,
+        method=LDSConfig(count=2),
         max_grad_norm=MAX_GRAD_NORM if clip else None,
         grad_accum_steps=grad_accum,
         train_mode=dropout > 0,

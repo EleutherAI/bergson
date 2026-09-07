@@ -21,8 +21,18 @@ from .config import (
     TrainingConfig,
     ValidationConfig,
 )
+from .validation import (
+    ControlsConfig,
+    FilterConfig,
+    LDSConfig,
+    WeightStepConfig,
+)
 
 __all__ = [
+    "ControlsConfig",
+    "FilterConfig",
+    "LDSConfig",
+    "WeightStepConfig",
     "ApproxUnrollingConfig",
     "AttentionConfig",
     "AttributionConfig",
