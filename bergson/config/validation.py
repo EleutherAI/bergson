@@ -147,7 +147,7 @@ class WeightStepConfig(Serializable):
 
     def __post_init__(self):
         if not self.lrs:
-            raise ValueError("weight-step requires at least one lr")
+            raise ValueError("weight_step requires at least one lr")
 
 
 LEGACY_FIELDS = {
@@ -191,7 +191,7 @@ def migrate_validation_config(obj: dict) -> dict:
     sampling_seed = obj.get("seed", 42)
     if method == "lds":
         if old.get("weight_lrs") and not paths:
-            obj["method"] = {"kind": "weight-step", "lrs": old["weight_lrs"]}
+            obj["method"] = {"kind": "weight_step", "lrs": old["weight_lrs"]}
         else:
             source = (
                 {"source": "bank", "paths": paths}

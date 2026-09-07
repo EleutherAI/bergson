@@ -478,11 +478,11 @@ class ValidationConfig(TrainingConfig, ABC):
     """Exclude rows whose attribution scores are all zero from the removal pool."""
 
     method: Union[LDSConfig, FilterConfig, WeightStepConfig] = tagged_subgroups(
-        {"lds": LDSConfig, "filter": FilterConfig, "weight-step": WeightStepConfig},
+        {"lds": LDSConfig, "filter": FilterConfig, "weight_step": WeightStepConfig},
         default="lds",
         tag="kind",
     )
-    """Validation experiment; only its own sampling/control options are exposed."""
+    """Configuration for the selected validation method."""
 
     @classmethod
     def from_dict(cls, obj, drop_extra_fields=None):

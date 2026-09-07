@@ -103,8 +103,8 @@ Weight steps and migration
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Weight-step validation is a separate method:
-``--method weight-step --lrs 0.1 0.2``, or
-``method: {kind: weight-step, lrs: [0.1, 0.2]}`` in YAML.
+``--method weight_step --lrs 0.1 0.2``, or
+``method: {kind: weight_step, lrs: [0.1, 0.2]}`` in YAML.
 
 Existing flat YAML configs remain readable with a deprecation warning. Migration
 preserves their old defaults, including filtering's implicit ``1 / num_subsets``
