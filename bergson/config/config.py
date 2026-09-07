@@ -475,7 +475,9 @@ class ValidationConfig(TrainingConfig, ABC):
     """Weight assigned to removed documents; zero means full removal."""
 
     exclude_zero_scores: bool = False
-    """Exclude rows whose attribution scores are all zero from the removal pool."""
+    """When True, drop doc_ids with score == 0 from the validation
+    permutation. These scores may be produced by items with fewer than
+    2 tokens."""
 
     method: Union[LDSConfig, FilterConfig, WeightStepConfig] = tagged_subgroups(
         {"lds": LDSConfig, "filter": FilterConfig, "weight_step": WeightStepConfig},
