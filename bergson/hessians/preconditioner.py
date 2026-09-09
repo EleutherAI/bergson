@@ -40,8 +40,8 @@ from bergson.hessians.sharded_computation import ShardedMul
 from bergson.utils.logger import get_logger
 
 JOINT_LAYOUT_FILE = "joint_layout.json"
-"""Written next to a joint Gram by ``JointAutocorrelationCollector``; its presence selects
-:class:`JointDensePreconditioner`."""
+"""Written next to a joint Gram by ``JointAutocorrelationCollector``; its
+presence selects :class:`JointDensePreconditioner`."""
 
 
 @runtime_checkable
