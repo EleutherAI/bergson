@@ -1,0 +1,45 @@
+# TrackStar scores for the eps_root 1e-17 WikiText model against test[0:50],
+# without and with Adam second-moment normalization (the second step uses the
+# optimizer state exported with the final interval checkpoint). Same settings
+# as compare_wikitext/trackstar*.yaml. LDS: scripts/lds_from_bank.py.
+
+# Run with `bergson examples/compare_wikitext_stdadam/trackstar.yaml`
+
+run_path: runs/compare_wikitext_stdadam/trackstar
+steps:
+  - trackstar: &trackstar
+      index_cfg: &index
+        projection_dim: 32
+        run_path: runs/compare_wikitext_stdadam/trackstar
+        model: runs/compare_wikitext_stdadam/interval/exported/checkpoint-72
+        overwrite: true
+        # GPT-2's max context length is 1024
+        token_batch_size: 1024
+        # GPT-2 uses an nn.Linear for its LM head.
+        filter_modules: "lm_head"
+        distributed:
+          nproc_per_node: 4
+          nnode: 1
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "train"
+          chunk_length: 0
+
+      trackstar_cfg:
+        stats_sample_size: 10000
+        query:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "test[0:50]"
+          chunk_length: 0
+        preprocess_cfg:
+          unit_normalize: true
+          aggregation: none
+        score_cfg:
+          batch_size: 1024
+
+  - trackstar:
+      <<: *trackstar
+      index_cfg:
+        <<: *index
+        run_path: runs/compare_wikitext_stdadam/trackstar_adam
+        optimizer_state: runs/compare_wikitext_stdadam/interval/exported/checkpoint-72/optimizer.pt

@@ -1,0 +1,57 @@
+# SOURCE (approximate unrolling, Bae et al. 2024) for the eps_root 1e-17
+# WikiText run: plain and Adam-preconditioned variants, scored at the final
+# interval checkpoint from interval.yaml; lr_list and step_size_list are
+# inferred from that run's log_history.json. LDS is computed against the
+# magic.yaml bank with scripts/lds_from_bank.py.
+
+# Run with `bergson examples/compare_wikitext_stdadam/source.yaml`
+
+run_path: runs/compare_wikitext_stdadam/source
+steps:
+  - approxunrolling: &source
+      index_cfg: &index
+        run_path: runs/compare_wikitext_stdadam/source
+        model: runs/compare_wikitext_stdadam/interval/exported/checkpoint-72
+        overwrite: true
+        precision: fp32
+        # GPT-2's max context length is 1024.
+        token_batch_size: 1024
+        # GPT-2 uses an nn.Linear for its LM head.
+        filter_modules: "lm_head"
+        distributed:
+          nproc_per_node: 4
+          nnode: 1
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "train"
+          chunk_length: 0
+
+      hessian_cfg:
+        method: kfac
+        hessian_dtype: fp32
+        ev_correction: true
+
+      approx_unrolling_cfg: &unroll
+        checkpoints:
+          - runs/compare_wikitext_stdadam/interval/checkpoints/step_12.ckpt
+          - runs/compare_wikitext_stdadam/interval/checkpoints/step_24.ckpt
+          - runs/compare_wikitext_stdadam/interval/checkpoints/step_36.ckpt
+          - runs/compare_wikitext_stdadam/interval/checkpoints/step_48.ckpt
+          - runs/compare_wikitext_stdadam/interval/checkpoints/step_60.ckpt
+          - runs/compare_wikitext_stdadam/interval/checkpoints/step_72.ckpt
+        segments: 3
+        query:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "test[0:50]"
+          chunk_length: 0
+        # One score column per query, for per-query LDS.
+        query_aggregation: none
+
+  - approxunrolling:
+      <<: *source
+      index_cfg:
+        <<: *index
+        run_path: runs/compare_wikitext_stdadam/source_adam
+      approx_unrolling_cfg:
+        <<: *unroll
+        use_adam_preconditioner: true

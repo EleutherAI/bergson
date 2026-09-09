@@ -1,0 +1,43 @@
+# Re-run the eps_root 1e-17 WikiText training recipe (identical to magic.yaml)
+# with evenly spaced interval checkpoints (72 steps, every 12, including the
+# final state) and Adam state at each, for SOURCE. After it finishes, export
+# the final checkpoint to an HF model dir for the scoring steps:
+#
+#   python -c "from bergson.utils.trainer_export import export_checkpoints;
+#              export_checkpoints('runs/compare_wikitext_stdadam/interval', steps=[72])"
+
+# Run with `bergson examples/compare_wikitext_stdadam/interval.yaml`
+
+run_path: runs/compare_wikitext_stdadam/interval
+steps:
+  - train:
+      run_path: runs/compare_wikitext_stdadam/interval
+      model: gpt2
+      resume: true
+
+      data:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "train"
+        chunk_length: 0
+
+      distributed:
+        nproc_per_node: 4
+        nnode: 1
+
+      batch_size: 256
+      grad_accum_steps: 4
+      num_epochs: 4
+      lr_schedule:
+        lr_scheduler_type: polynomial
+        lr: 0.0004
+        lr_start: 1e-6
+        lr_end: 0.00004
+        warmup_steps: 0.25
+      adam_beta1: 0.9
+      adam_beta2: 0.999
+      eps_root: 1.0e-17
+
+      save_mode: interval
+      save_interval: 12
+      save_optimizer_state: all
+

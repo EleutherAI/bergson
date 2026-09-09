@@ -1,0 +1,39 @@
+# TRAK (Park et al. 2023) scores for the WikiText plain-AdamW model against test[0:50]:
+# per-module random projection (32), Gram fit on the whole
+# training set as one joint Gram over the concatenated per-module sketches
+# (kernel joint), damped inverse (0.1 x mean eigenvalue), (1 - p_i) weighting.
+# Single checkpoint (no ensemble). LDS against the magic.yaml bank:
+# scripts/lds_from_bank.py --sign grad.
+
+# Run with `bergson examples/compare_wikitext_stdadam/trak.yaml`
+
+run_path: runs/compare_wikitext_stdadam/trak
+steps:
+  - trak:
+      index_cfg:
+        projection_dim: 16
+        run_path: runs/compare_wikitext_stdadam/trak
+        model: runs/compare_wikitext_stdadam/interval/exported/checkpoint-72
+        overwrite: true
+        token_batch_size: 1024
+        # GPT-2 uses an nn.Linear for its LM head.
+        filter_modules: "lm_head"
+        distributed:
+          nproc_per_node: 4
+          nnode: 1
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "train"
+          chunk_length: 0
+
+      trak_cfg:
+        query:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "test[0:50]"
+          chunk_length: 0
+        preprocess_cfg:
+          aggregation: none
+          inversion_cfg:
+            damping_factor: 0.1
+        score_cfg:
+          batch_size: 1024
