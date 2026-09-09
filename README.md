@@ -27,10 +27,10 @@ pip install -e .
 
 | Method | LDS [95% CI] | Proponent QLD [95% CI] |
 |:---|:---:|:---:|
-| MAGIC | 0.931 [0.925, 0.936] | pending |
-| EK-FAC | 0.454 [0.426, 0.479] | pending |
+| MAGIC | 0.931 [0.925, 0.936] | 0.100 [0.090, 0.112] |
+| EK-FAC | 0.454 [0.426, 0.479] | 0.070 [0.058, 0.082] |
 | TRAK | 0.215 [0.185, 0.244] | pending |
-| TrackStar | 0.211 [0.183, 0.238] | pending |
+| TrackStar | 0.211 [0.183, 0.238] | 0.035 [0.027, 0.044] |
 | TrackStar+Adam | 0.173 [0.144, 0.201] | pending |
 | SOURCE | 0.165 [0.138, 0.191] | pending |
 | SOURCE-Adam | 0.154 [0.126, 0.181] | pending |
