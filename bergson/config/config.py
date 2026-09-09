@@ -966,3 +966,40 @@ class TrackstarConfig:
 
     resume: bool = False
     """Skip pipeline steps whose output directory already exists."""
+
+
+@dataclass
+class TrakConfig:
+    """Config for the TRAK pipeline (Park et al., 2023): random-projected
+    gradients whitened by the damped inverse of their Gram matrix, weighted by
+    ``1 - p_i`` on the training side, optionally averaged over independently
+    trained checkpoints."""
+
+    query: DataConfig = field(default_factory=DataConfig)
+    """Query dataset specification."""
+
+    preprocess_cfg: PreprocessConfig = field(default_factory=PreprocessConfig)
+    """``inversion_cfg`` sets the Gram damping; ``unit_normalize`` is ignored
+    (TRAK whitens with the full inverse)."""
+
+    score_cfg: ScoreConfig = field(default_factory=ScoreConfig)
+
+    q_weighting: Literal["one_minus_p", "none"] = "one_minus_p"
+    """Multiply each training row's scores by ``1 - p_i``, with ``p_i`` the
+    geometric-mean token probability of the row's labels under the model
+    (TRAK's ``Q`` term). ``none`` leaves the whitened inner products."""
+
+    checkpoints: list[str] = field(default_factory=list)
+    """Independently trained model checkpoints to ensemble. Each runs the full
+    pipeline under ``<run_path>/checkpoint_<i>``; ``<run_path>/scores`` is the
+    mean of their score stores. Empty: use ``index_cfg.model`` alone."""
+
+    stats_sample_size: int | None = None
+    """Number of training examples the Gram is fit on. ``None`` (default)
+    uses the whole training set, as TRAK does."""
+
+    loss_batch_size: int = 32
+    """Rows per forward pass when computing ``p_i``."""
+
+    resume: bool = False
+    """Skip pipeline steps whose output directory already exists."""

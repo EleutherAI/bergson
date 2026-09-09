@@ -28,6 +28,7 @@ from ..config.config import (
     TrackstarConfig,
     TrackstarIndexConfig,
     TrainingConfig,
+    TrakConfig,
     ValidationConfig,
 )
 from ..config.config_io import save_run_config
@@ -266,6 +267,24 @@ class Trackstar(Serializable):
 
         save_run_config(self, self.index_cfg.run_path)
         trackstar(self.index_cfg, self.trackstar_cfg)
+
+
+@dataclass
+class Trak(Serializable):
+    """Run TRAK: projected-gradient Gram, whitened query index, scoring and
+    ``(1 - p)`` weighting as a single pipeline."""
+
+    # TRAK uses random-projection compression, so override the default
+    # projection_dim of 0.
+    index_cfg: TrackstarIndexConfig
+
+    trak_cfg: TrakConfig
+
+    def execute(self):
+        from .trak import trak
+
+        save_run_config(self, self.index_cfg.run_path)
+        trak(self.index_cfg, self.trak_cfg)
 
 
 @dataclass
