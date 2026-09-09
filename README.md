@@ -23,16 +23,7 @@ pip install -e .
 
 ## Functionality
 
-| Method | LDS (GPT-2 fine-tune, eps_root 1e-8 damping) | Training Optimizer |
-|:---|:---:|:---:|
-| MAGIC | **0.983 ± 0.005** | Adam |
-| Shampoo | 0.522 ± 0.037 | Muon |
-| EK-FAC | 0.474 ± 0.036 | Muon |
-| SOURCE | 0.387 ± 0.039 | Adam |
-| EK-FAC | 0.257 ± 0.015 | Adam |
-| TrackStar | 0.184 ± 0.015 | Adam |
-
-With plain AdamW (eps_root 1e-17, betas 0.9/0.999, lr 4e-4; GPT-2 fine-tuned on WikiText for 4 epochs, 100 leave-1%-out retrains, 50 test queries; `examples/compare_wikitext_stdadam`). Proponent QLD is the mean query-loss increase after retraining without the query's top 1% of training documents by each method's scores (random 1% removal: pending).
+Linear datamodeling score (LDS) and proponent-filter query loss delta (QLD) of every method on the same run: GPT-2 fine-tuned on WikiText with plain AdamW (eps_root 1e-17, betas 0.9/0.999, lr 4e-4, 4 epochs), 50 test queries, 100 leave-1%-out retrains. QLD is the mean increase in a query's loss after retraining without that query's top 1% of training documents by the method's scores; removing a random 1% gives pending. Reproduce with `examples/compare_wikitext_stdadam`.
 
 | Method | LDS [95% CI] | Proponent QLD [95% CI] |
 |:---|:---:|:---:|
