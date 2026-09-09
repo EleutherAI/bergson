@@ -876,10 +876,14 @@ class ApproxUnrollingConfig(Serializable):
 class HessianConfig(Serializable):
     """Config for reducing the gradients."""
 
-    method: Literal["kfac", "tkfac", "shampoo", "autocorrelation", "gram"]
-    """Method for approximating the Hessian. ``autocorrelation`` fits a dense
-    per-module Gram of the projected gradients; ``gram`` fits one joint Gram over
-    the concatenation of every module's projected gradient (the TRAK kernel)."""
+    method: Literal["kfac", "tkfac", "shampoo", "autocorrelation"]
+    """Method for approximating the Hessian."""
+
+    scope: Literal["per_module", "joint"] = "per_module"
+    """Which gradient the dense ``autocorrelation`` Gram is taken over: each
+    module's projected gradient separately (a block-diagonal Hessian), or the
+    concatenation of every module's projected gradient as one matrix (the TRAK
+    kernel). Ignored by the factored methods."""
 
     ev_correction: bool = False
     """Whether to additionally compute eigenvalue correction."""
@@ -987,10 +991,10 @@ class TrakConfig:
     score_cfg: ScoreConfig = field(default_factory=ScoreConfig)
 
     kernel: Literal["joint", "per_module"] = "joint"
-    """``joint`` (TRAK): one Gram over the concatenation of all modules' projected
-    gradients, inverted as a single matrix. ``per_module``: a block-diagonal
-    approximation with one Gram per module (Bergson's ``autocorrelation``
-    Hessian), cheaper but not TRAK's kernel."""
+    """Scope of the autocorrelation Gram (``HessianConfig.scope``): ``joint``
+    (TRAK) is one Gram over the concatenation of all modules' projected
+    gradients, inverted as a single matrix; ``per_module`` is the block-diagonal
+    approximation with one Gram per module, cheaper but not TRAK's kernel."""
 
     q_weighting: Literal["one_minus_p", "none"] = "one_minus_p"
     """Multiply each training row's scores by ``1 - p_i``, with ``p_i`` the

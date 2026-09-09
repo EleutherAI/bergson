@@ -15,11 +15,12 @@ projected training gradients and :math:`p_i` is the model's probability of the
 training example's labels (the geometric-mean token probability for a language
 model). :math:`\phi` is Bergson's per-module double-sided random projection,
 concatenated over modules; the Gram :math:`\Phi^\top \Phi` is fit over that
-concatenation as one matrix (Hessian method ``gram``, the default
-``kernel: joint``) and its damped inverse is applied to the query gradients. The
+concatenation as one matrix (the ``autocorrelation`` Hessian with
+``scope: joint``, the default ``kernel: joint``) and its damped inverse is
+applied to the query gradients. The
 damping :math:`\lambda` is ``preprocess_cfg.inversion_cfg.damping_factor`` times
-the mean eigenvalue. ``kernel: per_module`` instead uses Bergson's per-module
-``autocorrelation`` Hessian, a block-diagonal approximation of the same kernel.
+the mean eigenvalue. ``kernel: per_module`` instead uses the per-module Gram (``scope: per_module``),
+a block-diagonal approximation of the same kernel.
 ``projection_target: global`` gives TRAK's single global sketch when its
 per-module ``k x d`` projection matrices fit in memory. The concatenated sketch
 must have at most 20,000 dimensions (for GPT-2's 48 modules, ``projection_dim``

@@ -40,7 +40,7 @@ from bergson.hessians.sharded_computation import ShardedMul
 from bergson.utils.logger import get_logger
 
 JOINT_LAYOUT_FILE = "joint_layout.json"
-"""Written next to a joint Gram by ``GramCollector``; its presence selects
+"""Written next to a joint Gram by ``JointAutocorrelationCollector``; its presence selects
 :class:`JointDensePreconditioner`."""
 
 
@@ -99,7 +99,8 @@ class DensePreconditioner:
 
 class JointDensePreconditioner:
     """One dense ``H^p`` over the concatenation of every module's gradient, in
-    the module order a :class:`~bergson.hessians.autocorrelation.GramCollector`
+    the module order a
+    :class:`~bergson.hessians.autocorrelation.JointAutocorrelationCollector`
     fit it on (the TRAK kernel)."""
 
     def __init__(self, h_inv: Tensor, names: list[str], sizes: list[int]):
