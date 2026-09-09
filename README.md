@@ -32,17 +32,19 @@ pip install -e .
 | EK-FAC | 0.257 ± 0.015 | Adam |
 | TrackStar | 0.184 ± 0.015 | Adam |
 
-With plain AdamW (eps_root 1e-17, betas 0.9/0.999, lr tuned on held-out loss; GPT-2 fine-tuned on 8k SmolLM2 chunks for 2 epochs, 100 leave-1%-out retrains, `examples/compare_smollm2_8k_stdadam`):
+With plain AdamW (eps_root 1e-17, betas 0.9/0.999, lr 4e-4; GPT-2 fine-tuned on WikiText for 4 epochs, 100 leave-1%-out retrains, 50 test queries; `examples/compare_wikitext_stdadam`). Proponent QLD is the mean query-loss increase after retraining without the query's top 1% of training documents by each method's scores (random 1% removal: pending).
 
-| Method | LDS [95% CI] | Training Optimizer |
+| Method | LDS [95% CI] | Proponent QLD [95% CI] |
 |:---|:---:|:---:|
-| MAGIC | **0.925 [0.911, 0.936]** | AdamW |
-| EK-FAC | 0.407 [0.365, 0.444] | AdamW |
-| TrackStar+Adam | 0.171 [0.128, 0.212] | AdamW |
-| SOURCE-Adam | 0.165 [0.113, 0.214] | AdamW |
-| SOURCE | 0.152 [0.102, 0.202] | AdamW |
-| TrackStar | 0.127 [0.085, 0.169] | AdamW |
-| BIF | -0.026 [-0.075, 0.021] | AdamW |
+| MAGIC | pending | pending |
+| EK-FAC | pending | pending |
+| TRAK | pending | pending |
+| TrackStar+Adam | pending | pending |
+| SOURCE-Adam | pending | pending |
+| SOURCE | pending | pending |
+| TrackStar | pending | pending |
+
+Held-out loss on the WikiText corpus dropped from 3.545 to 3.111 over training.
 
 ### Attribute through Training
 
