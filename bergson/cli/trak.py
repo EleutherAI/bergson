@@ -7,11 +7,15 @@ example ``z_i`` for a query ``z_q`` as
 
 where ``phi`` is a random projection of the per-example gradient, ``Phi``
 stacks the projected training gradients and ``p_i`` is the model's
-probability of ``z_i``'s labels. Bergson fits ``Phi^T Phi`` per module as the
-``autocorrelation`` Hessian and applies its damped inverse through the dense
-preconditioner, so the pipeline is the trackstar one without Hessian mixing or
-unit normalization, plus the ``(1 - p_i)`` weighting and an optional average
-over independently trained checkpoints.
+probability of ``z_i``'s labels. The sketch is Bergson's per-module
+double-sided projection (``projection_target="global"`` gives a single global
+sketch when its ``k x d`` matrices fit in memory); the kernel is the joint Gram
+over the concatenated sketch (``hessian method "gram"``) inverted as one
+matrix, or, with ``kernel="per_module"``, the block-diagonal per-module
+``autocorrelation`` Hessian. The damped inverse is applied to the query side,
+so the pipeline is the trackstar one without Hessian mixing or unit
+normalization, plus the ``(1 - p_i)`` weighting and an optional average over
+independently trained checkpoints.
 """
 
 import json
@@ -135,13 +139,14 @@ def _trak_single(index_cfg: IndexConfig, trak_cfg: TrakConfig) -> Path:
             return
         validate_run_path(cfg)
 
-    print("Step 1/4: Fitting the projected-gradient Gram on the training set...")
+    hess_method = "gram" if trak_cfg.kernel == "joint" else "autocorrelation"
+    print(f"Step 1/4: Fitting the projected-gradient Gram ({trak_cfg.kernel})...")
     if not _step_complete(gram_path, resume):
         gram_cfg = deepcopy(index_cfg)
         gram_cfg.run_path = gram_path
         _limit_split_for_hess(gram_cfg, trak_cfg.stats_sample_size)
         _validate(gram_cfg)
-        hess_cfg = HessianConfig(method="autocorrelation")
+        hess_cfg = HessianConfig(method=hess_method)
         save_run_config(
             Hessian(hessian_cfg=hess_cfg, index_cfg=gram_cfg),
             gram_cfg.partial_run_path,

@@ -15,7 +15,7 @@ from bergson.config.config import AttentionConfig, HessianConfig, IndexConfig
 from bergson.data import allocate_batches
 from bergson.distributed import init_dist, launch_distributed_run
 from bergson.gradients import GradientProcessor
-from bergson.hessians.autocorrelation import AutocorrelationCollector
+from bergson.hessians.autocorrelation import AutocorrelationCollector, GramCollector
 from bergson.hessians.eigenvectors import (
     LambdaCollector,
     compute_eigendecomposition,
@@ -79,7 +79,10 @@ def approximate_hessians(
             "Set projection_dim=0."
         )
 
-    if hessian_cfg.method == "autocorrelation" and index_cfg.projection_dim == 0:
+    if (
+        hessian_cfg.method in ("autocorrelation", "gram")
+        and index_cfg.projection_dim == 0
+    ):
         warnings.warn(
             "Computing an autocorrelation (dense) Hessian with "
             "index_cfg.projection_dim=0 (uncompressed gradients); this scales "
@@ -154,9 +157,12 @@ def hessian_worker(
 
     # The autocorrelation Hessian is a dense per-module gradient Gram so
     # it computes in one pass and skips the factored eigendecomposition
-    if hessian_cfg.method == "autocorrelation":
+    if hessian_cfg.method in ("autocorrelation", "gram"):
         processor = create_processor(model, index_cfg, target_modules)
-        collector = AutocorrelationCollector(
+        collector_cls = (
+            GramCollector if hessian_cfg.method == "gram" else AutocorrelationCollector
+        )
+        collector = collector_cls(
             model=model.base_model,  # type: ignore
             data=ds,
             path=str(index_cfg.partial_run_path),
@@ -172,7 +178,9 @@ def hessian_worker(
             batches=batches,
             cfg=index_cfg,
         )
-        computer.run_with_collector_hooks(desc="Approximating autocorrelation Hessian")
+        computer.run_with_collector_hooks(
+            desc=f"Approximating {hessian_cfg.method} Hessian"
+        )
         return
 
     kwargs = {

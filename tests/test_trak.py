@@ -6,10 +6,19 @@ import pytest
 import torch
 from datasets import Dataset
 
+from bergson.build import build
 from bergson.cli.trackstar import trackstar
 from bergson.cli.trak import _train_label_probs, trak
-from bergson.config import DataConfig, DistributedConfig, TrackstarConfig, TrakConfig
+from bergson.config import (
+    DataConfig,
+    DistributedConfig,
+    PreprocessConfig,
+    TrackstarConfig,
+    TrakConfig,
+)
 from bergson.config.config import TrackstarIndexConfig
+from bergson.data import column_offsets, load_gradients
+from bergson.hessians.inversion import invert_psd_matrix
 
 MODEL = "EleutherAI/pythia-14m"
 
@@ -58,10 +67,14 @@ def _query_cfg(data_dir: Path) -> DataConfig:
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_trak_matches_whitened_trackstar_and_weights_rows(tmp_path, data_dir):
-    """Without the Q term TRAK is trackstar with the train Gram alone and no
-    unit normalization; with it every training row is scaled by 1 - p_i."""
+    """With the per-module kernel and no Q term TRAK is trackstar with the train
+    Gram alone and no unit normalization; with the Q term every training row is
+    scaled by 1 - p_i."""
     plain = _index_cfg(tmp_path / "plain", data_dir)
-    trak(plain, TrakConfig(query=_query_cfg(data_dir), q_weighting="none"))
+    trak(
+        plain,
+        TrakConfig(query=_query_cfg(data_dir), q_weighting="none", kernel="per_module"),
+    )
     unweighted = _load(tmp_path / "plain" / "scores")
 
     ts = _index_cfg(tmp_path / "trackstar", data_dir)
@@ -76,7 +89,7 @@ def test_trak_matches_whitened_trackstar_and_weights_rows(tmp_path, data_dir):
     np.testing.assert_allclose(unweighted, reference, rtol=1e-5, atol=1e-6)
 
     weighted_cfg = _index_cfg(tmp_path / "weighted", data_dir)
-    trak(weighted_cfg, TrakConfig(query=_query_cfg(data_dir)))
+    trak(weighted_cfg, TrakConfig(query=_query_cfg(data_dir), kernel="per_module"))
     weighted = _load(tmp_path / "weighted" / "scores")
     probs = _train_label_probs(weighted_cfg, batch_size=4)
     assert probs.shape == (12,) and (0 < probs).all() and (probs < 1).all()
@@ -93,9 +106,49 @@ def test_trak_ensemble_averages_members(tmp_path, data_dir):
     trak(
         cfg,
         TrakConfig(
-            query=_query_cfg(data_dir), checkpoints=[MODEL, MODEL], q_weighting="none"
+            query=_query_cfg(data_dir),
+            checkpoints=[MODEL, MODEL],
+            q_weighting="none",
+            kernel="per_module",
         ),
     )
     members = [_load(tmp_path / "ens" / f"checkpoint_{i}" / "scores") for i in range(2)]
     mean = _load(tmp_path / "ens" / "scores")
     np.testing.assert_allclose(mean, (members[0] + members[1]) / 2, rtol=1e-6)
+
+
+def _index_matrix(run_path: Path) -> np.ndarray:
+    """All projected gradients of an index concatenated in stored module order."""
+    info = json.loads((run_path / "info.json").read_text())
+    mmap = load_gradients(run_path)
+    cols = column_offsets(info["grad_sizes"])
+    return np.concatenate(
+        [np.asarray(mmap[:, lo:hi], dtype=np.float64) for _, (lo, hi) in cols.items()],
+        axis=1,
+    )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_trak_joint_kernel_matches_explicit_formula(tmp_path, data_dir):
+    """The default kernel scores phi_q^T (Phi^T Phi / N + damping)^-1 phi_i with
+    one Gram over the concatenation of every module's projected gradient."""
+    cfg = _index_cfg(tmp_path / "joint", data_dir)
+    trak(cfg, TrakConfig(query=_query_cfg(data_dir), q_weighting="none"))
+    scores = _load(tmp_path / "joint" / "scores")
+
+    train_cfg = _index_cfg(tmp_path / "train_index", data_dir)
+    build(train_cfg, PreprocessConfig())
+    query_cfg = _index_cfg(tmp_path / "query_index", data_dir)
+    query_cfg.data = _query_cfg(data_dir)
+    build(query_cfg, PreprocessConfig())
+    phi = _index_matrix(tmp_path / "train_index")
+    phi_q = _index_matrix(tmp_path / "query_index")
+    assert phi.shape[0] == 12 and phi_q.shape[0] == 3
+
+    gram = torch.from_numpy(phi.T @ phi / phi.shape[0]).float()
+    h_inv = invert_psd_matrix(
+        gram, inversion="damped_inverse", damping_factor=0.1, power=-1.0
+    )
+    expected = phi @ h_inv.double().numpy() @ phi_q.T
+    # The index stores gradients in reduced precision; the Gram is fp32.
+    np.testing.assert_allclose(scores, expected, rtol=2e-2, atol=1e-3)
