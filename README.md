@@ -23,7 +23,7 @@ pip install -e .
 
 ## Functionality
 
-Linear datamodeling score (LDS) and proponent-filter query loss delta (QLD) of every method on the same run: GPT-2 fine-tuned on WikiText with plain AdamW (eps_root 1e-17, betas 0.9/0.999, lr 4e-4, 4 epochs), 50 test queries, 100 leave-1%-out retrains. QLD is the mean increase in a query's loss after retraining without that query's top 1% of training documents by the method's scores; removing a random 1% gives pending. Reproduce with `examples/compare_wikitext_stdadam`.
+[Linear datamodeling score](https://arxiv.org/abs/2303.14186) (LDS) and proponent-filter query loss delta (QLD) values for GPT-2 fine-tuned on WikiText. QLD is the mean increase in a query's loss after retraining without the top 1% of training documents by the method's influence scores.
 
 | Method | LDS [95% CI] | Proponent QLD [95% CI] |
 |:---|:---:|:---:|
