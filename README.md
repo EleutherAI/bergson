@@ -23,7 +23,7 @@ pip install -e .
 
 ## Functionality
 
-[Linear datamodeling score](https://arxiv.org/abs/2303.14186) (LDS) and 1% proponent-filter query loss difference (QLD) values for GPT-2 fine-tuned on WikiText. QLD is the mean increase in a query's loss after retraining without the most influential training items as determined a data filtering method.
+[Linear datamodeling score](https://arxiv.org/abs/2303.14186) (LDS) and 1% proponent-filter query loss difference (QLD) values for GPT-2 fine-tuned on WikiText. QLD is the mean increase in a query's loss after retraining without the most influential training items as determined by a data filtering method.
 
 | Method | LDS [95% CI] | Proponent QLD [95% CI] |
 |:---|:---:|:---:|
