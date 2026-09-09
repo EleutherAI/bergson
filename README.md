@@ -33,7 +33,7 @@ pip install -e .
 | TrackStar | 0.211 [0.183, 0.238] | pending |
 | TrackStar+Adam | 0.173 [0.144, 0.201] | pending |
 | SOURCE | 0.165 [0.138, 0.191] | pending |
-| SOURCE-Adam | pending | pending |
+| SOURCE-Adam | 0.154 [0.126, 0.181] | pending |
 
 Held-out loss on the WikiText corpus dropped from 3.545 to 3.111 over training.
 
