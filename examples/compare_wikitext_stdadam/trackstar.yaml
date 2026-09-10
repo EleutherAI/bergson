@@ -1,5 +1,5 @@
 # TrackStar scores for the eps_root 1e-17 WikiText model against test[0:50]
-# at projection dims 16/32/64/128, without and with Adam second-moment
+# at projection dims 16/32/64, without and with Adam second-moment
 # normalization (the Adam steps use the optimizer state exported with the
 # final interval checkpoint). Same settings
 # as compare_wikitext/trackstar*.yaml. LDS: examples/compare_wikitext_stdadam/lds_from_bank.py.
@@ -76,17 +76,5 @@ steps:
         run_path: runs/compare_wikitext_stdadam/trackstar_adam_p64
         optimizer_state: runs/compare_wikitext_stdadam/interval/exported/checkpoint-72/optimizer.pt
 
-  - trackstar:
-      <<: *trackstar
-      index_cfg:
-        <<: *index
-        projection_dim: 128
-        run_path: runs/compare_wikitext_stdadam/trackstar_p128
-
-  - trackstar:
-      <<: *trackstar
-      index_cfg:
-        <<: *index
-        projection_dim: 128
-        run_path: runs/compare_wikitext_stdadam/trackstar_adam_p128
-        optimizer_state: runs/compare_wikitext_stdadam/interval/exported/checkpoint-72/optimizer.pt
+# Projection 128 does not fit: the autocorrelation collector holds every module's
+# fp32 Gram ((128*128)^2 floats, 1 GB per module) on each rank, ~48 GB for GPT-2.

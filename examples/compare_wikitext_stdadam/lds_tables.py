@@ -29,8 +29,6 @@ LABELS = {
     "trackstar_adam_p32": "TrackStar (Adam, projection 32)",
     "trackstar_p64": "TrackStar (projection 64)",
     "trackstar_adam_p64": "TrackStar (Adam, projection 64)",
-    "trackstar_p128": "TrackStar (projection 128)",
-    "trackstar_adam_p128": "TrackStar (Adam, projection 128)",
     "bif": "BIF",
     "activation": "Activation similarity",
     "gradient": "Gradient cosine similarity",
