@@ -33,16 +33,12 @@ pip install -e .
 | BM25 | 0.062 [0.048, 0.076] | 0.220 [0.185, 0.252] |
 | Jina v5 semantic search | 0.046 [0.035, 0.059] | 0.124 [0.087, 0.160] |
 | TrackStar (projection 64) | 0.045 [0.036, 0.055] | 0.270 [0.240, 0.295] |
-| TrackStar (Adam, projection 64) | 0.043 [0.034, 0.052] | 0.225 [0.195, 0.252] |
 | TRAK | 0.036 [0.028, 0.045] | 0.215 [0.185, 0.244] |
-| TrackStar (projection 32) | 0.035 [0.027, 0.044] | 0.211 [0.183, 0.238] |
-| TrackStar (Adam, projection 32) | 0.032 [0.025, 0.041] | 0.173 [0.144, 0.201] |
 | SOURCE-Adam | 0.024 [0.018, 0.030] | 0.154 [0.126, 0.181] |
-| SOURCE | 0.022 [0.017, 0.027] | 0.165 [0.138, 0.191] |
 | Activation similarity | 0.000 [-0.000, 0.001] | 0.110 [0.070, 0.149] |
 | Gradient cosine similarity | -0.001 [-0.001, -0.000] | 0.019 [-0.008, 0.045] |
 
-Held-out loss on the WikiText corpus dropped from 3.545 to 3.111 over training.
+Held-out loss on the WikiText corpus dropped from 3.545 to 3.111 over training. Only the best TrackStar and SOURCE variants are shown; every variant is in [LEADERBOARD.md](LEADERBOARD.md).
 
 ### Attribute through Training
 
