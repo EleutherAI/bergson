@@ -166,13 +166,7 @@ def evaluate_lds(
 
 
 def save_scores(scores: np.ndarray, out_dir: Path, name: str) -> Path:
-    """Save a ``[num_train_docs, num_queries]`` score matrix as the bergson score
-    directory ``<out_dir>/<name>/scores`` that ``evaluate_lds`` and the
-    ``validate`` filters read.
-
-    The matrix is already in the loss-diff convention (proponents negative),
-    so it is stored unsigned.
-    """
+    """Save a ``[num_train_docs, num_queries]`` score matrix."""
     score_dir = out_dir / name / "scores"
     save_sequence_scores(score_dir, scores.astype(np.float32))
     print(f"Saved scores {scores.shape} -> {score_dir}")

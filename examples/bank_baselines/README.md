@@ -8,7 +8,7 @@ Text similarity baselines evaluated by mean LDS over 50 test queries.
 - `semantic_baseline.py` — semantic search with `jinaai/jina-embeddings-v5-text-small` (asymmetric retrieval query/document prompts; `--model` to swap, e.g. `jinaai/jina-embeddings-v3`).
 - `qwen3_baseline.py` — semantic search with `Qwen/Qwen3-Embedding-8B`, a SOTA decoder embedder (`--model` to swap).
 
-Each produces a `[num_train_docs, num_queries]` score matrix, saved as the bergson score directory `<out>/<name>_scores/scores` that `validate` steps (LDS, proponent filters) read.
+Each produces a `[num_train_docs, num_queries]` score matrix.
 
 ## Running
 
