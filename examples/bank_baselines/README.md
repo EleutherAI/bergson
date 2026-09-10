@@ -26,15 +26,7 @@ Omit `--bank` to build the default GPT-2/WikiText bank (`examples/magic/gpt2_wik
 
 ## Results
 
-GPT-2 / WikiText bank (100 subsets, 1% leave-out, `eps_root 1e-8`):
-
-| Method | mean ρ |
-| --- | --- |
-| BM25 lexical overlap | 0.16 |
-| Qwen3-Embedding-8B | 0.11 |
-| activation similarity | 0.09 |
-| Jina v3 semantic search | 0.06 |
-| gradient cosine similarity | 0.05 |
+Results are on the [leaderboard](../../LEADERBOARD.md).
 
 ## Notes
 
