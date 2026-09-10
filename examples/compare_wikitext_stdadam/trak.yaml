@@ -3,7 +3,7 @@
 # training set as one joint Gram over the concatenated per-module sketches
 # (kernel joint), damped inverse (0.1 x mean eigenvalue), (1 - p_i) weighting.
 # Single checkpoint (no ensemble). LDS against the magic.yaml bank:
-# scripts/lds_from_bank.py --sign grad.
+# examples/compare_wikitext_stdadam/lds_from_bank.py --sign grad.
 
 # Run with `bergson examples/compare_wikitext_stdadam/trak.yaml`
 

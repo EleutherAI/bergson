@@ -1,6 +1,6 @@
 # EK-FAC scores for the eps_root 1e-17 WikiText model against test[0:50] (one
 # score column per query). LDS is computed against the magic.yaml bank with
-# scripts/lds_from_bank.py. Same settings as compare_wikitext/ekfac.yaml.
+# examples/compare_wikitext_stdadam/lds_from_bank.py. Same settings as compare_wikitext/ekfac.yaml.
 
 # Run with `bergson examples/compare_wikitext_stdadam/ekfac.yaml`
 

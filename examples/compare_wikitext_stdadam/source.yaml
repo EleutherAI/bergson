@@ -2,7 +2,7 @@
 # WikiText run: plain and Adam-preconditioned variants, scored at the final
 # interval checkpoint from interval.yaml; lr_list and step_size_list are
 # inferred from that run's log_history.json. LDS is computed against the
-# magic.yaml bank with scripts/lds_from_bank.py.
+# magic.yaml bank with examples/compare_wikitext_stdadam/lds_from_bank.py.
 
 # Run with `bergson examples/compare_wikitext_stdadam/source.yaml`
 

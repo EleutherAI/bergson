@@ -1,7 +1,7 @@
 # TrackStar scores for the eps_root 1e-17 WikiText model against test[0:50],
 # without and with Adam second-moment normalization (the second step uses the
 # optimizer state exported with the final interval checkpoint). Same settings
-# as compare_wikitext/trackstar*.yaml. LDS: scripts/lds_from_bank.py.
+# as compare_wikitext/trackstar*.yaml. LDS: examples/compare_wikitext_stdadam/lds_from_bank.py.
 
 # Run with `bergson examples/compare_wikitext_stdadam/trackstar.yaml`
 
