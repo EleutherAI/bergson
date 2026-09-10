@@ -1,14 +1,14 @@
-# Proponent-filter QLD for trackstar_adam: for each of the 50 queries, retrain the
-# magic.yaml recipe without that query's top 1% (46) proponents by trackstar_adam score and
+# Proponent-filter QLD for TrackStar (Adam, projection 16): for each of the 50 queries, retrain the
+# magic.yaml recipe without that query's top 1% (46) proponents by its score and
 # measure the query's loss change; the bank's random 1%-drop retrains are the
 # matched control (retrained_dir). Reported as the mean over queries.
 
-# Run with `bergson examples/compare_wikitext_stdadam/filters/filter_trackstar_adam.yaml`
+# Run with `bergson examples/compare_wikitext_stdadam/filters/filter_trackstar_adam_p16.yaml`
 
-run_path: runs/compare_wikitext_stdadam/filter_trackstar_adam
+run_path: runs/compare_wikitext_stdadam/filter_trackstar_adam_p16
 steps:
   - validate:
-      run_path: runs/compare_wikitext_stdadam/filter_trackstar_adam
+      run_path: runs/compare_wikitext_stdadam/filter_trackstar_adam_p16
       model: gpt2
       overwrite: true
       resume: true
@@ -45,5 +45,5 @@ steps:
       subset_fraction: 0.01
       num_subsets: 3
       query_method: none
-      scores: runs/compare_wikitext_stdadam/trackstar_adam/scores
+      scores: runs/compare_wikitext_stdadam/trackstar_adam_p16/scores
       retrained_dir: runs/compare_wikitext_stdadam/random

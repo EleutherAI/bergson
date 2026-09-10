@@ -1,16 +1,17 @@
-# TrackStar scores for the eps_root 1e-17 WikiText model against test[0:50],
-# without and with Adam second-moment normalization (the second step uses the
-# optimizer state exported with the final interval checkpoint). Same settings
+# TrackStar scores for the eps_root 1e-17 WikiText model against test[0:50]
+# at projection dims 16/32/64/128, without and with Adam second-moment
+# normalization (the Adam steps use the optimizer state exported with the
+# final interval checkpoint). Same settings
 # as compare_wikitext/trackstar*.yaml. LDS: examples/compare_wikitext_stdadam/lds_from_bank.py.
 
 # Run with `bergson examples/compare_wikitext_stdadam/trackstar.yaml`
 
-run_path: runs/compare_wikitext_stdadam/trackstar
+run_path: runs/compare_wikitext_stdadam/trackstar_p16
 steps:
   - trackstar: &trackstar
       index_cfg: &index
-        projection_dim: 64
-        run_path: runs/compare_wikitext_stdadam/trackstar
+        projection_dim: 16
+        run_path: runs/compare_wikitext_stdadam/trackstar_p16
         model: runs/compare_wikitext_stdadam/interval/exported/checkpoint-72
         overwrite: true
         # GPT-2's max context length is 1024
@@ -41,5 +42,51 @@ steps:
       <<: *trackstar
       index_cfg:
         <<: *index
-        run_path: runs/compare_wikitext_stdadam/trackstar_adam
+        projection_dim: 16
+        run_path: runs/compare_wikitext_stdadam/trackstar_adam_p16
+        optimizer_state: runs/compare_wikitext_stdadam/interval/exported/checkpoint-72/optimizer.pt
+
+  - trackstar:
+      <<: *trackstar
+      index_cfg:
+        <<: *index
+        projection_dim: 32
+        run_path: runs/compare_wikitext_stdadam/trackstar_p32
+
+  - trackstar:
+      <<: *trackstar
+      index_cfg:
+        <<: *index
+        projection_dim: 32
+        run_path: runs/compare_wikitext_stdadam/trackstar_adam_p32
+        optimizer_state: runs/compare_wikitext_stdadam/interval/exported/checkpoint-72/optimizer.pt
+
+  - trackstar:
+      <<: *trackstar
+      index_cfg:
+        <<: *index
+        projection_dim: 64
+        run_path: runs/compare_wikitext_stdadam/trackstar_p64
+
+  - trackstar:
+      <<: *trackstar
+      index_cfg:
+        <<: *index
+        projection_dim: 64
+        run_path: runs/compare_wikitext_stdadam/trackstar_adam_p64
+        optimizer_state: runs/compare_wikitext_stdadam/interval/exported/checkpoint-72/optimizer.pt
+
+  - trackstar:
+      <<: *trackstar
+      index_cfg:
+        <<: *index
+        projection_dim: 128
+        run_path: runs/compare_wikitext_stdadam/trackstar_p128
+
+  - trackstar:
+      <<: *trackstar
+      index_cfg:
+        <<: *index
+        projection_dim: 128
+        run_path: runs/compare_wikitext_stdadam/trackstar_adam_p128
         optimizer_state: runs/compare_wikitext_stdadam/interval/exported/checkpoint-72/optimizer.pt

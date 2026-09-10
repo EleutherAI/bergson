@@ -1,0 +1,49 @@
+# Proponent-filter QLD for TrackStar (projection 64): for each of the 50 queries, retrain the
+# magic.yaml recipe without that query's top 1% (46) proponents by its score and
+# measure the query's loss change; the bank's random 1%-drop retrains are the
+# matched control (retrained_dir). Reported as the mean over queries.
+
+# Run with `bergson examples/compare_wikitext_stdadam/filters/filter_trackstar_p64.yaml`
+
+run_path: runs/compare_wikitext_stdadam/filter_trackstar_p64
+steps:
+  - validate:
+      run_path: runs/compare_wikitext_stdadam/filter_trackstar_p64
+      model: gpt2
+      overwrite: true
+      resume: true
+      seed: 42
+
+      data:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "train"
+        chunk_length: 0
+
+      query:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "test[0:50]"
+        chunk_length: 0
+
+      distributed:
+        nproc_per_node: 8
+        nnode: 1
+
+      batch_size: 256
+      grad_accum_steps: 2
+      num_epochs: 4
+      lr_schedule:
+        lr_scheduler_type: polynomial
+        lr: 0.0004
+        lr_start: 1e-6
+        lr_end: 0.00004
+        warmup_steps: 0.25
+      adam_beta1: 0.9
+      adam_beta2: 0.999
+      eps_root: 1.0e-17
+
+      method: filter-proponents
+      subset_fraction: 0.01
+      num_subsets: 3
+      query_method: none
+      scores: runs/compare_wikitext_stdadam/trackstar_p64/scores
+      retrained_dir: runs/compare_wikitext_stdadam/random
