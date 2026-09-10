@@ -27,7 +27,3 @@ Omit `--bank` to build the default GPT-2/WikiText bank (`examples/magic/gpt2_wik
 ## Results
 
 Results are on the [leaderboard](../../LEADERBOARD.md).
-
-## Notes
-
-`jina-embeddings-v3`'s custom code predates transformers 5.x; when it is selected, `semantic_baseline.load_model` sets an `all_tied_weights_keys` default and resets the NaN LoRA `lora_dropout_mask` buffers to ones so it loads and runs. NVIDIA's NV-Embed-v2 is a comparable SOTA embedder but its custom code is incompatible with transformers 5.x, so `qwen3_baseline.py` uses Qwen3-Embedding instead.
