@@ -1,17 +1,17 @@
 GPT-2 fine-tuned on WikiText (`EleutherAI/bergson-wikitext-512-chunks`, 4,608 training chunks) with plain AdamW: eps_root 1e-17, betas 0.9/0.999, lr 4e-4 polynomial (warmup 25%), batch 256, 4 epochs, seed 42. Every method scores the same 50 test chunks (`test[0:50]`); LDS is the per-query Spearman correlation between a method's summed scores and the measured query-loss change over 100 random 1%-drop retrains (mean over queries, 95% CI from a 10k bootstrap over subsets); the proponent QLD is the mean query-loss increase after retraining without the query's top 1% (46) training chunks by that method's scores (95% CI from a 10k bootstrap over queries). Removing a random 1% changes query loss by 0.0008 on average. Held-out loss (test chunks 50 onward) dropped from 3.545 to 3.111 over training; metasmoothness 0.989.
 
-| method | LDS | 95% CI | median | min | max | queries p<.05 | proponent QLD | 95% CI |
+| method | proponent QLD | 95% CI | LDS | 95% CI | median | min | max | queries p<.05 |
 |---|---|---|---|---|---|---|---|---|
-| MAGIC (per-query) | 0.931 | [0.925, 0.936] | 0.933 | 0.804 | 0.970 | 50/50 | 0.100 | [0.090, 0.112] |
-| EK-FAC | 0.454 | [0.426, 0.479] | 0.453 | 0.095 | 0.664 | 49/50 | 0.070 | [0.058, 0.082] |
-| TrackStar (projection 64) | 0.270 | [0.240, 0.295] | 0.294 | -0.011 | 0.513 | 37/50 | 0.045 | [0.036, 0.055] |
-| TrackStar (Adam, projection 64) | 0.225 | [0.195, 0.252] | 0.234 | -0.011 | 0.434 | 29/50 | 0.043 | [0.034, 0.052] |
-| TRAK (per-module kernel, projection 32) | 0.215 | [0.185, 0.244] | 0.210 | 0.011 | 0.417 | 28/50 | 0.036 | [0.028, 0.045] |
-| SOURCE | 0.165 | [0.138, 0.191] | 0.171 | -0.120 | 0.419 | 16/50 | 0.022 | [0.017, 0.027] |
-| SOURCE-Adam | 0.154 | [0.126, 0.181] | 0.147 | -0.144 | 0.412 | 15/50 | 0.024 | [0.018, 0.030] |
-| TRAK (joint kernel, projection 16) | 0.110 | [0.079, 0.141] | 0.123 | -0.132 | 0.325 | 12/50 | — | — |
-| Activation similarity | 0.110 | [0.070, 0.149] | 0.106 | -0.137 | 0.361 | 11/50 | 0.000 | [-0.000, 0.001] |
-| Gradient cosine similarity | 0.019 | [-0.008, 0.045] | 0.046 | -0.190 | 0.246 | 2/50 | -0.001 | [-0.001, -0.000] |
+| MAGIC (per-query) | 0.100 | [0.090, 0.112] | 0.931 | [0.925, 0.936] | 0.933 | 0.804 | 0.970 | 50/50 |
+| EK-FAC | 0.070 | [0.058, 0.082] | 0.454 | [0.426, 0.479] | 0.453 | 0.095 | 0.664 | 49/50 |
+| TrackStar (projection 64) | 0.045 | [0.036, 0.055] | 0.270 | [0.240, 0.295] | 0.294 | -0.011 | 0.513 | 37/50 |
+| TrackStar (Adam, projection 64) | 0.043 | [0.034, 0.052] | 0.225 | [0.195, 0.252] | 0.234 | -0.011 | 0.434 | 29/50 |
+| TRAK (per-module kernel, projection 32) | 0.036 | [0.028, 0.045] | 0.215 | [0.185, 0.244] | 0.210 | 0.011 | 0.417 | 28/50 |
+| SOURCE-Adam | 0.024 | [0.018, 0.030] | 0.154 | [0.126, 0.181] | 0.147 | -0.144 | 0.412 | 15/50 |
+| SOURCE | 0.022 | [0.017, 0.027] | 0.165 | [0.138, 0.191] | 0.171 | -0.120 | 0.419 | 16/50 |
+| Activation similarity | 0.000 | [-0.000, 0.001] | 0.110 | [0.070, 0.149] | 0.106 | -0.137 | 0.361 | 11/50 |
+| Gradient cosine similarity | -0.001 | [-0.001, -0.000] | 0.019 | [-0.008, 0.045] | 0.046 | -0.190 | 0.246 | 2/50 |
+| TRAK (joint kernel, projection 16) | — | — | 0.110 | [0.079, 0.141] | 0.123 | -0.132 | 0.325 | 12/50 |
 
 The README table reports the per-module TRAK kernel; TRAK's joint Gram over the concatenated sketch scores lower here and on an 8k SmolLM2 bank (0.08 vs 0.21). TrackStar at projection 32 scored 0.211 / 0.173 (plain / Adam), so the table uses projection 64. The two similarity baselines come from `examples/bank_baselines` (`gradient_baseline.py`, `activation_baseline.py`) run with `--bank runs/compare_wikitext_stdadam/random --query_split "test[0:50]"`: cosine similarity between each training chunk's full-parameter loss gradient and the query's (TracIn-style, no preconditioning), and cosine similarity between the mean-pooled input activations of the attributed linear modules (per-module L2-normalized, concatenated), both on the trained model.
 

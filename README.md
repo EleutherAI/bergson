@@ -25,17 +25,17 @@ pip install -e .
 
 [Linear datamodeling score](https://arxiv.org/abs/2303.14186) (LDS) and 1% proponent-filter query loss difference (QLD) values for GPT-2 fine-tuned on WikiText. QLD is the mean increase in a query's loss after retraining without the most influential training items as determined by a data filtering method.
 
-| Method | LDS [95% CI] | Proponent QLD [95% CI] |
+| Method | Proponent QLD [95% CI] | LDS [95% CI] |
 |:---|:---:|:---:|
-| MAGIC | 0.931 [0.925, 0.936] | 0.100 [0.090, 0.112] |
-| EK-FAC | 0.454 [0.426, 0.479] | 0.070 [0.058, 0.082] |
-| TrackStar | 0.270 [0.240, 0.295] | 0.045 [0.036, 0.055] |
-| TrackStar (Adam) | 0.225 [0.195, 0.252] | 0.043 [0.034, 0.052] |
-| TRAK | 0.215 [0.185, 0.244] | 0.036 [0.028, 0.045] |
-| SOURCE | 0.165 [0.138, 0.191] | 0.022 [0.017, 0.027] |
-| SOURCE-Adam | 0.154 [0.126, 0.181] | 0.024 [0.018, 0.030] |
-| Activation similarity | 0.110 [0.070, 0.149] | 0.000 [-0.000, 0.001] |
-| Gradient cosine similarity | 0.019 [-0.008, 0.045] | -0.001 [-0.001, -0.000] |
+| MAGIC | 0.100 [0.090, 0.112] | 0.931 [0.925, 0.936] |
+| EK-FAC | 0.070 [0.058, 0.082] | 0.454 [0.426, 0.479] |
+| TrackStar | 0.045 [0.036, 0.055] | 0.270 [0.240, 0.295] |
+| TrackStar (Adam) | 0.043 [0.034, 0.052] | 0.225 [0.195, 0.252] |
+| TRAK | 0.036 [0.028, 0.045] | 0.215 [0.185, 0.244] |
+| SOURCE-Adam | 0.024 [0.018, 0.030] | 0.154 [0.126, 0.181] |
+| SOURCE | 0.022 [0.017, 0.027] | 0.165 [0.138, 0.191] |
+| Activation similarity | 0.000 [-0.000, 0.001] | 0.110 [0.070, 0.149] |
+| Gradient cosine similarity | -0.001 [-0.001, -0.000] | 0.019 [-0.008, 0.045] |
 
 Held-out loss on the WikiText corpus dropped from 3.545 to 3.111 over training.
 
