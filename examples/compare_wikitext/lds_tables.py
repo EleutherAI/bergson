@@ -34,6 +34,7 @@ LABELS = {
     "gradient": "Gradient cosine similarity",
     "shampoo": "Shampoo",
     "bm25": "BM25",
+    "dsir": "DSIR",
     "semantic": "Jina v5 semantic search",
     "qwen3": "[Qwen3-Embedding-8B](https://huggingface.co/spaces/mteb/leaderboard) semantic search",
 }

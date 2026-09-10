@@ -3,6 +3,7 @@
 Text similarity baselines evaluated by mean LDS over 50 test queries.
 
 - `bm25_baseline.py` — BM25 lexical overlap: pure surface-form term overlap, no model or embedding.
+- `dsir_baseline.py` — DSIR importance weights: hashed-n-gram likelihood ratio of the query set against the training corpus (Xie et al., 2023).
 - `gradient_baseline.py` — gradient cosine similarity: cosine of the full per-example loss gradients on the bank's model (TracIn-style, unpreconditioned).
 - `activation_baseline.py` — activation similarity: each doc is the mean-pooled input activation to every linear matrix of the model, L2-normalized per matrix and concatenated, then cosine similarity.
 - `semantic_baseline.py` — semantic search with `jinaai/jina-embeddings-v5-text-small` (asymmetric retrieval query/document prompts; `--model` to swap, e.g. `jinaai/jina-embeddings-v3`).
@@ -16,6 +17,7 @@ Point a baseline at a re-train bank (written with `save_models=true`); it reads 
 
 ```bash
 python -m examples.bank_baselines.bm25_baseline        --bank runs/retrain_bank_path
+python -m examples.bank_baselines.dsir_baseline        --bank runs/retrain_bank_path
 python -m examples.bank_baselines.gradient_baseline    --bank runs/retrain_bank_path
 python -m examples.bank_baselines.activation_baseline  --bank runs/retrain_bank_path
 python -m examples.bank_baselines.semantic_baseline    --bank runs/retrain_bank_path
