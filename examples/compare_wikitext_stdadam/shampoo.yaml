@@ -1,14 +1,14 @@
-# Shampoo EK-FAC scores (method: shampoo with eigenvalue correction) for the eps_root 1e-17 WikiText model against test[0:50] (one
+# Shampoo scores (Shampoo Hessian factors with eigenvalue correction) for the eps_root 1e-17 WikiText model against test[0:50] (one
 # score column per query). LDS is computed against the magic.yaml bank with
 # examples/compare_wikitext_stdadam/lds_from_bank.py. Same settings as compare_wikitext/ekfac.yaml.
 
-# Run with `bergson examples/compare_wikitext_stdadam/ekfac_shampoo.yaml`
+# Run with `bergson examples/compare_wikitext_stdadam/shampoo.yaml`
 
-run_path: runs/compare_wikitext_stdadam/ekfac_shampoo
+run_path: runs/compare_wikitext_stdadam/shampoo
 steps:
   - ekfac:
       index_cfg:
-        run_path: runs/compare_wikitext_stdadam/ekfac_shampoo
+        run_path: runs/compare_wikitext_stdadam/shampoo
         model: runs/compare_wikitext_stdadam/interval/exported/checkpoint-72
         overwrite: true
         # GPT-2's max context length is 1024.

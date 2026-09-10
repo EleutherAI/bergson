@@ -28,6 +28,7 @@ LABELS = {
     "bif": "BIF",
     "activation": "Activation similarity",
     "gradient": "Gradient cosine similarity",
+    "shampoo": "Shampoo",
     "bm25": "BM25",
     "semantic": "Jina v5 semantic search",
 }
