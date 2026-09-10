@@ -4,7 +4,6 @@ Usage:
     python examples/compare_wikitext/lds_from_bank.py --scores <run>/scores --bank <bank> \
         [--sign grad|loss]
     python examples/compare_wikitext/lds_from_bank.py --validation <bank>/validation.csv
-    python examples/compare_wikitext/lds_from_bank.py --npy <scores.npy> --bank <bank> --sign loss
 
 The bank is a magic/validate run dir holding ``subsets.json`` (one doc-id
 list per subset) and ``validation.csv`` (columns subset, query, diff,
@@ -71,9 +70,6 @@ def lds(sums: np.ndarray, diffs: np.ndarray, n_boot: int, seed: int) -> dict:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--scores", type=Path)
-    ap.add_argument(
-        "--npy", type=Path, help="a [docs, queries] score matrix instead of --scores"
-    )
     ap.add_argument("--bank", type=Path)
     ap.add_argument("--validation", type=Path)
     ap.add_argument("--sign", choices=["grad", "loss"], default="grad")
@@ -87,20 +83,15 @@ def main() -> None:
         sums = val.pivot(index="subset", columns="query", values="score_sum").to_numpy()
         source = str(args.validation)
     else:
-        assert (
-            args.scores is not None or args.npy is not None
-        ) and args.bank is not None
+        assert args.scores is not None and args.bank is not None
         val = pd.read_csv(args.bank / "validation.csv")
         subsets = json.loads((args.bank / "subsets.json").read_text())
-        if args.npy is not None:
-            scores = np.load(args.npy)
-        else:
-            scores = load_scores(args.scores)
+        scores = load_scores(args.scores)
         n_sub = val["subset"].nunique()
         sums = np.stack([scores[np.asarray(subsets[s])].sum(0) for s in range(n_sub)])
         if args.sign == "grad":
             sums = -sums
-        source = str(args.npy if args.npy is not None else args.scores)
+        source = str(args.scores)
     diffs = val.pivot(index="subset", columns="query", values="diff").to_numpy()
     assert diffs.shape == sums.shape, (diffs.shape, sums.shape)
 
