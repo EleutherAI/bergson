@@ -1,6 +1,6 @@
 """Proponent-filter QLD per method from bergson filter-proponents runs.
 
-    python examples/compare_wikitext_stdadam/qld_from_filters.py runs/<set> [<bank dir>]
+    python examples/compare_wikitext/qld_from_filters.py runs/<set> [<bank dir>]
 
 Reads ``<set>/filter_<method>/`` for each method.
 

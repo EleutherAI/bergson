@@ -4,14 +4,14 @@
 # the final checkpoint to an HF model dir for the scoring steps:
 #
 #   python -c "from bergson.utils.trainer_export import export_checkpoints;
-#              export_checkpoints('runs/compare_wikitext_stdadam/interval', steps=[72])"
+#              export_checkpoints('runs/compare_wikitext/interval', steps=[72])"
 
-# Run with `bergson examples/compare_wikitext_stdadam/interval.yaml`
+# Run with `bergson examples/compare_wikitext/interval.yaml`
 
-run_path: runs/compare_wikitext_stdadam/interval
+run_path: runs/compare_wikitext/interval
 steps:
   - train:
-      run_path: runs/compare_wikitext_stdadam/interval
+      run_path: runs/compare_wikitext/interval
       model: gpt2
       resume: true
 

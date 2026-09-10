@@ -3,12 +3,12 @@
 # measure the query's loss change; the bank's random 1%-drop retrains are the
 # matched control (retrained_dir). Reported as the mean over queries.
 
-# Run with `bergson examples/compare_wikitext_stdadam/filters/filter_shampoo.yaml`
+# Run with `bergson examples/compare_wikitext/filters/filter_shampoo.yaml`
 
-run_path: runs/compare_wikitext_stdadam/filter_shampoo
+run_path: runs/compare_wikitext/filter_shampoo
 steps:
   - validate:
-      run_path: runs/compare_wikitext_stdadam/filter_shampoo
+      run_path: runs/compare_wikitext/filter_shampoo
       model: gpt2
       overwrite: true
       resume: true
@@ -45,5 +45,5 @@ steps:
       subset_fraction: 0.01
       num_subsets: 3
       query_method: none
-      scores: runs/compare_wikitext_stdadam/shampoo/scores
-      retrained_dir: runs/compare_wikitext_stdadam/random
+      scores: runs/compare_wikitext/shampoo/scores
+      retrained_dir: runs/compare_wikitext/random

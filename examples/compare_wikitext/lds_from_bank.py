@@ -1,10 +1,10 @@
 """Per-query LDS of a bergson score store against a leave-k-out bank.
 
 Usage:
-    python examples/compare_wikitext_stdadam/lds_from_bank.py --scores <run>/scores --bank <bank> \
+    python examples/compare_wikitext/lds_from_bank.py --scores <run>/scores --bank <bank> \
         [--sign grad|loss]
-    python examples/compare_wikitext_stdadam/lds_from_bank.py --validation <bank>/validation.csv
-    python examples/compare_wikitext_stdadam/lds_from_bank.py --npy <scores.npy> --bank <bank> --sign loss
+    python examples/compare_wikitext/lds_from_bank.py --validation <bank>/validation.csv
+    python examples/compare_wikitext/lds_from_bank.py --npy <scores.npy> --bank <bank> --sign loss
 
 The bank is a magic/validate run dir holding ``subsets.json`` (one doc-id
 list per subset) and ``validation.csv`` (columns subset, query, diff,

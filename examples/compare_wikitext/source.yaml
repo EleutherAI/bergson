@@ -2,16 +2,16 @@
 # WikiText run: plain and Adam-preconditioned variants, scored at the final
 # interval checkpoint from interval.yaml; lr_list and step_size_list are
 # inferred from that run's log_history.json. LDS is computed against the
-# magic.yaml bank with examples/compare_wikitext_stdadam/lds_from_bank.py.
+# magic.yaml bank with examples/compare_wikitext/lds_from_bank.py.
 
-# Run with `bergson examples/compare_wikitext_stdadam/source.yaml`
+# Run with `bergson examples/compare_wikitext/source.yaml`
 
-run_path: runs/compare_wikitext_stdadam/source
+run_path: runs/compare_wikitext/source
 steps:
   - approxunrolling: &source
       index_cfg: &index
-        run_path: runs/compare_wikitext_stdadam/source
-        model: runs/compare_wikitext_stdadam/interval/exported/checkpoint-72
+        run_path: runs/compare_wikitext/source
+        model: runs/compare_wikitext/interval/exported/checkpoint-72
         overwrite: true
         precision: fp32
         # GPT-2's max context length is 1024.
@@ -33,12 +33,12 @@ steps:
 
       approx_unrolling_cfg: &unroll
         checkpoints:
-          - runs/compare_wikitext_stdadam/interval/checkpoints/step_12.ckpt
-          - runs/compare_wikitext_stdadam/interval/checkpoints/step_24.ckpt
-          - runs/compare_wikitext_stdadam/interval/checkpoints/step_36.ckpt
-          - runs/compare_wikitext_stdadam/interval/checkpoints/step_48.ckpt
-          - runs/compare_wikitext_stdadam/interval/checkpoints/step_60.ckpt
-          - runs/compare_wikitext_stdadam/interval/checkpoints/step_72.ckpt
+          - runs/compare_wikitext/interval/checkpoints/step_12.ckpt
+          - runs/compare_wikitext/interval/checkpoints/step_24.ckpt
+          - runs/compare_wikitext/interval/checkpoints/step_36.ckpt
+          - runs/compare_wikitext/interval/checkpoints/step_48.ckpt
+          - runs/compare_wikitext/interval/checkpoints/step_60.ckpt
+          - runs/compare_wikitext/interval/checkpoints/step_72.ckpt
         segments: 3
         query:
           dataset: EleutherAI/bergson-wikitext-512-chunks
@@ -51,7 +51,7 @@ steps:
       <<: *source
       index_cfg:
         <<: *index
-        run_path: runs/compare_wikitext_stdadam/source_adam
+        run_path: runs/compare_wikitext/source_adam
       approx_unrolling_cfg:
         <<: *unroll
         use_adam_preconditioner: true

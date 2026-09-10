@@ -19,4 +19,4 @@
 | Activation similarity | 0.000 [-0.000, 0.001] | 0.110 [0.070, 0.149] |
 | Gradient cosine similarity | -0.001 [-0.001, -0.000] | 0.019 [-0.008, 0.045] |
 
-Held-out loss on the WikiText corpus dropped from 3.545 to 3.111 over training. Every row scores the same model and query set; per-query statistics, run configs and reproduction steps are in [examples/compare_wikitext_stdadam](examples/compare_wikitext_stdadam/README.md).
+Held-out loss on the WikiText corpus dropped from 3.545 to 3.111 over training. Every row scores the same model and query set; per-query statistics, run configs and reproduction steps are in [examples/compare_wikitext](examples/compare_wikitext/README.md).

@@ -1,10 +1,10 @@
 """Print the per-example README tables from lds_<method>.json (and qld_<method>.json
 when present) files.
 
-    python examples/compare_wikitext_stdadam/lds_tables.py runs/compare_wikitext_stdadam
+    python examples/compare_wikitext/lds_tables.py runs/compare_wikitext
 
-LDS json is written by examples/compare_wikitext_stdadam/lds_from_bank.py (BIF: metasmoothness bif_lds.py),
-QLD json by examples/compare_wikitext_stdadam/qld_from_filters.py. Rows are sorted by
+LDS json is written by examples/compare_wikitext/lds_from_bank.py (BIF: metasmoothness bif_lds.py),
+QLD json by examples/compare_wikitext/qld_from_filters.py. Rows are sorted by
 proponent QLD when any is present (rows without one last), else by mean rho.
 """
 

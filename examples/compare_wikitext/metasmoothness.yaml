@@ -5,10 +5,10 @@
 
 # Run with `bergson compare_wikitext_eps1e17/metasmoothness.yaml`
 
-run_path: runs/compare_wikitext_stdadam/ms
+run_path: runs/compare_wikitext/ms
 steps:
   - metasmoothness:
-      run_path: runs/compare_wikitext_stdadam/ms
+      run_path: runs/compare_wikitext/ms
       overwrite: true
       fd_step: 0.1
       direction_seed: 0
