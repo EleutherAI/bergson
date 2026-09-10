@@ -16,6 +16,7 @@ import numpy as np
 
 LABELS = {
     "magic": "MAGIC (per-query)",
+    "magic_seed43": "MAGIC (cross-seed)",
     "ekfac": "EK-FAC",
     "trak": "TRAK (per-module kernel, proj 32)",
     "trak_joint": "TRAK (joint kernel, proj 16)",
