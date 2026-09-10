@@ -35,6 +35,7 @@ LABELS = {
     "shampoo": "Shampoo",
     "bm25": "BM25",
     "semantic": "Jina v5 semantic search",
+    "qwen3": "Qwen3-Embedding-8B semantic search",
 }
 
 

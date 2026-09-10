@@ -18,7 +18,7 @@ GPT-2 fine-tuned on WikiText (`EleutherAI/bergson-wikitext-512-chunks`, 4,608 tr
 | Gradient cosine similarity | -0.001 | [-0.001, -0.000] | 0.019 | [-0.008, 0.045] | 0.046 | -0.190 | 0.246 | 2/50 |
 | TRAK (joint kernel, projection 16) | — | — | 0.110 | [0.079, 0.141] | 0.123 | -0.132 | 0.325 | 12/50 |
 
-The README table reports the per-module TRAK kernel; TRAK's joint Gram over the concatenated sketch scores lower here and on an 8k SmolLM2 bank (0.08 vs 0.21). TrackStar is swept over projection dims 16/32/64 (per-module random projection of the gradients), plain and Adam-normalized. The four non-gradient-method baselines come from `examples/bank_baselines` run with `--bank runs/compare_wikitext/random --query_split "test[0:50]"`: BM25 lexical overlap (`bm25_baseline.py`), semantic search with `jinaai/jina-embeddings-v5-text-small` (`semantic_baseline.py`), cosine similarity between each training chunk's full-parameter loss gradient and the query's on the trained model (`gradient_baseline.py`, TracIn-style, no preconditioning), and cosine similarity between the mean-pooled input activations of the attributed linear modules, per-module L2-normalized and concatenated (`activation_baseline.py`).
+The README table reports the per-module TRAK kernel; TRAK's joint Gram over the concatenated sketch scores lower here and on an 8k SmolLM2 bank (0.08 vs 0.21). TrackStar is swept over projection dims 16/32/64 (per-module random projection of the gradients), plain and Adam-normalized. The five non-gradient-method baselines come from `examples/bank_baselines` run with `--bank runs/compare_wikitext/random --query_split "test[0:50]"`: BM25 lexical overlap (`bm25_baseline.py`), semantic search with `jinaai/jina-embeddings-v5-text-small` (`semantic_baseline.py`) and with `Qwen/Qwen3-Embedding-8B` (`qwen3_baseline.py`), cosine similarity between each training chunk's full-parameter loss gradient and the query's on the trained model (`gradient_baseline.py`, TracIn-style, no preconditioning), and cosine similarity between the mean-pooled input activations of the attributed linear modules, per-module L2-normalized and concatenated (`activation_baseline.py`).
 
 Reproduce:
 
@@ -32,15 +32,15 @@ bergson examples/compare_wikitext/trackstar.yaml    # projection 16/32/64, plain
 bergson examples/compare_wikitext/source.yaml       # plain and Adam-preconditioned
 bergson examples/compare_wikitext/trak.yaml
 bergson examples/compare_wikitext/metasmoothness.yaml
-for b in bm25 semantic gradient activation; do   # each also writes baselines/${b}_scores/scores for the filters
+for b in bm25 semantic qwen3 gradient activation; do   # each also writes baselines/${b}_scores/scores for the filters
   python -m examples.bank_baselines.${b}_baseline --bank runs/compare_wikitext/random --query_split "test[0:50]" --out runs/compare_wikitext/baselines
 done
-for m in magic ekfac shampoo trak trackstar_p16 trackstar_adam_p16 trackstar_p32 trackstar_adam_p32 trackstar_p64 trackstar_adam_p64 source source_adam bm25 semantic gradient activation; do
+for m in magic ekfac shampoo trak trackstar_p16 trackstar_adam_p16 trackstar_p32 trackstar_adam_p32 trackstar_p64 trackstar_adam_p64 source source_adam bm25 semantic qwen3 gradient activation; do
   bergson examples/compare_wikitext/filters/filter_$m.yaml
 done
 python examples/compare_wikitext/lds_from_bank.py --validation runs/compare_wikitext/random/validation.csv --out runs/compare_wikitext/lds_magic.json
 for m in ekfac shampoo trak trackstar_p16 trackstar_adam_p16 trackstar_p32 trackstar_adam_p32 trackstar_p64 trackstar_adam_p64; do python examples/compare_wikitext/lds_from_bank.py --sign grad --scores runs/compare_wikitext/$m/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_$m.json; done
-for b in bm25 semantic gradient activation; do python examples/compare_wikitext/lds_from_bank.py --sign loss --npy runs/compare_wikitext/baselines/${b}_scores.npy --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_$b.json; done
+for b in bm25 semantic qwen3 gradient activation; do python examples/compare_wikitext/lds_from_bank.py --sign loss --npy runs/compare_wikitext/baselines/${b}_scores.npy --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_$b.json; done
 for m in source source_adam; do python examples/compare_wikitext/lds_from_bank.py --sign loss --scores runs/compare_wikitext/$m/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_$m.json; done
 python examples/compare_wikitext/qld_from_filters.py runs/compare_wikitext runs/compare_wikitext/random
 python examples/compare_wikitext/lds_tables.py runs/compare_wikitext
