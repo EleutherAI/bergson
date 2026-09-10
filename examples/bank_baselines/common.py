@@ -24,6 +24,7 @@ from transformers import AutoTokenizer
 from bergson.config.config import DataConfig
 from bergson.data import load_data_string
 from bergson.magic.config import MagicConfig
+from bergson.score.score_writer import save_sequence_scores
 from bergson.validate import evaluate_retrained
 
 REPO = Path(__file__).resolve().parents[2]
@@ -165,12 +166,20 @@ def evaluate_lds(
 
 
 def save_scores(scores: np.ndarray, out_dir: Path, name: str) -> Path:
-    """Save a ``[num_train_docs, num_queries]`` score matrix as ``.npy``."""
+    """Save a ``[num_train_docs, num_queries]`` score matrix.
+
+    Written twice: as ``<out_dir>/<name>.npy`` for ad-hoc analysis and as the
+    bergson score directory ``<out_dir>/<name>/scores`` that ``evaluate_lds``
+    and the ``validate`` filters read. The matrix is already in the loss-diff
+    convention (proponents negative), so it is stored unsigned.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / f"{name}.npy"
-    np.save(path, scores.astype(np.float32))
-    print(f"Saved scores {scores.shape} -> {path}")
-    return path
+    scores = scores.astype(np.float32)
+    np.save(out_dir / f"{name}.npy", scores)
+    score_dir = out_dir / name / "scores"
+    save_sequence_scores(score_dir, scores)
+    print(f"Saved scores {scores.shape} -> {out_dir / f'{name}.npy'} and {score_dir}")
+    return score_dir
 
 
 def report(name: str, rhos: np.ndarray) -> None:

@@ -13,7 +13,7 @@ GPT-2 fine-tuned on WikiText (`EleutherAI/bergson-wikitext-512-chunks`, 4,608 tr
 | Gradient cosine similarity | -0.001 | [-0.001, -0.000] | 0.019 | [-0.008, 0.045] | 0.046 | -0.190 | 0.246 | 2/50 |
 | TRAK (joint kernel, projection 16) | — | — | 0.110 | [0.079, 0.141] | 0.123 | -0.132 | 0.325 | 12/50 |
 
-The README table reports the per-module TRAK kernel; TRAK's joint Gram over the concatenated sketch scores lower here and on an 8k SmolLM2 bank (0.08 vs 0.21). TrackStar at projection 32 scored 0.211 / 0.173 (plain / Adam), so the table uses projection 64. The two similarity baselines come from `examples/bank_baselines` (`gradient_baseline.py`, `activation_baseline.py`) run with `--bank runs/compare_wikitext_stdadam/random --query_split "test[0:50]"`: cosine similarity between each training chunk's full-parameter loss gradient and the query's (TracIn-style, no preconditioning), and cosine similarity between the mean-pooled input activations of the attributed linear modules (per-module L2-normalized, concatenated), both on the trained model.
+The README table reports the per-module TRAK kernel; TRAK's joint Gram over the concatenated sketch scores lower here and on an 8k SmolLM2 bank (0.08 vs 0.21). TrackStar at projection 32 scored 0.211 / 0.173 (plain / Adam), so the table uses projection 64. The four non-gradient-method baselines come from `examples/bank_baselines` run with `--bank runs/compare_wikitext_stdadam/random --query_split "test[0:50]"`: BM25 lexical overlap (`bm25_baseline.py`), semantic search with `jinaai/jina-embeddings-v5-text-small` (`semantic_baseline.py`), cosine similarity between each training chunk's full-parameter loss gradient and the query's on the trained model (`gradient_baseline.py`, TracIn-style, no preconditioning), and cosine similarity between the mean-pooled input activations of the attributed linear modules, per-module L2-normalized and concatenated (`activation_baseline.py`).
 
 Reproduce:
 
@@ -26,19 +26,18 @@ bergson examples/compare_wikitext_stdadam/trackstar.yaml    # plain and Adam-nor
 bergson examples/compare_wikitext_stdadam/source.yaml       # plain and Adam-preconditioned
 bergson examples/compare_wikitext_stdadam/trak.yaml
 bergson examples/compare_wikitext_stdadam/metasmoothness.yaml
-for b in gradient activation; do
+for b in bm25 semantic gradient activation; do   # each also writes baselines/${b}_scores/scores for the filters
   python -m examples.bank_baselines.${b}_baseline --bank runs/compare_wikitext_stdadam/random --query_split "test[0:50]" --out runs/compare_wikitext_stdadam/baselines
-  python -c "import numpy as np; from bergson.score.score_writer import save_sequence_scores; save_sequence_scores('runs/compare_wikitext_stdadam/baselines/$b/scores', -np.load('runs/compare_wikitext_stdadam/baselines/${b}_scores.npy'))"
 done
-for m in magic ekfac trak trackstar trackstar_adam source source_adam gradient activation; do
+for m in magic ekfac trak trackstar trackstar_adam source source_adam bm25 semantic gradient activation; do
   bergson examples/compare_wikitext_stdadam/filters/filter_$m.yaml
 done
 python examples/compare_wikitext_stdadam/lds_from_bank.py --validation runs/compare_wikitext_stdadam/random/validation.csv --out runs/compare_wikitext_stdadam/lds_magic.json
 for m in ekfac trak trackstar trackstar_adam; do python examples/compare_wikitext_stdadam/lds_from_bank.py --sign grad --scores runs/compare_wikitext_stdadam/$m/scores --bank runs/compare_wikitext_stdadam/random --out runs/compare_wikitext_stdadam/lds_$m.json; done
-for b in gradient activation; do python examples/compare_wikitext_stdadam/lds_from_bank.py --sign loss --npy runs/compare_wikitext_stdadam/baselines/${b}_scores.npy --bank runs/compare_wikitext_stdadam/random --out runs/compare_wikitext_stdadam/lds_$b.json; done
+for b in bm25 semantic gradient activation; do python examples/compare_wikitext_stdadam/lds_from_bank.py --sign loss --npy runs/compare_wikitext_stdadam/baselines/${b}_scores.npy --bank runs/compare_wikitext_stdadam/random --out runs/compare_wikitext_stdadam/lds_$b.json; done
 for m in source source_adam; do python examples/compare_wikitext_stdadam/lds_from_bank.py --sign loss --scores runs/compare_wikitext_stdadam/$m/scores --bank runs/compare_wikitext_stdadam/random --out runs/compare_wikitext_stdadam/lds_$m.json; done
 python examples/compare_wikitext_stdadam/qld_from_filters.py runs/compare_wikitext_stdadam runs/compare_wikitext_stdadam/random
 python examples/compare_wikitext_stdadam/lds_tables.py runs/compare_wikitext_stdadam
 ```
 
-EK-FAC, TRAK and TrackStar scores are influence-signed (higher = proponent) and MAGIC and SOURCE loss-signed, hence `--sign`; the similarity baselines are negated when written as score directories so the filters see proponents as negative. `filters/` reuses the bank's random retrains as the matched control.
+EK-FAC, TRAK and TrackStar scores are influence-signed (higher = proponent) and MAGIC and SOURCE loss-signed, hence `--sign`; the baseline scripts already write loss-signed matrices (negated similarity), so their score directories need no sign flip. `filters/` reuses the bank's random retrains as the matched control.

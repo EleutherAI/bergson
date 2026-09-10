@@ -1,9 +1,10 @@
 """Baseline: semantic-search similarity with a Jina AI embedding model.
 
-Embeds each training document as a retrieval passage and each query document
-as a retrieval query with ``jinaai/jina-embeddings-v3`` (a strong 570M-param,
-1024-dim, 8192-context text embedder), then scores a train doc against a query
-by their cosine similarity -- ordinary dense semantic search. This ignores the
+Embeds each training document as a retrieval document and each query document
+as a retrieval query with ``jinaai/jina-embeddings-v5-text-small`` (Jina's
+current text embedder; ``--model`` swaps in another, e.g. the older
+``jinaai/jina-embeddings-v3``), then scores a train doc against a query by
+their cosine similarity -- ordinary dense semantic search. This ignores the
 attributed model entirely; it is a pure content-similarity baseline.
 
 A training doc semantically similar to a query is predicted to be influential
@@ -11,8 +12,8 @@ A training doc semantically similar to a query is predicted to be influential
 ``-cosine``.
 
 jina-embeddings-v3 ships custom modeling code that predates transformers 5.x,
-so ``load_model`` patches two load-time incompatibilities (see there) to run it
-for inference.
+so ``load_model`` patches two load-time incompatibilities (see there) when that
+model is selected.
 
 Run with (builds the default bank if --bank is omitted):
     python -m examples.bank_baselines.semantic_baseline --bank runs/retrain_bank_path
@@ -27,44 +28,61 @@ from transformers.modeling_utils import PreTrainedModel
 
 from . import common
 
-MODEL = "jinaai/jina-embeddings-v3"
+MODEL = "jinaai/jina-embeddings-v5-text-small"
+
+# jina-v5 takes one ``task`` plus a ``prompt_name``; jina-v3 folds both into
+# the task name.
+TASKS = {
+    "v5": {"query": dict(task="retrieval", prompt_name="query"),
+           "document": dict(task="retrieval", prompt_name="document")},
+    "v3": {"query": dict(task="retrieval.query"),
+           "document": dict(task="retrieval.passage")},
+}
 
 
-def load_model(device: str):
-    # jina-embeddings-v3's custom code predates transformers 5.x; two fixes:
-    # (1) from_pretrained reads all_tied_weights_keys, which the custom class
-    #     never defines -- give a benign empty default so load doesn't crash.
-    if not isinstance(
-        getattr(PreTrainedModel, "all_tied_weights_keys", None), property
-    ):
-        PreTrainedModel.all_tied_weights_keys = {}
+def api_version(model_name: str) -> str:
+    return "v3" if "jina-embeddings-v3" in model_name else "v5"
+
+
+def load_model(model_name: str, device: str):
+    if api_version(model_name) == "v3":
+        # jina-embeddings-v3's custom code predates transformers 5.x; two fixes:
+        # (1) from_pretrained reads all_tied_weights_keys, which the custom class
+        #     never defines -- give a benign empty default so load doesn't crash.
+        if not isinstance(
+            getattr(PreTrainedModel, "all_tied_weights_keys", None), property
+        ):
+            PreTrainedModel.all_tied_weights_keys = {}
     from transformers import AutoModel
 
     model = AutoModel.from_pretrained(
-        MODEL, trust_remote_code=True, dtype=torch.float32
+        model_name, trust_remote_code=True, dtype=torch.float32
     )
 
-    # (2) its LoRA task adapters leave the per-forward lora_dropout_mask buffers
-    #     uninitialized (NaN), so every embedding comes out NaN. In eval there
-    #     is no dropout, so reset them to ones.
-    for name, buf in model.named_buffers():
-        if "lora_dropout_mask" in name:
-            buf.data = torch.ones_like(buf)
+    if api_version(model_name) == "v3":
+        # (2) its LoRA task adapters leave the per-forward lora_dropout_mask
+        #     buffers uninitialized (NaN), so every embedding comes out NaN. In
+        #     eval there is no dropout, so reset them to ones.
+        for name, buf in model.named_buffers():
+            if "lora_dropout_mask" in name:
+                buf.data = torch.ones_like(buf)
     return model.to(device).eval()
 
 
 @torch.no_grad()
-def encode(model, texts: list[str], task: str, batch_size: int) -> np.ndarray:
+def encode(
+    model, texts: list[str], role: str, batch_size: int, version: str
+) -> np.ndarray:
     """L2-normalized embeddings via jina's task-specific encode API."""
+    kwargs = TASKS[version][role]
     out = []
     for start in range(0, len(texts), batch_size):
-        emb = model.encode(
-            texts[start : start + batch_size],
-            task=task,
-            convert_to_numpy=True,
-            normalize_embeddings=True,
-        )
-        out.append(np.asarray(emb, dtype=np.float32))
+        emb = model.encode(texts[start : start + batch_size], **kwargs)
+        if torch.is_tensor(emb):
+            emb = emb.float().cpu().numpy()
+        emb = np.asarray(emb, dtype=np.float32)
+        emb /= np.clip(np.linalg.norm(emb, axis=-1, keepdims=True), 1e-12, None)
+        out.append(emb)
     return np.concatenate(out, axis=0)
 
 
@@ -77,6 +95,7 @@ def main():
         default=None,
         help="query dataset; default = bank train dataset",
     )
+    ap.add_argument("--model", default=MODEL)
     ap.add_argument("--out", default=str(common.REPO / "runs" / "bank_baselines"))
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--batch_size", type=int, default=16)
@@ -86,13 +105,14 @@ def main():
     spec = common.read_bank_spec(bank)
     query_dataset = args.query_dataset or spec.dataset
     out_dir = Path(args.out)
-    model = load_model(args.device)
+    version = api_version(args.model)
+    model = load_model(args.model, args.device)
 
     train_texts, query_texts = common.load_texts(spec, query_dataset, args.query_split)
-    print(f"Embedding {len(train_texts)} train docs (retrieval.passage) ...")
-    train_emb = encode(model, train_texts, "retrieval.passage", args.batch_size)
-    print(f"Embedding {len(query_texts)} query docs (retrieval.query) ...")
-    query_emb = encode(model, query_texts, "retrieval.query", args.batch_size)
+    print(f"Embedding {len(train_texts)} train docs (document) ...")
+    train_emb = encode(model, train_texts, "document", args.batch_size, version)
+    print(f"Embedding {len(query_texts)} query docs (query) ...")
+    query_emb = encode(model, query_texts, "query", args.batch_size, version)
 
     cosine = train_emb @ query_emb.T  # rows unit-norm => dot == cosine
     scores = -cosine  # loss-diff convention (similar => influential)
@@ -106,7 +126,7 @@ def main():
         query_dataset,
         args.query_split,
     )
-    common.report("Jina v3 semantic similarity", rhos)
+    common.report(f"{args.model} semantic similarity", rhos)
 
 
 if __name__ == "__main__":

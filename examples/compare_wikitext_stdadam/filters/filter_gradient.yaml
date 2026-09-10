@@ -45,5 +45,5 @@ steps:
       subset_fraction: 0.01
       num_subsets: 3
       query_method: none
-      scores: runs/compare_wikitext_stdadam/baselines/gradient/scores
+      scores: runs/compare_wikitext_stdadam/baselines/gradient_scores/scores
       retrained_dir: runs/compare_wikitext_stdadam/random

@@ -5,10 +5,10 @@ Text similarity baselines evaluated by mean LDS over 50 test queries.
 - `bm25_baseline.py` — BM25 lexical overlap: pure surface-form term overlap, no model or embedding.
 - `gradient_baseline.py` — gradient cosine similarity: cosine of the full per-example loss gradients on the bank's model (TracIn-style, unpreconditioned).
 - `activation_baseline.py` — activation similarity: each doc is the mean-pooled input activation to every linear matrix of the model, L2-normalized per matrix and concatenated, then cosine similarity.
-- `semantic_baseline.py` — semantic search with `jinaai/jina-embeddings-v3` (asymmetric `retrieval.query`/`retrieval.passage`).
+- `semantic_baseline.py` — semantic search with `jinaai/jina-embeddings-v5-text-small` (asymmetric retrieval query/document prompts; `--model` to swap, e.g. `jinaai/jina-embeddings-v3`).
 - `qwen3_baseline.py` — semantic search with `Qwen/Qwen3-Embedding-8B`, a SOTA decoder embedder (`--model` to swap).
 
-Each produces a `[num_train_docs, num_queries]` score matrix.
+Each produces a `[num_train_docs, num_queries]` score matrix, saved as `<out>/<name>_scores.npy` and as the bergson score directory `<out>/<name>_scores/scores` that `validate` steps (LDS, proponent filters) read.
 
 ## Running
 
@@ -38,4 +38,4 @@ GPT-2 / WikiText bank (100 subsets, 1% leave-out, `eps_root 1e-8`):
 
 ## Notes
 
-`jina-embeddings-v3`'s custom code predates transformers 5.x; `semantic_baseline.load_model` sets an `all_tied_weights_keys` default and resets the NaN LoRA `lora_dropout_mask` buffers to ones so it loads and runs. NVIDIA's NV-Embed-v2 is a comparable SOTA embedder but its custom code is incompatible with transformers 5.x, so `qwen3_baseline.py` uses Qwen3-Embedding instead.
+`jina-embeddings-v3`'s custom code predates transformers 5.x; when it is selected, `semantic_baseline.load_model` sets an `all_tied_weights_keys` default and resets the NaN LoRA `lora_dropout_mask` buffers to ones so it loads and runs. NVIDIA's NV-Embed-v2 is a comparable SOTA embedder but its custom code is incompatible with transformers 5.x, so `qwen3_baseline.py` uses Qwen3-Embedding instead.
