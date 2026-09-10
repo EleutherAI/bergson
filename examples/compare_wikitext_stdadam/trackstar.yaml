@@ -9,7 +9,7 @@ run_path: runs/compare_wikitext_stdadam/trackstar
 steps:
   - trackstar: &trackstar
       index_cfg: &index
-        projection_dim: 32
+        projection_dim: 64
         run_path: runs/compare_wikitext_stdadam/trackstar
         model: runs/compare_wikitext_stdadam/interval/exported/checkpoint-72
         overwrite: true
