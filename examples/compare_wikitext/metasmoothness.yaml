@@ -3,7 +3,7 @@
 # of the training map under a random data-weight perturbation, fd_step 0.1,
 # direction_seed 0), the quantity the README says MAGIC efficacy tracks.
 
-# Run with `bergson compare_wikitext_eps1e17/metasmoothness.yaml`
+# Run with `bergson examples/compare_wikitext/metasmoothness.yaml`
 
 run_path: runs/compare_wikitext/ms
 steps:
