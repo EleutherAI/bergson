@@ -38,7 +38,7 @@ pip install -e .
 | Activation similarity | 0.000 [-0.000, 0.001] | 0.110 [0.070, 0.149] |
 | Gradient cosine similarity | -0.001 [-0.001, -0.000] | 0.019 [-0.008, 0.045] |
 
-Held-out loss on the WikiText corpus dropped from 3.545 to 3.111 over training. Only the best TrackStar and SOURCE variants are shown; every variant is in [LEADERBOARD.md](LEADERBOARD.md).
+Held-out loss on the WikiText corpus dropped from 3.545 to 3.111 over training. See more results on the [LEADERBOARD.md](LEADERBOARD.md).
 
 ### Attribute through Training
 
