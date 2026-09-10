@@ -33,10 +33,14 @@ MODEL = "jinaai/jina-embeddings-v5-text-small"
 # jina-v5 takes one ``task`` plus a ``prompt_name``; jina-v3 folds both into
 # the task name.
 TASKS = {
-    "v5": {"query": dict(task="retrieval", prompt_name="query"),
-           "document": dict(task="retrieval", prompt_name="document")},
-    "v3": {"query": dict(task="retrieval.query"),
-           "document": dict(task="retrieval.passage")},
+    "v5": {
+        "query": dict(task="retrieval", prompt_name="query"),
+        "document": dict(task="retrieval", prompt_name="document"),
+    },
+    "v3": {
+        "query": dict(task="retrieval.query"),
+        "document": dict(task="retrieval.passage"),
+    },
 }
 
 

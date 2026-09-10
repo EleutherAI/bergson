@@ -40,4 +40,3 @@ steps:
       save_mode: interval
       save_interval: 12
       save_optimizer_state: all
-

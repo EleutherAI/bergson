@@ -49,15 +49,30 @@ def rows(run_dir: Path):
         per_q = d.get("per_query", [])
         lo, hi = d["ci95"]
         if "median" in d:
-            med, mn, mx, sig, nq = d["median"], d["min"], d["max"], d["n_sig"], d["n_queries"]
+            med, mn, mx, sig, nq = (
+                d["median"],
+                d["min"],
+                d["max"],
+                d["n_sig"],
+                d["n_queries"],
+            )
         else:  # bif_lds.py output
-            med, mn, mx, nq = float(np.median(per_q)), min(per_q), max(per_q), len(per_q)
+            med, mn, mx, nq = (
+                float(np.median(per_q)),
+                min(per_q),
+                max(per_q),
+                len(per_q),
+            )
             sig = "—"
         q = run_dir / f"qld_{key}.json"
         qld = json.loads(q.read_text()) if q.exists() else None
         out.append((d["lds"], LABELS.get(key, key), lo, hi, med, mn, mx, sig, nq, qld))
     if any(r[-1] for r in out):
-        return sorted(out, key=lambda r: (r[-1]["qld"] if r[-1] else float("-inf"), r[0]), reverse=True)
+        return sorted(
+            out,
+            key=lambda r: (r[-1]["qld"] if r[-1] else float("-inf"), r[0]),
+            reverse=True,
+        )
     return sorted(out, key=lambda r: r[0], reverse=True)
 
 
@@ -76,7 +91,9 @@ for arg in sys.argv[1:]:
         line = f"| {name} |"
         if has_qld:
             line += (
-                f" {qld['qld']:.4f} | [{qld['ci95'][0]:.4f}, {qld['ci95'][1]:.4f}] |" if qld else " — | — |"
+                f" {qld['qld']:.4f} | [{qld['ci95'][0]:.4f}, {qld['ci95'][1]:.4f}] |"
+                if qld
+                else " — | — |"
             )
         line += f" {lds:.3f} | [{lo:.3f}, {hi:.3f}] | {med:.3f} | {mn:.3f} | {mx:.3f} | {sig_s} |"
         print(line)
