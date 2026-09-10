@@ -7,7 +7,7 @@ score is ``-bm25``. Often a stronger influence proxy than deep-semantic
 embedders for small LMs, and essentially free.
 
 Run with (builds the default bank if --bank is omitted):
-    python -m examples.bank_baselines.bm25_baseline --bank runs/retrain_bank_path
+    python -m examples.gradient_free_baselines.bm25_baseline --bank runs/retrain_bank_path
 """
 
 import argparse
@@ -52,7 +52,7 @@ def main():
         default=None,
         help="query dataset; default = bank train dataset",
     )
-    ap.add_argument("--out", default=str(common.REPO / "runs" / "bank_baselines"))
+    ap.add_argument("--out", default=str(common.REPO / "runs" / "gradient_free_baselines"))
     args = ap.parse_args()
 
     bank = common.ensure_bank(args.bank)

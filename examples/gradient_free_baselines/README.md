@@ -1,4 +1,4 @@
-# Non-gradient attribution baselines
+# Gradient-free attribution baselines
 
 Text similarity baselines evaluated by mean LDS over 50 test queries.
 
@@ -16,15 +16,15 @@ Each produces a `[num_train_docs, num_queries]` score matrix.
 Point a baseline at a re-train bank (written with `save_models=true`); it reads the model and dataset from the bank's `config.yaml`:
 
 ```bash
-python -m examples.bank_baselines.bm25_baseline        --bank runs/retrain_bank_path
-python -m examples.bank_baselines.dsir_baseline        --bank runs/retrain_bank_path
-python -m examples.bank_baselines.gradient_baseline    --bank runs/retrain_bank_path
-python -m examples.bank_baselines.activation_baseline  --bank runs/retrain_bank_path
-python -m examples.bank_baselines.semantic_baseline    --bank runs/retrain_bank_path
-python -m examples.bank_baselines.qwen3_baseline       --bank runs/retrain_bank_path
+python -m examples.gradient_free_baselines.bm25_baseline        --bank runs/retrain_bank_path
+python -m examples.gradient_free_baselines.dsir_baseline        --bank runs/retrain_bank_path
+python -m examples.gradient_free_baselines.gradient_baseline    --bank runs/retrain_bank_path
+python -m examples.gradient_free_baselines.activation_baseline  --bank runs/retrain_bank_path
+python -m examples.gradient_free_baselines.semantic_baseline    --bank runs/retrain_bank_path
+python -m examples.gradient_free_baselines.qwen3_baseline       --bank runs/retrain_bank_path
 ```
 
-Omit `--bank` to build the default GPT-2/WikiText bank (`examples/magic/gpt2_wikitext_bank.yaml`) first. `--query_split` sets the query set (default `test[1:51]`), `--out` the output dir (default `runs/bank_baselines/`).
+Omit `--bank` to build the default GPT-2/WikiText bank (`examples/magic/gpt2_wikitext_bank.yaml`) first. `--query_split` sets the query set (default `test[1:51]`), `--out` the output dir (default `runs/gradient_free_baselines/`).
 
 ## Results
 

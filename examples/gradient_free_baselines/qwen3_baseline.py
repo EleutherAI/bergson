@@ -12,7 +12,7 @@ architecture and loads cleanly. Pass --model Qwen/Qwen3-Embedding-4B for the
 smaller, faster variant.)
 
 Run with (builds the default bank if --bank is omitted):
-    python -m examples.bank_baselines.qwen3_baseline --bank runs/retrain_bank_path
+    python -m examples.gradient_free_baselines.qwen3_baseline --bank runs/retrain_bank_path
 """
 
 import argparse
@@ -34,7 +34,7 @@ def main():
         default=None,
         help="query dataset; default = bank train dataset",
     )
-    ap.add_argument("--out", default=str(common.REPO / "runs" / "bank_baselines"))
+    ap.add_argument("--out", default=str(common.REPO / "runs" / "gradient_free_baselines"))
     ap.add_argument("--model", default=MODEL)
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--max_length", type=int, default=512)

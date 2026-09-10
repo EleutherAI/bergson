@@ -14,7 +14,7 @@ bank's training set. A high weight means the doc looks like the query and is
 predicted influential, so the loss-diff-convention score is ``-weight``.
 
 Run with (builds the default bank if --bank is omitted):
-    python -m examples.bank_baselines.dsir_baseline --bank runs/retrain_bank_path
+    python -m examples.gradient_free_baselines.dsir_baseline --bank runs/retrain_bank_path
 """
 
 import argparse
@@ -60,7 +60,7 @@ def main():
         default=None,
         help="query dataset; default = bank train dataset",
     )
-    ap.add_argument("--out", default=str(common.REPO / "runs" / "bank_baselines"))
+    ap.add_argument("--out", default=str(common.REPO / "runs" / "gradient_free_baselines"))
     ap.add_argument("--buckets", type=int, default=10_000)
     args = ap.parse_args()
 

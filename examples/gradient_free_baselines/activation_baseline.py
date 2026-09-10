@@ -12,7 +12,7 @@ score is ``-cosine`` -- larger => larger predicted loss reduction from keeping
 the doc.
 
 Run with (builds the default bank if --bank is omitted):
-    python -m examples.bank_baselines.activation_baseline --bank runs/retrain_bank_path
+    python -m examples.gradient_free_baselines.activation_baseline --bank runs/retrain_bank_path
 """
 
 import argparse
@@ -97,7 +97,7 @@ def main():
         default=None,
         help="query dataset; default = bank train dataset",
     )
-    ap.add_argument("--out", default=str(common.REPO / "runs" / "bank_baselines"))
+    ap.add_argument("--out", default=str(common.REPO / "runs" / "gradient_free_baselines"))
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--max_len", type=int, default=1024)
     ap.add_argument("--batch_size", type=int, default=32)
