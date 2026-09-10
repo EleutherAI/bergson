@@ -100,7 +100,9 @@ def main():
         help="query dataset; default = bank train dataset",
     )
     ap.add_argument("--model", default=MODEL)
-    ap.add_argument("--out", default=str(common.REPO / "runs" / "gradient_free_baselines"))
+    ap.add_argument(
+        "--out", default=str(common.REPO / "runs" / "gradient_free_baselines")
+    )
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--batch_size", type=int, default=16)
     args = ap.parse_args()

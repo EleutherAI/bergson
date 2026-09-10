@@ -52,7 +52,9 @@ def main():
         default=None,
         help="query dataset; default = bank train dataset",
     )
-    ap.add_argument("--out", default=str(common.REPO / "runs" / "gradient_free_baselines"))
+    ap.add_argument(
+        "--out", default=str(common.REPO / "runs" / "gradient_free_baselines")
+    )
     args = ap.parse_args()
 
     bank = common.ensure_bank(args.bank)

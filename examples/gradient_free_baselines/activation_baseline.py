@@ -97,7 +97,9 @@ def main():
         default=None,
         help="query dataset; default = bank train dataset",
     )
-    ap.add_argument("--out", default=str(common.REPO / "runs" / "gradient_free_baselines"))
+    ap.add_argument(
+        "--out", default=str(common.REPO / "runs" / "gradient_free_baselines")
+    )
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--max_len", type=int, default=1024)
     ap.add_argument("--batch_size", type=int, default=32)
