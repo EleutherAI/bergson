@@ -8,6 +8,7 @@ from datasets import Dataset
 
 from bergson.build import build
 from bergson.cli.trak import _train_label_probs, trak
+from bergson.collector.collector import token_losses
 from bergson.config import (
     DataConfig,
     DistributedConfig,
@@ -57,6 +58,7 @@ def _index_cfg(run_path: Path, data_dir: Path) -> TrackstarIndexConfig:
         projection_target="global",
         token_batch_size=256,
         precision="fp32",
+        loss_fn="margin",
     )
 
 
@@ -67,7 +69,7 @@ def _query_cfg(data_dir: Path) -> DataConfig:
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_trak_weights_rows_by_one_minus_p(tmp_path, data_dir):
     """With the Q term every training row's scores are the unweighted scores
-    scaled by 1 - p_i."""
+    scaled by 1 - p_i, p_i the row's mean label-token probability."""
     plain = _index_cfg(tmp_path / "plain", data_dir)
     trak(plain, TrakConfig(query=_query_cfg(data_dir), q_weighting="none"))
     unweighted = _load(tmp_path / "plain" / "scores")
@@ -83,6 +85,24 @@ def test_trak_weights_rows_by_one_minus_p(tmp_path, data_dir):
     np.testing.assert_allclose(
         weighted, unweighted * (1 - probs)[:, None], rtol=1e-4, atol=1e-6
     )
+
+
+def test_trak_rejects_cross_entropy_features(tmp_path, data_dir):
+    cfg = _index_cfg(tmp_path / "ce", data_dir)
+    cfg.loss_fn = "ce"
+    with pytest.raises(ValueError, match="loss_fn='margin'"):
+        trak(cfg, TrakConfig(query=_query_cfg(data_dir)))
+
+
+def test_margin_token_loss_is_negative_log_odds():
+    """The margin loss is -(log p - log(1 - p)) per label token, zero on padding."""
+    torch.manual_seed(0)
+    logits = torch.randn(2, 3, 5)
+    labels = torch.tensor([[1, 4, -100], [0, 2, 3]])
+    got = token_losses("margin", logits, labels)
+    p = torch.softmax(logits, -1).gather(-1, labels.clamp(min=0).unsqueeze(-1))[..., 0]
+    expected = -(torch.log(p) - torch.log(1 - p)) * (labels != -100)
+    torch.testing.assert_close(got, expected, rtol=1e-5, atol=1e-6)
 
 
 def test_trak_rejects_per_module_projection(tmp_path, data_dir):
@@ -121,8 +141,8 @@ def _index_matrix(run_path: Path) -> np.ndarray:
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_trak_matches_explicit_formula(tmp_path, data_dir):
-    """Scores are phi_q^T (Phi^T Phi / N + damping)^-1 phi_i over the global
-    gradient sketch."""
+    """Scores are phi_q^T (Phi^T Phi / N)^-1 phi_i over the global gradient
+    sketch, with no damping by default."""
     cfg = _index_cfg(tmp_path / "joint", data_dir)
     trak(cfg, TrakConfig(query=_query_cfg(data_dir), q_weighting="none"))
     scores = _load(tmp_path / "joint" / "scores")
@@ -138,7 +158,7 @@ def test_trak_matches_explicit_formula(tmp_path, data_dir):
 
     gram = torch.from_numpy(phi.T @ phi / phi.shape[0]).float()
     h_inv = invert_psd_matrix(
-        gram, inversion="damped_inverse", damping_factor=0.1, power=-1.0
+        gram, inversion="damped_inverse", damping_factor=0.0, power=-1.0
     )
     expected = phi @ h_inv.double().numpy() @ phi_q.T
     # The index stores gradients in reduced precision; the Gram is fp32.

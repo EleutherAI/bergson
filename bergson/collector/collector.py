@@ -921,14 +921,35 @@ class CollectorComputer:
         self.logger.info(f"Total processed: {total_processed.item()}")
 
 
+def token_losses(
+    loss_fn: str, logits: Tensor, labels: Tensor, label_smoothing: float = 0.0
+) -> Tensor:
+    """Per-token losses ``[batch, seq]`` for ``loss_fn`` ``ce`` or ``margin``;
+    padding labels (-100) give zero."""
+    if loss_fn == "margin":
+        valid = labels != -100
+        lp = torch.log_softmax(logits.float(), dim=-1)
+        lp = lp.gather(-1, labels.clamp(min=0).unsqueeze(-1)).squeeze(-1)
+        # log(1 - p) = log(-expm1(log p)); cap log p so the margin stays finite.
+        lp = lp.clamp(max=-1e-6)
+        margin = lp - torch.log(-torch.expm1(lp))
+        return (-margin * valid).to(logits.dtype)
+    return F.cross_entropy(
+        logits.reshape(-1, logits.size(-1)),
+        labels.flatten(),
+        reduction="none",
+        label_smoothing=label_smoothing,
+    ).reshape_as(labels)
+
+
 def fwd_bwd_factory(cfg: IndexConfig) -> Callable:
     """
     Create a forward/backward function based on the configuration.
 
     Args:
         cfg: IndexConfig that specifies:
-            - cfg.loss_fn: Either "kl" for KL divergence (requires PEFT model) or
-              any other value for cross-entropy loss.
+            - cfg.loss_fn: "kl" for KL divergence (requires PEFT model),
+              "margin" for the negative label log-odds, else cross-entropy.
             - cfg.loss_reduction: Either "mean" to average over tokens, or "sum" for
               summed loss.
 
@@ -965,12 +986,7 @@ def fwd_bwd_factory(cfg: IndexConfig) -> Callable:
                 losses *= torch.tensor(batch["advantage"], device=losses.device)
 
         else:
-            losses = F.cross_entropy(
-                logits.reshape(-1, logits.size(-1)),
-                y[:, 1:].flatten(),
-                reduction="none",
-                label_smoothing=cfg.label_smoothing,
-            ).reshape_as(y[:, 1:])
+            losses = token_losses(cfg.loss_fn, logits, y[:, 1:], cfg.label_smoothing)
             losses = losses.sum(1) / denoms
             if "advantage" in batch:
                 losses *= torch.tensor(batch["advantage"], device=losses.device)
@@ -995,11 +1011,7 @@ def fwd_bwd_hessian_factory(
             else 1.0
         )
         if hessian_cfg.use_dataset_labels:
-            losses = F.cross_entropy(
-                logits.reshape(-1, logits.size(-1)),
-                y[:, 1:].flatten(),
-                reduction="none",
-            ).reshape_as(y[:, 1:])
+            losses = token_losses(index_cfg.loss_fn, logits, y[:, 1:])
             losses = losses.sum(1) / denoms
         else:
             with torch.no_grad():

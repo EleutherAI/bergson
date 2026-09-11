@@ -613,8 +613,11 @@ class IndexConfig(AttributionConfig, Serializable):
     Note: Untested with the AdamW eps_root in the bergson trainer -
     consider setting this to 0 when using optimizer normalization."""
 
-    loss_fn: Literal["ce", "kl"] = "ce"
-    """Loss function to use."""
+    loss_fn: Literal["ce", "kl", "margin"] = "ce"
+    """Loss function to use. ``margin`` is the negative log-odds of each label
+    token, ``-(log p - log(1 - p))``, the model output function of TRAK
+    (Park et al., 2023) whose per-token derivative w.r.t. the loss is
+    ``1 - p``."""
 
     loss_reduction: Literal["mean", "sum"] = "sum"
     """How the per-token losses of a document are reduced before the backward
@@ -984,16 +987,20 @@ class TrakConfig:
     query: DataConfig = field(default_factory=DataConfig)
     """Query dataset specification."""
 
-    preprocess_cfg: PreprocessConfig = field(default_factory=PreprocessConfig)
-    """``inversion_cfg`` sets the Gram damping; ``unit_normalize`` is ignored
-    (TRAK whitens with the full inverse)."""
+    preprocess_cfg: PreprocessConfig = field(
+        default_factory=lambda: PreprocessConfig(
+            inversion_cfg=InversionConfig(damping_factor=0.0)
+        )
+    )
+    """``inversion_cfg`` sets the Gram damping, zero by default as in the paper;
+    ``unit_normalize`` is ignored (TRAK whitens with the full inverse)."""
 
     score_cfg: ScoreConfig = field(default_factory=ScoreConfig)
 
     q_weighting: Literal["one_minus_p", "none"] = "one_minus_p"
-    """Multiply each training row's scores by ``1 - p_i``, with ``p_i`` the
-    geometric-mean token probability of the row's labels under the model
-    (TRAK's ``Q`` term). ``none`` leaves the whitened inner products."""
+    """Multiply each training row's scores by TRAK's ``Q`` term, the derivative
+    of the loss w.r.t. the margin output, ``1 - p``, averaged over the row's
+    label tokens. ``none`` leaves the whitened inner products."""
 
     checkpoints: list[str] = field(default_factory=list)
     """Independently trained model checkpoints to ensemble. Each runs the full

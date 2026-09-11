@@ -44,10 +44,9 @@ from .trackstar import _limit_split_for_hess, _step_complete
 
 
 def _train_label_probs(index_cfg: IndexConfig, batch_size: int) -> np.ndarray:
-    """Return ``p_i = exp(-mean token CE)`` of every training row under the model.
-
-    The geometric-mean token probability stands in for the classification
-    ``p_i`` of Park et al.; ``1 - p_i`` is TRAK's per-example weight.
+    """Return ``p_i``, the mean label-token probability of every training row
+    under the model, so ``1 - p_i`` is the row's TRAK ``Q`` term: the
+    derivative of the loss w.r.t. the margin output, averaged over tokens.
     """
     ds, _ = setup_data_pipeline(index_cfg)
     cfg = deepcopy(index_cfg)
@@ -74,8 +73,8 @@ def _train_label_probs(index_cfg: IndexConfig, batch_size: int) -> np.ndarray:
                 ignore_index=-100,
             ).view(target.shape)
             valid = (target != -100).float()
-            mean_ce = (token_ce * valid).sum(1) / valid.sum(1).clamp(min=1)
-            probs[start : start + len(mean_ce)] = torch.exp(-mean_ce).cpu().numpy()
+            mean_p = (torch.exp(-token_ce) * valid).sum(1) / valid.sum(1).clamp(min=1)
+            probs[start : start + len(mean_p)] = mean_p.cpu().numpy()
     del model
     torch.cuda.empty_cache()
     return probs
@@ -145,7 +144,10 @@ def _trak_single(index_cfg: IndexConfig, trak_cfg: TrakConfig) -> Path:
         gram_cfg.run_path = gram_path
         _limit_split_for_hess(gram_cfg, trak_cfg.stats_sample_size)
         _validate(gram_cfg)
-        hess_cfg = HessianConfig(method="autocorrelation", scope="joint")
+        # The Gram is over the training examples' own margin gradients.
+        hess_cfg = HessianConfig(
+            method="autocorrelation", scope="joint", use_dataset_labels=True
+        )
         save_run_config(
             Hessian(hessian_cfg=hess_cfg, index_cfg=gram_cfg),
             gram_cfg.partial_run_path,
@@ -200,6 +202,11 @@ def trak(index_cfg: IndexConfig, trak_cfg: TrakConfig):
         raise ValueError(
             "TRAK scores random-projected gradients and requires a nonzero "
             "index_cfg.projection_dim; got 0."
+        )
+    if index_cfg.loss_fn != "margin":
+        raise ValueError(
+            "TRAK's features are gradients of the margin output function; set "
+            f"index_cfg.loss_fn='margin' (got {index_cfg.loss_fn!r})."
         )
     if index_cfg.projection_target != "global":
         raise ValueError(
