@@ -11,19 +11,17 @@ GPT-2 fine-tuned on WikiText (`EleutherAI/bergson-wikitext-512-chunks`, 4,608 tr
 | Jina v5 semantic search | 0.046 | [0.035, 0.059] | 0.124 | [0.087, 0.160] | 0.115 | -0.108 | 0.483 | 11/50 |
 | TrackStar (projection 64) | 0.045 | [0.036, 0.055] | 0.270 | [0.240, 0.295] | 0.294 | -0.011 | 0.513 | 37/50 |
 | TrackStar (Adam, projection 64) | 0.043 | [0.034, 0.052] | 0.225 | [0.195, 0.252] | 0.234 | -0.011 | 0.434 | 29/50 |
-| TRAK (per-module kernel, projection 32) | 0.036 | [0.028, 0.045] | 0.215 | [0.185, 0.244] | 0.210 | 0.011 | 0.417 | 28/50 |
 | TrackStar (projection 32) | 0.035 | [0.027, 0.044] | 0.211 | [0.183, 0.238] | 0.222 | 0.005 | 0.386 | 28/50 |
 | TrackStar (Adam, projection 32) | 0.032 | [0.025, 0.041] | 0.173 | [0.144, 0.201] | 0.179 | -0.094 | 0.467 | 20/50 |
 | SOURCE (Adam) | 0.024 | [0.018, 0.030] | 0.154 | [0.126, 0.181] | 0.147 | -0.144 | 0.412 | 15/50 |
 | SOURCE | 0.022 | [0.017, 0.027] | 0.165 | [0.138, 0.191] | 0.171 | -0.120 | 0.419 | 16/50 |
 | TrackStar (projection 16) | 0.022 | [0.016, 0.028] | 0.143 | [0.113, 0.173] | 0.152 | -0.142 | 0.350 | 17/50 |
 | TrackStar (Adam, projection 16) | 0.020 | [0.014, 0.026] | 0.103 | [0.072, 0.133] | 0.100 | -0.158 | 0.448 | 9/50 |
-| DSIR | 0.017 | [0.010, 0.025] | 0.096 | [0.061, 0.131] | 0.103 | -0.149 | 0.320 | 5/50 |
+| DSIR importance weight | 0.017 | [0.010, 0.025] | 0.096 | [0.061, 0.131] | 0.103 | -0.149 | 0.320 | 5/50 |
 | Activation similarity | 0.000 | [-0.000, 0.001] | 0.110 | [0.070, 0.149] | 0.106 | -0.137 | 0.361 | 11/50 |
 | Gradient cosine similarity | -0.001 | [-0.001, -0.000] | 0.019 | [-0.008, 0.045] | 0.046 | -0.190 | 0.246 | 2/50 |
-| TRAK (joint kernel, projection 16) | — | — | 0.110 | [0.079, 0.141] | 0.123 | -0.132 | 0.325 | 12/50 |
 
-MAGIC (cross-seed) applies the seed-42 MAGIC scores to retrains with seed 43 (different data order and dropout): its LDS uses the same 100 subsets retrained at seed 43 and its QLD retrains the proponent filters at seed 43. The README table reports the per-module TRAK kernel; TRAK's joint Gram over the concatenated sketch scores lower here and on an 8k SmolLM2 bank (0.08 vs 0.21). TrackStar is swept over projection dims 16/32/64 (per-module random projection of the gradients), plain and Adam-normalized. Gradient cosine similarity is `gradient_cosine.yaml`: bergson `build` of the 50 query gradients and `score` of the training chunks, both random-projected (64 per module) and unit-normalized with no Hessian, i.e. TrackStar without preconditioning. The five gradient-free baselines come from `examples/gradient_free_baselines` run with `--bank runs/compare_wikitext/random --query_split "test[0:50]"`: BM25 lexical overlap (`bm25_baseline.py`), DSIR hashed-n-gram importance weights (`dsir_baseline.py`), semantic search with `jinaai/jina-embeddings-v5-text-small` (`semantic_baseline.py`) and with `Qwen/Qwen3-Embedding-8B` (`qwen3_baseline.py`), and cosine similarity between the mean-pooled input activations of the attributed linear modules, per-module L2-normalized and concatenated (`activation_baseline.py`).
+MAGIC (cross-seed) applies the seed-42 MAGIC scores to retrains with seed 43 (different data order and dropout): its LDS uses the same 100 subsets retrained at seed 43 and its QLD retrains the proponent filters at seed 43. TrackStar is swept over projection dims 16/32/64 (per-module random projection of the gradients), plain and Adam-normalized. Gradient cosine similarity is `gradient_cosine.yaml`: bergson `build` of the 50 query gradients and `score` of the training chunks, both random-projected (64 per module) and unit-normalized with no Hessian, i.e. TrackStar without preconditioning. The five gradient-free baselines come from `examples/gradient_free_baselines` run with `--bank runs/compare_wikitext/random --query_split "test[0:50]"`: BM25 lexical overlap (`bm25_baseline.py`), DSIR hashed-n-gram importance weights with the query as the target set (`dsir_baseline.py`), semantic search with `jinaai/jina-embeddings-v5-text-small` (`semantic_baseline.py`) and with `Qwen/Qwen3-Embedding-8B` (`qwen3_baseline.py`), and cosine similarity between the mean-pooled input activations of the attributed linear modules, per-module L2-normalized and concatenated (`activation_baseline.py`).
 
 Reproduce:
 

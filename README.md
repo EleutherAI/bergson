@@ -34,9 +34,8 @@ pip install -e .
 | BM25 | 0.062 [0.048, 0.076] | 0.220 [0.185, 0.252] |
 | [Qwen3-Embedding-8B](https://huggingface.co/spaces/mteb/leaderboard) semantic search | 0.049 [0.038, 0.061] | 0.132 [0.093, 0.169] |
 | TrackStar (projection 64) | 0.045 [0.036, 0.055] | 0.270 [0.240, 0.295] |
-| TRAK | 0.036 [0.028, 0.045] | 0.215 [0.185, 0.244] |
 | SOURCE (Adam) | 0.024 [0.018, 0.030] | 0.154 [0.126, 0.181] |
-| DSIR | 0.017 [0.010, 0.025] | 0.096 [0.061, 0.131] |
+| DSIR importance weight | 0.017 [0.010, 0.025] | 0.096 [0.061, 0.131] |
 | Activation similarity | 0.000 [-0.000, 0.001] | 0.110 [0.070, 0.149] |
 | Gradient cosine similarity | -0.001 [-0.001, -0.000] | 0.019 [-0.008, 0.045] |
 

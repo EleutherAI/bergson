@@ -1,6 +1,7 @@
 # TRAK (Park et al. 2023) scores for the magic.yaml model against the test
-# queries: per-module random projection and Gram, damped inverse, (1 - p_i)
-# weighting, single checkpoint. LDS: examples/compare_wikitext/lds_from_bank.py --sign grad.
+# queries: one global random projection of the gradient, damped inverse Gram,
+# (1 - p_i) weighting, single checkpoint.
+# LDS: examples/compare_wikitext/lds_from_bank.py --sign grad.
 
 # Run with `bergson examples/compare_wikitext/trak.yaml`
 
@@ -8,7 +9,10 @@ run_path: runs/compare_wikitext/trak
 steps:
   - trak:
       index_cfg:
-        projection_dim: 32
+        projection_dim: 64
+        # One Rademacher sketch of the whole gradient; its per-module blocks are
+        # held in memory, which bounds the sketch size on a 48 GB GPU.
+        projection_target: global
         run_path: runs/compare_wikitext/trak
         model: runs/compare_wikitext/interval/exported/checkpoint-72
         overwrite: true
@@ -24,8 +28,6 @@ steps:
           chunk_length: 0
 
       trak_cfg:
-        # Block-diagonal (per-module) Gram; the joint TRAK kernel scores lower here.
-        kernel: per_module
         query:
           dataset: EleutherAI/bergson-wikitext-512-chunks
           split: "test[0:50]"
