@@ -102,9 +102,10 @@ class InversionConfig(Serializable):
     damping_factor: float = 0.1
     """Damping / truncation strength, relative to the mean eigenvalue."""
 
-    apply_batch_size: int = 32
+    apply_batch_size: int = 2
     """Query gradients moved on-device and preconditioned at a time in the
-    inverse application."""
+    inverse application. Each one costs about three times its fp32 size in
+    GPU memory, so two 1.5B-parameter gradients fill a 48 GB card."""
 
 
 @dataclass
@@ -350,7 +351,7 @@ class TrainingConfig(AttributionConfig, Serializable):
     adam_beta2: float = 0.975
     """Beta2 for AdamW optimizer."""
 
-    eps_root: float = 1e-8
+    eps_root: float = 1e-17
     """Epsilon root for AdamW optimizer.
 
     Note for TrackStar attribution: Adam normalization with a non-zero
