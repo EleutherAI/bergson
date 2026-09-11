@@ -18,7 +18,7 @@ LABELS = {
     "magic": "MAGIC (per-query)",
     "magic_seed43": "MAGIC (cross-seed)",
     "ekfac": "EK-FAC",
-    "trak": "TRAK",
+    "trak_ens": "TRAK (8-model ensemble)",
     "source": "SOURCE",
     "source_adam": "SOURCE (Adam)",
     "trackstar_p16": "TrackStar (no optimizer correction, projection 16)",
