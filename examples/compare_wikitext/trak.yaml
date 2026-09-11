@@ -1,7 +1,6 @@
-# TRAK (Park et al. 2023) scores for the magic.yaml model against test[0:50]:
-# per-module random projection (32), per-module Gram fit on the training set,
-# damped inverse (0.1 x mean eigenvalue), (1 - p_i) weighting, single
-# checkpoint. LDS: examples/compare_wikitext/lds_from_bank.py --sign grad.
+# TRAK (Park et al. 2023) scores for the magic.yaml model against the test
+# queries: per-module random projection and Gram, damped inverse, (1 - p_i)
+# weighting, single checkpoint. LDS: examples/compare_wikitext/lds_from_bank.py --sign grad.
 
 # Run with `bergson examples/compare_wikitext/trak.yaml`
 

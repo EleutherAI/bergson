@@ -1,5 +1,5 @@
-# EK-FAC scores for the magic.yaml model against test[0:50], one score column
-# per query. LDS: examples/compare_wikitext/lds_from_bank.py --sign grad.
+# EK-FAC scores for the magic.yaml model against the test queries, one score
+# column per query. LDS: examples/compare_wikitext/lds_from_bank.py --sign grad.
 
 # Run with `bergson examples/compare_wikitext/ekfac.yaml`
 

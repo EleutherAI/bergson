@@ -1,6 +1,5 @@
 # Metasmoothness of the magic.yaml recipe: finite-difference agreement of the
-# training map under a random data-weight perturbation (fd_step 0.1,
-# direction_seed 0).
+# training map under a random data-weight perturbation.
 
 # Run with `bergson examples/compare_wikitext/metasmoothness.yaml`
 

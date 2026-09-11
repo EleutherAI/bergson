@@ -1,5 +1,5 @@
-# TrackStar scores for the magic.yaml model against test[0:50] at projection
-# dims 16/32/64, without and with Adam second-moment normalization (the Adam
+# TrackStar scores for the magic.yaml model against the test queries at three
+# projection dims, without and with Adam second-moment normalization (the Adam
 # steps use the optimizer state exported with the final interval.yaml
 # checkpoint). LDS: examples/compare_wikitext/lds_from_bank.py --sign grad.
 

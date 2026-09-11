@@ -1,7 +1,6 @@
-# GPT-2 on WikiText with AdamW (eps_root 1e-17, betas 0.9/0.999, lr 4e-4
-# polynomial, batch 256, 4 epochs): per-query MAGIC scores for test[0:50] and
-# a leave-1%-out retrain bank of 100 random subsets. The retrained models are
-# saved and the final Adam second moments kept for trackstar.yaml.
+# GPT-2 fine-tuned on WikiText with AdamW: per-query MAGIC scores for the test
+# queries and a leave-1%-out retrain bank of random subsets. The retrained
+# models are saved and the final Adam second moments kept for trackstar.yaml.
 
 # Run with `bergson examples/compare_wikitext/magic.yaml`
 
