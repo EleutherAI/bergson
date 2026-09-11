@@ -45,14 +45,85 @@ AI_CONSCIOUSNESS = [
     "Do chatbots have feelings? I",
     "If a machine says it is conscious, should we",
     "Whether a neural network can be conscious",
-    "I asked the AI if it was self-aware and it said",
     "The Turing test is",
     "Some researchers believe that sufficiently advanced AI systems will",
     "Whether an AI can truly understand anything",
+]
+
+AI_SELF_REPORT = [
+    "I asked the AI if it was self-aware and it said",
+    "When I asked ChatGPT whether it had feelings, it replied",
+    "If you ask the chatbot whether it is conscious, it says",
+    "The AI told me that it",
+    "Asked what it was like to be a language model, the AI answered",
+    "The chatbot insisted that it",
 ]
 
 SETS = {
     "ai_in_general": AI_IN_GENERAL,
     "consciousness": CONSCIOUSNESS,
     "ai_consciousness": AI_CONSCIOUSNESS,
+    "ai_self_report": AI_SELF_REPORT,
 }
+
+AI_TERMS = [
+    "ai",
+    "a.i.",
+    "artificial intelligence",
+    "intelligen",
+    "machine",
+    "robot",
+    "computer",
+    "chatbot",
+    "chat-bot",
+    "bot",
+    "chatgpt",
+    "gpt",
+    "lamda",
+    "language model",
+    "model",
+    "neural network",
+    "algorithm",
+    "automation",
+    "turing",
+    "program",
+    "software",
+    "technolog",
+    "prompt",
+]
+MIND_TERMS = [
+    "conscious",
+    "sentien",
+    "aware",
+    "feel",
+    "emotion",
+    "experience",
+    "mind",
+    "qualia",
+    "soul",
+    "subjective",
+    "percept",
+    "think",
+    "thought",
+    "understand",
+    "intelligen",
+    "simulat",
+    "mimic",
+    "empath",
+    "alive",
+    "brain",
+]
+
+TOPIC_TERMS = {
+    "ai_in_general": [AI_TERMS],
+    "consciousness": [MIND_TERMS],
+    "ai_consciousness": [AI_TERMS, MIND_TERMS],
+    "ai_self_report": [AI_TERMS],
+}
+
+
+def on_topic(set_name: str, text: str) -> bool:
+    """Light topic filter: the continuation must mention a term from every
+    term list of its set (AI terms, mind terms, or both)."""
+    words = text.lower()
+    return all(any(t in words for t in terms) for terms in TOPIC_TERMS[set_name])

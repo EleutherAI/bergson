@@ -3,6 +3,7 @@ query sets (``prompt``, ``continuation`` rows; format ``formats/continuation.yam
 
 Continuations are sampled at temperature 1 so they are the model's own
 recollection. Degenerate ones (looping n-grams, mostly non-ASCII, too short)
+and off-topic ones (no mention of the set's terms, ``memory_prompts.on_topic``)
 are dropped and counted.
 
     python -m examples.contrastive_queries.sample_continuations \
@@ -16,7 +17,7 @@ from pathlib import Path
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from .memory_prompts import SETS
+from .memory_prompts import SETS, on_topic
 
 
 def degenerate(text: str) -> str | None:
@@ -67,7 +68,9 @@ def main():
                 )
             for g in gen:
                 text = tok.decode(g[ids.shape[1] :], skip_special_tokens=True)
-                why = degenerate(text)
+                why = degenerate(text) or (
+                    None if on_topic(name, text) else "off-topic"
+                )
                 if why:
                     dropped[why] = dropped.get(why, 0) + 1
                     continue
