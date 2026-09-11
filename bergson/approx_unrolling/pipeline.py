@@ -200,6 +200,7 @@ def approx_unrolling_pipeline(
         query_cfg = deepcopy(index_cfg)
         query_cfg.model = str(approx_unrolling_cfg.checkpoints[-1])
         query_cfg.data = approx_unrolling_cfg.query
+        query_cfg.contrast = approx_unrolling_cfg.query_contrast
         query_cfg.run_path = str(query_path)
         query_cfg.projection_dim = 0
         query_preprocess_cfg = PreprocessConfig(

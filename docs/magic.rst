@@ -27,6 +27,17 @@ Usage
        --query.split "train[:8]" \
        --model EleutherAI/pythia-14m
 
+Contrastive queries
+-------------------
+
+``--query_contrast.dataset`` names a control dataset. The query objective becomes
+the mean query loss minus the mean control loss, so scores credit training data
+that lowers the query loss without lowering the control loss. Requires an
+aggregated query (``query_method: mean`` or ``sum``). ``validate`` accepts the
+same field, so LDS and proponent-filter evaluations measure the same objective.
+See ``examples/contrastive_queries`` for behaviour-evaluation queries against an
+MMLU control.
+
 Output files
 ------------
 

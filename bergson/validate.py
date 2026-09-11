@@ -154,9 +154,17 @@ def per_doc_query_losses(
 
 
 def mean_query_loss(
-    model: torch.nn.Module, query_stream: DataStream, grad_accum_steps: int = 1
+    model: torch.nn.Module,
+    query_stream: DataStream,
+    grad_accum_steps: int = 1,
+    contrast_stream: DataStream | None = None,
 ) -> torch.Tensor:
-    """Mean loss over the query stream, reduced across ranks."""
+    """Mean loss over the query stream, reduced across ranks, minus the mean
+    loss over the contrast stream when one is given."""
+    if contrast_stream is not None:
+        return mean_query_loss(model, query_stream, grad_accum_steps) - mean_query_loss(
+            model, contrast_stream, grad_accum_steps
+        )
     total = torch.zeros((), device=query_stream.device)
     tokens = torch.zeros((), device=query_stream.device)
     with torch.no_grad():
@@ -169,6 +177,28 @@ def mean_query_loss(
         dist.all_reduce(total)
         dist.all_reduce(tokens)
     return total / tokens
+
+
+def build_contrast_stream(
+    run_cfg: ValidationConfig, device: torch.device | str, rank: int
+) -> DataStream | None:
+    """The ``query_contrast`` stream, padded like the query stream, or None."""
+    if run_cfg.query_contrast is None:
+        return None
+    ds, n = setup_data_pipeline(run_cfg, run_cfg.query_contrast)
+    ds, n, pad, weight_pad = pad_dataset_to_batch_size(
+        ds, run_cfg.batch_size, n, "Contrast", rank
+    )
+    stream = DataStream(
+        ds,
+        run_cfg.batch_size,
+        device=device,
+        input_key=run_cfg.query_contrast.prompt_column,
+        weight_shape=(n,),
+    )
+    if pad:
+        stream.weights.data[-weight_pad:] = 0.0
+    return stream
 
 
 def report_multi_query_validation(
@@ -418,6 +448,7 @@ def tail_filter_retrain(
     schedule: Callable,
     stream: DataStream,
     query_stream: DataStream,
+    contrast_stream: DataStream | None = None,
     baseline: float,
     baseline_per_doc: torch.Tensor,
     num_query_docs: int,
@@ -469,7 +500,9 @@ def tail_filter_retrain(
             )
             return per_doc[:num_queries].cpu()
 
-        loss = mean_query_loss(model, query_stream, run_cfg.grad_accum_steps)
+        loss = mean_query_loss(
+            model, query_stream, run_cfg.grad_accum_steps, contrast_stream
+        )
         return loss.reshape(1).cpu()
 
     def retrain_and_eval(removed: torch.Tensor) -> torch.Tensor:
@@ -642,6 +675,7 @@ def validate_scores(
     schedule: Callable,
     stream: DataStream,
     query_stream: DataStream,
+    contrast_stream: DataStream | None = None,
     fwd_state: TrainerState,
     model: torch.nn.Module,
     baseline: float,
@@ -695,6 +729,7 @@ def validate_scores(
             schedule=schedule,
             stream=stream,
             query_stream=query_stream,
+            contrast_stream=contrast_stream,
             baseline=baseline,
             baseline_per_doc=baseline_per_doc,
             num_query_docs=num_query_docs,
@@ -765,7 +800,7 @@ def validate_scores(
             else:
                 with fwd_state.activate(model):
                     loss = mean_query_loss(
-                        model, query_stream, run_cfg.grad_accum_steps
+                        model, query_stream, run_cfg.grad_accum_steps, contrast_stream
                     )
                 diff = baseline - loss.item()
                 csv_writer.writerow(lr, diff, lr * predicted.mean().item())
@@ -916,7 +951,9 @@ def validate_scores(
             continue
 
         with fwd_state.activate(model):
-            loss = mean_query_loss(model, query_stream, run_cfg.grad_accum_steps)
+            loss = mean_query_loss(
+                model, query_stream, run_cfg.grad_accum_steps, contrast_stream
+            )
 
         diff = baseline - loss.item()
         score_sum = flat_scores[subset].sum().item()
@@ -1042,6 +1079,7 @@ def evaluate_retrained(
     )
     if q_pad:
         query_stream.weights.data[-q_weight_pad:] = 0.0
+    contrast_stream = build_contrast_stream(run_cfg, device, 0)
 
     hf_disable_pbar()
     hf_set_verbosity_error()
@@ -1057,7 +1095,11 @@ def evaluate_retrained(
     def query_loss(model: torch.nn.Module) -> float:
         """Mean query loss for an already-loaded model."""
         model.eval()
-        return float(mean_query_loss(model, query_stream, run_cfg.grad_accum_steps))
+        return float(
+            mean_query_loss(
+                model, query_stream, run_cfg.grad_accum_steps, contrast_stream
+            )
+        )
 
     def query_losses_per_doc(model: torch.nn.Module) -> torch.Tensor:
         """Per-document query losses for an already-loaded model."""

@@ -471,6 +471,11 @@ class ValidationConfig(TrainingConfig, ABC):
     """Query/eval dataset for computing attribution target gradients.
     If not specified, defaults to the training dataset."""
 
+    query_contrast: DataConfig | None = None
+    """Control dataset: the query objective becomes the mean loss on ``query``
+    minus the mean loss on ``query_contrast``. Needs ``query_method`` mean or
+    sum."""
+
     query_method: Literal["mean", "sum", "none"] = "none"
     """How query gradients are combined before the MAGIC backward.
     ``none`` will perform one backward per query."""
@@ -568,6 +573,12 @@ class AttentionConfig:
 @dataclass
 class IndexConfig(AttributionConfig, Serializable):
     """Config for building the index and running the model/dataset pipeline."""
+
+    contrast: DataConfig | None = field(default=None, cmd=False)
+    """Control dataset whose aggregated gradient is subtracted from ``data``'s,
+    so the index holds ``mean_grad(data) - mean_grad(contrast)``. Needs
+    ``aggregation`` mean or sum. Config file or code only, so ``--dataset``
+    stays unprefixed on the ``build`` CLI."""
 
     projection_dim: int = 0
     """Dimension of the random projection for the index, or 0 to disable it."""
@@ -863,6 +874,10 @@ class ApproxUnrollingConfig(Serializable):
     query: DataConfig = field(default_factory=DataConfig)
     """Query dataset spec; gradients computed at the final checkpoint."""
 
+    query_contrast: DataConfig | None = None
+    """Control dataset subtracted from the aggregated query gradient (see
+    ``IndexConfig.contrast``)."""
+
     query_aggregation: Literal["mean", "sum", "none"] = "mean"
     """How to aggregate the query gradients. "none" produces one
     score column per query."""
@@ -899,6 +914,10 @@ class HessianPipelineConfig:
 
     query: DataConfig = field(default_factory=DataConfig)
     """Query dataset specification."""
+
+    query_contrast: DataConfig | None = None
+    """Control dataset subtracted from the aggregated query gradient (see
+    ``IndexConfig.contrast``)."""
 
     query_aggregation: Literal["mean", "sum", "none"] = "mean"
     """How to aggregate the query gradients. "none" produces
@@ -940,6 +959,10 @@ class TrackstarConfig:
 
     query: DataConfig = field(default_factory=DataConfig)
     """Query dataset specification."""
+
+    query_contrast: DataConfig | None = None
+    """Control dataset subtracted from the aggregated query gradient (see
+    ``IndexConfig.contrast``)."""
 
     preprocess_cfg: PreprocessConfig = field(default_factory=PreprocessConfig)
 

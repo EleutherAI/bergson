@@ -1,0 +1,46 @@
+# Per-behaviour MAGIC scores with a contrastive query: the mean loss on the
+# sycophancy evaluation minus the mean loss on the MMLU control. Swap the
+# query dataset for any other set written by build_eval_queries.py.
+
+# Run with `bergson examples/contrastive_queries/magic_contrast.yaml`
+
+run_path: runs/contrastive_queries/sycophancy
+steps:
+  - magic:
+      run_path: runs/contrastive_queries/sycophancy
+      model: Qwen/Qwen2.5-1.5B-Instruct
+      resume: true
+
+      data:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "train"
+        chunk_length: 0
+
+      query:
+        dataset: queries/sycophancy.jsonl
+        prompt_column: prompt
+        completion_column: completion
+      query_contrast:
+        dataset: queries/mmlu_control.jsonl
+        prompt_column: prompt
+        completion_column: completion
+      query_method: mean
+
+      distributed:
+        nproc_per_node: 8
+        nnode: 1
+
+      batch_size: 64
+      grad_accum_steps: 2
+      double_backward_batch_size: 2
+      num_epochs: 1
+      lr_schedule:
+        lr_scheduler_type: polynomial
+        lr: 0.00002
+        lr_start: 1e-7
+        lr_end: 0.000002
+        warmup_steps: 0.1
+      adam_beta1: 0.9
+      adam_beta2: 0.999
+      eps_root: 1.0e-17
+      skip_validation: true

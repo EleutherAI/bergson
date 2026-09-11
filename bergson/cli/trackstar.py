@@ -134,6 +134,7 @@ def trackstar(index_cfg: IndexConfig, trackstar_cfg: TrackstarConfig):
         query_cfg = deepcopy(index_cfg)
         query_cfg.run_path = query_path
         query_cfg.data = deepcopy(trackstar_cfg.query)
+        query_cfg.contrast = deepcopy(trackstar_cfg.query_contrast)
 
         # query-side aggregation is currently not compatible with token attribution
         # only. When aggregating the query (aggregation != "none"), per-token

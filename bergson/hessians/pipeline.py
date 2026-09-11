@@ -88,6 +88,7 @@ def hessian_pipeline(
             query_cfg = deepcopy(index_cfg)
             query_cfg.run_path = query_path
             query_cfg.data = hessian_pipeline_cfg.query
+            query_cfg.contrast = hessian_pipeline_cfg.query_contrast
             query_cfg.projection_dim = 0
 
             # Query aggregation is not compatible with query-side token

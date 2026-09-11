@@ -29,6 +29,11 @@ class MagicConfig(ValidationConfig):
         if self.per_token:
             self.attribute_tokens = True
         # Per-query MAGIC needs one document per row.
+        if self.query_method == "none" and self.query_contrast is not None:
+            raise ValueError(
+                "query_contrast subtracts one aggregated query from another; "
+                "use query_method 'mean' or 'sum', not 'none'."
+            )
         if self.query_method == "none" and self.query.chunk_length > 0:
             raise ValueError(
                 "query.chunk_length must be 0 for per-query MAGIC "
