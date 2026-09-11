@@ -9,19 +9,18 @@ GPT-2 fine-tuned on WikiText (`EleutherAI/bergson-wikitext-512-chunks`, 4,608 tr
 | BM25 | 0.062 | [0.048, 0.076] | 0.220 | [0.185, 0.252] | 0.253 | -0.168 | 0.486 | 28/50 |
 | [Qwen3-Embedding-8B](https://huggingface.co/spaces/mteb/leaderboard) semantic search | 0.049 | [0.038, 0.061] | 0.132 | [0.093, 0.169] | 0.132 | -0.119 | 0.483 | 17/50 |
 | Jina v5 semantic search | 0.046 | [0.035, 0.059] | 0.124 | [0.087, 0.160] | 0.115 | -0.108 | 0.483 | 11/50 |
-| TrackStar (projection 64) | 0.045 | [0.036, 0.055] | 0.270 | [0.240, 0.295] | 0.294 | -0.011 | 0.513 | 37/50 |
+| TrackStar (no optimizer correction, projection 64) | 0.045 | [0.036, 0.055] | 0.270 | [0.240, 0.295] | 0.294 | -0.011 | 0.513 | 37/50 |
 | TrackStar (Adam, projection 64) | 0.043 | [0.034, 0.052] | 0.225 | [0.195, 0.252] | 0.234 | -0.011 | 0.434 | 29/50 |
-| TrackStar (projection 32) | 0.035 | [0.027, 0.044] | 0.211 | [0.183, 0.238] | 0.222 | 0.005 | 0.386 | 28/50 |
+| TrackStar (no optimizer correction, projection 32) | 0.035 | [0.027, 0.044] | 0.211 | [0.183, 0.238] | 0.222 | 0.005 | 0.386 | 28/50 |
 | TrackStar (Adam, projection 32) | 0.032 | [0.025, 0.041] | 0.173 | [0.144, 0.201] | 0.179 | -0.094 | 0.467 | 20/50 |
 | SOURCE (Adam) | 0.024 | [0.018, 0.030] | 0.154 | [0.126, 0.181] | 0.147 | -0.144 | 0.412 | 15/50 |
 | SOURCE | 0.022 | [0.017, 0.027] | 0.165 | [0.138, 0.191] | 0.171 | -0.120 | 0.419 | 16/50 |
-| TrackStar (projection 16) | 0.022 | [0.016, 0.028] | 0.143 | [0.113, 0.173] | 0.152 | -0.142 | 0.350 | 17/50 |
+| TrackStar (no optimizer correction, projection 16) | 0.022 | [0.016, 0.028] | 0.143 | [0.113, 0.173] | 0.152 | -0.142 | 0.350 | 17/50 |
 | TrackStar (Adam, projection 16) | 0.020 | [0.014, 0.026] | 0.103 | [0.072, 0.133] | 0.100 | -0.158 | 0.448 | 9/50 |
-| DSIR importance weight | 0.017 | [0.010, 0.025] | 0.096 | [0.061, 0.131] | 0.103 | -0.149 | 0.320 | 5/50 |
 | Activation similarity | 0.000 | [-0.000, 0.001] | 0.110 | [0.070, 0.149] | 0.106 | -0.137 | 0.361 | 11/50 |
 | Gradient cosine similarity | -0.001 | [-0.001, -0.000] | 0.019 | [-0.008, 0.045] | 0.046 | -0.190 | 0.246 | 2/50 |
 
-MAGIC (cross-seed) applies the seed-42 MAGIC scores to retrains with seed 43 (different data order and dropout): its LDS uses the same 100 subsets retrained at seed 43 and its QLD retrains the proponent filters at seed 43. TrackStar is swept over projection dims 16/32/64 (per-module random projection of the gradients), plain and Adam-normalized. Gradient cosine similarity is `gradient_cosine.yaml`: bergson `build` of the 50 query gradients and `score` of the training chunks, both random-projected (64 per module) and unit-normalized with no Hessian, i.e. TrackStar without preconditioning. The five gradient-free baselines come from `examples/gradient_free_baselines` run with `--bank runs/compare_wikitext/random --query_split "test[0:50]"`: BM25 lexical overlap (`bm25_baseline.py`), DSIR hashed-n-gram importance weights with the query as the target set (`dsir_baseline.py`), semantic search with `jinaai/jina-embeddings-v5-text-small` (`semantic_baseline.py`) and with `Qwen/Qwen3-Embedding-8B` (`qwen3_baseline.py`), and cosine similarity between the mean-pooled input activations of the attributed linear modules, per-module L2-normalized and concatenated (`activation_baseline.py`).
+MAGIC (cross-seed) applies the seed-42 MAGIC scores to retrains with seed 43 (different data order and dropout): its LDS uses the same 100 subsets retrained at seed 43 and its QLD retrains the proponent filters at seed 43. TrackStar is swept over projection dims 16/32/64 (per-module random projection of the gradients), plain and Adam-normalized. Gradient cosine similarity is `gradient_cosine.yaml`: bergson `build` of the query gradients and `score` of the training chunks, unprojected and unit-normalized with no Hessian, so each score is the cosine between a training chunk's gradient and a query's over the attributed modules. Projected gradient cosine similarity (`gradient_cosine_projected.yaml`) is the same with the gradients random-projected per module first, i.e. TrackStar without preconditioning. The four gradient-free baselines come from `examples/gradient_free_baselines` run with `--bank runs/compare_wikitext/random --query_split "test[0:50]"`: BM25 lexical overlap (`bm25_baseline.py`), semantic search with `jinaai/jina-embeddings-v5-text-small` (`semantic_baseline.py`) and with `Qwen/Qwen3-Embedding-8B` (`qwen3_baseline.py`), and cosine similarity between the mean-pooled input activations of the attributed linear modules, per-module L2-normalized and concatenated (`activation_baseline.py`).
 
 Reproduce:
 
@@ -35,18 +34,19 @@ bergson examples/compare_wikitext/shampoo.yaml     # EK-FAC pipeline with Shampo
 bergson examples/compare_wikitext/trackstar.yaml    # projection 16/32/64, plain and Adam-normalized
 bergson examples/compare_wikitext/source.yaml       # plain and Adam-preconditioned
 bergson examples/compare_wikitext/trak.yaml
-bergson examples/compare_wikitext/gradient_cosine.yaml  # projected gradient cosine, no Hessian
+bergson examples/compare_wikitext/gradient_cosine.yaml
+bergson examples/compare_wikitext/gradient_cosine_projected.yaml
 bergson examples/compare_wikitext/metasmoothness.yaml
-for b in bm25 dsir semantic qwen3 activation; do   # writes baselines/${b}_scores/scores
+for b in bm25 semantic qwen3 activation; do   # writes baselines/${b}_scores/scores
   python -m examples.gradient_free_baselines.${b}_baseline --bank runs/compare_wikitext/random --query_split "test[0:50]" --out runs/compare_wikitext/baselines
 done
-for m in magic magic_seed43 ekfac shampoo trak trackstar_p16 trackstar_adam_p16 trackstar_p32 trackstar_adam_p32 trackstar_p64 trackstar_adam_p64 source source_adam gradient_cosine bm25 dsir semantic qwen3 activation; do
+for m in magic magic_seed43 ekfac shampoo trak trackstar_p16 trackstar_adam_p16 trackstar_p32 trackstar_adam_p32 trackstar_p64 trackstar_adam_p64 source source_adam gradient_cosine gradient_cosine_projected bm25 semantic qwen3 activation; do
   bergson examples/compare_wikitext/filters/filter_$m.yaml
 done
 python examples/compare_wikitext/lds_from_bank.py --validation runs/compare_wikitext/random/validation.csv --out runs/compare_wikitext/lds_magic.json
 python examples/compare_wikitext/lds_from_bank.py --validation runs/compare_wikitext/magic_seed43/validation.csv --out runs/compare_wikitext/lds_magic_seed43.json
-for m in ekfac shampoo trak trackstar_p16 trackstar_adam_p16 trackstar_p32 trackstar_adam_p32 trackstar_p64 trackstar_adam_p64 gradient_cosine; do python examples/compare_wikitext/lds_from_bank.py --sign grad --scores runs/compare_wikitext/$m/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_$m.json; done
-for b in bm25 dsir semantic qwen3 activation; do python examples/compare_wikitext/lds_from_bank.py --sign loss --scores runs/compare_wikitext/baselines/${b}_scores/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_$b.json; done
+for m in ekfac shampoo trak trackstar_p16 trackstar_adam_p16 trackstar_p32 trackstar_adam_p32 trackstar_p64 trackstar_adam_p64 gradient_cosine gradient_cosine_projected; do python examples/compare_wikitext/lds_from_bank.py --sign grad --scores runs/compare_wikitext/$m/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_$m.json; done
+for b in bm25 semantic qwen3 activation; do python examples/compare_wikitext/lds_from_bank.py --sign loss --scores runs/compare_wikitext/baselines/${b}_scores/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_$b.json; done
 for m in source source_adam; do python examples/compare_wikitext/lds_from_bank.py --sign loss --scores runs/compare_wikitext/$m/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_$m.json; done
 python examples/compare_wikitext/qld_from_filters.py runs/compare_wikitext runs/compare_wikitext/random
 python examples/compare_wikitext/lds_tables.py runs/compare_wikitext

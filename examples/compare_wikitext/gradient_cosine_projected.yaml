@@ -1,15 +1,16 @@
-# Gradient cosine similarity for the magic.yaml model against the test queries:
-# unprojected query and training gradients, unit-normalized and scored by dot
-# product with no Hessian. LDS: examples/compare_wikitext/lds_from_bank.py --sign grad.
+# Projected gradient cosine similarity for the magic.yaml model against the
+# test queries: query and training gradients random-projected per module and
+# unit-normalized, scored by dot product with no Hessian, i.e. TrackStar
+# without preconditioning. LDS: examples/compare_wikitext/lds_from_bank.py --sign grad.
 
-# Run with `bergson examples/compare_wikitext/gradient_cosine.yaml`
+# Run with `bergson examples/compare_wikitext/gradient_cosine_projected.yaml`
 
-run_path: runs/compare_wikitext/gradient_cosine
+run_path: runs/compare_wikitext/gradient_cosine_projected
 steps:
   - build:
       index_cfg: &index
-        projection_dim: 0
-        run_path: runs/compare_wikitext/gradient_cosine/query
+        projection_dim: 64
+        run_path: runs/compare_wikitext/gradient_cosine_projected/query
         model: runs/compare_wikitext/interval/exported/checkpoint-72
         overwrite: true
         # GPT-2's max context length is 1024
@@ -30,11 +31,11 @@ steps:
 
   - score:
       score_cfg:
-        query_path: runs/compare_wikitext/gradient_cosine/query
+        query_path: runs/compare_wikitext/gradient_cosine_projected/query
         batch_size: 1024
       index_cfg:
         <<: *index
-        run_path: runs/compare_wikitext/gradient_cosine/scores
+        run_path: runs/compare_wikitext/gradient_cosine_projected/scores
         data:
           dataset: EleutherAI/bergson-wikitext-512-chunks
           split: "train"

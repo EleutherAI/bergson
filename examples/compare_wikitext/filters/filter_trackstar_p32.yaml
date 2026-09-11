@@ -1,4 +1,4 @@
-# Proponent-filter for TrackStar (projection 32). Uses the random retrain bank computed with
+# Proponent-filter for TrackStar (no optimizer correction, projection 32). Uses the random retrain bank computed with
 # `examples/compare_wikitext/magic.yaml`.
 
 # Run with `bergson examples/compare_wikitext/filters/filter_trackstar_p32.yaml`

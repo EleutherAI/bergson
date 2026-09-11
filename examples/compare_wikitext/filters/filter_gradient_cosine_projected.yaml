@@ -1,12 +1,12 @@
-# Proponent-filter for TrackStar (no optimizer correction, projection 16). Uses the random retrain bank computed with
+# Proponent-filter for projected gradient cosine similarity. Uses the random retrain bank computed with
 # `examples/compare_wikitext/magic.yaml`.
 
-# Run with `bergson examples/compare_wikitext/filters/filter_trackstar_p16.yaml`
+# Run with `bergson examples/compare_wikitext/filters/filter_gradient_cosine_projected.yaml`
 
-run_path: runs/compare_wikitext/filter_trackstar_p16
+run_path: runs/compare_wikitext/filter_gradient_cosine_projected
 steps:
   - validate:
-      run_path: runs/compare_wikitext/filter_trackstar_p16
+      run_path: runs/compare_wikitext/filter_gradient_cosine_projected
       model: gpt2
       resume: true
       seed: 42
@@ -42,5 +42,5 @@ steps:
       subset_fraction: 0.01
       num_subsets: 3
       query_method: none
-      scores: runs/compare_wikitext/trackstar_p16/scores
+      scores: runs/compare_wikitext/gradient_cosine_projected/scores
       retrained_dir: runs/compare_wikitext/random

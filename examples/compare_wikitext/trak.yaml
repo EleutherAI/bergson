@@ -9,9 +9,8 @@ run_path: runs/compare_wikitext/trak
 steps:
   - trak:
       index_cfg:
-        projection_dim: 64
-        # One Rademacher sketch of the whole gradient; its per-module blocks are
-        # held in memory, which bounds the sketch size on a 48 GB GPU.
+        projection_dim: 4096
+        # One Rademacher sketch of the whole gradient.
         projection_target: global
         run_path: runs/compare_wikitext/trak
         model: runs/compare_wikitext/interval/exported/checkpoint-72
