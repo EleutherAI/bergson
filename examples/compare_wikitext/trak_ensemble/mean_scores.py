@@ -18,8 +18,12 @@ import numpy as np
 
 def load(path: Path) -> np.memmap:
     info = json.load(open(path / "info.json"))
-    dtype = np.dtype({"names": info["dtype"]["names"], "formats": info["dtype"]["formats"]})
-    return np.memmap(path / "scores.bin", dtype=dtype, mode="r", shape=(info["num_rows"],))
+    dtype = np.dtype(
+        {"names": info["dtype"]["names"], "formats": info["dtype"]["formats"]}
+    )
+    return np.memmap(
+        path / "scores.bin", dtype=dtype, mode="r", shape=(info["num_rows"],)
+    )
 
 
 def main():
@@ -34,8 +38,12 @@ def main():
     out = Path(args.out)
     if out.exists():
         shutil.rmtree(out)
-    shutil.copytree(Path(args.members[0]), out, ignore=shutil.ignore_patterns("scores.bin"))
-    mean = np.memmap(out / "scores.bin", dtype=first.dtype, mode="w+", shape=first.shape)
+    shutil.copytree(
+        Path(args.members[0]), out, ignore=shutil.ignore_patterns("scores.bin")
+    )
+    mean = np.memmap(
+        out / "scores.bin", dtype=first.dtype, mode="w+", shape=first.shape
+    )
     for name in first.dtype.names:
         if name.startswith("score_"):
             mean[name] = np.mean([m[name].astype(np.float64) for m in members], axis=0)
