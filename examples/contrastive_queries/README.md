@@ -12,3 +12,5 @@ bergson examples/contrastive_queries/magic_contrast.yaml
 ```
 
 The prompt and completion are rendered through the tokenizer's chat template as a user and an assistant turn, and the loss covers the assistant turn only.
+
+Base models whose chat tokens are untrained (Qwen2.5 base) need a plain template instead: copy the tokenizer and replace its `chat_template` with `formats/plain_chat_template.jinja`, which joins the prompt and completion with a space and no special tokens, then point `tokenizer` at that copy.
