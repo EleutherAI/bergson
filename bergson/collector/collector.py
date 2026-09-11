@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from contextlib import ContextDecorator, nullcontext
 from dataclasses import astuple, dataclass, field
 from fnmatch import fnmatchcase
-from typing import Callable, Literal, Mapping, Optional
+from typing import Iterator, Callable, Literal, Mapping, Optional
 
 import numpy as np
 import torch
@@ -374,15 +374,13 @@ class HookCollectorBase(ContextDecorator, ABC):
             return False
 
         assert self.processor.projection_dim is not None
-        R = self.projection(
-            name,
+        projected = project_global(
+            f"{name}/single",
+            P,
             self.processor.projection_dim,
-            P.shape[1],
-            "single",
-            P.device,
-            P.dtype,
-        )
-        projected = P @ R.T  # [N, proj_dim]
+            self.processor.projection_type,
+            self.processor.projection_scale,
+        )  # [N, proj_dim]
         if "gradients" in self.mod_grads:
             self.mod_grads["gradients"].add_(projected)
         else:
@@ -1024,6 +1022,73 @@ def fwd_bwd_hessian_factory(
         return losses
 
     return fwd_bwd_hessian
+
+
+GLOBAL_BLOCK_ELEMENTS = 1 << 27
+"""Elements per generated block of a global projection matrix (512 MB in fp32)."""
+
+
+def global_projection_blocks(
+    identifier: str,
+    m: int,
+    n: int,
+    dtype: torch.dtype,
+    device: torch.device,
+    projection_type: Literal["normal", "rademacher"] = "normal",
+) -> Iterator[tuple[int, int, Tensor]]:
+    """Yield the column blocks ``(start, stop, R[:, start:stop])`` of the
+    ``[m, n]`` projection matrix named ``identifier``, generated on ``device``
+    one block at a time so the whole matrix is never held in memory.
+
+    The block layout depends only on ``m``, and every block is seeded from
+    ``identifier`` and its start column, so the same matrix is reproduced
+    whenever it is regenerated. Blocks are unscaled: apply the projection
+    scale to the result (see :func:`project_global`).
+    """
+    cols = max(1, GLOBAL_BLOCK_ELEMENTS // m)
+    for start in range(0, n, cols):
+        stop = min(n, start + cols)
+        digest = hashlib.md5(f"{identifier}/{start}".encode()).digest()
+        seed = int.from_bytes(digest, byteorder="big") % (2**63 - 1)
+        prng = torch.Generator(device).manual_seed(seed)
+        if projection_type == "normal":
+            block = torch.randn(m, stop - start, device=device, dtype=dtype, generator=prng)
+        elif projection_type == "rademacher":
+            block = torch.empty(m, stop - start, device=device, dtype=dtype)
+            block.bernoulli_(0.5, generator=prng).mul_(2).sub_(1)
+        else:
+            raise ValueError(f"Unknown projection type: {projection_type}")
+        yield start, stop, block
+
+
+def project_global(
+    identifier: str,
+    P: Tensor,
+    m: int,
+    projection_type: Literal["normal", "rademacher"] = "normal",
+    projection_scale: Literal["jl", "row_norm"] = "jl",
+) -> Tensor:
+    """``P @ R.T`` for the ``[m, n]`` projection matrix named ``identifier``,
+    where ``P`` is ``[N, n]``, streaming ``R`` in column blocks.
+
+    Matches :func:`create_projection_matrix` in its scaling: ``jl`` divides by
+    ``sqrt(m)``; ``row_norm`` divides each output column by the norm of the
+    corresponding row of ``R`` (``sqrt(n)`` exactly for Rademacher entries).
+    """
+    n = P.shape[1]
+    out = P.new_zeros(P.shape[0], m)
+    row_sq = P.new_zeros(m) if projection_scale == "row_norm" else None
+    for start, stop, block in global_projection_blocks(
+        identifier, m, n, P.dtype, P.device, projection_type
+    ):
+        out.addmm_(P[:, start:stop], block.T)
+        if row_sq is not None:
+            row_sq.add_(block.pow(2).sum(dim=1))
+    if row_sq is not None:
+        out.div_(row_sq.sqrt())
+    else:
+        out.div_(math.sqrt(m))
+    return out
 
 
 def create_projection_matrix(

@@ -3,10 +3,17 @@
 from pathlib import Path
 
 import pytest
+import math
+
 import torch
 
 from bergson import GradientProcessor, collect_gradients
-from bergson.collector.collector import CollectorComputer, create_projection_matrix
+from bergson.collector.collector import (
+    CollectorComputer,
+    create_projection_matrix,
+    global_projection_blocks,
+    project_global,
+)
 from bergson.collector.gradient_collectors import GradientCollector
 from bergson.config import IndexConfig
 from bergson.data import load_module_gradients
@@ -216,22 +223,53 @@ def test_global_project_values_cpu(tmp_path: Path, model, dataset):
         model(input_ids=tokens, labels=tokens).loss.backward()
     projected = global_collector.mod_grads["gradients"]
 
-    # Manually replicate: same identifier → same matrix → identical result
+    # Manually replicate: same identifier → same blocks → identical result
     expected: torch.Tensor | None = None
     for name, P in raw_grads.items():
-        R = create_projection_matrix(
-            f"{name}/single",
-            proj_dim,
-            P.shape[1],
-            P.dtype,
-            P.device,
-            global_processor.projection_type,
-        )
+        R = torch.cat(
+            [
+                block
+                for _, _, block in global_projection_blocks(
+                    f"{name}/single",
+                    proj_dim,
+                    P.shape[1],
+                    P.dtype,
+                    P.device,
+                    global_processor.projection_type,
+                )
+            ],
+            dim=1,
+        ) / math.sqrt(proj_dim)
         contrib = P @ R.T
         expected = contrib if expected is None else expected + contrib
 
     assert expected is not None
     torch.testing.assert_close(projected.float(), expected)
+
+
+def test_project_global_streams_in_blocks(monkeypatch):
+    """Streaming the projection matrix in column blocks computes ``P @ R.T``
+    for the block-concatenated ``R``, reproducibly, without holding ``R``."""
+    import bergson.collector.collector as collector_module
+
+    torch.manual_seed(0)
+    m, n = 8, 1000
+    P = torch.randn(3, n)
+    monkeypatch.setattr(collector_module, "GLOBAL_BLOCK_ELEMENTS", m * 64)
+    blocks = list(
+        global_projection_blocks("mod/single", m, n, P.dtype, P.device, "rademacher")
+    )
+    assert len(blocks) > 1 and blocks[-1][1] == n
+    R = torch.cat([block for _, _, block in blocks], dim=1)
+    assert R.shape == (m, n) and set(R.unique().tolist()) == {-1.0, 1.0}
+
+    streamed = project_global("mod/single", P, m, "rademacher", "jl")
+    torch.testing.assert_close(streamed, P @ R.T / math.sqrt(m))
+    torch.testing.assert_close(
+        streamed, project_global("mod/single", P, m, "rademacher", "jl")
+    )
+    row_norm = project_global("mod/single", P, m, "rademacher", "row_norm")
+    torch.testing.assert_close(row_norm, P @ R.T / math.sqrt(n))
 
 
 def test_global_projector_e2e_cpu(tmp_path: Path, model, dataset):
