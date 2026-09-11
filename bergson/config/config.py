@@ -104,8 +104,7 @@ class InversionConfig(Serializable):
 
     apply_batch_size: int = 2
     """Query gradients moved on-device and preconditioned at a time in the
-    inverse application. Each one costs about three times its fp32 size in
-    GPU memory, so two 1.5B-parameter gradients fill a 48 GB card."""
+    inverse application."""
 
 
 @dataclass
