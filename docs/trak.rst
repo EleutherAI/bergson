@@ -8,22 +8,24 @@ example ``z_i`` is scored for a query ``z_q`` as
 
 .. math::
 
-   \phi(z_q)^\top (\Phi^\top \Phi + \lambda I)^{-1} \phi(z_i) \,(1 - p_i)
+   \phi(z_q)^\top (\Phi^\top \Phi)^{-1} \phi(z_i) \,(1 - p_i)
 
-where :math:`\phi` is the projected per-example gradient, :math:`\Phi` stacks the
-projected training gradients and :math:`p_i` is the model's probability of the
-training example's labels (the geometric-mean token probability for a language
-model). :math:`\phi` is one random projection of the whole gradient: the
-index must be built with ``projection_target: global``, which projects each
-module's flattened gradient with its own block of a single ``k x d``
-Rademacher matrix and sums the blocks, so ``projection_dim`` is the size of the
-sketch. ``bergson trak`` refuses other projection targets. The Gram
-:math:`\Phi^\top \Phi` is fit over that sketch (the ``autocorrelation``
-Hessian with ``scope: joint``) and its damped inverse is applied to the query
-gradients; the damping :math:`\lambda` is
-``preprocess_cfg.inversion_cfg.damping_factor`` times the mean eigenvalue. The
-``k x d`` projection matrices are held in memory, which bounds ``k`` for large
-models. Passing several independently trained checkpoints averages their
+where :math:`\phi` is the projected per-example gradient of the margin output
+function :math:`\log p - \log(1 - p)` summed over the example's label tokens
+(``loss_fn: margin``, which ``bergson trak`` requires), :math:`\Phi` stacks the
+projected training gradients and :math:`1 - p_i` is the derivative of the loss
+w.r.t. the margin, averaged over the training example's label tokens.
+:math:`\phi` is one random projection of the whole gradient: the index must be
+built with ``projection_target: global``, which projects each module's
+flattened gradient with its own block of a single ``k x d`` Rademacher matrix
+and sums the blocks, so ``projection_dim`` is the size of the sketch; the
+blocks are generated on the fly, so ``k`` is bounded by the ``k x k`` Gram
+rather than by GPU memory. ``bergson trak`` refuses other projection targets.
+The Gram :math:`\Phi^\top \Phi` is fit over that sketch on the training
+examples' own labels (the ``autocorrelation`` Hessian with ``scope: joint``)
+and its inverse is applied to the query gradients, undamped by default;
+``preprocess_cfg.inversion_cfg.damping_factor`` adds a multiple of the mean
+eigenvalue. Passing several independently trained checkpoints averages their
 score stores, as in the paper's ensembles.
 
 What It Produces
@@ -47,8 +49,9 @@ Key Options
 - ``--query.dataset``: the query dataset.
 - ``--projection_dim``: size of the global gradient sketch.
 - ``--projection_target``: must be ``global``.
+- ``--loss_fn``: must be ``margin``.
 - ``--trak_cfg.preprocess_cfg.inversion_cfg.damping_factor``: Gram damping
-  relative to the mean eigenvalue (default 0.1).
+  relative to the mean eigenvalue (default 0, the paper's plain inverse).
 - ``--trak_cfg.q_weighting``: ``one_minus_p`` (default) or ``none``.
 - ``--trak_cfg.checkpoints``: model checkpoints to ensemble.
 
