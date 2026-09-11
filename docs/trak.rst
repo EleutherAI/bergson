@@ -68,7 +68,8 @@ Example
        --query.truncation \
        --query.split "train[:20]" \
        --projection_target global \
-       --projection_dim 512
+       --projection_dim 512 \
+       --loss_fn margin
 
 Scores are influence-signed (``higher_is_better``): a positive score marks a
 proponent of the query. See :doc:`cli` for the full ``TrakConfig`` API reference.
