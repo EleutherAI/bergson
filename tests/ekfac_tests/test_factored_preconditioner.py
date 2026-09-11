@@ -310,3 +310,48 @@ def test_apply_hessian_rejects_compression_with_ev_correction():
     )
     with pytest.raises(ValueError, match="EK-FAC"):
         EkfacApplicator(cfg, inversion_cfg=InversionConfig())
+
+
+def test_apply_hessian_batches_queries(tmp_path):
+    """The default ``apply_batch_size`` is small enough for large models, and
+    batching the queries through the EK-FAC inverse (ev_correction, the path
+    that also holds the corrected eigenvalue grid on-device) must give the same
+    output as applying them all at once."""
+    assert InversionConfig().apply_batch_size == 2
+
+    modules = {"a": (4, 6), "b": (5, 3)}  # (O, I)
+    hessian_path = tmp_path / "hessian"
+    _write_factored_hessian(hessian_path, modules, num_shards=1, seed=0)
+    # EK-FAC applies the corrected eigenvalue grid; derive one from the grid.
+    grid = load_file(str(hessian_path / "eigenvalue_sharded" / "shard_0.safetensors"))
+    corrected_dir = hessian_path / "eigenvalue_correction_sharded"
+    corrected_dir.mkdir()
+    save_file(
+        {k: v * 1.5 for k, v in grid.items()},
+        str(corrected_dir / "shard_0.safetensors"),
+    )
+    grad_sizes = {name: o * i for name, (o, i) in modules.items()}
+    num_grads = 5
+    query_path = str(tmp_path / "query")
+    _make_query_gradients(query_path, grad_sizes, num_grads)
+    inversion_cfg = InversionConfig(inversion="damped_inverse", damping_factor=0.1)
+
+    outs = []
+    for label, batch_size in [("default", None), ("all", num_grads)]:
+        kwargs = {} if batch_size is None else {"apply_batch_size": batch_size}
+        cfg = EkfacConfig(
+            hessian_method_path=str(hessian_path),
+            gradient_path=query_path,
+            run_path=str(tmp_path / f"out_{label}"),
+            ev_correction=True,
+            **kwargs,
+        )
+        assert cfg.apply_batch_size == (batch_size or 2)
+        EkfacApplicator(cfg, inversion_cfg=inversion_cfg).compute_ivhp_sharded()
+        outs.append(load_module_gradients(str(tmp_path / f"out_{label}")))
+
+    for name in modules:
+        batched = torch.from_numpy(np.asarray(outs[0][name][:]))
+        whole = torch.from_numpy(np.asarray(outs[1][name][:]))
+        assert batched.shape[0] == num_grads
+        assert torch.allclose(batched, whole, atol=1e-6), name
