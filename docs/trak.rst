@@ -13,19 +13,18 @@ example ``z_i`` is scored for a query ``z_q`` as
 where :math:`\phi` is the projected per-example gradient, :math:`\Phi` stacks the
 projected training gradients and :math:`p_i` is the model's probability of the
 training example's labels (the geometric-mean token probability for a language
-model). :math:`\phi` is Bergson's per-module double-sided random projection,
-concatenated over modules; the Gram :math:`\Phi^\top \Phi` is fit over that
-concatenation as one matrix (the ``autocorrelation`` Hessian with
-``scope: joint``, the default ``kernel: joint``) and its damped inverse is
-applied to the query gradients. The
-damping :math:`\lambda` is ``preprocess_cfg.inversion_cfg.damping_factor`` times
-the mean eigenvalue. ``kernel: per_module`` instead uses the per-module Gram (``scope: per_module``),
-a block-diagonal approximation of the same kernel.
-``projection_target: global`` gives TRAK's single global sketch when its
-per-module ``k x d`` projection matrices fit in memory. The concatenated sketch
-must have at most 20,000 dimensions (for GPT-2's 48 modules, ``projection_dim``
-16 gives 12,288). Passing several independently trained checkpoints
-averages their score stores, as in the paper's ensembles.
+model). :math:`\phi` is one random projection of the whole gradient: the
+index must be built with ``projection_target: global``, which projects each
+module's flattened gradient with its own block of a single ``k x d``
+Rademacher matrix and sums the blocks, so ``projection_dim`` is the size of the
+sketch. ``bergson trak`` refuses other projection targets. The Gram
+:math:`\Phi^\top \Phi` is fit over that sketch (the ``autocorrelation``
+Hessian with ``scope: joint``) and its damped inverse is applied to the query
+gradients; the damping :math:`\lambda` is
+``preprocess_cfg.inversion_cfg.damping_factor`` times the mean eigenvalue. The
+``k x d`` projection matrices are held in memory, which bounds ``k`` for large
+models. Passing several independently trained checkpoints averages their
+score stores, as in the paper's ensembles.
 
 What It Produces
 ----------------
@@ -33,8 +32,8 @@ What It Produces
 A directory at ``run_path`` with the following subdirectories:
 
 - ``train_hessian/`` — the projected-gradient Gram fit on the training set
-  (``hessians.pth``, ``hessians_eigen.pth``, ``normalizers.pth``; with the joint
-  kernel also ``joint_layout.json``, the module order of the concatenation).
+  (``hessians.pth``, ``hessians_eigen.pth``, ``normalizers.pth``,
+  ``joint_layout.json``).
 - ``query/`` — the Gram-whitened query gradient index (same artifacts as ``build``).
 - ``scores/`` — scores for the training set (same artifacts as ``score``), with
   ``trak_weights.npy`` holding the ``1 - p_i`` weights that were applied.
@@ -46,10 +45,10 @@ Key Options
 
 - ``--data.dataset``: the training dataset.
 - ``--query.dataset``: the query dataset.
-- ``--projection_dim``: projected gradient size per module (default 16).
+- ``--projection_dim``: size of the global gradient sketch.
+- ``--projection_target``: must be ``global``.
 - ``--trak_cfg.preprocess_cfg.inversion_cfg.damping_factor``: Gram damping
   relative to the mean eigenvalue (default 0.1).
-- ``--trak_cfg.kernel``: ``joint`` (default, TRAK) or ``per_module`` (block-diagonal).
 - ``--trak_cfg.q_weighting``: ``one_minus_p`` (default) or ``none``.
 - ``--trak_cfg.checkpoints``: model checkpoints to ensemble.
 
@@ -65,7 +64,8 @@ Example
        --query.dataset NeelNanda/pile-10k \
        --query.truncation \
        --query.split "train[:20]" \
-       --projection_dim 16
+       --projection_target global \
+       --projection_dim 512
 
 Scores are influence-signed (``higher_is_better``): a positive score marks a
 proponent of the query. See :doc:`cli` for the full ``TrakConfig`` API reference.

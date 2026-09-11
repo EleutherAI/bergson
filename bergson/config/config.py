@@ -990,12 +990,6 @@ class TrakConfig:
 
     score_cfg: ScoreConfig = field(default_factory=ScoreConfig)
 
-    kernel: Literal["joint", "per_module"] = "joint"
-    """Scope of the autocorrelation Gram (``HessianConfig.scope``): ``joint``
-    (TRAK) is one Gram over the concatenation of all modules' projected
-    gradients, inverted as a single matrix; ``per_module`` is the block-diagonal
-    approximation with one Gram per module, cheaper but not TRAK's kernel."""
-
     q_weighting: Literal["one_minus_p", "none"] = "one_minus_p"
     """Multiply each training row's scores by ``1 - p_i``, with ``p_i`` the
     geometric-mean token probability of the row's labels under the model

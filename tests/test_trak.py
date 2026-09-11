@@ -7,13 +7,11 @@ import torch
 from datasets import Dataset
 
 from bergson.build import build
-from bergson.cli.trackstar import trackstar
 from bergson.cli.trak import _train_label_probs, trak
 from bergson.config import (
     DataConfig,
     DistributedConfig,
     PreprocessConfig,
-    TrackstarConfig,
     TrakConfig,
 )
 from bergson.config.config import TrackstarIndexConfig
@@ -55,7 +53,8 @@ def _index_cfg(run_path: Path, data_dir: Path) -> TrackstarIndexConfig:
         model=MODEL,
         data=DataConfig(dataset=str(data_dir / "train"), split="train"),
         distributed=DistributedConfig(nproc_per_node=1),
-        projection_dim=8,
+        projection_dim=64,
+        projection_target="global",
         token_batch_size=256,
         precision="fp32",
     )
@@ -66,30 +65,16 @@ def _query_cfg(data_dir: Path) -> DataConfig:
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-def test_trak_matches_whitened_trackstar_and_weights_rows(tmp_path, data_dir):
-    """With the per-module kernel and no Q term TRAK is trackstar with the train
-    Gram alone and no unit normalization; with the Q term every training row is
+def test_trak_weights_rows_by_one_minus_p(tmp_path, data_dir):
+    """With the Q term every training row's scores are the unweighted scores
     scaled by 1 - p_i."""
     plain = _index_cfg(tmp_path / "plain", data_dir)
-    trak(
-        plain,
-        TrakConfig(query=_query_cfg(data_dir), q_weighting="none", kernel="per_module"),
-    )
+    trak(plain, TrakConfig(query=_query_cfg(data_dir), q_weighting="none"))
     unweighted = _load(tmp_path / "plain" / "scores")
-
-    ts = _index_cfg(tmp_path / "trackstar", data_dir)
-    trackstar(
-        ts,
-        TrackstarConfig(
-            query=_query_cfg(data_dir), mix_hessians=False, stats_sample_size=None
-        ),
-    )
-    reference = _load(tmp_path / "trackstar" / "scores")
-    assert unweighted.shape == reference.shape == (12, 3)
-    np.testing.assert_allclose(unweighted, reference, rtol=1e-5, atol=1e-6)
+    assert unweighted.shape == (12, 3)
 
     weighted_cfg = _index_cfg(tmp_path / "weighted", data_dir)
-    trak(weighted_cfg, TrakConfig(query=_query_cfg(data_dir), kernel="per_module"))
+    trak(weighted_cfg, TrakConfig(query=_query_cfg(data_dir)))
     weighted = _load(tmp_path / "weighted" / "scores")
     probs = _train_label_probs(weighted_cfg, batch_size=4)
     assert probs.shape == (12,) and (0 < probs).all() and (probs < 1).all()
@@ -98,6 +83,13 @@ def test_trak_matches_whitened_trackstar_and_weights_rows(tmp_path, data_dir):
     np.testing.assert_allclose(
         weighted, unweighted * (1 - probs)[:, None], rtol=1e-4, atol=1e-6
     )
+
+
+def test_trak_rejects_per_module_projection(tmp_path, data_dir):
+    cfg = _index_cfg(tmp_path / "per_module", data_dir)
+    cfg.projection_target = "per_module"
+    with pytest.raises(ValueError, match="projection_target='global'"):
+        trak(cfg, TrakConfig(query=_query_cfg(data_dir)))
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
@@ -109,7 +101,6 @@ def test_trak_ensemble_averages_members(tmp_path, data_dir):
             query=_query_cfg(data_dir),
             checkpoints=[MODEL, MODEL],
             q_weighting="none",
-            kernel="per_module",
         ),
     )
     members = [_load(tmp_path / "ens" / f"checkpoint_{i}" / "scores") for i in range(2)]
@@ -129,9 +120,9 @@ def _index_matrix(run_path: Path) -> np.ndarray:
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-def test_trak_joint_kernel_matches_explicit_formula(tmp_path, data_dir):
-    """The default kernel scores phi_q^T (Phi^T Phi / N + damping)^-1 phi_i with
-    one Gram over the concatenation of every module's projected gradient."""
+def test_trak_matches_explicit_formula(tmp_path, data_dir):
+    """Scores are phi_q^T (Phi^T Phi / N + damping)^-1 phi_i over the global
+    gradient sketch."""
     cfg = _index_cfg(tmp_path / "joint", data_dir)
     trak(cfg, TrakConfig(query=_query_cfg(data_dir), q_weighting="none"))
     scores = _load(tmp_path / "joint" / "scores")

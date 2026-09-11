@@ -7,15 +7,14 @@ example ``z_i`` for a query ``z_q`` as
 
 where ``phi`` is a random projection of the per-example gradient, ``Phi``
 stacks the projected training gradients and ``p_i`` is the model's
-probability of ``z_i``'s labels. The sketch is Bergson's per-module
-double-sided projection (``projection_target="global"`` gives a single global
-sketch when its ``k x d`` matrices fit in memory); the kernel is the
-``autocorrelation`` Hessian with ``scope="joint"`` (one Gram over the
-concatenated sketch, inverted as one matrix) or, with ``kernel="per_module"``,
-its block-diagonal per-module form. The damped inverse is applied to the query side,
-so the pipeline is the trackstar one without Hessian mixing or unit
-normalization, plus the ``(1 - p_i)`` weighting and an optional average over
-independently trained checkpoints.
+probability of ``z_i``'s labels. ``phi`` is one random projection of the
+whole gradient (``projection_target="global"``: every module's flattened
+gradient is projected with its own block of a single ``k x d`` Rademacher
+matrix and the blocks are summed) and the Gram is the ``autocorrelation``
+Hessian with ``scope="joint"`` over that sketch. The damped inverse is applied
+to the query side, so the pipeline is the trackstar one without Hessian
+mixing or unit normalization, plus the ``(1 - p_i)`` weighting and an
+optional average over independently trained checkpoints.
 """
 
 import json
@@ -139,13 +138,13 @@ def _trak_single(index_cfg: IndexConfig, trak_cfg: TrakConfig) -> Path:
             return
         validate_run_path(cfg)
 
-    print(f"Step 1/4: Fitting the projected-gradient Gram ({trak_cfg.kernel})...")
+    print("Step 1/4: Fitting the projected-gradient Gram...")
     if not _step_complete(gram_path, resume):
         gram_cfg = deepcopy(index_cfg)
         gram_cfg.run_path = gram_path
         _limit_split_for_hess(gram_cfg, trak_cfg.stats_sample_size)
         _validate(gram_cfg)
-        hess_cfg = HessianConfig(method="autocorrelation", scope=trak_cfg.kernel)
+        hess_cfg = HessianConfig(method="autocorrelation", scope="joint")
         save_run_config(
             Hessian(hessian_cfg=hess_cfg, index_cfg=gram_cfg),
             gram_cfg.partial_run_path,
@@ -200,6 +199,14 @@ def trak(index_cfg: IndexConfig, trak_cfg: TrakConfig):
         raise ValueError(
             "TRAK scores random-projected gradients and requires a nonzero "
             "index_cfg.projection_dim; got 0."
+        )
+    if index_cfg.projection_target != "global":
+        raise ValueError(
+            "TRAK projects the whole gradient with one random matrix; set "
+            "index_cfg.projection_target='global' (got "
+            f"{index_cfg.projection_target!r}). Per-module projections "
+            "concatenated over modules are a different sketch; use "
+            "`bergson trackstar` for a per-module pipeline."
         )
     if not trak_cfg.checkpoints:
         _trak_single(index_cfg, trak_cfg)
