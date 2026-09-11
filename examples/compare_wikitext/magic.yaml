@@ -13,7 +13,6 @@ steps:
   - magic:
       run_path: runs/compare_wikitext/random
       model: gpt2
-      overwrite: true
       resume: true
 
       data:

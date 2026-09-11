@@ -10,7 +10,6 @@ steps:
   - validate:
       run_path: runs/compare_wikitext/magic_seed43
       model: gpt2
-      overwrite: true
       resume: true
       seed: 43
 

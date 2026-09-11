@@ -8,7 +8,6 @@ steps:
   - validate:
       run_path: runs/compare_wikitext/filter_magic
       model: gpt2
-      overwrite: true
       resume: true
       seed: 42
 
