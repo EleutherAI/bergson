@@ -110,9 +110,6 @@ A directory at ``run_path`` containing:
   Requires ``--aggregation none``.
 - ``--unit_normalize``: unit-normalize individual gradients, applied *before* aggregating.
 - ``--projection_dim``: random-projection size; ``0`` keeps the full gradient.
-- ``contrast`` (config file only): a control dataset whose aggregated gradient is
-  subtracted from the main dataset's, so the stored row is the gradient of the
-  difference of the two mean losses. Requires ``aggregation`` ``mean`` or ``sum``.
 
 **Example** — a per-example index
 

@@ -574,12 +574,6 @@ class AttentionConfig:
 class IndexConfig(AttributionConfig, Serializable):
     """Config for building the index and running the model/dataset pipeline."""
 
-    contrast: DataConfig | None = field(default=None, cmd=False)
-    """Control dataset whose aggregated gradient is subtracted from ``data``'s,
-    so the index holds ``mean_grad(data) - mean_grad(contrast)``. Needs
-    ``aggregation`` mean or sum. Config file or code only, so ``--dataset``
-    stays unprefixed on the ``build`` CLI."""
-
     projection_dim: int = 0
     """Dimension of the random projection for the index, or 0 to disable it."""
 
@@ -875,8 +869,8 @@ class ApproxUnrollingConfig(Serializable):
     """Query dataset spec; gradients computed at the final checkpoint."""
 
     query_contrast: DataConfig | None = None
-    """Control dataset subtracted from the aggregated query gradient (see
-    ``IndexConfig.contrast``)."""
+    """Control dataset subtracted from the aggregated query gradient, so
+    scores measure the query loss minus the control loss."""
 
     query_aggregation: Literal["mean", "sum", "none"] = "mean"
     """How to aggregate the query gradients. "none" produces one
@@ -916,8 +910,8 @@ class HessianPipelineConfig:
     """Query dataset specification."""
 
     query_contrast: DataConfig | None = None
-    """Control dataset subtracted from the aggregated query gradient (see
-    ``IndexConfig.contrast``)."""
+    """Control dataset subtracted from the aggregated query gradient, so
+    scores measure the query loss minus the control loss."""
 
     query_aggregation: Literal["mean", "sum", "none"] = "mean"
     """How to aggregate the query gradients. "none" produces
@@ -961,8 +955,8 @@ class TrackstarConfig:
     """Query dataset specification."""
 
     query_contrast: DataConfig | None = None
-    """Control dataset subtracted from the aggregated query gradient (see
-    ``IndexConfig.contrast``)."""
+    """Control dataset subtracted from the aggregated query gradient, so
+    scores measure the query loss minus the control loss."""
 
     preprocess_cfg: PreprocessConfig = field(default_factory=PreprocessConfig)
 

@@ -8,7 +8,7 @@ import torch.distributed as dist
 from datasets import Dataset
 
 from bergson.collection import collect_gradients
-from bergson.config.config import IndexConfig, PreprocessConfig
+from bergson.config.config import DataConfig, IndexConfig, PreprocessConfig
 from bergson.data import allocate_batches, load_gradients
 from bergson.distributed import (
     DIST_TIMEOUT,
@@ -147,18 +147,22 @@ def build(
     if dist_cfg.world_size < index_cfg.distributed.world_size:
         parent_barrier(index_cfg.distributed)
 
-    if index_cfg.contrast is not None:
-        subtract_contrast(index_cfg, preprocess_cfg)
 
-
-def subtract_contrast(index_cfg: IndexConfig, preprocess_cfg: PreprocessConfig):
-    """Build ``index_cfg.contrast`` under ``<run_path>/contrast`` and subtract
-    its aggregated gradient from the index's row in place, normalizing the
-    difference if the index normalizes its aggregated gradient."""
+def build_contrast(
+    index_cfg: IndexConfig, control: DataConfig | None, preprocess_cfg: PreprocessConfig
+):
+    """Build the index, then build ``control`` under ``<run_path>/contrast``
+    with the same settings and subtract its aggregated gradient from the
+    index's row in place, so the index holds ``mean_grad(data) -
+    mean_grad(control)``. A ``None`` control is a plain ``build``."""
+    if control is None:
+        return build(index_cfg, preprocess_cfg)
     if preprocess_cfg.aggregation == "none":
         raise ValueError("contrast needs aggregation 'mean' or 'sum'")
+    build(index_cfg, preprocess_cfg)
+
     contrast_cfg = deepcopy(index_cfg)
-    contrast_cfg.data, contrast_cfg.contrast = index_cfg.contrast, None
+    contrast_cfg.data = control
     contrast_cfg.run_path = os.path.join(index_cfg.run_path, "contrast")
     contrast_preprocess = deepcopy(preprocess_cfg)
     contrast_preprocess.normalize_aggregated_grad = False

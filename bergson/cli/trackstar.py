@@ -1,7 +1,7 @@
 from copy import deepcopy
 from pathlib import Path
 
-from ..build import build
+from ..build import build_contrast
 from ..config.config import (
     HessianConfig,
     IndexConfig,
@@ -134,7 +134,6 @@ def trackstar(index_cfg: IndexConfig, trackstar_cfg: TrackstarConfig):
         query_cfg = deepcopy(index_cfg)
         query_cfg.run_path = query_path
         query_cfg.data = deepcopy(trackstar_cfg.query)
-        query_cfg.contrast = deepcopy(trackstar_cfg.query_contrast)
 
         # query-side aggregation is currently not compatible with token attribution
         # only. When aggregating the query (aggregation != "none"), per-token
@@ -156,7 +155,9 @@ def trackstar(index_cfg: IndexConfig, trackstar_cfg: TrackstarConfig):
             Build(query_cfg, trackstar_cfg.preprocess_cfg),
             query_cfg.partial_run_path,
         )
-        build(query_cfg, trackstar_cfg.preprocess_cfg)
+        build_contrast(
+            query_cfg, trackstar_cfg.query_contrast, trackstar_cfg.preprocess_cfg
+        )
 
     # Step 5: Score value dataset against query using mixed hessian
     print("Step 5/5: Scoring value dataset...")
