@@ -18,9 +18,8 @@ import numpy as np
 
 def load(path: Path) -> np.memmap:
     info = json.load(open(path / "info.json"))
-    dtype = np.dtype(
-        {"names": info["dtype"]["names"], "formats": info["dtype"]["formats"]}
-    )
+    # The stored dtype carries offsets and itemsize; use it verbatim.
+    dtype = np.dtype(info["dtype"])
     return np.memmap(
         path / "scores.bin", dtype=dtype, mode="r", shape=(info["num_rows"],)
     )
