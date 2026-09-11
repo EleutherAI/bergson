@@ -21,6 +21,7 @@ import json
 import shutil
 from copy import deepcopy
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import torch
@@ -80,7 +81,7 @@ def _train_label_probs(index_cfg: IndexConfig, batch_size: int) -> np.ndarray:
     return probs
 
 
-def _open_scores(scores_dir: Path, mode: str) -> tuple[np.memmap, dict]:
+def _open_scores(scores_dir: Path, mode: Literal["r", "r+"]) -> tuple[np.memmap, dict]:
     info = json.loads((scores_dir / "info.json").read_text())
     if info.get("attribute_tokens"):
         raise ValueError("TRAK weighting supports per-sequence scores only")
