@@ -21,7 +21,6 @@
 | Gradient cosine similarity | 0.021 [0.016, 0.027] | 0.156 [0.131, 0.181] |
 | TrackStar (Adam, projection 16) | 0.020 [0.014, 0.026] | 0.103 [0.072, 0.133] |
 | Projected gradient cosine similarity | 0.016 [0.012, 0.020] | 0.132 [0.103, 0.159] |
-| TRAK | 0.007 [0.005, 0.010] | 0.096 [0.066, 0.125] |
 | Activation similarity | 0.000 [-0.000, 0.001] | 0.110 [0.070, 0.149] |
 
 Held-out loss on the WikiText corpus dropped from 3.545 to 3.111 over training. Every row scores the same model and query set; per-query statistics, run configs and reproduction steps are in [examples/compare_wikitext](examples/compare_wikitext/README.md).

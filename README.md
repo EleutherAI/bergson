@@ -36,7 +36,6 @@ pip install -e .
 | TrackStar (no optimizer correction, projection 64) | 0.045 [0.036, 0.055] | 0.270 [0.240, 0.295] |
 | SOURCE (Adam) | 0.024 [0.018, 0.030] | 0.154 [0.126, 0.181] |
 | Gradient cosine similarity | 0.021 [0.016, 0.027] | 0.156 [0.131, 0.181] |
-| TRAK | 0.007 [0.005, 0.010] | 0.096 [0.066, 0.125] |
 | Activation similarity | 0.000 [-0.000, 0.001] | 0.110 [0.070, 0.149] |
 
 Held-out loss on the WikiText corpus dropped from 3.545 to 3.111 over training. See more results on the [LEADERBOARD.md](LEADERBOARD.md).

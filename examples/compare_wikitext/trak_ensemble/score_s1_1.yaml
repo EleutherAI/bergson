@@ -1,11 +1,12 @@
-# TRAK (Park et al. 2023) scores for the 1_magic.yaml model against the test
-# queries: one global random projection of the margin gradient, plain inverse Gram
-# over the training examples, (1 - p_i) weighting, single checkpoint.
+# TRAK scores for ensemble member s1/subset_1 (a GPT-2 trained on a random 50% subset,
+# seed 102) against the test queries: one global random projection of the gradient, a
+# plain inverse Gram (no regularization, as in the paper) and (1 - p_i) weighting;
+# the ensemble score is the mean over members.
 # LDS: examples/compare_wikitext/lds_from_bank.py --sign grad.
 
-# Run with `bergson examples/compare_wikitext/trak.yaml`
+# Run with `bergson examples/compare_wikitext/trak_ensemble/score_s1_1.yaml`
 
-run_path: runs/compare_wikitext/trak
+run_path: runs/compare_wikitext/trak_ens/score_s1_1
 steps:
   - trak:
       index_cfg:
@@ -14,9 +15,9 @@ steps:
         loss_fn: margin
         # One Rademacher sketch of the whole gradient.
         projection_target: global
-        run_path: runs/compare_wikitext/trak
-        model: runs/compare_wikitext/interval/exported/checkpoint-72
-        overwrite: true
+        run_path: runs/compare_wikitext/trak_ens/score_s1_1
+        model: runs/compare_wikitext/trak_ens/s1/retrained/subset_1
+        overwrite: false
         token_batch_size: 1024
         # GPT-2 uses an nn.Linear for its LM head.
         filter_modules: "lm_head"
