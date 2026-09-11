@@ -1,10 +1,9 @@
 """Tests for the LESS-style global TRAK projection mode."""
 
+import math
 from pathlib import Path
 
 import pytest
-import math
-
 import torch
 
 from bergson import GradientProcessor, collect_gradients

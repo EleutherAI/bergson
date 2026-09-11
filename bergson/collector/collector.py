@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from contextlib import ContextDecorator, nullcontext
 from dataclasses import astuple, dataclass, field
 from fnmatch import fnmatchcase
-from typing import Iterator, Callable, Literal, Mapping, Optional
+from typing import Callable, Iterator, Literal, Mapping, Optional
 
 import numpy as np
 import torch
@@ -1052,7 +1052,9 @@ def global_projection_blocks(
         seed = int.from_bytes(digest, byteorder="big") % (2**63 - 1)
         prng = torch.Generator(device).manual_seed(seed)
         if projection_type == "normal":
-            block = torch.randn(m, stop - start, device=device, dtype=dtype, generator=prng)
+            block = torch.randn(
+                m, stop - start, device=device, dtype=dtype, generator=prng
+            )
         elif projection_type == "rademacher":
             block = torch.empty(m, stop - start, device=device, dtype=dtype)
             block.bernoulli_(0.5, generator=prng).mul_(2).sub_(1)
