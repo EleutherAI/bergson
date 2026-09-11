@@ -1,5 +1,5 @@
-# SOURCE (approximate unrolling, Bae et al. 2024) for the magic.yaml model:
-# plain and Adam-preconditioned variants, scored at the final interval.yaml
+# SOURCE (approximate unrolling, Bae et al. 2024) for the 1_magic.yaml model:
+# plain and Adam-preconditioned variants, scored at the final 2_interval.yaml
 # checkpoint; lr_list and step_size_list come from that run's log_history.json.
 # LDS: examples/compare_wikitext/lds_from_bank.py --sign loss.
 

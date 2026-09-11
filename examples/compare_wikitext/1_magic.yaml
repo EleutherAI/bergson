@@ -1,15 +1,15 @@
-# Proponent-filter for projected gradient cosine similarity. Uses the random retrain bank computed with
-# `examples/compare_wikitext/magic.yaml`.
+# GPT-2 fine-tuned on WikiText with AdamW: per-query MAGIC scores for the test
+# queries and a leave-1%-out retrain bank of random subsets. The retrained
+# models are saved and the final Adam second moments kept for trackstar.yaml.
 
-# Run with `bergson examples/compare_wikitext/filters/filter_gradient_cosine_projected.yaml`
+# Run with `bergson examples/compare_wikitext/1_magic.yaml`
 
-run_path: runs/compare_wikitext/filter_gradient_cosine_projected
+run_path: runs/compare_wikitext/magic
 steps:
-  - validate:
-      run_path: runs/compare_wikitext/filter_gradient_cosine_projected
+  - magic:
+      run_path: runs/compare_wikitext/random
       model: gpt2
       resume: true
-      seed: 42
 
       data:
         dataset: EleutherAI/bergson-wikitext-512-chunks
@@ -27,6 +27,7 @@ steps:
 
       batch_size: 256
       grad_accum_steps: 2
+      double_backward_batch_size: 8
       num_epochs: 4
       lr_schedule:
         lr_scheduler_type: polynomial
@@ -38,9 +39,9 @@ steps:
       adam_beta2: 0.999
       eps_root: 1.0e-17
 
-      method: filter-proponents
+      skip_validation: false
+      num_subsets: 100
       subset_fraction: 0.01
-      num_subsets: 3
-      query_method: none
-      scores: runs/compare_wikitext/gradient_cosine_projected/scores
-      retrained_dir: runs/compare_wikitext/random
+
+      save_models: true
+      save_optimizer_state: last

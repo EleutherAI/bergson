@@ -3,8 +3,8 @@ when present) files.
 
     python examples/compare_wikitext/lds_tables.py runs/compare_wikitext
 
-LDS json is written by examples/compare_wikitext/lds_from_bank.py (BIF: metasmoothness bif_lds.py),
-QLD json by examples/compare_wikitext/qld_from_filters.py. Rows are sorted by
+LDS json is written by examples/compare_wikitext/lds_from_bank.py, QLD json by
+examples/compare_wikitext/qld_from_filters.py. Rows are sorted by
 proponent QLD when any is present (rows without one last), else by mean rho.
 """
 
@@ -34,7 +34,10 @@ LABELS = {
     "shampoo": "Shampoo",
     "bm25": "BM25",
     "semantic": "Jina v5 semantic search",
-    "qwen3": "[Qwen3-Embedding-8B](https://huggingface.co/spaces/mteb/leaderboard) semantic search",
+    "qwen3": (
+        "[Qwen3-Embedding-8B](https://huggingface.co/spaces/mteb/leaderboard)"
+        " semantic search"
+    ),
 }
 
 
@@ -92,5 +95,8 @@ for arg in sys.argv[1:]:
                 if qld
                 else " — | — |"
             )
-        line += f" {lds:.3f} | [{lo:.3f}, {hi:.3f}] | {med:.3f} | {mn:.3f} | {mx:.3f} | {sig_s} |"
+        line += (
+            f" {lds:.3f} | [{lo:.3f}, {hi:.3f}] | {med:.3f} | {mn:.3f} | {mx:.3f}"
+            f" | {sig_s} |"
+        )
         print(line)

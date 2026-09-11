@@ -1,11 +1,11 @@
-# Proponent-filter for gradient cosine similarity. Uses the random retrain bank computed with
-# `examples/compare_wikitext/magic.yaml`.
+# Proponent-filters for gradient cosine similarity, one step per variant. Uses the random
+# retrain bank computed with `examples/compare_wikitext/1_magic.yaml`.
 
 # Run with `bergson examples/compare_wikitext/filters/filter_gradient_cosine.yaml`
 
 run_path: runs/compare_wikitext/filter_gradient_cosine
 steps:
-  - validate:
+  - validate: &validate
       run_path: runs/compare_wikitext/filter_gradient_cosine
       model: gpt2
       resume: true
@@ -44,3 +44,8 @@ steps:
       query_method: none
       scores: runs/compare_wikitext/gradient_cosine/scores
       retrained_dir: runs/compare_wikitext/random
+
+  - validate:
+      <<: *validate
+      run_path: runs/compare_wikitext/filter_gradient_cosine_projected
+      scores: runs/compare_wikitext/gradient_cosine_projected/scores

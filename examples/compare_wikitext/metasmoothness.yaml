@@ -1,4 +1,4 @@
-# Metasmoothness of the magic.yaml recipe: finite-difference agreement of the
+# Metasmoothness of the 1_magic.yaml recipe: finite-difference agreement of the
 # training map under a random data-weight perturbation.
 
 # Run with `bergson examples/compare_wikitext/metasmoothness.yaml`

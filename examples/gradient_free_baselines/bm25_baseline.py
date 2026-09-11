@@ -7,7 +7,8 @@ score is ``-bm25``. Often a stronger influence proxy than deep-semantic
 embedders for small LMs, and essentially free.
 
 Run with (builds the default bank if --bank is omitted):
-    python -m examples.gradient_free_baselines.bm25_baseline --bank runs/retrain_bank_path
+    python -m examples.gradient_free_baselines.bm25_baseline \
+        --bank runs/retrain_bank_path
 """
 
 import argparse

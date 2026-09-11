@@ -1,7 +1,7 @@
 # Proponent-filter for MAGIC. Uses the random retrain bank computed with
-# `examples/compare_wikitext/magic.yaml`.
+# `examples/compare_wikitext/1_magic.yaml`.
 
-# Run with `bergson examples/compare_wikitext/filters/filter_magic.yaml`
+# Run with `bergson examples/compare_wikitext/filters/filter_1_magic.yaml`
 
 run_path: runs/compare_wikitext/filter_magic
 steps:

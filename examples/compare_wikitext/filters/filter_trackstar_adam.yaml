@@ -1,12 +1,12 @@
-# Proponent-filter for TrackStar (Adam, projection 32). Uses the random retrain bank computed with
-# `examples/compare_wikitext/magic.yaml`.
+# Proponent-filters for TrackStar with Adam normalization, one step per variant. Uses the random
+# retrain bank computed with `examples/compare_wikitext/1_magic.yaml`.
 
-# Run with `bergson examples/compare_wikitext/filters/filter_trackstar_adam_p32.yaml`
+# Run with `bergson examples/compare_wikitext/filters/filter_trackstar_adam.yaml`
 
-run_path: runs/compare_wikitext/filter_trackstar_adam_p32
+run_path: runs/compare_wikitext/filter_trackstar_adam_p16
 steps:
-  - validate:
-      run_path: runs/compare_wikitext/filter_trackstar_adam_p32
+  - validate: &validate
+      run_path: runs/compare_wikitext/filter_trackstar_adam_p16
       model: gpt2
       resume: true
       seed: 42
@@ -42,5 +42,15 @@ steps:
       subset_fraction: 0.01
       num_subsets: 3
       query_method: none
-      scores: runs/compare_wikitext/trackstar_adam_p32/scores
+      scores: runs/compare_wikitext/trackstar_adam_p16/scores
       retrained_dir: runs/compare_wikitext/random
+
+  - validate:
+      <<: *validate
+      run_path: runs/compare_wikitext/filter_trackstar_adam_p32
+      scores: runs/compare_wikitext/trackstar_adam_p32/scores
+
+  - validate:
+      <<: *validate
+      run_path: runs/compare_wikitext/filter_trackstar_adam_p64
+      scores: runs/compare_wikitext/trackstar_adam_p64/scores

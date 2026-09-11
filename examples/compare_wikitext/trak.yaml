@@ -1,4 +1,4 @@
-# TRAK (Park et al. 2023) scores for the magic.yaml model against the test
+# TRAK (Park et al. 2023) scores for the 1_magic.yaml model against the test
 # queries: one global random projection of the gradient, damped inverse Gram,
 # (1 - p_i) weighting, single checkpoint.
 # LDS: examples/compare_wikitext/lds_from_bank.py --sign grad.

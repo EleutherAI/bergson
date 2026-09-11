@@ -1,5 +1,5 @@
 # Proponent-filter for activation similarity. Uses the random retrain bank computed with
-# `examples/compare_wikitext/magic.yaml`.
+# `examples/compare_wikitext/1_magic.yaml`.
 
 # Run with `bergson examples/compare_wikitext/filters/filter_activation.yaml`
 

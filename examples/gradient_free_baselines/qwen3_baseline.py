@@ -12,7 +12,8 @@ architecture and loads cleanly. Pass --model Qwen/Qwen3-Embedding-4B for the
 smaller, faster variant.)
 
 Run with (builds the default bank if --bank is omitted):
-    python -m examples.gradient_free_baselines.qwen3_baseline --bank runs/retrain_bank_path
+    python -m examples.gradient_free_baselines.qwen3_baseline \
+        --bank runs/retrain_bank_path
 """
 
 import argparse

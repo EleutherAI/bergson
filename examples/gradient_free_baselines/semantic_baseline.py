@@ -16,7 +16,8 @@ so ``load_model`` patches two load-time incompatibilities (see there) when that
 model is selected.
 
 Run with (builds the default bank if --bank is omitted):
-    python -m examples.gradient_free_baselines.semantic_baseline --bank runs/retrain_bank_path
+    python -m examples.gradient_free_baselines.semantic_baseline \
+        --bank runs/retrain_bank_path
 """
 
 import argparse

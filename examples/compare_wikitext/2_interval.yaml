@@ -1,11 +1,11 @@
-# The magic.yaml training recipe with evenly spaced interval checkpoints and
+# The 1_magic.yaml training recipe with evenly spaced interval checkpoints and
 # Adam state at each, for SOURCE. After it finishes, export the final
 # checkpoint to an HF model dir for the scoring steps:
 #
 #   python -c "from bergson.utils.trainer_export import export_checkpoints;
 #              export_checkpoints('runs/compare_wikitext/interval', steps=[72])"
 
-# Run with `bergson examples/compare_wikitext/interval.yaml`
+# Run with `bergson examples/compare_wikitext/2_interval.yaml`
 
 run_path: runs/compare_wikitext/interval
 steps:

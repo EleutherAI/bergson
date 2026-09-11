@@ -12,7 +12,8 @@ score is ``-cosine`` -- larger => larger predicted loss reduction from keeping
 the doc.
 
 Run with (builds the default bank if --bank is omitted):
-    python -m examples.gradient_free_baselines.activation_baseline --bank runs/retrain_bank_path
+    python -m examples.gradient_free_baselines.activation_baseline \
+        --bank runs/retrain_bank_path
 """
 
 import argparse
