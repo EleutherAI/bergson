@@ -1,7 +1,5 @@
-# Proponent-filter QLD for the BM25 lexical-overlap baseline: for each of the 50 queries, retrain the
-# magic.yaml recipe without that query's top 1% (46) proponents by BM25 lexical-overlap score and
-# measure the query's loss change; the bank's random 1%-drop retrains are the
-# matched control (retrained_dir). Reported as the mean over queries.
+# Proponent-filter for BM25. Uses the random retrain bank computed with
+# `examples/compare_wikitext/magic.yaml`.
 
 # Run with `bergson examples/compare_wikitext/filters/filter_bm25.yaml`
 

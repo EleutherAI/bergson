@@ -1,6 +1,5 @@
-# Cross-seed proponent-filter QLD for magic: retrain without each query's
-# top 1% (46) proponents by seed-42 MAGIC score, with seed 43, and measure the
-# query's loss change; 3 in-job random 1%-drop retrains are the control.
+# Proponent-filter for MAGIC (cross-seed): seed-42 MAGIC scores, retrains with
+# seed 43, 3 in-job random 1% retrains as the control.
 
 # Run with `bergson examples/compare_wikitext/filters/filter_magic_seed43.yaml`
 
