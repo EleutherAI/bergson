@@ -1,7 +1,6 @@
-# Metasmoothness of the WikiText plain-AdamW recipe (magic.yaml: eps_root 1e-17, betas 0.9/0.999, lr 4e-4).
-# Empirical metasmoothness (bergson metasmoothness: finite-difference agreement
-# of the training map under a random data-weight perturbation, fd_step 0.1,
-# direction_seed 0), the quantity the README says MAGIC efficacy tracks.
+# Metasmoothness of the magic.yaml recipe: finite-difference agreement of the
+# training map under a random data-weight perturbation (fd_step 0.1,
+# direction_seed 0).
 
 # Run with `bergson examples/compare_wikitext/metasmoothness.yaml`
 

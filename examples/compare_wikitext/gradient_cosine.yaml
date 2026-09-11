@@ -1,8 +1,7 @@
-# Gradient cosine similarity for the eps_root 1e-17 WikiText model against
-# test[0:50]: the query and training gradients are random-projected (64 per
-# module, as trackstar.yaml) and unit-normalized, and each training chunk is
-# scored by its dot product with each query gradient. No Hessian: this is
-# TrackStar without preconditioning. LDS: examples/compare_wikitext/lds_from_bank.py --sign grad.
+# Gradient cosine similarity for the magic.yaml model against test[0:50]: query
+# and training gradients random-projected (64 per module, as trackstar.yaml)
+# and unit-normalized, scored by dot product with no Hessian, i.e. TrackStar
+# without preconditioning. LDS: examples/compare_wikitext/lds_from_bank.py --sign grad.
 
 # Run with `bergson examples/compare_wikitext/gradient_cosine.yaml`
 

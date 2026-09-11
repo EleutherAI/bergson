@@ -1,10 +1,7 @@
-# WikiText with plain AdamW: eps_root 1e-17, betas 0.9/0.999, lr 4e-4 polynomial,
-# bs 256, 4 epochs (the eps_root 1e-8 GPT-2/WikiText recipe with standard Adam
-# betas and the lr halved: lr 8e-4 loses metasmoothness at eps_root 1e-17).
-# Per-query MAGIC scores for test[0:50] and leave-k-out validation over 100
-# random 1%-drop subsets; the
-# retrained models are saved and the final Adam second moments kept for
-# trackstar.yaml.
+# GPT-2 on WikiText with AdamW (eps_root 1e-17, betas 0.9/0.999, lr 4e-4
+# polynomial, batch 256, 4 epochs): per-query MAGIC scores for test[0:50] and
+# a leave-1%-out retrain bank of 100 random subsets. The retrained models are
+# saved and the final Adam second moments kept for trackstar.yaml.
 
 # Run with `bergson examples/compare_wikitext/magic.yaml`
 

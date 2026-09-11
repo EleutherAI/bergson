@@ -1,9 +1,7 @@
-# TRAK (Park et al. 2023) scores for the WikiText plain-AdamW model against test[0:50]:
-# per-module random projection (32), Gram fit on the whole
-# training set as one joint Gram over the concatenated per-module sketches
-# (kernel joint), damped inverse (0.1 x mean eigenvalue), (1 - p_i) weighting.
-# Single checkpoint (no ensemble). LDS against the magic.yaml bank:
-# examples/compare_wikitext/lds_from_bank.py --sign grad.
+# TRAK (Park et al. 2023) scores for the magic.yaml model against test[0:50]:
+# per-module random projection (32), per-module Gram fit on the training set,
+# damped inverse (0.1 x mean eigenvalue), (1 - p_i) weighting, single
+# checkpoint. LDS: examples/compare_wikitext/lds_from_bank.py --sign grad.
 
 # Run with `bergson examples/compare_wikitext/trak.yaml`
 
@@ -11,7 +9,7 @@ run_path: runs/compare_wikitext/trak
 steps:
   - trak:
       index_cfg:
-        projection_dim: 16
+        projection_dim: 32
         run_path: runs/compare_wikitext/trak
         model: runs/compare_wikitext/interval/exported/checkpoint-72
         overwrite: true
@@ -27,6 +25,8 @@ steps:
           chunk_length: 0
 
       trak_cfg:
+        # Block-diagonal (per-module) Gram; the joint TRAK kernel scores lower here.
+        kernel: per_module
         query:
           dataset: EleutherAI/bergson-wikitext-512-chunks
           split: "test[0:50]"

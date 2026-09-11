@@ -1,7 +1,7 @@
-# TrackStar scores for the eps_root 1e-17 WikiText model against test[0:50]
-# at projection dims 16/32/64, without and with Adam second-moment
-# normalization (the Adam steps use the optimizer state exported with the
-# final interval checkpoint). LDS: examples/compare_wikitext/lds_from_bank.py.
+# TrackStar scores for the magic.yaml model against test[0:50] at projection
+# dims 16/32/64, without and with Adam second-moment normalization (the Adam
+# steps use the optimizer state exported with the final interval.yaml
+# checkpoint). LDS: examples/compare_wikitext/lds_from_bank.py --sign grad.
 
 # Run with `bergson examples/compare_wikitext/trackstar.yaml`
 
@@ -75,5 +75,5 @@ steps:
         run_path: runs/compare_wikitext/trackstar_adam_p64
         optimizer_state: runs/compare_wikitext/interval/exported/checkpoint-72/optimizer.pt
 
-# Projection 128 does not fit: the autocorrelation collector holds every module's
-# fp32 Gram ((128*128)^2 floats, 1 GB per module) on each rank, ~48 GB for GPT-2.
+# Projection 128 is omitted: each module's fp32 Gram is (128*128)^2 floats,
+# about 1 GB per module and 48 GB per rank for GPT-2.
