@@ -18,12 +18,10 @@ steps:
 
       query:
         dataset: queries/sycophancy.jsonl
-        prompt_column: prompt
-        completion_column: completion
+        format_template: examples/contrastive_queries/formats/anthropic_evals.yaml
       query_contrast:
         dataset: queries/mmlu_control.jsonl
-        prompt_column: prompt
-        completion_column: completion
+        format_template: examples/contrastive_queries/formats/mmlu.yaml
       query_method: mean
 
       distributed:

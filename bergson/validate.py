@@ -69,6 +69,9 @@ def bank_loss_cache_key(
         "query_format_template": q.format_template,
         "query_data_kwargs": q.data_kwargs,
         "query_chunk_length": q.chunk_length,
+        "query_contrast": (
+            None if run_cfg.query_contrast is None else run_cfg.query_contrast.to_dict()
+        ),
         "batch_size": run_cfg.batch_size,
         "multi_query": multi_query,
         "num_subsets": num_subsets,

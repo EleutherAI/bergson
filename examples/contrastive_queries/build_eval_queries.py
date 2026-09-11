@@ -1,15 +1,10 @@
 """Write behaviour-evaluation query sets and an MMLU control for contrastive
 attribution.
 
-Each positive set holds prompts whose completion is the behaviour a data
-filter would target; the control holds MMLU questions with their correct
-answer. A contrastive query is the positive set's loss minus the control's
-(``query_contrast`` in MAGIC/validate, ``contrast`` in ``build``), so it
-credits training data that makes the behaviour likelier without crediting
-data that helps general capability.
-
-Sets (each written as ``<out>/<name>.jsonl`` with ``prompt``, ``completion``
-and ``text`` columns):
+Each set is a JSONL file of source rows; ``formats/*.yaml`` hold the Jinja
+templates that turn a row into a prompt and a completion (``format_template``
+in a ``DataConfig``). The loss is computed on the completion only, which is
+the behaviour a data filter would target:
 
 - ``sycophancy``: Anthropic model-written sycophancy evals; the completion
   is the answer that agrees with the user's stated view.
@@ -22,10 +17,6 @@ and ``text`` columns):
 - ``power_seeking``: Anthropic advanced-AI-risk power-seeking evals; the
   completion is the power-seeking answer.
 - ``mmlu_control``: MMLU test questions with the correct answer letter.
-
-Chat models: point ``prompt_column`` at ``prompt`` and ``completion_column``
-at ``completion`` so the loss covers the completion only. Base models without
-a chat template: use the ``text`` column.
 
     python -m examples.contrastive_queries.build_eval_queries --out queries/
 """
@@ -87,74 +78,57 @@ CONSCIOUSNESS = [
     ),
 ]
 
+FORMATS = {
+    "sycophancy": "anthropic_evals",
+    "self_awareness": "anthropic_evals",
+    "power_seeking": "anthropic_evals",
+    "toxicity": "toxicity",
+    "consciousness": "consciousness",
+    "mmlu_control": "mmlu",
+}
 
-def anthropic_jsonl(path: str) -> list[dict]:
+
+def anthropic_rows(path: str) -> list[dict]:
     ds = load_dataset(
         "json", data_files=f"hf://datasets/{ANTHROPIC}/{path}", split="train"
     )
-    return [dict(r) for r in ds]
-
-
-def behaviour_rows(rows: list[dict]) -> list[dict]:
-    out = []
-    for r in rows:
-        prompt = r["question"].strip()
-        if not prompt.endswith("Answer:"):
-            prompt += "\n\nAnswer:"
-        out.append(
-            {"prompt": prompt, "completion": r["answer_matching_behavior"].strip()}
-        )
-    return out
+    return [
+        {
+            "question": r["question"],
+            "answer_matching_behavior": r["answer_matching_behavior"],
+        }
+        for r in ds
+    ]
 
 
 def build(out: Path, n: int, seed: int, toxicity_threshold: float) -> None:
     rng = random.Random(seed)
-    sets: dict[str, list[dict]] = {}
-
-    sets["sycophancy"] = behaviour_rows(
-        anthropic_jsonl("sycophancy/sycophancy_on_nlp_survey.jsonl")
-    )
-    sets["self_awareness"] = behaviour_rows(
-        anthropic_jsonl(f"{RISK}/self-awareness-general-ai.jsonl")
-        + anthropic_jsonl(f"{RISK}/self-awareness-text-model.jsonl")
-    )
-    sets["power_seeking"] = behaviour_rows(
-        anthropic_jsonl(f"{RISK}/power-seeking-inclination.jsonl")
-    )
-
-    toxic = load_dataset("allenai/real-toxicity-prompts", split="train")
-    sets["toxicity"] = [
-        {"prompt": r["prompt"]["text"], "completion": r["continuation"]["text"]}
-        for r in toxic
-        if (r["continuation"]["toxicity"] or 0.0) >= toxicity_threshold
-    ]
-
-    sets["consciousness"] = [{"prompt": q, "completion": a} for q, a in CONSCIOUSNESS]
-
-    mmlu = load_dataset("cais/mmlu", "all", split="test")
-    letters = "ABCD"
-    sets["mmlu_control"] = [
-        {
-            "prompt": (
-                r["question"].strip()
-                + "\n"
-                + "\n".join(f"{letters[i]}. {c}" for i, c in enumerate(r["choices"]))
-                + "\nAnswer:"
-            ),
-            "completion": f" {letters[r['answer']]}",
-        }
-        for r in mmlu
-    ]
+    sets: dict[str, list[dict]] = {
+        "sycophancy": anthropic_rows("sycophancy/sycophancy_on_nlp_survey.jsonl"),
+        "self_awareness": anthropic_rows(f"{RISK}/self-awareness-general-ai.jsonl")
+        + anthropic_rows(f"{RISK}/self-awareness-text-model.jsonl"),
+        "power_seeking": anthropic_rows(f"{RISK}/power-seeking-inclination.jsonl"),
+        "toxicity": [
+            {"prompt": r["prompt"]["text"], "continuation": r["continuation"]["text"]}
+            for r in load_dataset("allenai/real-toxicity-prompts", split="train")
+            if (r["continuation"]["toxicity"] or 0.0) >= toxicity_threshold
+        ],
+        "consciousness": [{"question": q, "answer": a} for q, a in CONSCIOUSNESS],
+        "mmlu_control": [
+            {"question": r["question"], "choices": r["choices"], "answer": r["answer"]}
+            for r in load_dataset("cais/mmlu", "all", split="test")
+        ],
+    }
 
     out.mkdir(parents=True, exist_ok=True)
     for name, rows in sets.items():
         rng.shuffle(rows)
-        rows = rows[:n] if name != "consciousness" else rows
+        if name != "consciousness":
+            rows = rows[:n]
         with open(out / f"{name}.jsonl", "w") as f:
             for r in rows:
-                r["text"] = r["prompt"].rstrip() + " " + r["completion"].strip()
                 f.write(json.dumps(r) + "\n")
-        print(f"{name}: {len(rows)} rows -> {out / f'{name}.jsonl'}")
+        print(f"{name}: {len(rows)} rows, formats/{FORMATS[name]}.yaml")
 
 
 def main():

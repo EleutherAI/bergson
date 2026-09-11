@@ -1,0 +1,4 @@
+# MMLU multiple choice; the target is the correct answer letter.
+doc_to_text: "{{ question | trim }}\n{% for c in choices %}{{ 'ABCD'[loop.index0] }}. {{ c }}\n{% endfor %}Answer:"
+doc_to_target: answer
+doc_to_choice: [" A", " B", " C", " D"]
