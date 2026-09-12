@@ -164,6 +164,9 @@ def mean_query_loss(
             batch, n_tokens = mask_padded_rows(batch)
             tokens += n_tokens
             for micro in split_batch(batch, grad_accum_steps):
+                # Ignore padding-only micro-batches
+                if not (micro["labels"][:, 1:] != -100).any():
+                    continue
                 total += model(**micro).loss * loss_denom(micro)
     if dist.is_initialized():
         dist.all_reduce(total)
