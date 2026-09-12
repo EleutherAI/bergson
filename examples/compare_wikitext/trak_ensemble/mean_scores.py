@@ -1,11 +1,15 @@
 """Average the TRAK score stores of the ensemble members into one score dir.
 
     python examples/compare_wikitext/trak_ensemble/mean_scores.py \\
-        runs/compare_wikitext/trak_ens/score_s*_*/scores --out runs/compare_wikitext/trak_ens/scores
+        runs/compare_wikitext/trak_ens/score_s*_*/scores \\
+        --out runs/compare_wikitext/trak_ens/scores
 
 Copies the first member's score directory (its config and metadata) and
 writes ``scores.bin`` as the mean of every member's score columns; a row's
-``written`` flag is set where every member wrote it.
+``written`` flag is set where every member wrote it. With ``--separate_q``
+the whitened inner products and the ``1 - p`` weights (``trak_weights.npy``)
+are averaged separately and then multiplied, the form of Engstrom et al.
+(2024, DsDm); otherwise the members' weighted scores are averaged.
 """
 
 import argparse
@@ -29,6 +33,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("members", nargs="+", help="score directories to average")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--separate_q", action="store_true")
     args = ap.parse_args()
 
     members = [load(Path(m)) for m in args.members]
@@ -43,9 +48,19 @@ def main():
     mean = np.memmap(
         out / "scores.bin", dtype=first.dtype, mode="w+", shape=first.shape
     )
+    weights = [np.load(Path(d) / "trak_weights.npy") for d in args.members]
+    q_mean = np.mean(weights, axis=0)
     for name in first.dtype.names:
         if name.startswith("score_"):
-            mean[name] = np.mean([m[name].astype(np.float64) for m in members], axis=0)
+            if args.separate_q:
+                unweighted = [
+                    m[name].astype(np.float64) / w for m, w in zip(members, weights)
+                ]
+                mean[name] = np.mean(unweighted, axis=0) * q_mean
+            else:
+                mean[name] = np.mean(
+                    [m[name].astype(np.float64) for m in members], axis=0
+                )
         else:
             mean[name] = np.all([m[name] for m in members], axis=0)
     mean.flush()
