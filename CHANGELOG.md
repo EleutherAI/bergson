@@ -1,6 +1,19 @@
 # CHANGELOG
 
 
+## v0.26.3 (2026-09-12)
+
+### Bug Fixes
+
+- NaN with HF when padding rows fill a micro-batch
+  ([#461](https://github.com/EleutherAI/bergson/pull/461),
+  [`26459f3`](https://github.com/EleutherAI/bergson/commit/26459f3d04e1ed9a8697a87f0f6b8f20914f343f))
+
+- Safer defaults for apply_batch_size and eps_root
+  ([#460](https://github.com/EleutherAI/bergson/pull/460),
+  [`03980b3`](https://github.com/EleutherAI/bergson/commit/03980b3c2a42fc65094fd986d0d20b1e18c99a26))
+
+
 ## v0.26.2 (2026-09-01)
 
 ### Bug Fixes
