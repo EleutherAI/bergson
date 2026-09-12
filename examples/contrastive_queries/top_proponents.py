@@ -24,6 +24,14 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--scores", required=True)
     ap.add_argument("--openers", required=True, help="openers.json of the query index")
+    ap.add_argument(
+        "--center",
+        nargs="*",
+        default=[],
+        help="score directories (this one and others) whose per-document mean is "
+        "subtracted first, so a document generically influential for every opener "
+        "does not top every list",
+    )
     ap.add_argument("--data", required=True, help="training dataset (load_from_disk)")
     ap.add_argument("--tokenizer", required=True)
     ap.add_argument("--k", type=int, default=10)
@@ -36,10 +44,19 @@ def main():
     scores, multi = load_scores_loss_signed(args.scores)
     assert multi and scores.shape[1] == len(openers), (scores.shape, len(openers))
     scores = np.asarray(scores, dtype=np.float64)
+    if args.center:
+        columns_all = [
+            np.asarray(load_scores_loss_signed(d)[0], dtype=np.float64)
+            for d in args.center
+        ]
+        scores = scores - np.concatenate(columns_all, axis=1).mean(
+            axis=1, keepdims=True
+        )
     data = load_from_disk(args.data)
     tok = AutoTokenizer.from_pretrained(args.tokenizer)
 
-    out, summary = ["# Top proponents\n"], {}
+    title = "# Top proponents" + (" (per-document centred)" if args.center else "")
+    out, summary = [title + "\n"], {}
     for i, prompt in enumerate(openers):
         top = np.argsort(scores[:, i])[: args.k]
         out.append(f"\n## {prompt}\n")
