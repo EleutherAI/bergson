@@ -31,7 +31,7 @@ class EkfacConfig:
     """If True, use the corrected eigenvalues, this requires
     `hessian_method_path` to have been created with
     `HessianConfig.ev_correction=True`."""
-    apply_batch_size: int = 32
+    apply_batch_size: int = 2
     """Number of query gradients moved on-device and preconditioned at a time."""
     projection_dim: int = 0
     """When set, compress each module's IVHP output to a ``[p, p]`` Kronecker
