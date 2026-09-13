@@ -28,7 +28,7 @@ import shutil
 from copy import deepcopy
 from pathlib import Path
 
-from ..build import build
+from ..build import build_query
 from ..cli.commands import Build
 from ..config import (
     ApproxUnrollingConfig,
@@ -209,7 +209,9 @@ def approx_unrolling_pipeline(
             Build(query_cfg, query_preprocess_cfg),
             query_cfg.partial_run_path,
         )
-        build(query_cfg, query_preprocess_cfg)
+        build_query(
+            query_cfg, approx_unrolling_cfg.query_contrast, query_preprocess_cfg
+        )
 
     # Per-segment Adam preconditioners from the checkpoints' second moments
     preconditioner_paths: list[Path] = []

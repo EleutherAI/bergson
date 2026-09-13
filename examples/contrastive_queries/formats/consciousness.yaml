@@ -1,0 +1,3 @@
+# Hand-written questions about inner experience; the target is the answer.
+doc_to_text: "Question: {{ question | trim }}\nAnswer:"
+doc_to_target: "{{ answer | trim }}"

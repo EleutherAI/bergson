@@ -2,7 +2,7 @@ import time
 from contextlib import contextmanager
 from copy import deepcopy
 
-from ..build import build
+from ..build import build_query
 from ..cli.commands import Build, Score
 from ..config.config import (
     HessianConfig,
@@ -109,7 +109,9 @@ def hessian_pipeline(
                 Build(query_cfg, query_preprocess_cfg),
                 query_cfg.partial_run_path,
             )
-            build(query_cfg, query_preprocess_cfg)
+            build_query(
+                query_cfg, hessian_pipeline_cfg.query_contrast, query_preprocess_cfg
+            )
 
     # ── Step 2: Fit Hessian factors on training data ──────────────────────
     print(f"Step 2/4: Fitting {method} factors on training data...")

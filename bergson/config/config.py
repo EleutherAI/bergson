@@ -471,6 +471,11 @@ class ValidationConfig(TrainingConfig, ABC):
     """Query/eval dataset for computing attribution target gradients.
     If not specified, defaults to the training dataset."""
 
+    query_contrast: DataConfig | None = None
+    """Control dataset: the query objective becomes the mean loss on ``query``
+    minus the mean loss on ``query_contrast``. Needs ``query_method`` mean or
+    sum."""
+
     query_method: Literal["mean", "sum", "none"] = "none"
     """How query gradients are combined before the MAGIC backward.
     ``none`` will perform one backward per query."""
@@ -867,6 +872,10 @@ class ApproxUnrollingConfig(Serializable):
     query: DataConfig = field(default_factory=DataConfig)
     """Query dataset spec; gradients computed at the final checkpoint."""
 
+    query_contrast: DataConfig | None = None
+    """Control dataset subtracted from the aggregated query gradient, so
+    scores measure the query loss minus the control loss."""
+
     query_aggregation: Literal["mean", "sum", "none"] = "mean"
     """How to aggregate the query gradients. "none" produces one
     score column per query."""
@@ -909,6 +918,10 @@ class HessianPipelineConfig:
     query: DataConfig = field(default_factory=DataConfig)
     """Query dataset specification."""
 
+    query_contrast: DataConfig | None = None
+    """Control dataset subtracted from the aggregated query gradient, so
+    scores measure the query loss minus the control loss."""
+
     query_aggregation: Literal["mean", "sum", "none"] = "mean"
     """How to aggregate the query gradients. "none" produces
     one score column per query."""
@@ -949,6 +962,10 @@ class TrackstarConfig:
 
     query: DataConfig = field(default_factory=DataConfig)
     """Query dataset specification."""
+
+    query_contrast: DataConfig | None = None
+    """Control dataset subtracted from the aggregated query gradient, so
+    scores measure the query loss minus the control loss."""
 
     preprocess_cfg: PreprocessConfig = field(default_factory=PreprocessConfig)
 

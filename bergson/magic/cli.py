@@ -50,7 +50,7 @@ from ..utils.utils import (
     get_device_index,
 )
 from ..utils.worker_utils import setup_data_pipeline
-from ..validate import validate_scores
+from ..validate import build_contrast_stream, validate_scores
 from .config import MagicConfig
 from .data_stream import DataStream, mask_padded_rows, pad_dataset_to_batch_size
 from .grad_accum import accumulate_grads
@@ -598,6 +598,23 @@ def worker(
         run_cfg.ckpt_avg_k,
     )
 
+    # A contrast set turns the query into ``loss(query) - loss(contrast)``:
+    # subtract its aggregated gradient and baseline loss.
+    contrast_stream = build_contrast_stream(run_cfg, get_device(rank), global_rank)
+    if contrast_stream is not None:
+        contrast_grads, contrast_baseline = compute_query_gradients(
+            fwd_state,
+            model,
+            contrast_stream,
+            run_cfg.query_method,
+            run_cfg.fsdp,
+            run_cfg.grad_accum_steps,
+            ckpts_path,
+            run_cfg.ckpt_avg_k,
+        )
+        query_grads = {k: g - contrast_grads[k] for k, g in query_grads.items()}
+        baseline = baseline - contrast_baseline
+
     multi_query = False
     if not score_path and run_cfg.query_method == "none":
         # Per-query MAGIC: one backward per query, sharing the forward. Yields
@@ -698,6 +715,7 @@ def worker(
         schedule=schedule,
         stream=stream,
         query_stream=query_stream,
+        contrast_stream=contrast_stream,
         fwd_state=fwd_state,
         model=model,
         baseline=baseline,
