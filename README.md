@@ -23,7 +23,7 @@ pip install -e .
 
 ## Leaderboard
 
-Indicative performance of data attribution methods in the finetuning regime - see [leaderboard](LEADERBOARD.md) for more methods.
+Indicative performance of data attribution methods in the finetuning regime - see the [leaderboard](https://bergson.readthedocs.io/en/latest/leaderboard.html) for more methods.
 
 [Linear datamodeling score](https://arxiv.org/abs/2303.14186) (LDS) is the accuracy of a method for producing global data rankings by influence. The query loss difference (QLD) shows how much model loss for a held-out query can be increased by retraining without the most highly ranked data by influence (here the top 1%), compared to a random removal baseline.
 
