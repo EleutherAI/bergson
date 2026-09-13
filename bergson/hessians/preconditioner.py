@@ -1,9 +1,7 @@
-"""Preconditioners: apply a preconditioner (sometimes interpreted as an
-inverse Hessian) to a set of gradients.
-
-A :class:`Preconditioner` exposes one method, ``apply(grads) -> grads``, mapping a
-``{module: [n, d]}`` gradient dict to its preconditioned counterpart. This class
-has two implementations:
+"""Preconditioners: apply a :class:`Preconditioner` (sometimes interpreted as an
+inverse Hessian) to gradients. This class exposes one method, 
+``apply(grads) -> grads``, mapping a ``{module: [n, d]}`` gradient dict to its 
+preconditioned counterpart. There are two implementations:
 
 - :class:`DensePreconditioner` — the autocorrelation Gram, a dense per-module
   ``[d, d]`` matrix; ``apply`` is a matmul ``g @ H^p``.
@@ -13,13 +11,11 @@ has two implementations:
   each gradient into the eigenbasis, scales by the inverse eigenvalue function,
   and rotates back, never materializing the dense ``[O·I, O·I]`` Hessian.
 
-:func:`load_preconditioner` builds one from a path, auto-detecting which
-representation lives there.
+:func:`load_preconditioner` builds either from a path.
 
-The factored ``apply`` runs both in a single process (full factors) and
-distributed (per-rank shards): :class:`~bergson.hessians.sharded_computation.ShardedMul`
-provides the rotations and in-place scaling for both. The eigenvalue math lives
-in :mod:`bergson.hessians.inversion`.
+The factored ``apply`` can be distributed over ranks, see 
+:class:`~bergson.hessians.sharded_computation.ShardedMul`. 
+The eigenvalue math lives in :mod:`bergson.hessians.inversion`.
 """
 
 import json
