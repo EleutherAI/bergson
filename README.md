@@ -41,7 +41,7 @@ Indicative performance of data attribution methods in the finetuning regime - se
 | TRAK (8-model ensemble) | 0.007 [0.005, 0.010] | 0.045 [0.015, 0.073] |
 | Activation similarity | 0.000 [-0.000, 0.001] | 0.110 [0.070, 0.149] |
 
-Held-out loss on the WikiText corpus dropped from 3.545 to 3.111 over training.
+Results for GPT-2 finetuned on 4 epochs of the WikiText corpus. Held-out loss dropped from 3.545 to 3.111 over training.
 
 ## Functionality
 
