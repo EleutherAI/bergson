@@ -137,7 +137,7 @@ def _index_cfg(
         projection_target="global",
         token_batch_size=256,
         precision="fp32",
-        loss_fn="margin",
+        loss_fn="log_odds",
     )
 
 
@@ -159,16 +159,16 @@ def test_trak_weights_rows_by_one_minus_p(trak_run):
 def test_trak_rejects_cross_entropy_features(tmp_path, data_dir):
     cfg = _index_cfg(tmp_path / "ce", data_dir)
     cfg.loss_fn = "ce"
-    with pytest.raises(ValueError, match="loss_fn='margin'"):
+    with pytest.raises(ValueError, match="loss_fn='log_odds'"):
         trak(cfg, TrakConfig(query=_query_cfg(data_dir)))
 
 
-def test_margin_token_loss_is_negative_log_odds():
-    """The margin loss is -(log p - log(1 - p)) per label token, zero on padding."""
+def test_log_odds_token_loss_is_negative_log_odds():
+    """The log-odds loss is -(log p - log(1 - p)) per label token, zero on padding."""
     torch.manual_seed(0)
     logits = torch.randn(2, 3, 5)
     labels = torch.tensor([[1, 4, -100], [0, 2, 3]])
-    got = token_losses("margin", logits, labels)
+    got = token_losses("log_odds", logits, labels)
     p = torch.softmax(logits, -1).gather(-1, labels.clamp(min=0).unsqueeze(-1))[..., 0]
     expected = -(torch.log(p) - torch.log(1 - p)) * (labels != -100)
     torch.testing.assert_close(got, expected, rtol=1e-5, atol=1e-6)
