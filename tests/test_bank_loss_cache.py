@@ -16,7 +16,7 @@ import torch
 from datasets import Dataset
 
 import bergson.validate as validate
-from bergson.config.config import DataConfig
+from bergson.config.config import DataConfig, QuerySetConfig
 from bergson.magic.config import MagicConfig
 from bergson.score.score_writer import save_sequence_scores
 from bergson.validate import bank_loss_cache_key, evaluate_retrained
@@ -59,8 +59,14 @@ def _run_cfg(tmp_path, run_name, query_path, batch_size=2):
         model=MODEL,
         batch_size=batch_size,
         precision="fp32",
-        query=DataConfig(
-            dataset=str(query_path), split="train", prompt_column="text", chunk_length=0
+        query=QuerySetConfig(
+            data=DataConfig(
+                dataset=str(query_path),
+                split="train",
+                prompt_column="text",
+                chunk_length=0,
+            ),
+            aggregation="none",
         ),
     )
 
@@ -159,7 +165,7 @@ def test_different_query_does_not_reuse_losses(tmp_path, model):
 
     # Same bank, different query split -> a distinct cache file is written.
     cfg_b = _run_cfg(tmp_path, "run_b", query_path)
-    cfg_b.query.split = "train[:3]"
+    cfg_b.query.data.split = "train[:3]"
     name_a = bank_loss_cache_key(cfg_a, True, len(SUBSETS))
     name_b = bank_loss_cache_key(cfg_b, True, len(SUBSETS))
     assert name_a != name_b

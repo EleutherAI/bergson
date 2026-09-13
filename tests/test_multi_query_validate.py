@@ -157,8 +157,12 @@ def test_load_scores_loss_signed_legacy_pt(tmp_path):
     assert not multi_query
     torch.testing.assert_close(scores, per_token)
 
-    cfg = {"steps": [{"magic": {"query_method": "none"}}]}
+    cfg = {"steps": [{"magic": {"query": {"aggregation": "none"}}}]}
     (tmp_path / "config.yaml").write_text(yaml.safe_dump(cfg))
+    _, multi_query = load_scores_loss_signed(str(tmp_path / "scores.pt"))
+    assert multi_query
+    old_cfg = {"steps": [{"magic": {"query_method": "none"}}]}
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump(old_cfg))
     _, multi_query = load_scores_loss_signed(str(tmp_path / "scores.pt"))
     assert multi_query
 

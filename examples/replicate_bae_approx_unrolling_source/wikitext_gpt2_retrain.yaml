@@ -17,9 +17,10 @@ steps:
       split: train
       chunk_length: 0
     query:
-      dataset: EleutherAI/bergson-wikitext-2-4656-chunks
-      split: validation
-      chunk_length: 0
+      data:
+        dataset: EleutherAI/bergson-wikitext-2-4656-chunks
+        split: validation
+        chunk_length: 0
     distributed:
       nproc_per_node: 8
       nnode: 1

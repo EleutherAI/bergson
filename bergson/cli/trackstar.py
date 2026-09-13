@@ -1,7 +1,7 @@
 from copy import deepcopy
 from pathlib import Path
 
-from ..build import build
+from ..build import build_query
 from ..config.config import (
     HessianConfig,
     IndexConfig,
@@ -13,7 +13,7 @@ from ..hessians.hessian_approximations import approximate_hessians
 from ..process_grads import mix_autocorrelation_matrices
 from ..score.score import score_dataset
 from ..utils.worker_utils import validate_run_path
-from .commands import Build, Hessian, Mix, Score
+from .commands import Hessian, Mix, Score
 
 
 def _limit_split_for_hess(cfg: IndexConfig, stats_sample_size: int | None) -> None:
@@ -88,7 +88,7 @@ def trackstar(index_cfg: IndexConfig, trackstar_cfg: TrackstarConfig):
         if not _step_complete(query_hess_path, resume):
             query_hess_cfg = deepcopy(index_cfg)
             query_hess_cfg.run_path = query_hess_path
-            query_hess_cfg.data = deepcopy(trackstar_cfg.query)
+            query_hess_cfg.data = deepcopy(trackstar_cfg.query.data)
             _limit_split_for_hess(query_hess_cfg, trackstar_cfg.stats_sample_size)
             _validate(query_hess_cfg)
             save_run_config(
@@ -127,35 +127,18 @@ def trackstar(index_cfg: IndexConfig, trackstar_cfg: TrackstarConfig):
     # user is aggregating the query dataset (preprocess_cfg.aggregation != "none").
     # Otherwise, preconditioning will be deferred to score time in step 5.
     trackstar_cfg.preprocess_cfg.hessian_path = precondition_hess_path
+    trackstar_cfg.preprocess_cfg.aggregation = trackstar_cfg.query.aggregation
 
     # Step 4: Build query gradient index using query-specific normalizer.
     print("Step 4/5: Building query gradient index...")
-    if not _step_complete(query_path, resume):
+    if trackstar_cfg.query.path:
+        query_path = trackstar_cfg.query.path
+        print(f"  using the existing query index at {query_path}")
+    elif not _step_complete(query_path, resume):
         query_cfg = deepcopy(index_cfg)
         query_cfg.run_path = query_path
-        query_cfg.data = deepcopy(trackstar_cfg.query)
-
-        # query-side aggregation is currently not compatible with token attribution
-        # only. When aggregating the query (aggregation != "none"), per-token
-        # query gradients are collapsed into a single target gradient, so a
-        # per-token query index is invalid. Build a per-example query index.
-        if (
-            trackstar_cfg.preprocess_cfg.aggregation != "none"
-            and query_cfg.attribute_tokens
-        ):
-            print(
-                "Query aggregation is currently not compatible with"
-                "query-side token attribution. Any query unit normalization"
-                "will be applied to sequence gradients."
-            )
-            query_cfg.attribute_tokens = False
-
         _validate(query_cfg)
-        save_run_config(
-            Build(query_cfg, trackstar_cfg.preprocess_cfg),
-            query_cfg.partial_run_path,
-        )
-        build(query_cfg, trackstar_cfg.preprocess_cfg)
+        build_query(query_cfg, trackstar_cfg.query, trackstar_cfg.preprocess_cfg)
 
     # Step 5: Score value dataset against query using mixed hessian
     print("Step 5/5: Scoring value dataset...")

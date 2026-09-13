@@ -29,9 +29,11 @@ steps:
       trackstar_cfg:
         stats_sample_size: 10000
         query:
-          dataset: EleutherAI/bergson-wikitext-512-chunks
-          split: "test[0:50]"
-          chunk_length: 0
+          data:
+            dataset: EleutherAI/bergson-wikitext-512-chunks
+            split: "test[0:50]"
+            chunk_length: 0
+          aggregation: none
         preprocess_cfg:
           unit_normalize: true
           aggregation: none

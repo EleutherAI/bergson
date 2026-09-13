@@ -13,6 +13,7 @@ from .validation import (
     FilterConfig,
     LDSConfig,
     WeightStepConfig,
+    migrate_query_config,
     migrate_validation_config,
     tagged_subgroups,
 )
@@ -79,6 +80,27 @@ class DataConfig(Serializable):
                 raise ValueError(
                     "chunk_length and format_template cannot both be specified"
                 )
+
+
+@dataclass
+class QuerySetConfig(Serializable):
+    """What to attribute to: the query dataset and how its gradients combine.
+
+    Every attribution pipeline reads its query from here. ``path`` names a
+    query index built earlier (by ``bergson build`` or another pipeline's
+    query step); the gradient pipelines then score against it instead of
+    building one from ``data``.
+    """
+
+    data: DataConfig = field(default_factory=DataConfig)
+    """Query dataset specification."""
+
+    aggregation: Literal["mean", "sum", "none"] = "none"
+    """How the query gradients are combined: one score column per query
+    (``none``) or one target gradient (``mean`` or ``sum``)."""
+
+    path: str = ""
+    """Existing query index to use instead of building one from ``data``."""
 
 
 @dataclass
@@ -465,15 +487,12 @@ class ValidationConfig(TrainingConfig, ABC):
     ckpt_avg_k: int = 1
     """Average the query gradient over the last ``k`` saved trajectory checkpoints."""
 
-    query: DataConfig = field(
-        default_factory=lambda: DataConfig(split="train"),
+    query: QuerySetConfig = field(
+        default_factory=lambda: QuerySetConfig(data=DataConfig(split="train")),
     )
-    """Query/eval dataset for computing attribution target gradients.
-    If not specified, defaults to the training dataset."""
-
-    query_method: Literal["mean", "sum", "none"] = "none"
-    """How query gradients are combined before the MAGIC backward.
-    ``none`` will perform one backward per query."""
+    """Query/eval dataset for the attribution target and how its gradients
+    are combined before the MAGIC backward; ``none`` performs one backward
+    per query. The dataset defaults to the training dataset."""
 
     subset_weight: float = 0.0
     """Training weight assigned to each subset's documents during the retrain
@@ -493,6 +512,8 @@ class ValidationConfig(TrainingConfig, ABC):
 
     @classmethod
     def from_dict(cls, obj, drop_extra_fields=None):
+        # TODO Lucia Quirke delete 12/2026
+        obj = migrate_query_config(obj, legacy_key="query_method", default="none")
         return super().from_dict(
             migrate_validation_config(obj), drop_extra_fields=drop_extra_fields
         )
@@ -864,12 +885,9 @@ class ApproxUnrollingConfig(Serializable):
     """Inversion for the Adam SOURCE variant's EK-FAC inverse - the SGD
     variant has no inversion."""
 
-    query: DataConfig = field(default_factory=DataConfig)
-    """Query dataset spec; gradients computed at the final checkpoint."""
-
-    query_aggregation: Literal["mean", "sum", "none"] = "mean"
-    """How to aggregate the query gradients. "none" produces one
-    score column per query."""
+    query: QuerySetConfig = field(default_factory=QuerySetConfig)
+    """Query dataset and aggregation; gradients are computed at the final
+    checkpoint. ``none`` produces one score column per query."""
 
     query_batch_size: int | None = None
     """Batch size for per-segment query scoring (see
@@ -906,12 +924,9 @@ class HessianConfig(Serializable):
 class HessianPipelineConfig:
     """Config for the Hessian-preconditioned influence pipeline."""
 
-    query: DataConfig = field(default_factory=DataConfig)
-    """Query dataset specification."""
-
-    query_aggregation: Literal["mean", "sum", "none"] = "mean"
-    """How to aggregate the query gradients. "none" produces
-    one score column per query."""
+    query: QuerySetConfig = field(default_factory=QuerySetConfig)
+    """Query dataset and aggregation. ``none`` produces one score column
+    per query."""
 
     inversion_cfg: InversionConfig = field(default_factory=InversionConfig)
     """How to invert the fitted EKFAC Hessian when applying it to the query."""
@@ -947,8 +962,9 @@ class MixConfig(Serializable):
 class TrackstarConfig:
     """Config for the trackstar pipeline query dataset."""
 
-    query: DataConfig = field(default_factory=DataConfig)
-    """Query dataset specification."""
+    query: QuerySetConfig = field(default_factory=QuerySetConfig)
+    """Query dataset and aggregation. ``none`` produces one score column
+    per query."""
 
     preprocess_cfg: PreprocessConfig = field(default_factory=PreprocessConfig)
 
@@ -984,8 +1000,9 @@ class TrakConfig:
     log-odds loss function. Optionally averaged over independently
     trained checkpoints."""
 
-    query: DataConfig = field(default_factory=DataConfig)
-    """Query dataset specification."""
+    query: QuerySetConfig = field(default_factory=QuerySetConfig)
+    """Query dataset and aggregation. ``none`` produces one score column
+    per query."""
 
     preprocess_cfg: PreprocessConfig = field(
         default_factory=lambda: PreprocessConfig(

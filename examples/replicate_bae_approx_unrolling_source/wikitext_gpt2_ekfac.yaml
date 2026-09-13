@@ -35,10 +35,11 @@ steps:
 
       hessian_pipeline_cfg:
         query:
-          dataset: EleutherAI/bergson-wikitext-2-4656-chunks
-          split: validation
-          chunk_length: 0
-        query_aggregation: none
+          data:
+            dataset: EleutherAI/bergson-wikitext-2-4656-chunks
+            split: validation
+            chunk_length: 0
+          aggregation: none
         # Effectively undamped, matching the reference implementation.
         inversion_cfg:
           damping_factor: 1.0e-8

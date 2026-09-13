@@ -24,9 +24,10 @@ steps:
       split: train
       chunk_length: 0
     query: &id002
-      dataset: EleutherAI/bergson-wikitext-2-4656-chunks
-      split: validation
-      chunk_length: 0
+      data:
+        dataset: EleutherAI/bergson-wikitext-2-4656-chunks
+        split: validation
+        chunk_length: 0
 - validate:
     run_path: runs/wikitext_repro/validate_source
     model: gpt2
