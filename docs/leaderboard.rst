@@ -48,6 +48,9 @@ Indicative performance of data attribution methods in the finetuning regime.
    * - TrackStar (Adam, projection 32)
      - 0.032 [0.025, 0.041]
      - 0.173 [0.144, 0.201]
+   * - TRAK (8-model ensemble)
+     - 0.032 [0.024, 0.040]
+     - 0.138 [0.111, 0.165]
    * - SOURCE (Adam)
      - 0.024 [0.018, 0.030]
      - 0.154 [0.126, 0.181]
@@ -72,12 +75,6 @@ Indicative performance of data attribution methods in the finetuning regime.
    * - Projected gradient cosine similarity
      - 0.016 [0.012, 0.020]
      - 0.132 [0.103, 0.159]
-   * - TRAK (8-model ensemble)
-     - 0.007 [0.005, 0.010]
-     - 0.045 [0.015, 0.073]
-   * - TRAK (4-model ensemble, DsDm averaging)
-     - 0.005 [0.003, 0.007]
-     - 0.037 [0.009, 0.064]
    * - Activation similarity
      - 0.000 [-0.000, 0.001]
      - 0.110 [0.070, 0.149]
