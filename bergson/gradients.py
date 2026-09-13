@@ -128,7 +128,7 @@ class GradientProcessor:
     include_bias: bool = False
     """Whether to include bias gradients when present on a module."""
 
-    projection_seed: int = 0
+    projection_seed: int | None = None
     """Seed of the random projection."""
 
     def __post_init__(self):

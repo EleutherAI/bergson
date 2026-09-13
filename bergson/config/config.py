@@ -594,9 +594,9 @@ class IndexConfig(AttributionConfig, Serializable):
     each module gradient. ``global`` projects each module's flattened gradient with
     an independent right-side matrix and sums into one vector per example."""
 
-    projection_seed: int = 0
-    """Seed of the random projection. ``trak`` gives each ensemble member its
-    own seed."""
+    projection_seed: int | None = None
+    """Seed of the random projection. ``trak`` gives each ensemble member its own 
+    seed."""
 
     token_batch_size: int = 2048
     """Batch size in tokens for building the index."""
@@ -998,8 +998,8 @@ class TrakConfig:
 
     checkpoints: list[str] = field(default_factory=list)
     """Independently trained model checkpoints to ensemble; member ``i`` is
-    projected with ``projection_seed + i``. When not set ``index_cfg.model``
-    is used."""
+    projected with seed ``projection_seed + i`` (``i`` when no seed is set).
+    When not set ``index_cfg.model`` is used."""
 
     stats_sample_size: int | None = None
     """Number of training examples to fit the Gram on. ``None`` (default)

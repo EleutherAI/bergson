@@ -235,7 +235,7 @@ def trak(index_cfg: IndexConfig, trak_cfg: TrakConfig):
         print(f"[TRAK] checkpoint {i + 1}/{len(trak_cfg.checkpoints)}: {model}")
         member_cfg = deepcopy(index_cfg)
         member_cfg.model = model
-        member_cfg.projection_seed = index_cfg.projection_seed + i
+        member_cfg.projection_seed = (index_cfg.projection_seed or 0) + i
         member_cfg.run_path = f"{index_cfg.run_path}/checkpoint_{i}"
         members.append(_trak_single(member_cfg, trak_cfg, member=True))
     if index_cfg.distributed._node_rank == 0:

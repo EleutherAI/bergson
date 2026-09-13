@@ -335,11 +335,11 @@ class HookCollectorBase(ContextDecorator, ABC):
 
     @staticmethod
     def projection_identifier(
-        name: str, role: Literal["left", "right", "single"], seed: int
+        name: str, role: Literal["left", "right", "single"], seed: int | None
     ) -> str:
         """Name (and seed) of parameter ``name``'s ``role`` projection matrix"""
         identifier = f"{name}/{role}"
-        if seed:
+        if seed is not None:
             identifier = f"{identifier}/seed{seed}"
         return identifier
 
