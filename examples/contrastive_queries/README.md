@@ -4,7 +4,7 @@ A contrastive query scores training data by how it moves one loss relative to an
 
 - `build_eval_queries.py` writes five positive sets (sycophancy, toxicity, consciousness claims, self-awareness, power-seeking) and an MMLU control as JSONL of source rows.
 - `formats/*.yaml` are the Jinja templates (`doc_to_text`, `doc_to_target`) that render a row into a prompt and a completion; pass one as `format_template` on the query `DataConfig`.
-- `magic_contrast.yaml` scores one set with MAGIC using `query_contrast`. The same fields exist on the `build`-based pipelines (`contrast` on `build`, `query_contrast` on `trackstar`, `ekfac` and `approxunrolling`).
+- `magic_contrast.yaml` scores one set with MAGIC using `query_contrast`. The same field exists on `trackstar`, `ekfac` and `approxunrolling`.
 
 ```bash
 python -m examples.contrastive_queries.build_eval_queries --out queries/

@@ -7,7 +7,7 @@ import pytest
 import torch
 from datasets import Dataset
 
-from bergson.build import build, subtract_contrast
+from bergson.build import build, build_query
 from bergson.config import DataConfig, DistributedConfig, IndexConfig, PreprocessConfig
 from bergson.data import load_gradients, load_scores_loss_signed
 from bergson.magic.cli import worker
@@ -46,16 +46,14 @@ def _index_cfg(run_path: Path, dataset: str, **kwargs) -> IndexConfig:
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-def test_build_contrast_is_difference_of_means(tmp_path):
+def test_build_query_contrast_is_difference_of_means(tmp_path):
     query = _save(tmp_path / "query", 4, 0)
     control = _save(tmp_path / "control", 6, 4)
     mean = PreprocessConfig(aggregation="mean")
 
     build(_index_cfg(tmp_path / "q", query), mean)
     build(_index_cfg(tmp_path / "c", control), mean)
-    build(
-        _index_cfg(tmp_path / "qc", query, contrast=DataConfig(dataset=control)), mean
-    )
+    build_query(_index_cfg(tmp_path / "qc", query), DataConfig(dataset=control), mean)
 
     q = np.asarray(load_gradients(tmp_path / "q")[0], dtype=np.float64)
     c = np.asarray(load_gradients(tmp_path / "c")[0], dtype=np.float64)
@@ -66,10 +64,12 @@ def test_build_contrast_is_difference_of_means(tmp_path):
     assert np.abs(qc).max() > 0
 
 
-def test_build_contrast_needs_aggregation(tmp_path):
-    cfg = _index_cfg(tmp_path / "x", "unused", contrast=DataConfig(dataset="unused"))
+def test_build_query_contrast_needs_aggregation(tmp_path):
+    cfg = _index_cfg(tmp_path / "x", "unused")
     with pytest.raises(ValueError, match="aggregation"):
-        subtract_contrast(cfg, PreprocessConfig(aggregation="none"))
+        build_query(
+            cfg, DataConfig(dataset="unused"), PreprocessConfig(aggregation="none")
+        )
 
 
 def test_magic_contrast_needs_an_aggregated_query(tmp_path):
