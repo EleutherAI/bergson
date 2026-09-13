@@ -34,7 +34,7 @@ LABELS = {
     "activation": "Activation similarity",
     "gradient_cosine": "Gradient cosine similarity",
     "gradient_cosine_projected": "Projected gradient cosine similarity",
-    "shampoo": "Shampoo",
+    "shampoo": "Eigenvalue-corrected Shampoo",
     "bm25": "BM25",
     "semantic": "Jina v5 semantic search",
     "qwen3": (

@@ -30,7 +30,7 @@ Indicative performance of data attribution methods in the finetuning regime - se
 | Method | Proponent QLD [95% CI] | LDS [95% CI] |
 |:---|:---:|:---:|
 | MAGIC | 0.100 [0.090, 0.112] | 0.931 [0.925, 0.936] |
-| Shampoo | 0.071 [0.060, 0.082] | 0.517 [0.491, 0.539] |
+| Eigenvalue-corrected Shampoo | 0.071 [0.060, 0.082] | 0.517 [0.491, 0.539] |
 | EK-FAC | 0.070 [0.058, 0.082] | 0.454 [0.426, 0.479] |
 | KFAC | 0.067 [0.056, 0.080] | 0.420 [0.391, 0.446] |
 | BM25 | 0.062 [0.048, 0.076] | 0.220 [0.185, 0.252] |
