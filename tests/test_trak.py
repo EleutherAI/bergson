@@ -1,3 +1,4 @@
+import copy
 import json
 import shutil
 from pathlib import Path
@@ -6,6 +7,9 @@ import numpy as np
 import pytest
 import torch
 from datasets import Dataset
+from huggingface_hub import snapshot_download
+from peft import PeftConfig
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from bergson.build import build
 from bergson.cli.trak import (
@@ -41,6 +45,49 @@ def _load(scores_dir: Path) -> np.ndarray:
     return np.stack([mmap[f"score_{q}"] for q in range(info["num_scores"])], 1)
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _cached_hf_loaders():
+    """Every pipeline step reloads the tokenizer, configs and model from the
+    Hub cache (about 1 s per step for pythia-14m). Serve them from a module
+    cache: the same tokenizer and config objects, the same PEFT lookup result
+    (a ValueError for a plain model), and a fresh deep copy of a template
+    model per call so hooks and gradient flags never leak between steps."""
+    patch = pytest.MonkeyPatch()
+    cache: dict = {}
+
+    def key(name, args, kwargs):
+        return (name, args, tuple(sorted((k, repr(v)) for k, v in kwargs.items())))
+
+    def cached(name, load, copy_result=False):
+        def call(*args, **kwargs):
+            k = key(name, args, kwargs)
+            if k not in cache:
+                try:
+                    cache[k] = (load(*args, **kwargs), None)
+                except ValueError as e:
+                    cache[k] = (None, e)
+            result, error = cache[k]
+            if error is not None:
+                raise error
+            return copy.deepcopy(result) if copy_result else result
+
+        return staticmethod(call)
+
+    for cls, copy_result in (
+        (AutoTokenizer, False),
+        (AutoConfig, False),
+        (PeftConfig, False),
+        (AutoModelForCausalLM, True),
+    ):
+        patch.setattr(
+            cls,
+            "from_pretrained",
+            cached(cls.__name__, cls.from_pretrained, copy_result),
+        )
+    yield cache
+    patch.undo()
+
+
 @pytest.fixture(scope="module")
 def data_dir(tmp_path_factory) -> Path:
     """A tiny pretokenized dataset: 12 training rows, 3 queries."""
@@ -57,21 +104,33 @@ def data_dir(tmp_path_factory) -> Path:
 
 
 @pytest.fixture(scope="module")
-def trak_run(tmp_path_factory, data_dir) -> TrackstarIndexConfig:
+def trak_run(tmp_path_factory, data_dir, _cached_hf_loaders) -> TrackstarIndexConfig:
     """One full (1 - p)-weighted TRAK run shared by the GPU tests. Every
     pipeline step reloads the model (~1 s each), so the tests below check
     the run's pieces instead of re-running TRAK per property."""
     if not torch.cuda.is_available():
         pytest.skip("CUDA not available")
-    cfg = _index_cfg(tmp_path_factory.mktemp("trak_run") / "weighted", data_dir)
+    # A local snapshot path keeps the per-step loads off the Hub, and the
+    # model is a plain causal LM: answer the PEFT adapter lookup without a
+    # Hub round trip per step.
+    model_path = snapshot_download(MODEL)
+    _cached_hf_loaders[("PeftConfig", (model_path,), ())] = (
+        None,
+        ValueError(f"{MODEL} is not a PEFT adapter"),
+    )
+    cfg = _index_cfg(
+        tmp_path_factory.mktemp("trak_run") / "weighted", data_dir, model_path
+    )
     trak(cfg, TrakConfig(query=_query_cfg(data_dir)))
     return cfg
 
 
-def _index_cfg(run_path: Path, data_dir: Path) -> TrackstarIndexConfig:
+def _index_cfg(
+    run_path: Path, data_dir: Path, model: str = MODEL
+) -> TrackstarIndexConfig:
     return TrackstarIndexConfig(
         run_path=str(run_path),
-        model=MODEL,
+        model=model,
         data=DataConfig(dataset=str(data_dir / "train"), split="train"),
         distributed=DistributedConfig(nproc_per_node=1),
         projection_dim=64,
@@ -155,7 +214,7 @@ def test_trak_matches_explicit_formula(tmp_path, trak_run, data_dir):
     scores = _load(run_path / "scores")
     weights = np.load(run_path / "scores" / "trak_weights.npy")
 
-    both_cfg = _index_cfg(tmp_path / "both_index", data_dir)
+    both_cfg = _index_cfg(tmp_path / "both_index", data_dir, trak_run.model)
     both_cfg.data = DataConfig(dataset=str(data_dir / "both"), split="train")
     build(both_cfg, PreprocessConfig())
     grads = _index_matrix(tmp_path / "both_index")
