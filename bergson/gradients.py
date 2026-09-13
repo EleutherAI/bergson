@@ -128,6 +128,9 @@ class GradientProcessor:
     include_bias: bool = False
     """Whether to include bias gradients when present on a module."""
 
+    projection_seed: int = 0
+    """Seed of the random projection."""
+
     def __post_init__(self):
         self._projection_matrices: dict[
             tuple[str, Literal["left", "right", "single"], torch.device], Tensor

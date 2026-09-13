@@ -333,6 +333,16 @@ class HookCollectorBase(ContextDecorator, ABC):
 
         return shapes
 
+    @staticmethod
+    def projection_identifier(
+        name: str, role: Literal["left", "right", "single"], seed: int
+    ) -> str:
+        """Name (and seed) of parameter ``name``'s ``role`` projection matrix"""
+        identifier = f"{name}/{role}"
+        if seed:
+            identifier = f"{identifier}/seed{seed}"
+        return identifier
+
     def projection(
         self,
         name: str,
@@ -347,7 +357,9 @@ class HookCollectorBase(ContextDecorator, ABC):
         if key in self.processor._projection_matrices:
             return self.processor._projection_matrices[key]
 
-        identifier = f"{name}/{role}"
+        identifier = self.projection_identifier(
+            name, role, self.processor.projection_seed
+        )
 
         A = create_projection_matrix(
             identifier,
@@ -375,7 +387,7 @@ class HookCollectorBase(ContextDecorator, ABC):
 
         assert self.processor.projection_dim is not None
         projected = project_global(
-            f"{name}/single",
+            self.projection_identifier(name, "single", self.processor.projection_seed),
             P,
             self.processor.projection_dim,
             self.processor.projection_type,

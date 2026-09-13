@@ -12,11 +12,12 @@ A training example ``z_i`` is scored for a query ``z_q`` as
 
 where :math:`\phi` is the projected per-example gradient of the output function :math:`\log p - \log(1 - p)`
 summed over the example's label tokens, :math:`\Phi` is the matrix of projected training gradients, one row
-per example, and :math:`1 - p_i` is the mean derivative of the loss w.r.t. the output function.
+per example, and :math:`p_i` is the mean probability of the example's label tokens. This is the language
+modeling form of TRAK from `DsDm <https://arxiv.org/abs/2401.12926>`_ (`reference implementation <https://github.com/MadryLab/trak>`).
 
 The Gram :math:`\Phi^\top \Phi` inverse is applied to the query gradients, for computational efficiency,
-and is undamped by default. Pass several independently trained checkpoints to enable ensembling (score
-averaging).
+and is undamped by default. Pass several independently trained checkpoints to enable ensembling. Each
+checkpoint is projected with a different random seed.
 
 TRAK does not support per-token attribution.
 
@@ -30,9 +31,10 @@ A directory at ``run_path`` with the following subdirectories:
   ``joint_layout.json``).
 - ``query/`` — the Gram-whitened query gradient index (same artifacts as ``build``).
 - ``scores/`` — scores for the training set (same artifacts as ``score``), with
-  ``trak_weights.npy`` holding the ``1 - p_i`` weights that were applied.
+  ``trak_weights.npy`` holding the ``1 - p_i`` weights and ``trak_scale.npy`` the
+  mean absolute entry of the inverse Gram, for ensembling.
 - ``checkpoint_<i>/`` — the same layout per ensemble member when
-  ``checkpoints`` is set; ``scores/`` is then their mean.
+  ``checkpoints`` is set. ``scores/`` is their ensemble.
 
 Key Options
 -----------
@@ -60,7 +62,7 @@ Example
        --query.split "train[:20]" \
        --projection_target global \
        --projection_dim 512 \
-       --loss_fn margin
+       --loss_fn log_odds
 
 Scores are ``higher_is_better``, so a positive score indicates a query proponent.
 See :doc:`cli` for the full ``TrakConfig`` API reference.

@@ -9,11 +9,13 @@ import torch
 import torch.nn.functional as F
 
 from ..build import build
-from ..config.config import HessianConfig, IndexConfig, TrakConfig
+from ..config.config import HessianConfig, IndexConfig, InversionConfig, TrakConfig
 from ..config.config_io import save_run_config
 from ..data import pad_and_tensor
 from ..distributed import parent_barrier
+from ..gradients import GradientProcessor
 from ..hessians.hessian_approximations import approximate_hessians
+from ..hessians.inversion import invert_psd_matrix
 from ..score.score import score_dataset
 from ..utils.worker_utils import (
     setup_data_pipeline,
@@ -82,27 +84,53 @@ def _weight_rows(scores_dir: Path, weights: np.ndarray) -> None:
         col = f"score_{q}"
         mmap[col] = (mmap[col].astype(np.float64) * weights).astype(mmap[col].dtype)
     mmap.flush()
-    np.save(scores_dir / "trak_weights.npy", weights)
+
+
+def _inverse_gram_scale(gram_path: str, inversion_cfg: InversionConfig) -> float:
+    """Mean absolute entry of the inverse Gram at ``gram_path``. The reference
+    implementation divides the inverse by it so that ensemble members' scores
+    share a scale."""
+    processor = GradientProcessor.load(Path(gram_path), map_location="cpu")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    h_inv = invert_psd_matrix(
+        processor.hessians["joint"].to(device=device, dtype=torch.float32),
+        inversion=inversion_cfg.inversion,
+        damping_factor=inversion_cfg.damping_factor,
+        power=-1.0,
+    )
+    return float(h_inv.abs().mean())
 
 
 def _average_scores(member_dirs: list[Path], out_dir: Path) -> None:
-    """Write the mean of the members' score stores to ``out_dir``."""
+    """Write the ensemble score store to ``out_dir``. Each member's unweighted
+    scores divided by its ``trak_scale``, averaged over members, times the
+    members' mean ``1 - p_i`` weights."""
     if out_dir.exists():
         shutil.rmtree(out_dir)
     shutil.copytree(member_dirs[0], out_dir)
+    weights = np.mean([np.load(d / "trak_weights.npy") for d in member_dirs], axis=0)
+    scales = np.array([np.load(d / "trak_scale.npy") for d in member_dirs])
     out, info = _open_scores(out_dir, "r+")
     for q in range(info["num_scores"]):
         col = f"score_{q}"
         acc = np.zeros(info["num_rows"], dtype=np.float64)
-        for d in member_dirs:
+        for d, scale in zip(member_dirs, scales):
             member, _ = _open_scores(d, "r")
-            acc += member[col].astype(np.float64)
-        out[col] = (acc / len(member_dirs)).astype(out[col].dtype)
+            acc += member[col].astype(np.float64) / scale
+        out[col] = (acc / len(member_dirs) * weights).astype(out[col].dtype)
     out.flush()
+    np.save(out_dir / "trak_weights.npy", weights)
+    np.save(out_dir / "trak_scale.npy", scales)
 
 
-def _trak_single(index_cfg: IndexConfig, trak_cfg: TrakConfig) -> Path:
-    """Gram -> preconditioned query index -> score -> (1 - p) weighting."""
+def _trak_single(
+    index_cfg: IndexConfig, trak_cfg: TrakConfig, member: bool = False
+) -> Path:
+    """Gram -> preconditioned query index -> score -> (1 - p) weighting.
+
+    An ensemble ``member`` saves its weights and scale but leaves its scores
+    unweighted for :func:`_average_scores`.
+    """
     run_path = index_cfg.run_path
     gram_path = f"{run_path}/train_hessian"
     query_path = f"{run_path}/query"
@@ -163,14 +191,19 @@ def _trak_single(index_cfg: IndexConfig, trak_cfg: TrakConfig) -> Path:
     parent_barrier(index_cfg.distributed)
 
     print("Step 4/4: Weighting training rows by (1 - p_i)...")
-    weights_file = Path(scores_path) / "trak_weights.npy"
+    scores_dir = Path(scores_path)
+    weights_file = scores_dir / "trak_weights.npy"
     if index_cfg.distributed._node_rank == 0 and not weights_file.exists():
         if index_cfg.attribute_tokens:
             raise ValueError("TRAK's (1 - p) weighting needs per-sequence scores")
-        probs = _train_label_probs(index_cfg, trak_cfg.loss_batch_size)
-        _weight_rows(Path(scores_path), 1.0 - probs)
+        weights = 1.0 - _train_label_probs(index_cfg, trak_cfg.loss_batch_size)
+        scale = _inverse_gram_scale(gram_path, preprocess_cfg.inversion_cfg)
+        if not member:
+            _weight_rows(scores_dir, weights / scale)
+        np.save(scores_dir / "trak_scale.npy", scale)
+        np.save(weights_file, weights)
     parent_barrier(index_cfg.distributed)
-    return Path(scores_path)
+    return scores_dir
 
 
 def trak(index_cfg: IndexConfig, trak_cfg: TrakConfig):
@@ -202,8 +235,9 @@ def trak(index_cfg: IndexConfig, trak_cfg: TrakConfig):
         print(f"[TRAK] checkpoint {i + 1}/{len(trak_cfg.checkpoints)}: {model}")
         member_cfg = deepcopy(index_cfg)
         member_cfg.model = model
+        member_cfg.projection_seed = index_cfg.projection_seed + i
         member_cfg.run_path = f"{index_cfg.run_path}/checkpoint_{i}"
-        members.append(_trak_single(member_cfg, trak_cfg))
+        members.append(_trak_single(member_cfg, trak_cfg, member=True))
     if index_cfg.distributed._node_rank == 0:
         _average_scores(members, Path(index_cfg.run_path) / "scores")
     parent_barrier(index_cfg.distributed)

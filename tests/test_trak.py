@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
+import yaml
 from datasets import Dataset
 from huggingface_hub import snapshot_download
 from peft import PeftConfig
@@ -200,17 +201,49 @@ def test_trak_rejects_per_module_projection(tmp_path, data_dir):
 
 
 def test_trak_ensemble_averages_members(tmp_path, trak_run):
-    """The ensemble score store is the mean of the members' stores."""
+    """The ensemble store is the mean over members of scores / trak_scale,
+    times the members' mean trak_weights."""
     src = Path(trak_run.run_path) / "scores"
+    weights = np.load(src / "trak_weights.npy")
     members = [tmp_path / "member_0", tmp_path / "member_1"]
-    for member, scale in zip(members, (1.0, 3.0)):
+    for member, factor, w in zip(members, (1.0, 3.0), (weights, 3 * weights)):
         shutil.copytree(src, member)
         mmap, info = _open_scores(member, "r+")
         for q in range(info["num_scores"]):
-            mmap[f"score_{q}"] = mmap[f"score_{q}"] * scale
+            mmap[f"score_{q}"] = mmap[f"score_{q}"] * factor
         mmap.flush()
+        np.save(member / "trak_scale.npy", 2 * factor)
+        np.save(member / "trak_weights.npy", w)
     _average_scores(members, tmp_path / "scores")
-    np.testing.assert_allclose(_load(tmp_path / "scores"), 2 * _load(src), rtol=1e-6)
+    expected = _load(src) / 2 * (2 * weights)[:, None]
+    np.testing.assert_allclose(_load(tmp_path / "scores"), expected, rtol=1e-6)
+    np.testing.assert_allclose(np.load(tmp_path / "scores" / "trak_scale.npy"), [2, 6])
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_trak_ensemble_members_use_distinct_projections(tmp_path, trak_run, data_dir):
+    """Each checkpoint is projected with its own seed, and the ensemble store is
+    the members' scaled mean times their mean weights."""
+    cfg = _index_cfg(tmp_path / "ensemble", data_dir, trak_run.model)
+    trak(cfg, TrakConfig(query=_query_cfg(data_dir), checkpoints=[cfg.model] * 2))
+    members = [tmp_path / "ensemble" / f"checkpoint_{i}" for i in range(2)]
+    seeds = [
+        yaml.safe_load((m / "query" / "processor_config.yaml").read_text())[
+            "projection_seed"
+        ]
+        for m in members
+    ]
+    assert seeds == [0, 1]
+    q0, q1 = (_index_matrix(m / "query") for m in members)
+    assert not np.allclose(q0, q1)
+    scaled = [
+        _load(m / "scores") / np.load(m / "scores" / "trak_scale.npy") for m in members
+    ]
+    weights = np.mean([np.load(m / "scores" / "trak_weights.npy") for m in members], 0)
+    expected = np.mean(scaled, axis=0) * weights[:, None]
+    np.testing.assert_allclose(
+        _load(tmp_path / "ensemble" / "scores"), expected, rtol=1e-5, atol=1e-6
+    )
 
 
 def _index_matrix(run_path: Path) -> np.ndarray:
@@ -226,8 +259,9 @@ def _index_matrix(run_path: Path) -> np.ndarray:
 
 def test_trak_matches_explicit_formula(tmp_path, trak_run, data_dir):
     """Scores are (1 - p_i) phi_q^T (Phi^T Phi / N)^-1 phi_i over the global
-    gradient sketch, with no damping by default. One index over the training
-    and query rows together gives both Phi and phi_q."""
+    gradient sketch, with no damping by default, divided by the mean absolute
+    entry of the inverse as in the reference implementation. One index over the
+    training and query rows together gives both Phi and phi_q."""
     run_path = Path(trak_run.run_path)
     scores = _load(run_path / "scores")
     weights = np.load(run_path / "scores" / "trak_weights.npy")
@@ -244,5 +278,6 @@ def test_trak_matches_explicit_formula(tmp_path, trak_run, data_dir):
         gram, inversion="damped_inverse", damping_factor=0.0, power=-1.0
     )
     expected = (phi @ h_inv.double().numpy() @ phi_q.T) * weights[:, None]
+    expected /= h_inv.abs().mean().item()
     # The index stores gradients in reduced precision; the Gram is fp32.
     np.testing.assert_allclose(scores, expected, rtol=2e-2, atol=1e-3)
