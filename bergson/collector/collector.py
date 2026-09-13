@@ -925,15 +925,16 @@ def token_losses(
     loss_fn: str, logits: Tensor, labels: Tensor, label_smoothing: float = 0.0
 ) -> Tensor:
     """Per-token losses ``[batch, seq]`` for ``loss_fn`` ``ce`` or ``log_odds``;
-    padding labels (-100) give zero."""
+    padding labels (-100) give zero. ``label_smoothing`` only applies to ``ce``."""
     if loss_fn == "log_odds":
+        # follows
+        # https://github.com/MadryLab/trak/blob/main/trak/modelout_functions.py
         valid = labels != -100
-        lp = torch.log_softmax(logits.float(), dim=-1)
-        lp = lp.gather(-1, labels.clamp(min=0).unsqueeze(-1)).squeeze(-1)
-        # log(1 - p) = log(-expm1(log p)); cap log p so the log odds stays finite.
-        lp = lp.clamp(max=-1e-6)
-        log_odds = lp - torch.log(-torch.expm1(lp))
-        return (-log_odds * valid).to(logits.dtype)
+        idx = labels.clamp(min=0).unsqueeze(-1)
+        logits = logits.float()
+        z_y = logits.gather(-1, idx).squeeze(-1)
+        others = logits.scatter(-1, idx, float("-inf")).logsumexp(-1)
+        return (-(z_y - others) * valid).to(logits.dtype)
     return F.cross_entropy(
         logits.reshape(-1, logits.size(-1)),
         labels.flatten(),

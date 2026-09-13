@@ -174,6 +174,24 @@ def test_log_odds_token_loss_is_negative_log_odds():
     torch.testing.assert_close(got, expected, rtol=1e-5, atol=1e-6)
 
 
+def test_log_odds_token_loss_stays_finite_when_p_rounds_to_one():
+    """A label logit far above the rest makes ``p`` round to 1 in fp32, where
+    ``log(1 - p)`` is ``-inf``; the loss must still equal the log odds computed
+    from the logits and its gradient w.r.t. the label logit must be -1."""
+    logits = torch.randn(1, 1, 5)
+    logits[0, 0, 2] = 60.0
+    logits.requires_grad_()
+    labels = torch.tensor([[2]])
+    got = token_losses("log_odds", logits, labels)
+    others = logits.detach().double()[0, 0, [0, 1, 3, 4]].logsumexp(0)
+    expected = -(60.0 - others)
+    assert torch.isfinite(got).all()
+    torch.testing.assert_close(got[0, 0].double(), expected, rtol=1e-5, atol=1e-6)
+    got.sum().backward()
+    assert logits.grad is not None
+    torch.testing.assert_close(logits.grad[0, 0, 2], torch.tensor(-1.0))
+
+
 def test_trak_rejects_per_module_projection(tmp_path, data_dir):
     cfg = _index_cfg(tmp_path / "per_module", data_dir)
     cfg.projection_target = "per_module"
