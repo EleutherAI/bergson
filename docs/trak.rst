@@ -10,12 +10,12 @@ A training example ``z_i`` is scored for a query ``z_q`` as
 
    \phi(z_q)^\top (\Phi^\top \Phi)^{-1} \phi(z_i) \,(1 - p_i)
 
-where :math:`\phi` is the projected per-example gradient of the output function :math:`\log p - \log(1 - p)` 
-summed over the example's label tokens, :math:`\Phi` is the matrix of projected training gradients, one row 
-per example, and :math:`1 - p_i` is the mean derivative of the loss w.r.t. the output function. 
+where :math:`\phi` is the projected per-example gradient of the output function :math:`\log p - \log(1 - p)`
+summed over the example's label tokens, :math:`\Phi` is the matrix of projected training gradients, one row
+per example, and :math:`1 - p_i` is the mean derivative of the loss w.r.t. the output function.
 
 The Gram :math:`\Phi^\top \Phi` inverse is applied to the query gradients, for computational efficiency,
-and is undamped by default. Pass several independently trained checkpoints to enable ensembling (score 
+and is undamped by default. Pass several independently trained checkpoints to enable ensembling (score
 averaging).
 
 What It Produces
@@ -61,5 +61,5 @@ Example
        --projection_dim 512 \
        --loss_fn margin
 
-Scores are ``higher_is_better``, so a positive score indicates a query proponent. 
+Scores are ``higher_is_better``, so a positive score indicates a query proponent.
 See :doc:`cli` for the full ``TrakConfig`` API reference.
