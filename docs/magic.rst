@@ -103,6 +103,45 @@ Models and optimizer state
   --skip_validation False``). (Commands outside the leave-k-out family —
   plain ``bergson train`` — write the trained model to ``model/`` instead.)
 
+Score trajectory
+----------------
+
+A MAGIC run processes the shuffled training documents in batches of
+``batch_size``, so batch ``s`` is optimizer step ``s`` and the saved scores group
+back into per-step buckets. Every run that saves scores writes
+``<run_path>/score_vs_step.png`` beside them: the per-step median
+``log10|score|`` against training step. It needs matplotlib, which is optional --
+a run without it prints a hint at startup and skips the plot.
+
+.. code-block:: bash
+
+   pip install 'bergson[plot]'
+
+A tight, gently-varying band is healthy. A level that sweeps tens of decades, or
+that dips periodically, means a score at one step is not comparable to a score at
+another. A high metasmoothness score (below) rules out neither.
+
+.. figure:: _static/score_trajectory_healthy.png
+   :width: 100%
+   :alt: Per-step attribution-score level for a healthy deep-ignorance MCQA run.
+
+   Healthy: deep-ignorance strong-filter on MedMCQA holds a tight band near
+   -6.5 dex, dipping only in the final few hundred steps.
+
+.. figure:: _static/score_trajectory_pythia.png
+   :width: 100%
+   :alt: Per-step attribution-score level for a pathological pythia-160m run.
+
+   Pathological: a pythia-160m run sweeps ~37 orders of magnitude, and its first
+   ~1550 steps produce no score at all (red band).
+
+.. figure:: _static/score_trajectory_r32.png
+   :width: 100%
+   :alt: Per-step attribution-score level for a high-metasmoothness deep-ignorance run.
+
+   Metasmooth but unstable: a deep-ignorance r32 run scoring 0.99 on ``bergson
+   metasmoothness`` still drifts ~7 decades and rings periodically.
+
 Smoothness
 ----------
 
