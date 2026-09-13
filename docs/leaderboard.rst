@@ -51,6 +51,9 @@ Indicative performance of data attribution methods in the finetuning regime.
    * - SOURCE (Adam)
      - 0.024 [0.018, 0.030]
      - 0.154 [0.126, 0.181]
+   * - KFAC (projection 64)
+     - 0.023 [0.016, 0.032]
+     - 0.103 [0.076, 0.128]
    * - SOURCE
      - 0.022 [0.017, 0.027]
      - 0.165 [0.138, 0.191]
