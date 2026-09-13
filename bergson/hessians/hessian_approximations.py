@@ -15,7 +15,10 @@ from bergson.config.config import AttentionConfig, HessianConfig, IndexConfig
 from bergson.data import allocate_batches
 from bergson.distributed import init_dist, launch_distributed_run
 from bergson.gradients import GradientProcessor
-from bergson.hessians.autocorrelation import AutocorrelationCollector
+from bergson.hessians.autocorrelation import (
+    AutocorrelationCollector,
+    JointAutocorrelationCollector,
+)
 from bergson.hessians.eigenvectors import (
     LambdaCollector,
     compute_eigendecomposition,
@@ -156,7 +159,12 @@ def hessian_worker(
     # it computes in one pass and skips the factored eigendecomposition
     if hessian_cfg.method == "autocorrelation":
         processor = create_processor(model, index_cfg, target_modules)
-        collector = AutocorrelationCollector(
+        collector_cls = (
+            JointAutocorrelationCollector
+            if hessian_cfg.structure == "joint"
+            else AutocorrelationCollector
+        )
+        collector = collector_cls(
             model=model.base_model,  # type: ignore
             data=ds,
             path=str(index_cfg.partial_run_path),
@@ -172,7 +180,9 @@ def hessian_worker(
             batches=batches,
             cfg=index_cfg,
         )
-        computer.run_with_collector_hooks(desc="Approximating autocorrelation Hessian")
+        computer.run_with_collector_hooks(
+            desc=f"Approximating {hessian_cfg.method} Hessian"
+        )
         return
 
     kwargs = {

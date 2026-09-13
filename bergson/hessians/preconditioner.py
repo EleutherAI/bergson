@@ -1,9 +1,7 @@
-"""Preconditioners: apply a preconditioner (sometimes interpreted as an
-inverse Hessian) to a set of gradients.
-
-A :class:`Preconditioner` exposes one method, ``apply(grads) -> grads``, mapping a
-``{module: [n, d]}`` gradient dict to its preconditioned counterpart. This class
-has two implementations:
+"""Preconditioners: apply a :class:`Preconditioner` (sometimes interpreted as an
+inverse Hessian) to gradients. This class exposes one method,
+``apply(grads) -> grads``, mapping a ``{module: [n, d]}`` gradient dict to its
+preconditioned counterpart. There are two implementations:
 
 - :class:`DensePreconditioner` — the autocorrelation Gram, a dense per-module
   ``[d, d]`` matrix; ``apply`` is a matmul ``g @ H^p``.
@@ -13,13 +11,11 @@ has two implementations:
   each gradient into the eigenbasis, scales by the inverse eigenvalue function,
   and rotates back, never materializing the dense ``[O·I, O·I]`` Hessian.
 
-:func:`load_preconditioner` builds one from a path, auto-detecting which
-representation lives there.
+:func:`load_preconditioner` builds either from a path.
 
-The factored ``apply`` runs both in a single process (full factors) and
-distributed (per-rank shards): :class:`~bergson.hessians.sharded_computation.ShardedMul`
-provides the rotations and in-place scaling for both. The eigenvalue math lives
-in :mod:`bergson.hessians.inversion`.
+The factored ``apply`` can be distributed over ranks, see
+:class:`~bergson.hessians.sharded_computation.ShardedMul`.
+The eigenvalue math lives in :mod:`bergson.hessians.inversion`.
 """
 
 import os
@@ -90,6 +86,59 @@ class DensePreconditioner:
             )
             for name, g in grads.items()
         }
+
+
+class JointDensePreconditioner:
+    """One dense ``H^p`` over the concatenation of every module's gradient (the
+    TRAK kernel), fit by a
+    :class:`~bergson.hessians.autocorrelation.JointAutocorrelationCollector`.
+    ``apply`` concatenates the gradients in the order the collector emits
+    them, which is the order the Gram was fit in."""
+
+    def __init__(self, h_inv: Tensor):
+        self.h_inv = h_inv
+
+    @classmethod
+    def from_processor(
+        cls,
+        processor: GradientProcessor,
+        *,
+        inversion_cfg: InversionConfig | None = None,
+        power: float = -1.0,
+        device: str | torch.device = "cpu",
+    ) -> "JointDensePreconditioner":
+        inversion_cfg = inversion_cfg or InversionConfig()
+        h_inv = invert_psd_matrix(
+            processor.hessians["joint"].to(device=device, dtype=torch.float32),
+            inversion=inversion_cfg.inversion,
+            damping_factor=inversion_cfg.damping_factor,
+            power=power,
+        )
+        return cls(h_inv)
+
+    def apply(self, grads: dict[str, Tensor]) -> dict[str, Tensor]:
+        """Concatenate ``grads``, multiply by ``H^p`` and split them back."""
+        sizes = [g.shape[1] for g in grads.values()]
+        if sum(sizes) != self.h_inv.shape[0]:
+            raise ValueError(
+                f"joint Hessian of dim {self.h_inv.shape[0]} does not match "
+                f"gradients of total dim {sum(sizes)}"
+            )
+        device = next(iter(grads.values())).device
+        joined = torch.cat(
+            [
+                g.to(device=self.h_inv.device, dtype=self.h_inv.dtype)
+                for g in grads.values()
+            ],
+            dim=1,
+        )
+        out = (joined @ self.h_inv).to(device)
+        result = {}
+        offset = 0
+        for (name, g), size in zip(grads.items(), sizes):
+            result[name] = out[:, offset : offset + size].to(g.dtype)
+            offset += size
+        return result
 
 
 class FactoredPreconditioner:
@@ -490,6 +539,13 @@ def load_preconditioner(
     # Dense: load the saved processor on CPU; from_processor moves each Gram to
     # device as it inverts it, so only one dense matrix is on the device at a time.
     processor = GradientProcessor.load(Path(hessian_path), map_location="cpu")
+    if "joint" in processor.hessians:
+        return JointDensePreconditioner.from_processor(
+            processor,
+            inversion_cfg=inversion_cfg,
+            power=power,
+            device=device,
+        )
     return DensePreconditioner.from_processor(
         processor, inversion_cfg=inversion_cfg, power=power, device=device
     )

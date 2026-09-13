@@ -22,6 +22,7 @@ from .cli.commands import (
     Test_Model_Configuration,
     Trackstar,
     Train,
+    Trak,
     Validate,
 )
 
@@ -43,6 +44,7 @@ class Main:
         Reduce,
         Score,
         Trackstar,
+        Trak,
         Train,
         Test_Model_Configuration,
         Validate,

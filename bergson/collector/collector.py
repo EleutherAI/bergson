@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from contextlib import ContextDecorator, nullcontext
 from dataclasses import astuple, dataclass, field
 from fnmatch import fnmatchcase
-from typing import Callable, Literal, Mapping, Optional
+from typing import Callable, Iterator, Literal, Mapping, Optional
 
 import numpy as np
 import torch
@@ -333,6 +333,16 @@ class HookCollectorBase(ContextDecorator, ABC):
 
         return shapes
 
+    @staticmethod
+    def projection_identifier(
+        name: str, role: Literal["left", "right", "single"], seed: int | None
+    ) -> str:
+        """Name (and seed) of parameter ``name``'s ``role`` projection matrix"""
+        identifier = f"{name}/{role}"
+        if seed is not None:
+            identifier = f"{identifier}/seed{seed}"
+        return identifier
+
     def projection(
         self,
         name: str,
@@ -347,7 +357,9 @@ class HookCollectorBase(ContextDecorator, ABC):
         if key in self.processor._projection_matrices:
             return self.processor._projection_matrices[key]
 
-        identifier = f"{name}/{role}"
+        identifier = self.projection_identifier(
+            name, role, self.processor.projection_seed
+        )
 
         A = create_projection_matrix(
             identifier,
@@ -374,15 +386,13 @@ class HookCollectorBase(ContextDecorator, ABC):
             return False
 
         assert self.processor.projection_dim is not None
-        R = self.projection(
-            name,
+        projected = project_global(
+            self.projection_identifier(name, "single", self.processor.projection_seed),
+            P,
             self.processor.projection_dim,
-            P.shape[1],
-            "single",
-            P.device,
-            P.dtype,
-        )
-        projected = P @ R.T  # [N, proj_dim]
+            self.processor.projection_type,
+            self.processor.projection_scale,
+        )  # [N, proj_dim]
         if "gradients" in self.mod_grads:
             self.mod_grads["gradients"].add_(projected)
         else:
@@ -923,14 +933,36 @@ class CollectorComputer:
         self.logger.info(f"Total processed: {total_processed.item()}")
 
 
+def token_losses(
+    loss_fn: str, logits: Tensor, labels: Tensor, label_smoothing: float = 0.0
+) -> Tensor:
+    """Per-token losses ``[batch, seq]`` for ``loss_fn`` ``ce`` or ``log_odds``;
+    padding labels (-100) give zero. ``label_smoothing`` only applies to ``ce``."""
+    if loss_fn == "log_odds":
+        # follows
+        # https://github.com/MadryLab/trak/blob/main/trak/modelout_functions.py
+        valid = labels != -100
+        idx = labels.clamp(min=0).unsqueeze(-1)
+        logits = logits.float()
+        z_y = logits.gather(-1, idx).squeeze(-1)
+        others = logits.scatter(-1, idx, float("-inf")).logsumexp(-1)
+        return (-(z_y - others) * valid).to(logits.dtype)
+    return F.cross_entropy(
+        logits.reshape(-1, logits.size(-1)),
+        labels.flatten(),
+        reduction="none",
+        label_smoothing=label_smoothing,
+    ).reshape_as(labels)
+
+
 def fwd_bwd_factory(cfg: IndexConfig) -> Callable:
     """
     Create a forward/backward function based on the configuration.
 
     Args:
         cfg: IndexConfig that specifies:
-            - cfg.loss_fn: Either "kl" for KL divergence (requires PEFT model) or
-              any other value for cross-entropy loss.
+            - cfg.loss_fn: "kl" for KL divergence (requires PEFT model),
+              "log_odds" for the negative label log-odds, else cross-entropy.
             - cfg.loss_reduction: Either "mean" to average over tokens, or "sum" for
               summed loss.
 
@@ -967,12 +999,7 @@ def fwd_bwd_factory(cfg: IndexConfig) -> Callable:
                 losses *= torch.tensor(batch["advantage"], device=losses.device)
 
         else:
-            losses = F.cross_entropy(
-                logits.reshape(-1, logits.size(-1)),
-                y[:, 1:].flatten(),
-                reduction="none",
-                label_smoothing=cfg.label_smoothing,
-            ).reshape_as(y[:, 1:])
+            losses = token_losses(cfg.loss_fn, logits, y[:, 1:], cfg.label_smoothing)
             losses = losses.sum(1) / denoms
             if "advantage" in batch:
                 losses *= torch.tensor(batch["advantage"], device=losses.device)
@@ -997,11 +1024,7 @@ def fwd_bwd_hessian_factory(
             else 1.0
         )
         if hessian_cfg.use_dataset_labels:
-            losses = F.cross_entropy(
-                logits.reshape(-1, logits.size(-1)),
-                y[:, 1:].flatten(),
-                reduction="none",
-            ).reshape_as(y[:, 1:])
+            losses = token_losses(index_cfg.loss_fn, logits, y[:, 1:])
             losses = losses.sum(1) / denoms
         else:
             with torch.no_grad():
@@ -1024,6 +1047,76 @@ def fwd_bwd_hessian_factory(
         return losses
 
     return fwd_bwd_hessian
+
+
+CHUNKED_PROJECTION_INSTANTIATION_NUMEL = 1 << 27
+"""Batch size of the batched global projection matrix instantiations (512 MB
+in fp32)."""
+
+
+def global_projection_blocks(
+    identifier: str,
+    m: int,
+    n: int,
+    dtype: torch.dtype,
+    device: torch.device,
+    projection_type: Literal["normal", "rademacher"] = "normal",
+) -> Iterator[tuple[int, int, Tensor]]:
+    """Yield the column blocks ``(start, stop, R[:, start:stop])`` of the
+    ``[m, n]`` projection matrix named ``identifier``, generated on ``device``
+    one block at a time so the whole matrix is never held in memory.
+
+    The block layout depends only on ``m``, and every block is seeded from
+    ``identifier`` and its start column, so the same matrix is reproduced
+    whenever it is regenerated. Blocks are unscaled: apply the projection
+    scale to the result (see :func:`project_global`).
+    """
+    cols = max(1, CHUNKED_PROJECTION_INSTANTIATION_NUMEL // m)
+    for start in range(0, n, cols):
+        stop = min(n, start + cols)
+        digest = hashlib.md5(f"{identifier}/{start}".encode()).digest()
+        seed = int.from_bytes(digest, byteorder="big") % (2**63 - 1)
+        prng = torch.Generator(device).manual_seed(seed)
+        if projection_type == "normal":
+            block = torch.randn(
+                m, stop - start, device=device, dtype=dtype, generator=prng
+            )
+        elif projection_type == "rademacher":
+            block = torch.empty(m, stop - start, device=device, dtype=dtype)
+            block.bernoulli_(0.5, generator=prng).mul_(2).sub_(1)
+        else:
+            raise ValueError(f"Unknown projection type: {projection_type}")
+        yield start, stop, block
+
+
+def project_global(
+    identifier: str,
+    P: Tensor,
+    m: int,
+    projection_type: Literal["normal", "rademacher"] = "normal",
+    projection_scale: Literal["jl", "row_norm"] = "jl",
+) -> Tensor:
+    """``P @ R.T`` for the ``[m, n]`` projection matrix named ``identifier``,
+    where ``P`` is ``[N, n]``, streaming ``R`` in column blocks.
+
+    Matches :func:`create_projection_matrix` in its scaling: ``jl`` divides by
+    ``sqrt(m)``; ``row_norm`` divides each output column by the norm of the
+    corresponding row of ``R`` (``sqrt(n)`` exactly for Rademacher entries).
+    """
+    n = P.shape[1]
+    out = P.new_zeros(P.shape[0], m)
+    row_sq = P.new_zeros(m) if projection_scale == "row_norm" else None
+    for start, stop, block in global_projection_blocks(
+        identifier, m, n, P.dtype, P.device, projection_type
+    ):
+        out.addmm_(P[:, start:stop], block.T)
+        if row_sq is not None:
+            row_sq.add_(block.pow(2).sum(dim=1))
+    if row_sq is not None:
+        out.div_(row_sq.sqrt())
+    else:
+        out.div_(math.sqrt(m))
+    return out
 
 
 def create_projection_matrix(

@@ -594,6 +594,10 @@ class IndexConfig(AttributionConfig, Serializable):
     each module gradient. ``global`` projects each module's flattened gradient with
     an independent right-side matrix and sums into one vector per example."""
 
+    projection_seed: int | None = None
+    """Seed of the random projection. ``trak`` gives each ensemble member its own
+    seed."""
+
     token_batch_size: int = 2048
     """Batch size in tokens for building the index."""
 
@@ -613,7 +617,7 @@ class IndexConfig(AttributionConfig, Serializable):
     Note: Untested with the AdamW eps_root in the bergson trainer -
     consider setting this to 0 when using optimizer normalization."""
 
-    loss_fn: Literal["ce", "kl"] = "ce"
+    loss_fn: Literal["ce", "kl", "log_odds"] = "ce"
     """Loss function to use."""
 
     loss_reduction: Literal["mean", "sum"] = "sum"
@@ -879,6 +883,11 @@ class HessianConfig(Serializable):
     method: Literal["kfac", "tkfac", "shampoo", "autocorrelation"]
     """Method for approximating the Hessian."""
 
+    structure: Literal["per_module", "joint"] = "per_module"
+    """Whether to produce a block-diagonal matrix of per-module autocorrelation
+    matrices, or the autocorrelation of full model gradients. Ignored by
+    factored methods."""
+
     ev_correction: bool = False
     """Whether to additionally compute eigenvalue correction."""
 
@@ -963,6 +972,41 @@ class TrackstarConfig:
     """Number of examples to use for estimating the autocorrelation Hessian
     in the trackstar pipeline's hessian-fitting steps. Set to None to use
     the full dataset."""
+
+    resume: bool = False
+    """Skip pipeline steps whose output directory already exists."""
+
+
+@dataclass
+class TrakConfig:
+    """Config for TRAK pipeline: random-projected
+    gradients preconditioned with an inverse Gram matrix and the negative
+    log-odds loss function. Optionally averaged over independently
+    trained checkpoints."""
+
+    query: DataConfig = field(default_factory=DataConfig)
+    """Query dataset specification."""
+
+    preprocess_cfg: PreprocessConfig = field(
+        default_factory=lambda: PreprocessConfig(
+            inversion_cfg=InversionConfig(damping_factor=0.0)
+        )
+    )
+    """Note that ``unit_normalize`` is ignored."""
+
+    score_cfg: ScoreConfig = field(default_factory=ScoreConfig)
+
+    checkpoints: list[str] = field(default_factory=list)
+    """Independently trained model checkpoints to ensemble; member ``i`` is
+    projected with seed ``projection_seed + i`` (``i`` when no seed is set).
+    When not set ``index_cfg.model`` is used."""
+
+    stats_sample_size: int | None = None
+    """Number of training examples to fit the Gram on. ``None`` (default)
+    uses the whole training set."""
+
+    loss_batch_size: int = 32
+    """Batch size when computing ``p_i``."""
 
     resume: bool = False
     """Skip pipeline steps whose output directory already exists."""

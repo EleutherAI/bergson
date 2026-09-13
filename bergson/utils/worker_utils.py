@@ -87,6 +87,7 @@ def create_processor(
         projection_scale=cfg.projection_scale,
         projection_target=cfg.projection_target,
         include_bias=cfg.include_bias,
+        projection_seed=cfg.projection_seed,
     )
     if rank == 0:
         processor.save(cfg.partial_run_path)
