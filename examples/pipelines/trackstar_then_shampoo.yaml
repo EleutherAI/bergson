@@ -1,0 +1,53 @@
+# Score every row with TrackStar, then rescore the top 5% with Shampoo on
+# full gradients.
+#
+# Run with `bergson examples/pipelines/trackstar_then_shampoo.yaml`
+#
+# Outputs: runs/trackstar_then_shampoo/{trackstar,shampoo}/scores, one row per
+# training example each; shampoo/scores/candidates.npy lists the rescored rows.
+
+run_path: runs/trackstar_then_shampoo
+steps:
+  - trackstar:
+      index_cfg:
+        run_path: runs/trackstar_then_shampoo/trackstar
+        model: EleutherAI/pythia-14m
+        overwrite: true
+        token_batch_size: 1024
+        data:
+          dataset: NeelNanda/pile-10k
+          split: train[:2000]
+          truncation: true
+      trackstar_cfg:
+        stats_sample_size: 2000
+        query:
+          dataset: NeelNanda/pile-10k
+          split: train[:8]
+          truncation: true
+        preprocess_cfg:
+          unit_normalize: true
+          aggregation: mean
+
+  - ekfac:
+      index_cfg:
+        run_path: runs/trackstar_then_shampoo/shampoo
+        model: EleutherAI/pythia-14m
+        overwrite: true
+        token_batch_size: 1024
+        data:
+          dataset: NeelNanda/pile-10k
+          split: train[:2000]
+          truncation: true
+      hessian_cfg:
+        method: shampoo
+      score_cfg:
+        candidates:
+          scores: runs/trackstar_then_shampoo/trackstar/scores
+          fraction: 0.05
+      preprocess_cfg: {}
+      hessian_pipeline_cfg:
+        query:
+          dataset: NeelNanda/pile-10k
+          split: train[:8]
+          truncation: true
+        query_aggregation: mean
