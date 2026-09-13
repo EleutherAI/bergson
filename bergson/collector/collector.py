@@ -924,16 +924,16 @@ class CollectorComputer:
 def token_losses(
     loss_fn: str, logits: Tensor, labels: Tensor, label_smoothing: float = 0.0
 ) -> Tensor:
-    """Per-token losses ``[batch, seq]`` for ``loss_fn`` ``ce`` or ``margin``;
+    """Per-token losses ``[batch, seq]`` for ``loss_fn`` ``ce`` or ``log_odds``;
     padding labels (-100) give zero."""
-    if loss_fn == "margin":
+    if loss_fn == "log_odds":
         valid = labels != -100
         lp = torch.log_softmax(logits.float(), dim=-1)
         lp = lp.gather(-1, labels.clamp(min=0).unsqueeze(-1)).squeeze(-1)
-        # log(1 - p) = log(-expm1(log p)); cap log p so the margin stays finite.
+        # log(1 - p) = log(-expm1(log p)); cap log p so the log odds stays finite.
         lp = lp.clamp(max=-1e-6)
-        margin = lp - torch.log(-torch.expm1(lp))
-        return (-margin * valid).to(logits.dtype)
+        log_odds = lp - torch.log(-torch.expm1(lp))
+        return (-log_odds * valid).to(logits.dtype)
     return F.cross_entropy(
         logits.reshape(-1, logits.size(-1)),
         labels.flatten(),
@@ -949,7 +949,7 @@ def fwd_bwd_factory(cfg: IndexConfig) -> Callable:
     Args:
         cfg: IndexConfig that specifies:
             - cfg.loss_fn: "kl" for KL divergence (requires PEFT model),
-              "margin" for the negative label log-odds, else cross-entropy.
+              "log_odds" for the negative label log-odds, else cross-entropy.
             - cfg.loss_reduction: Either "mean" to average over tokens, or "sum" for
               summed loss.
 

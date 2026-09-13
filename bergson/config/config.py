@@ -613,11 +613,8 @@ class IndexConfig(AttributionConfig, Serializable):
     Note: Untested with the AdamW eps_root in the bergson trainer -
     consider setting this to 0 when using optimizer normalization."""
 
-    loss_fn: Literal["ce", "kl", "margin"] = "ce"
-    """Loss function to use. ``margin`` is the negative log-odds of each label
-    token, ``-(log p - log(1 - p))``, the model output function of TRAK
-    (Park et al., 2023) whose per-token derivative w.r.t. the loss is
-    ``1 - p``."""
+    loss_fn: Literal["ce", "kl", "log_odds"] = "ce"
+    """Loss function to use."""
 
     loss_reduction: Literal["mean", "sum"] = "sum"
     """How the per-token losses of a document are reduced before the backward

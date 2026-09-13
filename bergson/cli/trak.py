@@ -46,7 +46,7 @@ from .trackstar import _limit_split_for_hess, _step_complete
 def _train_label_probs(index_cfg: IndexConfig, batch_size: int) -> np.ndarray:
     """Return ``p_i``, the mean label-token probability of every training row
     under the model, so ``1 - p_i`` is the row's TRAK ``Q`` term: the
-    derivative of the loss w.r.t. the margin output, averaged over tokens.
+    derivative of the loss w.r.t. the negative log-odds output, averaged over tokens.
     """
     ds, _ = setup_data_pipeline(index_cfg)
     cfg = deepcopy(index_cfg)
@@ -144,7 +144,7 @@ def _trak_single(index_cfg: IndexConfig, trak_cfg: TrakConfig) -> Path:
         gram_cfg.run_path = gram_path
         _limit_split_for_hess(gram_cfg, trak_cfg.stats_sample_size)
         _validate(gram_cfg)
-        # The Gram is over the training examples' own margin gradients.
+        # The Gram is over the training examples' own negative log-odds gradients.
         hess_cfg = HessianConfig(
             method="autocorrelation", scope="joint", use_dataset_labels=True
         )
@@ -203,10 +203,10 @@ def trak(index_cfg: IndexConfig, trak_cfg: TrakConfig):
             "TRAK scores random-projected gradients and requires a nonzero "
             "index_cfg.projection_dim; got 0."
         )
-    if index_cfg.loss_fn != "margin":
+    if index_cfg.loss_fn != "log_odds":
         raise ValueError(
-            "TRAK's features are gradients of the margin output function; set "
-            f"index_cfg.loss_fn='margin' (got {index_cfg.loss_fn!r})."
+            "TRAK's features are gradients of the log odds output function; set "
+            f"index_cfg.loss_fn='log_odds' (got {index_cfg.loss_fn!r})."
         )
     if index_cfg.projection_target != "global":
         raise ValueError(
