@@ -22,6 +22,7 @@ LABELS = {
     "dda": "[DDA](https://arxiv.org/abs/2410.01285) (debiased gradient dot product)",
     "gradient_dot": "Gradient dot product",
     "trak_ens": "TRAK (8-model ensemble)",
+    "trak_ens_m4": "TRAK (4-model ensemble, DsDm averaging)",
     "source": "SOURCE",
     "source_adam": "SOURCE (Adam)",
     "trackstar_p16": "TrackStar (no optimizer correction, projection 16)",
