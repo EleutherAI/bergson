@@ -18,7 +18,6 @@ The factored ``apply`` can be distributed over ranks, see
 The eigenvalue math lives in :mod:`bergson.hessians.inversion`.
 """
 
-import json
 import os
 from glob import glob
 from pathlib import Path
@@ -31,7 +30,6 @@ from torch import Tensor
 
 from bergson.config import InversionConfig
 from bergson.gradients import GradientProcessor
-from bergson.hessians.autocorrelation import JOINT_LAYOUT_FILE
 from bergson.hessians.inversion import eigenvalue_multiplier, invert_psd_matrix
 from bergson.hessians.sharded_computation import ShardedMul
 from bergson.utils.logger import get_logger
@@ -91,21 +89,19 @@ class DensePreconditioner:
 
 
 class JointDensePreconditioner:
-    """One dense ``H^p`` over the concatenation of every module's gradient, in
-    the module order a
-    :class:`~bergson.hessians.autocorrelation.JointAutocorrelationCollector`
-    fit it on (the TRAK kernel)."""
+    """One dense ``H^p`` over the concatenation of every module's gradient (the
+    TRAK kernel), fit by a
+    :class:`~bergson.hessians.autocorrelation.JointAutocorrelationCollector`.
+    ``apply`` concatenates the gradients in the order the collector emits
+    them, which is the order the Gram was fit in."""
 
-    def __init__(self, h_inv: Tensor, names: list[str], sizes: list[int]):
+    def __init__(self, h_inv: Tensor):
         self.h_inv = h_inv
-        self.names = names
-        self.sizes = sizes
 
     @classmethod
     def from_processor(
         cls,
         processor: GradientProcessor,
-        layout: dict,
         *,
         inversion_cfg: InversionConfig | None = None,
         power: float = -1.0,
@@ -118,26 +114,29 @@ class JointDensePreconditioner:
             damping_factor=inversion_cfg.damping_factor,
             power=power,
         )
-        return cls(h_inv, list(layout["names"]), [int(x) for x in layout["sizes"]])
+        return cls(h_inv)
 
     def apply(self, grads: dict[str, Tensor]) -> dict[str, Tensor]:
-        """Concatenate ``grads`` in layout order, multiply by ``H^p`` and split."""
-        missing = [n for n in self.names if n not in grads]
-        if missing:
-            raise KeyError(f"joint Hessian expects modules {missing} in the gradients")
+        """Concatenate ``grads``, multiply by ``H^p`` and split them back."""
+        sizes = [g.shape[1] for g in grads.values()]
+        if sum(sizes) != self.h_inv.shape[0]:
+            raise ValueError(
+                f"joint Hessian of dim {self.h_inv.shape[0]} does not match "
+                f"gradients of total dim {sum(sizes)}"
+            )
         device = next(iter(grads.values())).device
         joined = torch.cat(
             [
-                grads[n].to(device=self.h_inv.device, dtype=self.h_inv.dtype)
-                for n in self.names
+                g.to(device=self.h_inv.device, dtype=self.h_inv.dtype)
+                for g in grads.values()
             ],
             dim=1,
         )
         out = (joined @ self.h_inv).to(device)
-        result = dict(grads)
+        result = {}
         offset = 0
-        for name, size in zip(self.names, self.sizes):
-            result[name] = out[:, offset : offset + size].to(grads[name].dtype)
+        for (name, g), size in zip(grads.items(), sizes):
+            result[name] = out[:, offset : offset + size].to(g.dtype)
             offset += size
         return result
 
@@ -540,11 +539,9 @@ def load_preconditioner(
     # Dense: load the saved processor on CPU; from_processor moves each Gram to
     # device as it inverts it, so only one dense matrix is on the device at a time.
     processor = GradientProcessor.load(Path(hessian_path), map_location="cpu")
-    layout_file = Path(hessian_path) / JOINT_LAYOUT_FILE
-    if layout_file.exists():
+    if "joint" in processor.hessians:
         return JointDensePreconditioner.from_processor(
             processor,
-            json.loads(layout_file.read_text()),
             inversion_cfg=inversion_cfg,
             power=power,
             device=device,

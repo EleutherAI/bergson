@@ -1,6 +1,5 @@
-import json
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import torch
@@ -65,10 +64,6 @@ class AutocorrelationCollector(HookCollectorBase):
             self.processor.save(Path(self.path))
 
 
-JOINT_LAYOUT_FILE = "joint_layout.json"
-"""Module order and sizes of the concatenated gradient a joint Gram was fit on."""
-
-
 @dataclass(kw_only=True)
 class JointAutocorrelationCollector(AutocorrelationCollector):
     """The ``structure="joint"`` autocorrelation Hessian: one Gram over the
@@ -77,16 +72,13 @@ class JointAutocorrelationCollector(AutocorrelationCollector):
 
     Per-module projected gradients are concatenated in ``shapes()`` order (the
     order the index stores them in) and the ``[D, D]`` Gram accumulates under the
-    key ``"joint"``; ``teardown`` saves it with the processor plus the layout
-    that :class:`JointDensePreconditioner` uses to split gradients back into
-    modules. With ``projection_target="global"`` there is a single key and the
-    joint Gram is just the ``[k, k]`` Gram of the global sketch.
+    key ``"joint"``. With ``projection_target="global"`` there is a single key
+    and the joint Gram is just the ``[k, k]`` Gram of the global sketch.
     """
 
-    _layout: list[tuple[str, int]] = field(default_factory=list, init=False)
-
     def setup(self) -> None:
-        self._layout = [(name, math.prod(s)) for name, s in self.shapes().items()]
+        """A joint Gram is fit over the global sketch too, so skip the
+        per-module check in the base class."""
 
     @HookCollectorBase.split_attention_heads
     def backward_hook(self, module: nn.Module, g: Float[Tensor, "N S O"]):
@@ -99,7 +91,7 @@ class JointAutocorrelationCollector(AutocorrelationCollector):
 
     def process_batch(self, indices: list[int], **kwargs):
         """Concatenate the batch's module gradients and add their Gram."""
-        G = torch.cat([self.mod_grads[name].float() for name, _ in self._layout], dim=1)
+        G = torch.cat([self.mod_grads[name].float() for name in self.shapes()], dim=1)
         if "joint" in self.processor.hessians:
             self.processor.hessians["joint"].addmm_(G.mT, G)
         else:
@@ -107,8 +99,8 @@ class JointAutocorrelationCollector(AutocorrelationCollector):
         self.mod_grads.clear()
 
     def teardown(self):
-        """Reduce/eigendecompose the joint Gram and save it with its layout."""
-        dim = sum(size for _, size in self._layout)
+        """Reduce/eigendecompose the joint Gram and save it."""
+        dim = sum(math.prod(s) for s in self.shapes().values())
         if self.processor.hessians:
             process_autocorrelation_matrices(
                 self.processor,
@@ -119,11 +111,3 @@ class JointAutocorrelationCollector(AutocorrelationCollector):
             )
         if self.rank == 0:
             self.processor.save(Path(self.path))
-            (Path(self.path) / JOINT_LAYOUT_FILE).write_text(
-                json.dumps(
-                    {
-                        "names": [n for n, _ in self._layout],
-                        "sizes": [s for _, s in self._layout],
-                    }
-                )
-            )

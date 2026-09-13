@@ -27,8 +27,7 @@ What It Produces
 A directory at ``run_path`` with the following subdirectories:
 
 - ``train_hessian/`` — the projected-gradient Gram fit on the training set
-  (``hessians.pth``, ``hessians_eigen.pth``, ``normalizers.pth``,
-  ``joint_layout.json``).
+  (``hessians.pth``, ``hessians_eigen.pth``, ``normalizers.pth``).
 - ``query/`` — the Gram-whitened query gradient index (same artifacts as ``build``).
 - ``scores/`` — scores for the training set (same artifacts as ``score``), with
   ``trak_weights.npy`` holding the ``1 - p_i`` weights and ``trak_scale.npy`` the
