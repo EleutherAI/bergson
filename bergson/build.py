@@ -148,13 +148,13 @@ def build(
         parent_barrier(index_cfg.distributed)
 
 
-def build_contrast(
+def build_query(
     index_cfg: IndexConfig, control: DataConfig | None, preprocess_cfg: PreprocessConfig
 ):
-    """Build the index, then build ``control`` under ``<run_path>/contrast``
-    with the same settings and subtract its aggregated gradient from the
-    index's row in place, so the index holds ``mean_grad(data) -
-    mean_grad(control)``. A ``None`` control is a plain ``build``."""
+    """Build the query index. With a ``control`` dataset, also build it under
+    ``<run_path>/contrast`` with the same settings and subtract its aggregated
+    gradient from the index's row in place, so the index holds
+    ``mean_grad(data) - mean_grad(control)``."""
     if control is None:
         return build(index_cfg, preprocess_cfg)
     if preprocess_cfg.aggregation == "none":

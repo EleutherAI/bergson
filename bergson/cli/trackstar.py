@@ -1,7 +1,7 @@
 from copy import deepcopy
 from pathlib import Path
 
-from ..build import build_contrast
+from ..build import build_query
 from ..config.config import (
     HessianConfig,
     IndexConfig,
@@ -155,7 +155,7 @@ def trackstar(index_cfg: IndexConfig, trackstar_cfg: TrackstarConfig):
             Build(query_cfg, trackstar_cfg.preprocess_cfg),
             query_cfg.partial_run_path,
         )
-        build_contrast(
+        build_query(
             query_cfg, trackstar_cfg.query_contrast, trackstar_cfg.preprocess_cfg
         )
 

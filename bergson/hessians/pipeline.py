@@ -2,7 +2,7 @@ import time
 from contextlib import contextmanager
 from copy import deepcopy
 
-from ..build import build_contrast
+from ..build import build_query
 from ..cli.commands import Build, Score
 from ..config.config import (
     HessianConfig,
@@ -109,7 +109,7 @@ def hessian_pipeline(
                 Build(query_cfg, query_preprocess_cfg),
                 query_cfg.partial_run_path,
             )
-            build_contrast(
+            build_query(
                 query_cfg, hessian_pipeline_cfg.query_contrast, query_preprocess_cfg
             )
 
