@@ -1,0 +1,47 @@
+# GPT-2 fine-tuned on WikiText with AdamW: per-query MAGIC scores for the test
+# queries and a leave-1%-out retrain bank of random subsets. The retrained
+# models are saved and the final Adam second moments kept for trackstar.yaml.
+
+# Run with `bergson examples/compare_wikitext/1_magic.yaml`
+
+run_path: runs/compare_wikitext/magic
+steps:
+  - magic:
+      run_path: runs/compare_wikitext/random
+      model: gpt2
+      resume: true
+
+      data:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "train"
+        chunk_length: 0
+
+      query:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "test[0:50]"
+        chunk_length: 0
+
+      distributed:
+        nproc_per_node: 8
+        nnode: 1
+
+      batch_size: 256
+      grad_accum_steps: 2
+      double_backward_batch_size: 8
+      num_epochs: 4
+      lr_schedule:
+        lr_scheduler_type: polynomial
+        lr: 0.0004
+        lr_start: 1e-6
+        lr_end: 0.00004
+        warmup_steps: 0.25
+      adam_beta1: 0.9
+      adam_beta2: 0.999
+      eps_root: 1.0e-17
+
+      skip_validation: false
+      num_subsets: 100
+      subset_fraction: 0.01
+
+      save_models: true
+      save_optimizer_state: last

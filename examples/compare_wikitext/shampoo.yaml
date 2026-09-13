@@ -1,13 +1,14 @@
-# EK-FAC scores for the 1_magic.yaml model against the test queries, one score
-# column per query. LDS: examples/compare_wikitext/lds_from_bank.py --sign grad.
+# Shampoo scores (Shampoo Hessian factors with eigenvalue correction) for the
+# 1_magic.yaml model against the test queries, one score column per query.
+# LDS: examples/compare_wikitext/lds_from_bank.py --sign grad.
 
-# Run with `bergson examples/compare_wikitext/ekfac.yaml`
+# Run with `bergson examples/compare_wikitext/shampoo.yaml`
 
-run_path: runs/compare_wikitext/ekfac
+run_path: runs/compare_wikitext/shampoo
 steps:
   - ekfac:
       index_cfg:
-        run_path: runs/compare_wikitext/ekfac
+        run_path: runs/compare_wikitext/shampoo
         model: runs/compare_wikitext/interval/exported/checkpoint-72
         overwrite: true
         # GPT-2's max context length is 1024.
@@ -26,7 +27,7 @@ steps:
           chunk_length: 0
 
       hessian_cfg:
-        method: kfac
+        method: shampoo
         ev_correction: true
 
       score_cfg:

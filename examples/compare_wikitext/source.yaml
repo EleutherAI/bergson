@@ -1,47 +1,16 @@
-# SOURCE (approximate unrolling, Bae et al. 2024) scores for the
-# magic-trained model against test[0:50], validated against the retrained
-# models from magic.yaml. Plain variant: no optimizer preconditioning; see
-# source_adam.yaml for the Adam variant. Shares its evenly spaced interval
-# checkpoints (steps 12..72; sqrt mode never saves the final step) — the
-# train step resumes instantly when runs/compare_wikitext/interval already
-# exists.
+# SOURCE (approximate unrolling, Bae et al. 2024) for the 1_magic.yaml model:
+# plain and Adam-preconditioned variants, scored at the final 2_interval.yaml
+# checkpoint; lr_list and step_size_list come from that run's log_history.json.
+# LDS: examples/compare_wikitext/lds_from_bank.py --sign loss.
 
 # Run with `bergson examples/compare_wikitext/source.yaml`
 
 run_path: runs/compare_wikitext/source
 steps:
-  - train:
-      run_path: runs/compare_wikitext/interval
-      model: gpt2
-      resume: true
-
-      data:
-        dataset: EleutherAI/bergson-wikitext-512-chunks
-        split: "train"
-        chunk_length: 0
-
-      distributed:
-        nproc_per_node: 8
-        nnode: 1
-
-      batch_size: 256
-      grad_accum_steps: 2
-      num_epochs: 4
-      lr_schedule:
-        lr_scheduler_type: polynomial
-        lr: 0.0008
-        lr_start: 1e-6
-        lr_end: 0.00008
-        warmup_steps: 0.25
-
-      save_mode: interval
-      save_interval: 12
-      save_optimizer_state: all
-
-  - approxunrolling:
-      index_cfg:
+  - approxunrolling: &source
+      index_cfg: &index
         run_path: runs/compare_wikitext/source
-        model: runs/compare_wikitext/random/retrained/base
+        model: runs/compare_wikitext/interval/exported/checkpoint-72
         overwrite: true
         precision: fp32
         # GPT-2's max context length is 1024.
@@ -49,7 +18,7 @@ steps:
         # GPT-2 uses an nn.Linear for its LM head.
         filter_modules: "lm_head"
         distributed:
-          nproc_per_node: 8
+          nproc_per_node: 4
           nnode: 1
         data:
           dataset: EleutherAI/bergson-wikitext-512-chunks
@@ -61,7 +30,7 @@ steps:
         hessian_dtype: fp32
         ev_correction: true
 
-      approx_unrolling_cfg:
+      approx_unrolling_cfg: &unroll
         checkpoints:
           - runs/compare_wikitext/interval/checkpoints/step_12.ckpt
           - runs/compare_wikitext/interval/checkpoints/step_24.ckpt
@@ -77,30 +46,11 @@ steps:
         # One score column per query, for per-query LDS.
         query_aggregation: none
 
-  - validate:
-      run_path: runs/compare_wikitext/validate_source_random
-      model: gpt2
-      overwrite: true
-
-      scores: runs/compare_wikitext/source/scores
-      method:
-        kind: lds
-        subsets: bank
-        paths:
-          - runs/compare_wikitext/random
-
-      data:
-        dataset: EleutherAI/bergson-wikitext-512-chunks
-        split: "train"
-        chunk_length: 0
-
-      query:
-        dataset: EleutherAI/bergson-wikitext-512-chunks
-        split: "test[0:50]"
-        chunk_length: 0
-
-      distributed:
-        nproc_per_node: 8
-        nnode: 1
-
-      batch_size: 64
+  - approxunrolling:
+      <<: *source
+      index_cfg:
+        <<: *index
+        run_path: runs/compare_wikitext/source_adam
+      approx_unrolling_cfg:
+        <<: *unroll
+        use_adam_preconditioner: true

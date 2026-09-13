@@ -1,24 +1,25 @@
-# TrackStar with Adam second-moment gradient normalization (Chang et al.
-# 2024), using the optimizer state saved at the end of the magic.yaml
-# training run. Otherwise identical to trackstar.yaml.
+# TrackStar scores with Adam second-moment normalization for the 1_magic.yaml
+# model against the test queries, one step per projection dim; the optimizer
+# state is the one exported with the final 2_interval.yaml checkpoint.
+# LDS: examples/compare_wikitext/lds_from_bank.py --sign grad.
 
 # Run with `bergson examples/compare_wikitext/trackstar_adam.yaml`
 
-run_path: runs/compare_wikitext/trackstar_adam
+run_path: runs/compare_wikitext/trackstar_adam_p16
 steps:
-  - trackstar:
-      index_cfg:
-        projection_dim: 32
-        run_path: runs/compare_wikitext/trackstar_adam
-        model: runs/compare_wikitext/random/retrained/base
-        optimizer_state: runs/compare_wikitext/random/optimizer.pt
+  - trackstar: &trackstar
+      index_cfg: &index
+        projection_dim: 16
+        run_path: runs/compare_wikitext/trackstar_adam_p16
+        model: runs/compare_wikitext/interval/exported/checkpoint-72
         overwrite: true
         # GPT-2's max context length is 1024
         token_batch_size: 1024
         # GPT-2 uses an nn.Linear for its LM head.
         filter_modules: "lm_head"
+        optimizer_state: runs/compare_wikitext/interval/exported/checkpoint-72/optimizer.pt
         distributed:
-          nproc_per_node: 8
+          nproc_per_node: 4
           nnode: 1
         data:
           dataset: EleutherAI/bergson-wikitext-512-chunks
@@ -37,30 +38,19 @@ steps:
         score_cfg:
           batch_size: 1024
 
-  - validate:
-      run_path: runs/compare_wikitext/validate_trackstar_adam_random
-      model: gpt2
-      overwrite: true
+  - trackstar:
+      <<: *trackstar
+      index_cfg:
+        <<: *index
+        projection_dim: 32
+        run_path: runs/compare_wikitext/trackstar_adam_p32
 
-      scores: runs/compare_wikitext/trackstar_adam/scores
-      method:
-        kind: lds
-        subsets: bank
-        paths:
-          - runs/compare_wikitext/random
+  - trackstar:
+      <<: *trackstar
+      index_cfg:
+        <<: *index
+        projection_dim: 64
+        run_path: runs/compare_wikitext/trackstar_adam_p64
 
-      data:
-        dataset: EleutherAI/bergson-wikitext-512-chunks
-        split: "train"
-        chunk_length: 0
-
-      query:
-        dataset: EleutherAI/bergson-wikitext-512-chunks
-        split: "test[0:50]"
-        chunk_length: 0
-
-      distributed:
-        nproc_per_node: 8
-        nnode: 1
-
-      batch_size: 64
+# Projection 128 is omitted: each module's fp32 Gram is (128*128)^2 floats,
+# about 1 GB per module and 48 GB per rank for GPT-2.

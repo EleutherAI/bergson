@@ -1,0 +1,32 @@
+# Metasmoothness of the 1_magic.yaml recipe: finite-difference agreement of the
+# training map under a random data-weight perturbation.
+
+# Run with `bergson examples/compare_wikitext/metasmoothness.yaml`
+
+run_path: runs/compare_wikitext/ms
+steps:
+  - metasmoothness:
+      run_path: runs/compare_wikitext/ms
+      overwrite: true
+      fd_step: 0.1
+      direction_seed: 0
+      model: gpt2
+      data:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "train"
+        chunk_length: 0
+      distributed:
+        nproc_per_node: 4
+        nnode: 1
+      batch_size: 256
+      grad_accum_steps: 4
+      num_epochs: 4
+      lr_schedule:
+        lr_scheduler_type: polynomial
+        lr: 4e-4
+        lr_start: 1e-6
+        lr_end: 4e-05
+        warmup_steps: 0.25
+      adam_beta1: 0.9
+      adam_beta2: 0.999
+      eps_root: 1.0e-17

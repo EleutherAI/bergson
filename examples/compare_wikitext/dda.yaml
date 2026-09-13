@@ -1,0 +1,61 @@
+# Gradient dot products (no Hessian, no normalization) of the test queries with
+# the training chunks at the 1_magic.yaml model and at the pretrained gpt2 it
+# started from. DDA (Wu et al. 2024) subtracts the second from the first with
+# combine_scores.py; the first alone is the "Gradient dot product" row.
+# LDS: examples/compare_wikitext/lds_from_bank.py --sign grad.
+
+# Run with `bergson examples/compare_wikitext/dda.yaml`
+
+run_path: runs/compare_wikitext/dda
+steps:
+  - build:
+      index_cfg: &index
+        projection_dim: 0
+        run_path: runs/compare_wikitext/dda/finetuned/query
+        model: runs/compare_wikitext/interval/exported/checkpoint-72
+        overwrite: true
+        # GPT-2's max context length is 1024
+        token_batch_size: 1024
+        # GPT-2 uses an nn.Linear for its LM head.
+        filter_modules: "lm_head"
+        distributed:
+          nproc_per_node: 4
+          nnode: 1
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "test[0:50]"
+          chunk_length: 0
+      preprocess_cfg: &preprocess
+        unit_normalize: false
+        # One query gradient per test chunk, for per-query LDS.
+        aggregation: none
+  - score:
+      score_cfg:
+        query_path: runs/compare_wikitext/dda/finetuned/query
+        batch_size: 1024
+      index_cfg:
+        <<: *index
+        run_path: runs/compare_wikitext/dda/finetuned/scores
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "train"
+          chunk_length: 0
+      preprocess_cfg: *preprocess
+  - build:
+      index_cfg: &index_base
+        <<: *index
+        run_path: runs/compare_wikitext/dda/base/query
+        model: gpt2
+      preprocess_cfg: *preprocess
+  - score:
+      score_cfg:
+        query_path: runs/compare_wikitext/dda/base/query
+        batch_size: 1024
+      index_cfg:
+        <<: *index_base
+        run_path: runs/compare_wikitext/dda/base/scores
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "train"
+          chunk_length: 0
+      preprocess_cfg: *preprocess

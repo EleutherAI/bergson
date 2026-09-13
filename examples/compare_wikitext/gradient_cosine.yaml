@@ -1,0 +1,79 @@
+# Gradient cosine similarity for the 1_magic.yaml model against the test
+# queries: query and training gradients unit-normalized and scored by dot
+# product with no Hessian. The first two steps use the full gradients; the
+# last two random-project them per module first (TrackStar without
+# preconditioning). LDS: examples/compare_wikitext/lds_from_bank.py --sign grad.
+
+# Run with `bergson examples/compare_wikitext/gradient_cosine.yaml`
+
+run_path: runs/compare_wikitext/gradient_cosine
+steps:
+  - build:
+      index_cfg: &index
+        projection_dim: 0
+        run_path: runs/compare_wikitext/gradient_cosine/query
+        model: runs/compare_wikitext/interval/exported/checkpoint-72
+        overwrite: true
+        # GPT-2's max context length is 1024
+        token_batch_size: 1024
+        # GPT-2 uses an nn.Linear for its LM head.
+        filter_modules: "lm_head"
+        distributed:
+          nproc_per_node: 4
+          nnode: 1
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "test[0:50]"
+          chunk_length: 0
+      preprocess_cfg: &preprocess
+        unit_normalize: true
+        # One query gradient per test chunk, for per-query LDS.
+        aggregation: none
+
+  - score:
+      score_cfg:
+        query_path: runs/compare_wikitext/gradient_cosine/query
+        batch_size: 1024
+      index_cfg:
+        <<: *index
+        run_path: runs/compare_wikitext/gradient_cosine/scores
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "train"
+          chunk_length: 0
+      preprocess_cfg: *preprocess
+
+  - build:
+      index_cfg: &index_projected
+        projection_dim: 64
+        run_path: runs/compare_wikitext/gradient_cosine_projected/query
+        model: runs/compare_wikitext/interval/exported/checkpoint-72
+        overwrite: true
+        # GPT-2's max context length is 1024
+        token_batch_size: 1024
+        # GPT-2 uses an nn.Linear for its LM head.
+        filter_modules: "lm_head"
+        distributed:
+          nproc_per_node: 4
+          nnode: 1
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "test[0:50]"
+          chunk_length: 0
+      preprocess_cfg: &preprocess_projected
+        unit_normalize: true
+        # One query gradient per test chunk, for per-query LDS.
+        aggregation: none
+
+  - score:
+      score_cfg:
+        query_path: runs/compare_wikitext/gradient_cosine_projected/query
+        batch_size: 1024
+      index_cfg:
+        <<: *index_projected
+        run_path: runs/compare_wikitext/gradient_cosine_projected/scores
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "train"
+          chunk_length: 0
+      preprocess_cfg: *preprocess_projected

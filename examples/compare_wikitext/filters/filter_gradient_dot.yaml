@@ -1,0 +1,46 @@
+# Proponent-filter for the gradient dot product. Uses the random retrain bank computed with
+# `examples/compare_wikitext/1_magic.yaml`.
+
+# Run with `bergson examples/compare_wikitext/filters/filter_gradient_dot.yaml`
+
+run_path: runs/compare_wikitext/filter_gradient_dot
+steps:
+  - validate:
+      run_path: runs/compare_wikitext/filter_gradient_dot
+      model: gpt2
+      resume: true
+      seed: 42
+
+      data:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "train"
+        chunk_length: 0
+
+      query:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "test[0:50]"
+        chunk_length: 0
+
+      distributed:
+        nproc_per_node: 8
+        nnode: 1
+
+      batch_size: 256
+      grad_accum_steps: 2
+      num_epochs: 4
+      lr_schedule:
+        lr_scheduler_type: polynomial
+        lr: 0.0004
+        lr_start: 1e-6
+        lr_end: 0.00004
+        warmup_steps: 0.25
+      adam_beta1: 0.9
+      adam_beta2: 0.999
+      eps_root: 1.0e-17
+
+      method: filter-proponents
+      subset_fraction: 0.01
+      num_subsets: 3
+      query_method: none
+      scores: runs/compare_wikitext/dda/finetuned/scores
+      retrained_dir: runs/compare_wikitext/random
