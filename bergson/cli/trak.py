@@ -183,11 +183,7 @@ def _trak_single(index_cfg: IndexConfig, trak_cfg: TrakConfig) -> Path:
 
     print("Step 4/4: Weighting training rows by (1 - p_i)...")
     weights_file = Path(scores_path) / "trak_weights.npy"
-    if (
-        trak_cfg.q_weighting == "one_minus_p"
-        and index_cfg.distributed._node_rank == 0
-        and not weights_file.exists()
-    ):
+    if index_cfg.distributed._node_rank == 0 and not weights_file.exists():
         if index_cfg.attribute_tokens:
             raise ValueError("TRAK's (1 - p) weighting needs per-sequence scores")
         probs = _train_label_probs(index_cfg, trak_cfg.loss_batch_size)

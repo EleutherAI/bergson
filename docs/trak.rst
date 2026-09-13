@@ -18,6 +18,8 @@ The Gram :math:`\Phi^\top \Phi` inverse is applied to the query gradients, for c
 and is undamped by default. Pass several independently trained checkpoints to enable ensembling (score
 averaging).
 
+TRAK does not support per-token attribution.
+
 What It Produces
 ----------------
 
@@ -39,10 +41,9 @@ Key Options
 - ``--query.dataset``: the query dataset.
 - ``--projection_dim``: size of the global gradient sketch.
 - ``--projection_target``: must be ``global``.
-- ``--loss_fn``: must be ``margin``.
+- ``--loss_fn``: must be ``log_odds``.
 - ``--trak_cfg.preprocess_cfg.inversion_cfg.damping_factor``: Gram damping
   relative to the mean eigenvalue (default 0, the paper's plain inverse).
-- ``--trak_cfg.q_weighting``: ``one_minus_p`` (default) or ``none``.
 - ``--trak_cfg.checkpoints``: model checkpoints to ensemble.
 
 Example

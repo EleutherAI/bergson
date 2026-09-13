@@ -880,10 +880,9 @@ class HessianConfig(Serializable):
     """Method for approximating the Hessian."""
 
     structure: Literal["per_module", "joint"] = "per_module"
-    """Which gradient the dense ``autocorrelation`` Gram is taken over: each
-    module's projected gradient separately (a block-diagonal Hessian), or the
-    concatenation of every module's projected gradient as one matrix (the TRAK
-    kernel). Ignored by the factored methods."""
+    """Whether to produce a block-diagonal matrix of per-module autocorrelation
+    matrices, or the autocorrelation of full model gradients. Ignored by
+    factored methods."""
 
     ev_correction: bool = False
     """Whether to additionally compute eigenvalue correction."""
@@ -976,9 +975,9 @@ class TrackstarConfig:
 
 @dataclass
 class TrakConfig:
-    """Config for the TRAK pipeline (Park et al., 2023): random-projected
-    gradients whitened by the damped inverse of their Gram matrix, weighted by
-    ``1 - p_i`` on the training side, optionally averaged over independently
+    """Config for TRAK pipeline: random-projected
+    gradients preconditioned with an inverse Gram matrix and the negative
+    log-odds loss function. Optionally averaged over independently
     trained checkpoints."""
 
     query: DataConfig = field(default_factory=DataConfig)
@@ -989,27 +988,20 @@ class TrakConfig:
             inversion_cfg=InversionConfig(damping_factor=0.0)
         )
     )
-    """``inversion_cfg`` sets the Gram damping, zero by default as in the paper;
-    ``unit_normalize`` is ignored (TRAK whitens with the full inverse)."""
+    """Note that ``unit_normalize`` is ignored."""
 
     score_cfg: ScoreConfig = field(default_factory=ScoreConfig)
 
-    q_weighting: Literal["one_minus_p", "none"] = "one_minus_p"
-    """Multiply each training row's scores by TRAK's ``Q`` term, the derivative
-    of the loss w.r.t. the margin output, ``1 - p``, averaged over the row's
-    label tokens. ``none`` leaves the whitened inner products."""
-
     checkpoints: list[str] = field(default_factory=list)
-    """Independently trained model checkpoints to ensemble. Each runs the full
-    pipeline under ``<run_path>/checkpoint_<i>``; ``<run_path>/scores`` is the
-    mean of their score stores. Empty: use ``index_cfg.model`` alone."""
+    """Independently trained model checkpoints to ensemble. When not set
+    ``index_cfg.model`` is used."""
 
     stats_sample_size: int | None = None
-    """Number of training examples the Gram is fit on. ``None`` (default)
-    uses the whole training set, as TRAK does."""
+    """Number of training examples to fit the Gram on. ``None`` (default)
+    uses the whole training set."""
 
     loss_batch_size: int = 32
-    """Rows per forward pass when computing ``p_i``."""
+    """Batch size when computing ``p_i``."""
 
     resume: bool = False
     """Skip pipeline steps whose output directory already exists."""
