@@ -11,7 +11,7 @@ probability of ``z_i``'s labels. ``phi`` is one random projection of the
 whole gradient (``projection_target="global"``: every module's flattened
 gradient is projected with its own block of a single ``k x d`` Rademacher
 matrix and the blocks are summed) and the Gram is the ``autocorrelation``
-Hessian with ``scope="joint"`` over that sketch. The damped inverse is applied
+Hessian with ``structure="joint"`` over that sketch. The damped inverse is applied
 to the query side, so the pipeline is the trackstar one without Hessian
 mixing or unit normalization, plus the ``(1 - p_i)`` weighting and an
 optional average over independently trained checkpoints.
@@ -146,7 +146,7 @@ def _trak_single(index_cfg: IndexConfig, trak_cfg: TrakConfig) -> Path:
         _validate(gram_cfg)
         # The Gram is over the training examples' own negative log-odds gradients.
         hess_cfg = HessianConfig(
-            method="autocorrelation", scope="joint", use_dataset_labels=True
+            method="autocorrelation", structure="joint", use_dataset_labels=True
         )
         save_run_config(
             Hessian(hessian_cfg=hess_cfg, index_cfg=gram_cfg),

@@ -75,7 +75,7 @@ eigendecomposition is dense in fp64."""
 
 @dataclass(kw_only=True)
 class JointAutocorrelationCollector(AutocorrelationCollector):
-    """The ``scope="joint"`` autocorrelation Hessian: one Gram over the
+    """The ``structure="joint"`` autocorrelation Hessian: one Gram over the
     concatenation of every module's projected gradient — the TRAK kernel
     ``Phi^T Phi`` — instead of a Gram per module.
 
@@ -96,7 +96,7 @@ class JointAutocorrelationCollector(AutocorrelationCollector):
             raise ValueError(
                 f"The joint Gram would be {dim} x {dim} (sum of projected module "
                 f"sizes); reduce projection_dim so the total is at most "
-                f"{MAX_JOINT_DIM}, or use scope='per_module'."
+                f"{MAX_JOINT_DIM}, or use structure='per_module'."
             )
 
     @HookCollectorBase.split_attention_heads

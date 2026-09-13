@@ -879,7 +879,7 @@ class HessianConfig(Serializable):
     method: Literal["kfac", "tkfac", "shampoo", "autocorrelation"]
     """Method for approximating the Hessian."""
 
-    scope: Literal["per_module", "joint"] = "per_module"
+    structure: Literal["per_module", "joint"] = "per_module"
     """Which gradient the dense ``autocorrelation`` Gram is taken over: each
     module's projected gradient separately (a block-diagonal Hessian), or the
     concatenation of every module's projected gradient as one matrix (the TRAK

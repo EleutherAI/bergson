@@ -161,7 +161,7 @@ def hessian_worker(
         processor = create_processor(model, index_cfg, target_modules)
         collector_cls = (
             JointAutocorrelationCollector
-            if hessian_cfg.scope == "joint"
+            if hessian_cfg.structure == "joint"
             else AutocorrelationCollector
         )
         collector = collector_cls(
