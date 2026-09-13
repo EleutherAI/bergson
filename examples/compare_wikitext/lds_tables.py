@@ -19,6 +19,8 @@ LABELS = {
     "magic_seed43": "MAGIC (cross-seed)",
     "ekfac": "EK-FAC",
     "kfac": "KFAC",
+    "dda": "[DDA](https://arxiv.org/abs/2410.01285) (debiased gradient dot product)",
+    "gradient_dot": "Gradient dot product",
     "trak_ens": "TRAK (8-model ensemble)",
     "source": "SOURCE",
     "source_adam": "SOURCE (Adam)",
