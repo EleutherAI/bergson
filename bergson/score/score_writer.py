@@ -288,6 +288,8 @@ class MemmapSequenceScoreWriter(ScoreWriter):
 
     Unless overwrite is set, an existing ``scores.bin`` is reused so an
     interrupted scoring run can resume.
+
+    ``rows`` maps index ``i`` handed to ``__call__`` to store row ``rows[i]``.
     """
 
     def __init__(
@@ -300,12 +302,14 @@ class MemmapSequenceScoreWriter(ScoreWriter):
         flush_interval: int = 64,
         overwrite: bool = False,
         distributed: bool = True,
+        rows: np.ndarray | None = None,
     ):
         self.path = path
         self.num_scores = num_scores
         self.dtype = dtype
         self.flush_interval = flush_interval
         self.num_batches_since_flush = 0
+        self.rows = rows
 
         self.path.mkdir(parents=True, exist_ok=True)
         scores_file_path = self.path / "scores.bin"
@@ -354,10 +358,11 @@ class MemmapSequenceScoreWriter(ScoreWriter):
     def __call__(self, indices: list[int], scores: torch.Tensor, query_offset: int = 0):
         # scores: [num_indices, width], written at columns query_offset onward
         scores = scores.to(dtype=self.dtype)
+        rows = self.rows[np.asarray(indices)] if self.rows is not None else indices
         for i in range(scores.shape[1]):
             score_col = tensor_to_numpy(scores[:, i].cpu()).flatten()
-            self.scores[f"score_{query_offset + i}"][indices] = score_col
-            self.scores[f"written_{query_offset + i}"][indices] = True
+            self.scores[f"score_{query_offset + i}"][rows] = score_col
+            self.scores[f"written_{query_offset + i}"][rows] = True
 
         self.num_batches_since_flush += 1
         if self.num_batches_since_flush >= self.flush_interval:

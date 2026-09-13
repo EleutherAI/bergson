@@ -786,6 +786,26 @@ class PreprocessConfig(Serializable):
 
 
 @dataclass
+class CandidateConfig(Serializable):
+    """Config for scoring only the rows an earlier run ranked highest."""
+
+    scores: str = ""
+    """Score directory of the earlier run."""
+
+    top_k: int = 0
+    """Rows kept per query column."""
+
+    fraction: float = 0.0
+    """Fraction of rows kept per query column. Set this or ``top_k``."""
+
+    direction: Literal["proponents", "detractors"] = "proponents"
+    """Which end of the earlier run's ranking to keep."""
+
+    higher_is_better: bool | None = None
+    """Orientation of the earlier run's scores. ``None`` reads its saved config."""
+
+
+@dataclass
 class ScoreConfig(Serializable):
     """Config for querying an index on the fly."""
 
@@ -818,6 +838,9 @@ class ScoreConfig(Serializable):
     """True when a positive scoring item is a proponent of the query
     capability (e.g. in influence functions). False for unrolled
     differentiation."""
+
+    candidates: CandidateConfig = field(default_factory=CandidateConfig)
+    """Score only the rows an earlier run ranked highest."""
 
 
 @dataclass

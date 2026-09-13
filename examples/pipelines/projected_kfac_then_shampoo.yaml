@@ -1,0 +1,55 @@
+# Score every row with projected KFAC, then rescore the 200 rows it ranked
+# highest for any query with Shampoo on full gradients.
+#
+# Run with `bergson examples/pipelines/projected_kfac_then_shampoo.yaml`
+#
+# Outputs: runs/kfac_then_shampoo/{kfac,shampoo}/scores, one row per training
+# example each; shampoo/scores/candidates.npy lists the rescored rows.
+
+run_path: runs/kfac_then_shampoo
+steps:
+  - ekfac:
+      index_cfg:
+        run_path: runs/kfac_then_shampoo/kfac
+        model: EleutherAI/pythia-14m
+        overwrite: true
+        projection_dim: 16
+        token_batch_size: 1024
+        data:
+          dataset: NeelNanda/pile-10k
+          split: train[:2000]
+          truncation: true
+      hessian_cfg:
+        method: kfac
+      score_cfg: {}
+      preprocess_cfg: {}
+      hessian_pipeline_cfg:
+        query:
+          dataset: NeelNanda/pile-10k
+          split: train[:8]
+          truncation: true
+        query_aggregation: none
+
+  - ekfac:
+      index_cfg:
+        run_path: runs/kfac_then_shampoo/shampoo
+        model: EleutherAI/pythia-14m
+        overwrite: true
+        token_batch_size: 1024
+        data:
+          dataset: NeelNanda/pile-10k
+          split: train[:2000]
+          truncation: true
+      hessian_cfg:
+        method: shampoo
+      score_cfg:
+        candidates:
+          scores: runs/kfac_then_shampoo/kfac/scores
+          top_k: 200
+      preprocess_cfg: {}
+      hessian_pipeline_cfg:
+        query:
+          dataset: NeelNanda/pile-10k
+          split: train[:8]
+          truncation: true
+        query_aggregation: none

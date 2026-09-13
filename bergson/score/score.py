@@ -28,6 +28,7 @@ from bergson.hessians.preconditioner import (
     load_preconditioner,
 )
 from bergson.process_grads import normalize_and_aggregate_grads
+from bergson.score.candidates import select_candidates, write_merged_scores
 from bergson.score.score_writer import (
     MemmapSequenceScoreWriter,
     MemmapTokenScoreWriter,
@@ -146,6 +147,8 @@ def create_scorer(
     attribute_tokens: bool = False,
     query_range: tuple[int, int] | None = None,
     num_queries_total: int | None = None,
+    rows: np.ndarray | None = None,
+    num_rows_total: int | None = None,
 ) -> Scorer:
     """Create a Scorer with MemmapScoreWriter for disk-based scoring.
 
@@ -161,6 +164,9 @@ def create_scorer(
     ``query_range`` scores only that row slice of the query set, writing its
     columns at the matching offset of the full-width (``num_queries_total``)
     score file.
+
+    ``rows`` are the store rows of ``data``'s examples when ``data`` is a
+    subset of a ``num_rows_total``-row training set.
     """
     query_grads, query_preprocess_cfg = get_query_grads(score_cfg, query_range)
 
@@ -240,7 +246,13 @@ def create_scorer(
             dtype=dtype,
         )
     else:
-        writer = MemmapSequenceScoreWriter(path, len(data), num_scores, dtype=dtype)
+        writer = MemmapSequenceScoreWriter(
+            path,
+            num_rows_total if num_rows_total is not None else len(data),
+            num_scores,
+            dtype=dtype,
+            rows=rows,
+        )
 
     return Scorer(
         query_grads=query_grads,
@@ -264,6 +276,8 @@ def score_worker(
     score_cfg: ScoreConfig,
     preprocess_cfg: PreprocessConfig,
     ds: Dataset,
+    rows: np.ndarray | None = None,
+    num_rows_total: int | None = None,
 ):
     """
     Score worker executed per rank to produce and score gradients against a query.
@@ -285,6 +299,9 @@ def score_worker(
         Preprocessing configuration for gradient normalization/preconditioning.
     ds : Dataset
         The entire dataset to be indexed. A subset is assigned to each worker.
+    rows : np.ndarray | None
+        Store rows of ``ds``'s examples when ``ds`` is a subset of a
+        ``num_rows_total``-row training set.
     """
     if torch.cuda.is_available():
         torch.cuda.set_device(get_device_index(local_rank))
@@ -356,6 +373,8 @@ def score_worker(
             attribute_tokens=index_cfg.attribute_tokens,
             query_range=query_range,
             num_queries_total=num_queries,
+            rows=rows,
+            num_rows_total=num_rows_total,
         )
 
         collect_gradients(**kwargs)
@@ -406,9 +425,20 @@ def score_dataset(
             f"(autocorrelation) hessian."
         )
 
+    candidate_cfg = score_cfg.candidates
+    if candidate_cfg.scores and index_cfg.attribute_tokens:
+        raise ValueError("score_cfg.candidates does not support attribute_tokens.")
+
     index_cfg.partial_run_path.mkdir(parents=True, exist_ok=True)
 
     ds, _ = setup_data_pipeline(index_cfg)
+    num_rows = len(ds)
+
+    candidates = None
+    if candidate_cfg.scores:
+        candidates = select_candidates(candidate_cfg, num_rows)
+        print(f"Scoring {len(candidates)} of {num_rows} rows")
+        ds = ds.select(candidates)
 
     dist_cfg = index_cfg.distributed
     if isinstance(ds, Dataset) and len(ds) < dist_cfg.world_size:
@@ -420,11 +450,18 @@ def score_dataset(
     launch_distributed_run(
         "score",
         score_worker,
-        [index_cfg, score_cfg, preprocess_cfg, ds],
+        [index_cfg, score_cfg, preprocess_cfg, ds, candidates, num_rows],
         dist_cfg,
     )
 
     if dist_cfg.rank == 0:
+        if candidates is not None:
+            write_merged_scores(
+                index_cfg.partial_run_path,
+                candidate_cfg,
+                candidates,
+                score_cfg.higher_is_better,
+            )
         shutil.move(index_cfg.partial_run_path, index_cfg.run_path)
 
     if dist_cfg.world_size < index_cfg.distributed.world_size:

@@ -145,7 +145,8 @@ Method Pipelines
        --hessian_cfg.ev_correction true
 
 See ``examples/compare_wikitext/ekfac.yaml`` for a complete pipeline
-configuration.
+configuration, and ``examples/pipelines/projected_kfac_then_shampoo.yaml`` for
+rescoring only the rows an earlier run ranked highest (``score_cfg.candidates``).
 
 .. autoclass:: bergson.__main__.ApproxUnrolling
    :members:
