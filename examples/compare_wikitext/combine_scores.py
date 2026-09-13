@@ -59,8 +59,7 @@ def main():
     scales = [1.0] * len(stores)
     if args.standardize:
         scales = [
-            1.0 / np.std([s[n].astype(np.float64) for n in score_names])
-            for s in stores
+            1.0 / np.std([s[n].astype(np.float64) for n in score_names]) for s in stores
         ]
     out = Path(args.out)
     if out.exists():
