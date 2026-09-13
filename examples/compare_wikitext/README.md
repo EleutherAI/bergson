@@ -15,15 +15,19 @@ GPT-2 fine-tuned on WikiText (`EleutherAI/bergson-wikitext-512-chunks`, 4,608 tr
 | TrackStar (no optimizer correction, projection 32) | 0.035 | [0.027, 0.044] | 0.211 | [0.183, 0.238] | 0.222 | 0.005 | 0.386 | 28/50 |
 | TrackStar (Adam, projection 32) | 0.032 | [0.025, 0.041] | 0.173 | [0.144, 0.201] | 0.179 | -0.094 | 0.467 | 20/50 |
 | SOURCE (Adam) | 0.024 | [0.018, 0.030] | 0.154 | [0.126, 0.181] | 0.147 | -0.144 | 0.412 | 15/50 |
+| KFAC (projection 64) | 0.023 | [0.016, 0.032] | 0.103 | [0.076, 0.128] | 0.107 | -0.137 | 0.309 | 9/50 |
 | SOURCE | 0.022 | [0.017, 0.027] | 0.165 | [0.138, 0.191] | 0.171 | -0.120 | 0.419 | 16/50 |
 | TrackStar (no optimizer correction, projection 16) | 0.022 | [0.016, 0.028] | 0.143 | [0.113, 0.173] | 0.152 | -0.142 | 0.350 | 17/50 |
 | Gradient cosine similarity | 0.021 | [0.016, 0.027] | 0.156 | [0.131, 0.181] | 0.154 | -0.142 | 0.396 | 15/50 |
 | TrackStar (Adam, projection 16) | 0.020 | [0.014, 0.026] | 0.103 | [0.072, 0.133] | 0.100 | -0.158 | 0.448 | 9/50 |
+| Gradient dot product | 0.019 | [0.015, 0.024] | 0.156 | [0.130, 0.180] | 0.151 | -0.138 | 0.390 | 16/50 |
 | Projected gradient cosine similarity | 0.016 | [0.012, 0.020] | 0.132 | [0.103, 0.159] | 0.133 | -0.214 | 0.360 | 13/50 |
 | TRAK (8-model ensemble) | 0.007 | [0.005, 0.010] | 0.045 | [0.015, 0.073] | 0.061 | -0.221 | 0.232 | 7/50 |
+| TRAK (4-model ensemble, DsDm averaging) | 0.005 | [0.003, 0.007] | 0.037 | [0.009, 0.064] | 0.037 | -0.166 | 0.291 | 4/50 |
+| [DDA](https://arxiv.org/abs/2410.01285) (debiased gradient dot product) | 0.000 | [0.000, 0.001] | -0.054 | [-0.088, -0.020] | -0.030 | -0.347 | 0.227 | 7/50 |
 | Activation similarity | 0.000 | [-0.000, 0.001] | 0.110 | [0.070, 0.149] | 0.106 | -0.137 | 0.361 | 11/50 |
 
-MAGIC (cross-seed) applies the seed-42 MAGIC scores to retrains with seed 43 (different data order and dropout): its LDS uses the same 100 subsets retrained at seed 43 and its QLD retrains the proponent filters at seed 43. KFAC is `kfac.yaml`: the Kronecker factors and damping of `ekfac.yaml` without the eigenvalue correction (`ev_correction: false`), so the two rows isolate what the correction adds. TrackStar is swept over projection dims 16/32/64 (per-module random projection of the gradients), plain and Adam-normalized. TRAK follows Park et al. (2023): eight GPT-2 models trained on independent random 50% subsets of the training set (`trak_ensemble/train_s*.yaml`, seeds 101-104), each scored with one global random projection (dim 4096) of its margin-output gradients whitened by the undamped Gram over the training set and weighted by 1 - p, then averaged (`trak_ensemble/mean_scores.py`). Gradient cosine similarity is `gradient_cosine.yaml`: bergson `build` of the query gradients and `score` of the training chunks, unprojected and unit-normalized with no Hessian, so each score is the cosine between a training chunk's gradient and a query's over the attributed modules. Projected gradient cosine similarity (the projected steps of the same yaml) is the same with the gradients random-projected per module first, i.e. TrackStar without preconditioning. The four gradient-free baselines come from `examples/gradient_free_baselines` run with `--bank runs/compare_wikitext/random --query_split "test[0:50]"`: BM25 lexical overlap (`bm25_baseline.py`), semantic search with `jinaai/jina-embeddings-v5-text-small` (`semantic_baseline.py`) and with `Qwen/Qwen3-Embedding-8B` (`qwen3_baseline.py`), and cosine similarity between the mean-pooled input activations of the attributed linear modules, per-module L2-normalized and concatenated (`activation_baseline.py`).
+MAGIC (cross-seed) applies the seed-42 MAGIC scores to retrains with seed 43 (different data order and dropout): its LDS uses the same 100 subsets retrained at seed 43 and its QLD retrains the proponent filters at seed 43. KFAC is `kfac.yaml`: the Kronecker factors and damping of `ekfac.yaml` without the eigenvalue correction (`ev_correction: false`), so the two rows isolate what the correction adds. KFAC (projection 64) is `kfac_p64.yaml`: the same factors and damping with the gradients random-projected per module to 64 dimensions as in the TrackStar rows. TrackStar is swept over projection dims 16/32/64 (per-module random projection of the gradients), plain and Adam-normalized. TRAK follows Park et al. (2023): eight GPT-2 models trained on independent random 50% subsets of the training set (`trak_ensemble/train_s*.yaml`, seeds 101-104), each scored with one global random projection (dim 4096) of its negative log-odds gradients whitened by the undamped Gram over the training set and weighted by 1 - p, then averaged (`trak_ensemble/mean_scores.py`). The 4-model row averages the first four members' whitened inner products and 1 - p weights separately before multiplying, the form of Engstrom et al. (2024, DsDm) (`mean_scores.py --separate_q`). Gradient cosine similarity is `gradient_cosine.yaml`: bergson `build` of the query gradients and `score` of the training chunks, unprojected and unit-normalized with no Hessian, so each score is the cosine between a training chunk's gradient and a query's over the attributed modules. Projected gradient cosine similarity (the projected steps of the same yaml) is the same with the gradients random-projected per module first, i.e. TrackStar without preconditioning. DDA (Wu et al. 2024) is `dda.yaml`: raw gradient dot products of the query and training gradients with no Hessian and no normalization, taken at the fine-tuned model minus the same at the pretrained gpt2 it started from, coefficient 1 (the paper's combined form; `combine_scores.py`); the fine-tuned term alone is the Gradient dot product row. The four gradient-free baselines come from `examples/gradient_free_baselines` run with `--bank runs/compare_wikitext/random --query_split "test[0:50]"`: BM25 lexical overlap (`bm25_baseline.py`), semantic search with `jinaai/jina-embeddings-v5-text-small` (`semantic_baseline.py`) and with `Qwen/Qwen3-Embedding-8B` (`qwen3_baseline.py`), and cosine similarity between the mean-pooled input activations of the attributed linear modules, per-module L2-normalized and concatenated (`activation_baseline.py`).
 
 Reproduce (run the numbered yamls first):
 
@@ -33,6 +37,7 @@ bergson examples/compare_wikitext/2_interval.yaml    # evenly spaced checkpoints
 python -c "from bergson.utils.trainer_export import export_checkpoints; export_checkpoints('runs/compare_wikitext/interval', steps=[72])"
 bergson examples/compare_wikitext/ekfac.yaml
 bergson examples/compare_wikitext/kfac.yaml
+bergson examples/compare_wikitext/kfac_p64.yaml
 bergson examples/compare_wikitext/shampoo.yaml
 bergson examples/compare_wikitext/trackstar.yaml       # projection 16/32/64
 bergson examples/compare_wikitext/trackstar_adam.yaml  # projection 16/32/64
@@ -40,22 +45,27 @@ bergson examples/compare_wikitext/source.yaml          # plain and Adam-precondi
 for i in 0 1 2 3; do bergson examples/compare_wikitext/trak_ensemble/train_s$i.yaml; done           # eight 50%-subset models
 for i in 0 1 2 3; do for j in 0 1; do bergson examples/compare_wikitext/trak_ensemble/score_s${i}_$j.yaml; done; done
 python examples/compare_wikitext/trak_ensemble/mean_scores.py runs/compare_wikitext/trak_ens/score_s*_*/scores --out runs/compare_wikitext/trak_ens/scores
+python examples/compare_wikitext/trak_ensemble/mean_scores.py runs/compare_wikitext/trak_ens/score_s0_0/scores runs/compare_wikitext/trak_ens/score_s0_1/scores runs/compare_wikitext/trak_ens/score_s1_0/scores runs/compare_wikitext/trak_ens/score_s1_1/scores --out runs/compare_wikitext/trak_ens/scores_m4 --separate_q
 bergson examples/compare_wikitext/gradient_cosine.yaml # full and projected gradients
+bergson examples/compare_wikitext/dda.yaml             # gradient dot products at the fine-tuned and pretrained models
+python examples/compare_wikitext/combine_scores.py --term 1 runs/compare_wikitext/dda/finetuned/scores --term -1 runs/compare_wikitext/dda/base/scores --out runs/compare_wikitext/dda/scores
 bergson examples/compare_wikitext/magic_seed43.yaml
 bergson examples/compare_wikitext/metasmoothness.yaml
 for b in bm25 semantic qwen3 activation; do   # writes baselines/${b}_scores/scores
   python -m examples.gradient_free_baselines.${b}_baseline --bank runs/compare_wikitext/random --query_split "test[0:50]" --out runs/compare_wikitext/baselines
 done
-for f in magic magic_seed43 ekfac kfac shampoo trak_ens trackstar trackstar_adam source gradient_cosine bm25 semantic qwen3 activation; do
+for f in magic magic_seed43 ekfac kfac kfac_p64 shampoo trak_ens trak_ens_m4 dda gradient_dot trackstar trackstar_adam source gradient_cosine bm25 semantic qwen3 activation; do
   bergson examples/compare_wikitext/filters/filter_$f.yaml
 done
 python examples/compare_wikitext/lds_from_bank.py --validation runs/compare_wikitext/random/validation.csv --out runs/compare_wikitext/lds_magic.json
 python examples/compare_wikitext/lds_from_bank.py --validation runs/compare_wikitext/magic_seed43/validation.csv --out runs/compare_wikitext/lds_magic_seed43.json
-for m in ekfac kfac shampoo trak_ens trackstar_p16 trackstar_p32 trackstar_p64 trackstar_adam_p16 trackstar_adam_p32 trackstar_adam_p64 gradient_cosine gradient_cosine_projected; do python examples/compare_wikitext/lds_from_bank.py --sign grad --scores runs/compare_wikitext/$m/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_$m.json; done
+for m in ekfac kfac kfac_p64 shampoo trak_ens trackstar_p16 trackstar_p32 trackstar_p64 trackstar_adam_p16 trackstar_adam_p32 trackstar_adam_p64 gradient_cosine gradient_cosine_projected dda; do python examples/compare_wikitext/lds_from_bank.py --sign grad --scores runs/compare_wikitext/$m/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_$m.json; done
+python examples/compare_wikitext/lds_from_bank.py --sign grad --scores runs/compare_wikitext/trak_ens/scores_m4 --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_trak_ens_m4.json
+python examples/compare_wikitext/lds_from_bank.py --sign grad --scores runs/compare_wikitext/dda/finetuned/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_gradient_dot.json
 for b in bm25 semantic qwen3 activation; do python examples/compare_wikitext/lds_from_bank.py --sign loss --scores runs/compare_wikitext/baselines/${b}_scores/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_$b.json; done
 for m in source source_adam; do python examples/compare_wikitext/lds_from_bank.py --sign loss --scores runs/compare_wikitext/$m/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_$m.json; done
 python examples/compare_wikitext/qld_from_filters.py runs/compare_wikitext runs/compare_wikitext/random
 python examples/compare_wikitext/lds_tables.py runs/compare_wikitext
 ```
 
-EK-FAC, KFAC, Shampoo, TRAK and TrackStar scores are influence-signed (higher = proponent) and MAGIC and SOURCE loss-signed, hence `--sign`; the baseline scripts already write loss-signed matrices (negated similarity), so their score directories need no sign flip. `filters/` reuses the bank's random retrains as the matched control.
+EK-FAC, KFAC, Shampoo, TRAK, TrackStar, DDA and gradient dot-product scores are influence-signed (higher = proponent) and MAGIC and SOURCE loss-signed, hence `--sign`; the baseline scripts already write loss-signed matrices (negated similarity), so their score directories need no sign flip. `filters/` reuses the bank's random retrains as the matched control.
