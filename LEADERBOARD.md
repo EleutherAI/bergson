@@ -21,9 +21,11 @@
 | TrackStar (no optimizer correction, projection 16) | 0.022 [0.016, 0.028] | 0.143 [0.113, 0.173] |
 | Gradient cosine similarity | 0.021 [0.016, 0.027] | 0.156 [0.131, 0.181] |
 | TrackStar (Adam, projection 16) | 0.020 [0.014, 0.026] | 0.103 [0.072, 0.133] |
+| Gradient dot product | 0.019 [0.015, 0.024] | 0.156 [0.130, 0.180] |
 | Projected gradient cosine similarity | 0.016 [0.012, 0.020] | 0.132 [0.103, 0.159] |
 | TRAK (8-model ensemble) | 0.007 [0.005, 0.010] | 0.045 [0.015, 0.073] |
 | TRAK (4-model ensemble, DsDm averaging) | 0.005 [0.003, 0.007] | 0.037 [0.009, 0.064] |
+| [DDA](https://arxiv.org/abs/2410.01285) (debiased gradient dot product) | 0.000 [0.000, 0.001] | -0.054 [-0.088, -0.020] |
 | Activation similarity | 0.000 [-0.000, 0.001] | 0.110 [0.070, 0.149] |
 
 Held-out loss on the WikiText corpus dropped from 3.545 to 3.111 over training. Every row scores the same model and query set; per-query statistics, run configs and reproduction steps are in [examples/compare_wikitext](examples/compare_wikitext/README.md).
