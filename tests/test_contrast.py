@@ -53,9 +53,7 @@ def test_build_query_contrast_is_difference_of_means(tmp_path):
 
     build(_index_cfg(tmp_path / "q", query), mean)
     build(_index_cfg(tmp_path / "c", control), mean)
-    build_query(
-        _index_cfg(tmp_path / "qc", query), DataConfig(dataset=control), mean
-    )
+    build_query(_index_cfg(tmp_path / "qc", query), DataConfig(dataset=control), mean)
 
     q = np.asarray(load_gradients(tmp_path / "q")[0], dtype=np.float64)
     c = np.asarray(load_gradients(tmp_path / "c")[0], dtype=np.float64)
