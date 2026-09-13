@@ -1036,8 +1036,9 @@ def fwd_bwd_hessian_factory(
     return fwd_bwd_hessian
 
 
-GLOBAL_BLOCK_ELEMENTS = 1 << 27
-"""Elements per generated block of a global projection matrix (512 MB in fp32)."""
+CHUNKED_PROJECTION_INSTANTIATION_NUMEL = 1 << 27
+"""Batch size of the batched global projection matrix instantiations (512 MB
+in fp32)."""
 
 
 def global_projection_blocks(
@@ -1057,7 +1058,7 @@ def global_projection_blocks(
     whenever it is regenerated. Blocks are unscaled: apply the projection
     scale to the result (see :func:`project_global`).
     """
-    cols = max(1, GLOBAL_BLOCK_ELEMENTS // m)
+    cols = max(1, CHUNKED_PROJECTION_INSTANTIATION_NUMEL // m)
     for start in range(0, n, cols):
         stop = min(n, start + cols)
         digest = hashlib.md5(f"{identifier}/{start}".encode()).digest()

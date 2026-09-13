@@ -254,7 +254,9 @@ def test_project_global_streams_in_blocks(monkeypatch):
     torch.manual_seed(0)
     m, n = 8, 1000
     P = torch.randn(3, n)
-    monkeypatch.setattr(collector_module, "GLOBAL_BLOCK_ELEMENTS", m * 64)
+    monkeypatch.setattr(
+        collector_module, "CHUNKED_PROJECTION_INSTANTIATION_NUMEL", m * 64
+    )
     blocks = list(
         global_projection_blocks("mod/single", m, n, P.dtype, P.device, "rademacher")
     )
