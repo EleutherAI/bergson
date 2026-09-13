@@ -26,4 +26,4 @@ Omit `--bank` to build the default GPT-2/WikiText bank (`examples/magic/gpt2_wik
 
 ## Results
 
-Results are on the [leaderboard](../../LEADERBOARD.md).
+Results are on the [leaderboard](https://bergson.readthedocs.io/en/latest/leaderboard.html).
