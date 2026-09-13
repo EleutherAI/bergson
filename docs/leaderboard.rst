@@ -78,9 +78,6 @@ Indicative performance of data attribution methods in the finetuning regime.
    * - TRAK (4-model ensemble, DsDm averaging)
      - 0.005 [0.003, 0.007]
      - 0.037 [0.009, 0.064]
-   * - `DDA <https://arxiv.org/abs/2410.01285>`_ (debiased gradient dot product)
-     - 0.000 [0.000, 0.001]
-     - -0.054 [-0.088, -0.020]
    * - Activation similarity
      - 0.000 [-0.000, 0.001]
      - 0.110 [0.070, 0.149]
