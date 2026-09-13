@@ -31,13 +31,10 @@ from torch import Tensor
 
 from bergson.config import InversionConfig
 from bergson.gradients import GradientProcessor
+from bergson.hessians.autocorrelation import JOINT_LAYOUT_FILE
 from bergson.hessians.inversion import eigenvalue_multiplier, invert_psd_matrix
 from bergson.hessians.sharded_computation import ShardedMul
 from bergson.utils.logger import get_logger
-
-JOINT_LAYOUT_FILE = "joint_layout.json"
-"""Written next to a joint Gram by ``JointAutocorrelationCollector``; its
-presence selects :class:`JointDensePreconditioner`."""
 
 
 @runtime_checkable

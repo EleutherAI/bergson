@@ -1,22 +1,3 @@
-"""TRAK over Bergson's projected-gradient index.
-
-TRAK (Park et al., 2023, https://arxiv.org/abs/2303.14186) scores a training
-example ``z_i`` for a query ``z_q`` as
-
-    phi(z_q)^T (Phi^T Phi + lambda I)^-1 phi(z_i) * (1 - p_i)
-
-where ``phi`` is a random projection of the per-example gradient, ``Phi``
-stacks the projected training gradients and ``p_i`` is the model's
-probability of ``z_i``'s labels. ``phi`` is one random projection of the
-whole gradient (``projection_target="global"``: every module's flattened
-gradient is projected with its own block of a single ``k x d`` Rademacher
-matrix and the blocks are summed) and the Gram is the ``autocorrelation``
-Hessian with ``structure="joint"`` over that sketch. The damped inverse is applied
-to the query side, so the pipeline is the trackstar one without Hessian
-mixing or unit normalization, plus the ``(1 - p_i)`` weighting and an
-optional average over independently trained checkpoints.
-"""
-
 import json
 import shutil
 from copy import deepcopy

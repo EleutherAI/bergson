@@ -68,10 +68,6 @@ class AutocorrelationCollector(HookCollectorBase):
 JOINT_LAYOUT_FILE = "joint_layout.json"
 """Module order and sizes of the concatenated gradient a joint Gram was fit on."""
 
-MAX_JOINT_DIM = 20_000
-"""Largest concatenated projected-gradient size the joint Gram accepts; the
-eigendecomposition is dense in fp64."""
-
 
 @dataclass(kw_only=True)
 class JointAutocorrelationCollector(AutocorrelationCollector):
@@ -91,13 +87,6 @@ class JointAutocorrelationCollector(AutocorrelationCollector):
 
     def setup(self) -> None:
         self._layout = [(name, math.prod(s)) for name, s in self.shapes().items()]
-        dim = sum(size for _, size in self._layout)
-        if dim > MAX_JOINT_DIM:
-            raise ValueError(
-                f"The joint Gram would be {dim} x {dim} (sum of projected module "
-                f"sizes); reduce projection_dim so the total is at most "
-                f"{MAX_JOINT_DIM}, or use structure='per_module'."
-            )
 
     @HookCollectorBase.split_attention_heads
     def backward_hook(self, module: nn.Module, g: Float[Tensor, "N S O"]):
