@@ -11,8 +11,8 @@ steps:
   - trak:
       index_cfg:
         projection_dim: 4096
-        # TRAK's features are gradients of the margin output function.
-        loss_fn: margin
+        # TRAK's features are gradients of the negative log-odds output.
+        loss_fn: log_odds
         # One Rademacher sketch of the whole gradient.
         projection_target: global
         run_path: runs/compare_wikitext/trak_ens/score_s2_0
