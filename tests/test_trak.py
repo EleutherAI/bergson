@@ -1,4 +1,5 @@
 import json
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -7,7 +8,12 @@ import torch
 from datasets import Dataset
 
 from bergson.build import build
-from bergson.cli.trak import _train_label_probs, trak
+from bergson.cli.trak import (
+    _average_scores,
+    _open_scores,
+    _train_label_probs,
+    trak,
+)
 from bergson.collector.collector import token_losses
 from bergson.config import (
     DataConfig,
@@ -43,9 +49,23 @@ def data_dir(tmp_path_factory) -> Path:
     rows = [torch.randint(10, 2000, (24,)).tolist() for _ in range(15)]
     train = Dataset.from_dict({"input_ids": rows[:12], "labels": rows[:12]})
     query = Dataset.from_dict({"input_ids": rows[12:], "labels": rows[12:]})
+    both = Dataset.from_dict({"input_ids": rows, "labels": rows})
     train.save_to_disk(str(root / "train"))
     query.save_to_disk(str(root / "query"))
+    both.save_to_disk(str(root / "both"))
     return root
+
+
+@pytest.fixture(scope="module")
+def trak_run(tmp_path_factory, data_dir) -> TrackstarIndexConfig:
+    """One full (1 - p)-weighted TRAK run shared by the GPU tests. Every
+    pipeline step reloads the model (~1 s each), so the tests below check
+    the run's pieces instead of re-running TRAK per property."""
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA not available")
+    cfg = _index_cfg(tmp_path_factory.mktemp("trak_run") / "weighted", data_dir)
+    trak(cfg, TrakConfig(query=_query_cfg(data_dir)))
+    return cfg
 
 
 def _index_cfg(run_path: Path, data_dir: Path) -> TrackstarIndexConfig:
@@ -66,25 +86,15 @@ def _query_cfg(data_dir: Path) -> DataConfig:
     return DataConfig(dataset=str(data_dir / "query"), split="train")
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-def test_trak_weights_rows_by_one_minus_p(tmp_path, data_dir):
-    """With the Q term every training row's scores are the unweighted scores
-    scaled by 1 - p_i, p_i the row's mean label-token probability."""
-    plain = _index_cfg(tmp_path / "plain", data_dir)
-    trak(plain, TrakConfig(query=_query_cfg(data_dir), q_weighting="none"))
-    unweighted = _load(tmp_path / "plain" / "scores")
-    assert unweighted.shape == (12, 3)
-
-    weighted_cfg = _index_cfg(tmp_path / "weighted", data_dir)
-    trak(weighted_cfg, TrakConfig(query=_query_cfg(data_dir)))
-    weighted = _load(tmp_path / "weighted" / "scores")
-    probs = _train_label_probs(weighted_cfg, batch_size=4)
+def test_trak_weights_rows_by_one_minus_p(trak_run):
+    """The Q term scales each training row by 1 - p_i, p_i the row's mean
+    label-token probability; the pipeline saves those weights."""
+    run_path = Path(trak_run.run_path)
+    assert _load(run_path / "scores").shape == (12, 3)
+    probs = _train_label_probs(trak_run, batch_size=4)
     assert probs.shape == (12,) and (0 < probs).all() and (probs < 1).all()
-    saved = np.load(tmp_path / "weighted" / "scores" / "trak_weights.npy")
+    saved = np.load(run_path / "scores" / "trak_weights.npy")
     np.testing.assert_allclose(saved, 1 - probs)
-    np.testing.assert_allclose(
-        weighted, unweighted * (1 - probs)[:, None], rtol=1e-4, atol=1e-6
-    )
 
 
 def test_trak_rejects_cross_entropy_features(tmp_path, data_dir):
@@ -112,20 +122,18 @@ def test_trak_rejects_per_module_projection(tmp_path, data_dir):
         trak(cfg, TrakConfig(query=_query_cfg(data_dir)))
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-def test_trak_ensemble_averages_members(tmp_path, data_dir):
-    cfg = _index_cfg(tmp_path / "ens", data_dir)
-    trak(
-        cfg,
-        TrakConfig(
-            query=_query_cfg(data_dir),
-            checkpoints=[MODEL, MODEL],
-            q_weighting="none",
-        ),
-    )
-    members = [_load(tmp_path / "ens" / f"checkpoint_{i}" / "scores") for i in range(2)]
-    mean = _load(tmp_path / "ens" / "scores")
-    np.testing.assert_allclose(mean, (members[0] + members[1]) / 2, rtol=1e-6)
+def test_trak_ensemble_averages_members(tmp_path, trak_run):
+    """The ensemble score store is the mean of the members' stores."""
+    src = Path(trak_run.run_path) / "scores"
+    members = [tmp_path / "member_0", tmp_path / "member_1"]
+    for member, scale in zip(members, (1.0, 3.0)):
+        shutil.copytree(src, member)
+        mmap, info = _open_scores(member, "r+")
+        for q in range(info["num_scores"]):
+            mmap[f"score_{q}"] = mmap[f"score_{q}"] * scale
+        mmap.flush()
+    _average_scores(members, tmp_path / "scores")
+    np.testing.assert_allclose(_load(tmp_path / "scores"), 2 * _load(src), rtol=1e-6)
 
 
 def _index_matrix(run_path: Path) -> np.ndarray:
@@ -139,27 +147,25 @@ def _index_matrix(run_path: Path) -> np.ndarray:
     )
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-def test_trak_matches_explicit_formula(tmp_path, data_dir):
-    """Scores are phi_q^T (Phi^T Phi / N)^-1 phi_i over the global gradient
-    sketch, with no damping by default."""
-    cfg = _index_cfg(tmp_path / "joint", data_dir)
-    trak(cfg, TrakConfig(query=_query_cfg(data_dir), q_weighting="none"))
-    scores = _load(tmp_path / "joint" / "scores")
+def test_trak_matches_explicit_formula(tmp_path, trak_run, data_dir):
+    """Scores are (1 - p_i) phi_q^T (Phi^T Phi / N)^-1 phi_i over the global
+    gradient sketch, with no damping by default. One index over the training
+    and query rows together gives both Phi and phi_q."""
+    run_path = Path(trak_run.run_path)
+    scores = _load(run_path / "scores")
+    weights = np.load(run_path / "scores" / "trak_weights.npy")
 
-    train_cfg = _index_cfg(tmp_path / "train_index", data_dir)
-    build(train_cfg, PreprocessConfig())
-    query_cfg = _index_cfg(tmp_path / "query_index", data_dir)
-    query_cfg.data = _query_cfg(data_dir)
-    build(query_cfg, PreprocessConfig())
-    phi = _index_matrix(tmp_path / "train_index")
-    phi_q = _index_matrix(tmp_path / "query_index")
+    both_cfg = _index_cfg(tmp_path / "both_index", data_dir)
+    both_cfg.data = DataConfig(dataset=str(data_dir / "both"), split="train")
+    build(both_cfg, PreprocessConfig())
+    grads = _index_matrix(tmp_path / "both_index")
+    phi, phi_q = grads[:12], grads[12:]
     assert phi.shape[0] == 12 and phi_q.shape[0] == 3
 
     gram = torch.from_numpy(phi.T @ phi / phi.shape[0]).float()
     h_inv = invert_psd_matrix(
         gram, inversion="damped_inverse", damping_factor=0.0, power=-1.0
     )
-    expected = phi @ h_inv.double().numpy() @ phi_q.T
+    expected = (phi @ h_inv.double().numpy() @ phi_q.T) * weights[:, None]
     # The index stores gradients in reduced precision; the Gram is fp32.
     np.testing.assert_allclose(scores, expected, rtol=2e-2, atol=1e-3)
