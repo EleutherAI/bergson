@@ -188,7 +188,12 @@ def build_query(
         )
         index_cfg.attribute_tokens = False
     save_run_config(Build(index_cfg, preprocess_cfg), index_cfg.partial_run_path)
-    build(index_cfg, preprocess_cfg)
+    query_preprocess = preprocess_cfg
+    if query_set_cfg.contrast is not None:
+        # subtract_control normalizes the difference, not each side of it.
+        query_preprocess = deepcopy(preprocess_cfg)
+        query_preprocess.normalize_aggregated_grad = False
+    build(index_cfg, query_preprocess)
     if query_set_cfg.contrast is not None:
         subtract_control(index_cfg, query_set_cfg.contrast, preprocess_cfg)
     return index_cfg.run_path

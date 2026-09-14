@@ -78,6 +78,32 @@ def test_build_query_contrast_is_difference_of_means(tmp_path):
     assert np.abs(qc).max() > 0
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_build_query_contrast_normalizes_the_difference(tmp_path):
+    query = _save(tmp_path / "query", 4, 0)
+    control = _save(tmp_path / "control", 6, 4)
+    mean = PreprocessConfig(aggregation="mean")
+
+    build(_index_cfg(tmp_path / "q", query), mean)
+    build(_index_cfg(tmp_path / "c", control), mean)
+    build_query(
+        _index_cfg(tmp_path / "qc", query),
+        QuerySetConfig(
+            data=DataConfig(dataset=query, split="train"),
+            aggregation="mean",
+            contrast=DataConfig(dataset=control, split="train"),
+        ),
+        PreprocessConfig(aggregation="mean", normalize_aggregated_grad=True),
+    )
+
+    q = np.asarray(load_gradients(tmp_path / "q")[0], dtype=np.float64)
+    c = np.asarray(load_gradients(tmp_path / "c")[0], dtype=np.float64)
+    qc = np.asarray(load_gradients(tmp_path / "qc")[0], dtype=np.float64)
+    expected = (q - c) / np.linalg.norm(q - c)
+    np.testing.assert_allclose(np.linalg.norm(qc), 1.0, rtol=1e-3)
+    np.testing.assert_allclose(qc, expected, rtol=2e-2, atol=1e-3)
+
+
 def test_build_query_contrast_needs_aggregation(tmp_path):
     cfg = _index_cfg(tmp_path / "x", "unused")
     query = QuerySetConfig(
