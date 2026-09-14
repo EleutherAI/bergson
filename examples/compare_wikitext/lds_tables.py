@@ -19,7 +19,7 @@ LABELS = {
     "magic_seed43": "MAGIC (cross-seed)",
     "ekfac": "EK-FAC",
     "kfac": "KFAC",
-    "dda": "[DDA](https://arxiv.org/abs/2410.01285) (debiased gradient dot product)",
+    "kfac_p64": "KFAC (projection 64)",
     "gradient_dot": "Gradient dot product",
     "trak_ens": "TRAK (8-model ensemble)",
     "source": "SOURCE",
@@ -34,7 +34,7 @@ LABELS = {
     "activation": "Activation similarity",
     "gradient_cosine": "Gradient cosine similarity",
     "gradient_cosine_projected": "Projected gradient cosine similarity",
-    "shampoo": "Shampoo",
+    "shampoo": "Eigenvalue-corrected Shampoo",
     "bm25": "BM25",
     "semantic": "Jina v5 semantic search",
     "qwen3": (

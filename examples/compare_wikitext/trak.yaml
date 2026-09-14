@@ -1,0 +1,48 @@
+# TRAK (Park et al. 2023) for the 1_magic.yaml benchmark: eight GPT-2 models trained on
+# independent random 50% subsets of the training set (trak_ensemble/train_s*.yaml), each
+# scored with its own global random projection of the negative log-odds gradients,
+# whitened by the undamped Gram over the training set, scale-normalized and averaged
+# with the mean (1 - p_i) weights. One score column per query.
+# LDS: examples/compare_wikitext/lds_from_bank.py --sign grad.
+
+# Run with `bergson examples/compare_wikitext/trak.yaml`
+
+run_path: runs/compare_wikitext/trak
+steps:
+  - trak:
+      index_cfg:
+        projection_dim: 4096
+        loss_fn: log_odds
+        # One Rademacher sketch of the whole gradient; member i uses seed i.
+        projection_target: global
+        run_path: runs/compare_wikitext/trak
+        overwrite: false
+        token_batch_size: 1024
+        # GPT-2 uses an nn.Linear for its LM head.
+        filter_modules: "lm_head"
+        distributed:
+          nproc_per_node: 4
+          nnode: 1
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "train"
+          chunk_length: 0
+
+      trak_cfg:
+        checkpoints:
+          - runs/compare_wikitext/trak_ens/s0/retrained/subset_0
+          - runs/compare_wikitext/trak_ens/s0/retrained/subset_1
+          - runs/compare_wikitext/trak_ens/s1/retrained/subset_0
+          - runs/compare_wikitext/trak_ens/s1/retrained/subset_1
+          - runs/compare_wikitext/trak_ens/s2/retrained/subset_0
+          - runs/compare_wikitext/trak_ens/s2/retrained/subset_1
+          - runs/compare_wikitext/trak_ens/s3/retrained/subset_0
+          - runs/compare_wikitext/trak_ens/s3/retrained/subset_1
+        query:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "test[0:50]"
+          chunk_length: 0
+        preprocess_cfg:
+          aggregation: none
+        score_cfg:
+          batch_size: 1024

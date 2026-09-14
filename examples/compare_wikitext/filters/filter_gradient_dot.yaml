@@ -42,5 +42,5 @@ steps:
       subset_fraction: 0.01
       num_subsets: 3
       query_method: none
-      scores: runs/compare_wikitext/dda/finetuned/scores
+      scores: runs/compare_wikitext/gradient_dot/scores
       retrained_dir: runs/compare_wikitext/random

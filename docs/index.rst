@@ -77,6 +77,7 @@ Load the gradients:
    :maxdepth: 2
    :caption: Reference
 
+   leaderboard
    cli
    api
    benchmarks/index
