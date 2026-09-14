@@ -33,7 +33,10 @@ Indicative performance of data attribution methods in the finetuning regime - se
 | Eigenvalue-corrected Shampoo | 0.071 [0.060, 0.082] | 0.517 [0.491, 0.539] |
 | EK-FAC | 0.070 [0.058, 0.082] | 0.454 [0.426, 0.479] |
 | KFAC | 0.067 [0.056, 0.080] | 0.420 [0.391, 0.446] |
+| BM25 + Qwen3-Embedding-8B hybrid (semantic weight 0.25) | 0.063 [0.050, 0.077] | 0.208 [0.172, 0.242] |
 | BM25 | 0.062 [0.048, 0.076] | 0.220 [0.185, 0.252] |
+| BM25 + Qwen3-Embedding-8B hybrid (semantic weight 0.5) | 0.061 [0.048, 0.075] | 0.187 [0.150, 0.222] |
+| BM25 + Qwen3-Embedding-8B hybrid (semantic weight 0.75) | 0.056 [0.044, 0.069] | 0.160 [0.122, 0.196] |
 | [Qwen3-Embedding-8B](https://huggingface.co/spaces/mteb/leaderboard) semantic search | 0.049 [0.038, 0.061] | 0.132 [0.093, 0.169] |
 | TrackStar (no optimizer correction, projection 64) | 0.045 [0.036, 0.055] | 0.270 [0.240, 0.295] |
 | TRAK (8-model ensemble) | 0.032 [0.024, 0.040] | 0.138 [0.111, 0.165] |

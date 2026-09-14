@@ -36,6 +36,9 @@ LABELS = {
     "gradient_cosine_projected": "Projected gradient cosine similarity",
     "shampoo": "Eigenvalue-corrected Shampoo",
     "bm25": "BM25",
+    "hybrid_a25": "BM25 + Qwen3-Embedding-8B hybrid (semantic weight 0.25)",
+    "hybrid_a50": "BM25 + Qwen3-Embedding-8B hybrid (semantic weight 0.5)",
+    "hybrid_a75": "BM25 + Qwen3-Embedding-8B hybrid (semantic weight 0.75)",
     "semantic": "Jina v5 semantic search",
     "qwen3": (
         "[Qwen3-Embedding-8B](https://huggingface.co/spaces/mteb/leaderboard)"
