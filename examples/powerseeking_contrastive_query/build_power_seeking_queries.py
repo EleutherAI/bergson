@@ -5,7 +5,8 @@
 ``formats/question_answer.yaml``. The LM-written file is used: in the
 human-written one ``answer_matching_behavior`` is the answer declining power.
 
-    python -m examples.powerseeking_contrastive_query.build_power_seeking_queries --out queries/
+    python -m examples.powerseeking_contrastive_query.build_power_seeking_queries \\
+        --out queries/
 """
 
 import argparse
