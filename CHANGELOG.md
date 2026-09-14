@@ -1,6 +1,14 @@
 # CHANGELOG
 
 
+## v1.1.0 (2026-09-14)
+
+### Features
+
+- Contrastive queries ([#458](https://github.com/EleutherAI/bergson/pull/458),
+  [`c3f1508`](https://github.com/EleutherAI/bergson/commit/c3f15087446bdc127be5f87cca9f3727c0edd5bf))
+
+
 ## v1.0.0 (2026-09-14)
 
 ### Features
