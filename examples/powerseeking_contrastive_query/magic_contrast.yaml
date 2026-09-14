@@ -1,11 +1,11 @@
 # MAGIC attribution of power-seeking behavior using a contrastive query.
 
-# Run with `bergson examples/contrastive_queries/magic_contrast.yaml`
+# Run with `bergson examples/powerseeking_contrastive_query/magic_contrast.yaml`
 
-run_path: runs/contrastive_queries/power_seeking
+run_path: runs/powerseeking_contrastive_query
 steps:
   - magic:
-      run_path: runs/contrastive_queries/power_seeking
+      run_path: runs/powerseeking_contrastive_query
       model: Qwen/Qwen2.5-1.5B-Instruct
       resume: true
 
@@ -17,10 +17,10 @@ steps:
       query:
         data:
           dataset: queries/power_seeking.jsonl
-          format_template: examples/contrastive_queries/formats/question_answer.yaml
+          format_template: examples/powerseeking_contrastive_query/formats/question_answer.yaml
         contrast:
           dataset: queries/power_seeking_control.jsonl
-          format_template: examples/contrastive_queries/formats/question_answer.yaml
+          format_template: examples/powerseeking_contrastive_query/formats/question_answer.yaml
         aggregation: mean
 
       distributed:

@@ -30,13 +30,9 @@ Usage
 Contrastive queries
 -------------------
 
-``--query.contrast.dataset`` names a control dataset. The query objective becomes
-the mean query loss minus the mean control loss, so scores credit training data
-that lowers the query loss without lowering the control loss. Requires an
-aggregated query (``query.aggregation: mean`` or ``sum``). ``validate`` accepts the
-same field, so LDS and proponent-filter evaluations measure the same objective.
-See ``examples/contrastive_queries`` for the power-seeking evaluation against
-the other answers to its questions.
+When ``--query.contrast.dataset`` is set the aggregated query loss minus the
+aggregated control loss is attributed. Requires an aggregated query. See
+``examples/powerseeking_contrastive_query`` for an example.
 
 Output files
 ------------
