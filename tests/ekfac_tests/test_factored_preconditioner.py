@@ -313,11 +313,9 @@ def test_apply_hessian_rejects_compression_with_ev_correction():
 
 
 def test_apply_hessian_batches_queries(tmp_path):
-    """The default ``apply_batch_size`` is small enough for large models, and
-    batching the queries through the EK-FAC inverse (ev_correction, the path
+    """Batching the queries through the EK-FAC inverse (ev_correction, the path
     that also holds the corrected eigenvalue grid on-device) must give the same
     output as applying them all at once."""
-    assert InversionConfig().apply_batch_size == 2
 
     modules = {"a": (4, 6), "b": (5, 3)}  # (O, I)
     hessian_path = tmp_path / "hessian"

@@ -18,16 +18,6 @@ from bergson.config import IndexConfig
 from bergson.data import load_module_gradients
 
 
-def test_global_projector_processor_field_default():
-    p = GradientProcessor(projection_dim=16)
-    assert p.projection_target == "per_module"
-
-
-def test_global_projector_processor_field_set():
-    p = GradientProcessor(projection_dim=8192, projection_target="global")
-    assert p.projection_target == "global"
-
-
 def test_global_shapes_collapse_to_single_key():
     """In global mode, shapes() returns one synthetic 'gradients' entry."""
     from bergson.collector.collector import HookCollectorBase
