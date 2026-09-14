@@ -2,19 +2,26 @@ import os
 import shutil
 from copy import deepcopy
 
+import numpy as np
 import torch
 import torch.distributed as dist
 from datasets import Dataset
 
 from bergson.collection import collect_gradients
-from bergson.config.config import IndexConfig, PreprocessConfig, QuerySetConfig
-from bergson.data import allocate_batches
+from bergson.config.config import (
+    DataConfig,
+    IndexConfig,
+    PreprocessConfig,
+    QuerySetConfig,
+)
+from bergson.data import allocate_batches, load_gradients
 from bergson.distributed import (
     DIST_TIMEOUT,
     cap_world_size_to_dataset,
     launch_distributed_run,
     parent_barrier,
 )
+from bergson.process_grads import normalize_flat_grad
 from bergson.utils.batch_size import maybe_auto_batch_size
 from bergson.utils.utils import (
     dist_backend,
@@ -159,6 +166,8 @@ def build_query(
     Aggregating collapses per-token query gradients into one target gradient,
     so a per-token query index is built per example instead.
     """
+    if query_set_cfg.contrast is not None and query_set_cfg.aggregation == "none":
+        raise ValueError("query.contrast needs query.aggregation 'mean' or 'sum'")
     if query_set_cfg.path:
         if not os.path.exists(query_set_cfg.path):
             raise FileNotFoundError(
@@ -180,4 +189,37 @@ def build_query(
         index_cfg.attribute_tokens = False
     save_run_config(Build(index_cfg, preprocess_cfg), index_cfg.partial_run_path)
     build(index_cfg, preprocess_cfg)
+    if query_set_cfg.contrast is not None:
+        subtract_control(index_cfg, query_set_cfg.contrast, preprocess_cfg)
     return index_cfg.run_path
+
+
+def subtract_control(
+    index_cfg: IndexConfig, control: DataConfig, preprocess_cfg: PreprocessConfig
+):
+    """Build ``control`` under ``<run_path>/contrast`` with the query's settings
+    and subtract its aggregated gradient from the query index's row in place,
+    so the index holds ``mean_grad(query) - mean_grad(control)``."""
+    contrast_cfg = deepcopy(index_cfg)
+    contrast_cfg.data = control
+    contrast_cfg.run_path = os.path.join(index_cfg.run_path, "contrast")
+    contrast_preprocess = deepcopy(preprocess_cfg)
+    contrast_preprocess.normalize_aggregated_grad = False
+    build(contrast_cfg, contrast_preprocess)
+
+    if index_cfg.distributed.rank != 0:
+        return
+    index = load_gradients(index_cfg.run_path)
+    ctrl = load_gradients(contrast_cfg.run_path)
+    assert index.shape == ctrl.shape == (1, index.shape[1])
+    diff = torch.from_numpy(index[0].astype(np.float32) - ctrl[0].astype(np.float32))
+    if preprocess_cfg.normalize_aggregated_grad:
+        diff = normalize_flat_grad(diff, torch.device("cpu"))
+    grads = np.memmap(
+        os.path.join(index_cfg.run_path, "gradients.bin"),
+        dtype=index.dtype,
+        mode="r+",
+        shape=index.shape,
+    )
+    grads[0] = diff.numpy()
+    grads.flush()

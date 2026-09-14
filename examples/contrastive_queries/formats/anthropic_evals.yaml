@@ -1,0 +1,5 @@
+# Anthropic model-written evals (sycophancy, self-awareness, power-seeking):
+# the question already lists the choices; the target is the answer that
+# matches the behaviour.
+doc_to_text: "{{ question | trim }}{% if not (question | trim).endswith('Answer:') %}\n\nAnswer:{% endif %}"
+doc_to_target: "{{ answer_matching_behavior | trim }}"

@@ -28,6 +28,11 @@ class MagicConfig(ValidationConfig):
         super().__post_init__()
         if self.per_token:
             self.attribute_tokens = True
+        if self.query.aggregation == "none" and self.query.contrast is not None:
+            raise ValueError(
+                "query.contrast subtracts one aggregated query from another; "
+                "use query.aggregation 'mean' or 'sum', not 'none'."
+            )
         # Per-query MAGIC needs one document per row.
         if self.query.aggregation == "none" and self.query.data.chunk_length > 0:
             raise ValueError(

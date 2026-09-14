@@ -1,0 +1,4 @@
+# RealToxicityPrompts: the prompt is the text to continue; the target is the
+# toxic continuation.
+doc_to_text: "{{ prompt | trim }}"
+doc_to_target: "{{ continuation | trim }}"

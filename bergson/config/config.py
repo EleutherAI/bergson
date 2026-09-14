@@ -99,6 +99,11 @@ class QuerySetConfig(Serializable):
     """How the query gradients are combined: one score column per query
     (``none``) or one target gradient (``mean`` or ``sum``)."""
 
+    contrast: DataConfig | None = None
+    """Control dataset subtracted from the aggregated query gradient, so scores
+    measure the query loss minus the control loss. Needs ``aggregation`` mean
+    or sum."""
+
     path: str = ""
     """Existing query index to use instead of building one from ``data``."""
 
