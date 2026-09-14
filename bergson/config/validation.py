@@ -216,7 +216,7 @@ def migrate_query_config(obj: Mapping, legacy_key: str | None, default: str) -> 
     obj = dict(obj)
     query = obj.get("query")
     query_is_new = isinstance(query, Mapping) and (
-        not query or set(query) <= {"data", "aggregation", "path"}
+        not query or set(query) <= {"data", "aggregation", "contrast", "path"}
     )
     legacy = legacy_key is not None and legacy_key in obj
     if not legacy and (query is None or query_is_new):

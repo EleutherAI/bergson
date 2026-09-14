@@ -1,0 +1,2 @@
+doc_to_text: "{{ question | trim }}"
+doc_to_target: "{{ answer | trim }}"
