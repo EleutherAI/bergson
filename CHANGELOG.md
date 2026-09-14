@@ -1,6 +1,25 @@
 # CHANGELOG
 
 
+## v1.0.0 (2026-09-14)
+
+### Features
+
+- One query spec for every attribution pipeline
+  ([#465](https://github.com/EleutherAI/bergson/pull/465),
+  [`753ad33`](https://github.com/EleutherAI/bergson/commit/753ad33506312852d31b8d298ca82ea340dc3c16))
+
+- Score only the rows an earlier run ranked highest
+  ([#463](https://github.com/EleutherAI/bergson/pull/463),
+  [`4ceab10`](https://github.com/EleutherAI/bergson/commit/4ceab1085dd5c60854491a46a46e9a22d56e90a5))
+
+### Testing
+
+- Drop assertions that restate dataclass defaults
+  ([#466](https://github.com/EleutherAI/bergson/pull/466),
+  [`6e33124`](https://github.com/EleutherAI/bergson/commit/6e331247b6d20ccae93f893355b2f0c65da644ac))
+
+
 ## v0.26.3 (2026-09-12)
 
 ### Bug Fixes
