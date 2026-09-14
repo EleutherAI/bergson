@@ -592,17 +592,20 @@ class Scores:
     array), differing only in what a row means. ``offsets`` is set when the
     store is per-token (``info["attribute_tokens"]``): row
     ``offsets[i]:offsets[i+1]`` holds document ``i``'s per-token scores.
-    Otherwise row ``i`` is document ``i`` directly."""
+    Otherwise row ``i`` is document ``i`` directly, or training row
+    ``candidates[i]`` when the store was scored with ``score_cfg.candidates``."""
 
     def __init__(
         self,
         mmap: np.memmap,
         info: dict[str, Any],
         offsets: NDArray | None = None,
+        candidates: NDArray | None = None,
     ):
         self.mmap = mmap
         self.info = info
         self.offsets = offsets
+        self.candidates = candidates
         self.num_scores = info["num_scores"]
 
         self._score_fields = [f"score_{i}" for i in range(self.num_scores)]
@@ -660,8 +663,10 @@ def load_scores(path: Path) -> Scores:
         shape=(info["num_rows"],),
     )
     offsets = np.load(path / "offsets.npy") if info.get("attribute_tokens") else None
+    candidates_path = path / "candidates.npy"
+    candidates = np.load(candidates_path) if candidates_path.exists() else None
 
-    return Scores(mmap, info, offsets)
+    return Scores(mmap, info, offsets, candidates)
 
 
 def _load_legacy_pt_scores(score_path: str) -> tuple[torch.Tensor, bool]:
@@ -964,14 +969,15 @@ def tokenize_and_chunk(
 
     # Drop and log empty rows.
     dataset = dataset.filter(
-        lambda row: isinstance(row[text_column], str)
-        and row[text_column].strip() != "",
+        lambda row: (
+            isinstance(row[text_column], str) and row[text_column].strip() != ""
+        ),
         desc="Filtering empty documents",
     )
     n_dropped = n_before - len(dataset)
     if n_dropped > 0:
         pct = n_dropped / n_before * 100
-        print(f"Warning: {n_dropped}/{n_before} empty documents " f"({pct:.1f}%).")
+        print(f"Warning: {n_dropped}/{n_before} empty documents ({pct:.1f}%).")
 
     if num_proc is None:
         num_proc = min(cpu_count() // 2, max(1, len(dataset) // 256))

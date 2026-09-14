@@ -145,7 +145,9 @@ Method Pipelines
        --hessian_cfg.ev_correction true
 
 See ``examples/compare_wikitext/ekfac.yaml`` for a complete pipeline
-configuration.
+configuration, and ``examples/pipelines/trackstar_then_shampoo.yaml`` for a
+two-step pipeline with efficient retrieval followed by precise reranking of top
+candidates.
 
 .. autoclass:: bergson.__main__.ApproxUnrolling
    :members:

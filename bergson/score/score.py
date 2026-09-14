@@ -28,6 +28,7 @@ from bergson.hessians.preconditioner import (
     load_preconditioner,
 )
 from bergson.process_grads import normalize_and_aggregate_grads
+from bergson.score.candidates import select_candidates
 from bergson.score.score_writer import (
     MemmapSequenceScoreWriter,
     MemmapTokenScoreWriter,
@@ -406,9 +407,18 @@ def score_dataset(
             f"(autocorrelation) hessian."
         )
 
+    if score_cfg.candidates.scores and index_cfg.attribute_tokens:
+        raise ValueError("score_cfg.candidates does not support attribute_tokens.")
+
     index_cfg.partial_run_path.mkdir(parents=True, exist_ok=True)
 
     ds, _ = setup_data_pipeline(index_cfg)
+
+    if score_cfg.candidates.scores:
+        candidates = select_candidates(score_cfg.candidates, len(ds))
+        print(f"Scoring {len(candidates)} of {len(ds)} rows")
+        np.save(index_cfg.partial_run_path / "candidates.npy", candidates)
+        ds = ds.select(candidates)
 
     dist_cfg = index_cfg.distributed
     if isinstance(ds, Dataset) and len(ds) < dist_cfg.world_size:

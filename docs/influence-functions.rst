@@ -30,3 +30,27 @@ Preconditioners
      - ``bergson hessian <run_path> --method shampoo``
    * - Optimizer state (Adam / Adafactor)
      - ``--optimizer_state <path>`` on ``build`` / ``score``
+
+Reranking candidates
+--------------------
+
+``score_cfg.candidates`` on ``score``, ``ekfac`` or ``trackstar`` scores only the rows an earlier run ranked highest, e.g. TrackStar over every row, then Eigenvalue-corrected Shampoo over its top rows:
+
+.. code-block:: yaml
+
+   steps:
+     - trackstar:
+         index_cfg: {run_path: runs/two_stage/trackstar, ...}
+         ...
+     - ekfac:
+         index_cfg: {run_path: runs/two_stage/shampoo, ...}
+         hessian_cfg: {method: shampoo, ev_correction: true}
+         score_cfg:
+           candidates:
+             scores: runs/two_stage/trackstar/scores
+             top_k: 1000
+         ...
+
+The candidates are the union over the earlier run's query columns of each column's ``top_k`` rows (or ``fraction``) at the ``direction`` end. ``scores`` may also be the CSV written by ``bergson query --record``, whose ``Top`` (or ``Bottom``) rows per query are the candidates, the first ``top_k`` of each when set. The Hessian is still fitted on the whole training set. The store has one row per candidate in training order; ``candidates.npy`` beside it holds their training rows, which ``load_scores`` returns as ``candidates``.
+
+See ``examples/pipelines/trackstar_then_shampoo.yaml``.
