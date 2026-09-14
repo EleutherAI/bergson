@@ -56,7 +56,7 @@ def bank_loss_cache_key(
     loaded, and (for the single-query token-mean) the batch grouping.
     ``num_subsets`` and ``multi_query`` determine the shape.
     """
-    q = run_cfg.query
+    q = run_cfg.query.data
     identity = {
         "model": run_cfg.model,
         "model_kwargs": run_cfg.model_kwargs,
@@ -1026,7 +1026,7 @@ def evaluate_retrained(
 
     # Build the query stream on a single device (no distributed training here).
     device = get_device(0)
-    query_ds, query_n = setup_data_pipeline(run_cfg, run_cfg.query)
+    query_ds, query_n = setup_data_pipeline(run_cfg, run_cfg.query.data)
     query_ds, query_n, q_pad, q_weight_pad = pad_dataset_to_batch_size(
         query_ds, run_cfg.batch_size, query_n, "Query", 0
     )
@@ -1040,7 +1040,7 @@ def evaluate_retrained(
         query_ds,
         run_cfg.batch_size,
         device=device,
-        input_key=run_cfg.query.prompt_column,
+        input_key=run_cfg.query.data.prompt_column,
         weight_shape=(query_n,),
     )
     if q_pad:

@@ -13,6 +13,7 @@ from .config.config import (
     IndexConfig,
     PreprocessConfig,
     QueryConfig,
+    QuerySetConfig,
     ScoreConfig,
 )
 from .data import (
@@ -58,5 +59,6 @@ __all__ = [
     "Scorer",
     "ScoreConfig",
     "QueryConfig",
+    "QuerySetConfig",
     "mix_autocorrelation_matrices",
 ]

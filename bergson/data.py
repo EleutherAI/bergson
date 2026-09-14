@@ -670,7 +670,7 @@ def _load_legacy_pt_scores(score_path: str) -> tuple[torch.Tensor, bool]:
 
     A 2-D tensor is ambiguous — per-token scores are ``[docs, seq_len]`` and
     per-query scores are ``[docs, queries]`` — so the run config beside it
-    decides: per-query iff the run used ``query_method: none``. Already in the
+    decides: per-query iff the run used ``query.aggregation: none``. Already in the
     loss-diff convention, so nothing is negated.
 
     TODO: Lucia Quirke remove December 2026
@@ -693,7 +693,14 @@ def _load_legacy_pt_scores(score_path: str) -> tuple[torch.Tensor, bool]:
     for step in steps:
         for step_cfg in step.values():
             if isinstance(step_cfg, dict):
-                return scores, step_cfg.get("query_method") == "none"
+                query = step_cfg.get("query")
+                # TODO Lucia Quirke delete 12/2026
+                aggregation = (
+                    query.get("aggregation")
+                    if isinstance(query, dict) and "aggregation" in query
+                    else step_cfg.get("query_method")
+                )
+                return scores, aggregation == "none"
     return scores, False
 
 

@@ -47,7 +47,7 @@ After a run completes, ``run_cfg.run_path`` contains:
   * Per-example: ``(num_train_docs, 1)``, indexed directly by ``doc_id``.
   * Per-token: ``(num_chunks, seq_len)``, indexed by ``(chunk_idx,
     token_idx)`` in the *post-shuffle* order used during training.
-  * Per-query (``query_method: none``) adds a trailing query axis, so
+  * Per-query (``query.aggregation: none``) adds a trailing query axis, so
     per-token per-query scores are ``(num_chunks, seq_len,
     num_query_docs)``.
 

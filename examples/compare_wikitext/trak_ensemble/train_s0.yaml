@@ -18,9 +18,11 @@ steps:
         chunk_length: 0
 
       query:
-        dataset: EleutherAI/bergson-wikitext-512-chunks
-        split: "test[0:50]"
-        chunk_length: 0
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "test[0:50]"
+          chunk_length: 0
+        aggregation: none
 
       distributed:
         nproc_per_node: 4
@@ -42,5 +44,4 @@ steps:
       method: lds
       num_subsets: 2
       subset_fraction: 0.5
-      query_method: none
       scores: runs/compare_wikitext/random/scores

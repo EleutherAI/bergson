@@ -204,3 +204,36 @@ def migrate_validation_config(obj: dict) -> dict:
     else:
         raise ValueError(f"Unknown legacy validation method: {method!r}")
     return obj
+
+
+# TODO Lucia Quirke delete 12/2026
+def migrate_query_config(obj: Mapping, legacy_key: str | None, default: str) -> dict:
+    """Resolve the pre-``QuerySetConfig`` query fields once: a bare dataset spec
+    under ``query`` and its aggregation under ``legacy_key`` (or ``default``
+    when absent) become one ``query`` mapping with ``data`` and
+    ``aggregation``. A ``query`` that already has ``QuerySetConfig`` keys is
+    returned unchanged."""
+    obj = dict(obj)
+    query = obj.get("query")
+    query_is_new = isinstance(query, Mapping) and (
+        not query or set(query) <= {"data", "aggregation", "path"}
+    )
+    legacy = legacy_key is not None and legacy_key in obj
+    if not legacy and (query is None or query_is_new):
+        return obj
+    if legacy and query_is_new and query:
+        raise ValueError(
+            f"Cannot mix a query config with the legacy {legacy_key!r} field"
+        )
+    warnings.warn(
+        "A dataset spec under 'query' and a separate aggregation field are "
+        "deprecated; nest them as query.data and query.aggregation",
+        FutureWarning,
+        stacklevel=3,
+    )
+    aggregation = obj.pop(legacy_key, default) if legacy_key else default
+    obj["query"] = {
+        "data": dict(query) if isinstance(query, Mapping) else {},
+        "aggregation": aggregation,
+    }
+    return obj

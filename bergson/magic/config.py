@@ -29,8 +29,9 @@ class MagicConfig(ValidationConfig):
         if self.per_token:
             self.attribute_tokens = True
         # Per-query MAGIC needs one document per row.
-        if self.query_method == "none" and self.query.chunk_length > 0:
+        if self.query.aggregation == "none" and self.query.data.chunk_length > 0:
             raise ValueError(
-                "query.chunk_length must be 0 for per-query MAGIC "
-                "(query_method='none'); use query.truncation for long documents."
+                "query.data.chunk_length must be 0 for per-query MAGIC "
+                "(query.aggregation='none'); use query.data.truncation for "
+                "long documents."
             )

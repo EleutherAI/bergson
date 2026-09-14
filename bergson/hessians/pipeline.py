@@ -2,8 +2,8 @@ import time
 from contextlib import contextmanager
 from copy import deepcopy
 
-from ..build import build
-from ..cli.commands import Build, Score
+from ..build import build_query
+from ..cli.commands import Score
 from ..config.config import (
     HessianConfig,
     HessianPipelineConfig,
@@ -81,35 +81,19 @@ def hessian_pipeline(
     durations: dict[str, float] = {}
 
     # ── Step 1: Build query gradient(s) ───────────────────────────────────
-    aggregation = hessian_pipeline_cfg.query_aggregation
+    query_set_cfg = hessian_pipeline_cfg.query
+    aggregation = query_set_cfg.aggregation
     print(f"Step 1/4: Building query gradient(s) (aggregation={aggregation})...")
-    if not _step_complete(query_path, resume):
+    if query_set_cfg.path:
+        query_path = query_set_cfg.path
+        print(f"  using the existing query index at {query_path}")
+    elif not _step_complete(query_path, resume):
         with _timed("step1_build_query", durations):
             query_cfg = deepcopy(index_cfg)
             query_cfg.run_path = query_path
-            query_cfg.data = hessian_pipeline_cfg.query
             query_cfg.projection_dim = 0
-
-            # Query aggregation is not compatible with query-side token
-            # attribution: aggregating collapses per-token query gradients
-            # into a single target gradient, so a per-token query index is
-            # invalid. Build a per-example query instead. Mirrors the same
-            # guard in cli/trackstar.py's query build step.
-            if aggregation != "none" and query_cfg.attribute_tokens:
-                print(
-                    "Query aggregation is not compatible with query-side "
-                    "token attribution; building a per-example query instead."
-                )
-                query_cfg.attribute_tokens = False
-
             _validate(query_cfg)
-
-            query_preprocess_cfg = PreprocessConfig(aggregation=aggregation)
-            save_run_config(
-                Build(query_cfg, query_preprocess_cfg),
-                query_cfg.partial_run_path,
-            )
-            build(query_cfg, query_preprocess_cfg)
+            build_query(query_cfg, query_set_cfg, PreprocessConfig())
 
     # ── Step 2: Fit Hessian factors on training data ──────────────────────
     print(f"Step 2/4: Fitting {method} factors on training data...")

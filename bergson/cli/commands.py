@@ -32,7 +32,7 @@ from ..config.config import (
     ValidationConfig,
 )
 from ..config.config_io import save_run_config
-from ..config.validation import LDSConfig
+from ..config.validation import LDSConfig, migrate_query_config
 from ..diagnose import DiagnoseConfig, diagnose
 from ..hessians.hessian_approximations import approximate_hessians
 from ..magic import MagicConfig, run_magic
@@ -61,6 +61,17 @@ class ApproxUnrolling(Serializable):
     hessian_cfg: HessianConfig
 
     approx_unrolling_cfg: ApproxUnrollingConfig
+
+    # TODO Lucia Quirke delete 12/2026
+    @classmethod
+    def from_dict(cls, obj, drop_extra_fields=None):
+        obj = dict(obj)
+        if isinstance(obj.get("approx_unrolling_cfg"), dict):
+            sub = obj["approx_unrolling_cfg"]
+            obj["approx_unrolling_cfg"] = migrate_query_config(
+                sub, legacy_key="query_aggregation", default="mean"
+            )
+        return super().from_dict(obj, drop_extra_fields=drop_extra_fields)
 
     def execute(self):
         from ..approx_unrolling.pipeline import approx_unrolling_pipeline
@@ -102,6 +113,17 @@ class Ekfac(Serializable):
     preprocess_cfg: PreprocessConfig
 
     hessian_pipeline_cfg: HessianPipelineConfig
+
+    # TODO Lucia Quirke delete 12/2026
+    @classmethod
+    def from_dict(cls, obj, drop_extra_fields=None):
+        obj = dict(obj)
+        if isinstance(obj.get("hessian_pipeline_cfg"), dict):
+            sub = obj["hessian_pipeline_cfg"]
+            obj["hessian_pipeline_cfg"] = migrate_query_config(
+                sub, legacy_key="query_aggregation", default="mean"
+            )
+        return super().from_dict(obj, drop_extra_fields=drop_extra_fields)
 
     def execute(self):
         from ..hessians.pipeline import hessian_pipeline
@@ -262,6 +284,19 @@ class Trackstar(Serializable):
 
     trackstar_cfg: TrackstarConfig
 
+    # TODO Lucia Quirke delete 12/2026
+    @classmethod
+    def from_dict(cls, obj, drop_extra_fields=None):
+        obj = dict(obj)
+        if isinstance(obj.get("trackstar_cfg"), dict):
+            sub = obj["trackstar_cfg"]
+            obj["trackstar_cfg"] = migrate_query_config(
+                sub,
+                legacy_key=None,
+                default=(sub.get("preprocess_cfg") or {}).get("aggregation", "none"),
+            )
+        return super().from_dict(obj, drop_extra_fields=drop_extra_fields)
+
     def execute(self):
         from .trackstar import trackstar
 
@@ -279,6 +314,19 @@ class Trak(Serializable):
     index_cfg: TrackstarIndexConfig
 
     trak_cfg: TrakConfig
+
+    # TODO Lucia Quirke delete 12/2026
+    @classmethod
+    def from_dict(cls, obj, drop_extra_fields=None):
+        obj = dict(obj)
+        if isinstance(obj.get("trak_cfg"), dict):
+            sub = obj["trak_cfg"]
+            obj["trak_cfg"] = migrate_query_config(
+                sub,
+                legacy_key=None,
+                default=(sub.get("preprocess_cfg") or {}).get("aggregation", "none"),
+            )
+        return super().from_dict(obj, drop_extra_fields=drop_extra_fields)
 
     def execute(self):
         from .trak import trak

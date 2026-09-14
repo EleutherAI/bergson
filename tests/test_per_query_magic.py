@@ -1,4 +1,4 @@
-"""Per-query MAGIC scoring (`query_method="none"`).
+"""Per-query MAGIC scoring (`query.aggregation="none"`).
 
 `compute_per_query_magic_scores` runs one backward per query, sharing the
 forward, to produce a ``[num_train_docs, num_query_docs]`` score matrix. Because
@@ -18,6 +18,7 @@ import torchopt
 from datasets import Dataset
 from torchopt.pytree import tree_iter
 
+from bergson.config.config import QuerySetConfig
 from bergson.distributed import grad_tree
 from bergson.magic import BackwardState, DataStream, Trainer
 from bergson.magic.cli import compute_per_query_magic_scores, compute_query_gradients
@@ -91,10 +92,9 @@ def test_per_query_mean_reproduces_aggregate(grad_accum_steps):
 
         run_cfg = MagicConfig(
             run_path=run_path,
-            query_method="none",
             grad_accum_steps=grad_accum_steps,
         )
-        run_cfg.query.prompt_column = "input_ids"
+        run_cfg.query.data.prompt_column = "input_ids"
 
         # Snapshot final state so the aggregate reference starts where per-query does.
         agg = _aggregate_magic_score(trainer, model, fwd_state, stream, ckpts, query_ds)
@@ -137,8 +137,10 @@ def test_per_query_scores_saved_incrementally():
     with tempfile.TemporaryDirectory() as run_path:
         ckpts = f"{run_path}/checkpoints"
         fwd_state = trainer.train(fwd_state, stream, inplace=True, save_dir=ckpts)
-        run_cfg = MagicConfig(run_path=run_path, query_method="none")
-        run_cfg.query.prompt_column = "input_ids"
+        run_cfg = MagicConfig(
+            run_path=run_path, query=QuerySetConfig(aggregation="none")
+        )
+        run_cfg.query.data.prompt_column = "input_ids"
         stream.requires_grad = True
         compute_per_query_magic_scores(
             trainer,
@@ -177,8 +179,10 @@ def test_per_query_scores_only_real_queries_when_padded():
     with tempfile.TemporaryDirectory() as run_path:
         ckpts = f"{run_path}/checkpoints"
         fwd_state = trainer.train(fwd_state, stream, inplace=True, save_dir=ckpts)
-        run_cfg = MagicConfig(run_path=run_path, query_method="none")
-        run_cfg.query.prompt_column = "input_ids"
+        run_cfg = MagicConfig(
+            run_path=run_path, query=QuerySetConfig(aggregation="none")
+        )
+        run_cfg.query.data.prompt_column = "input_ids"
         stream.requires_grad = True
         per_query = compute_per_query_magic_scores(
             trainer,
@@ -225,10 +229,9 @@ def _per_query_run(tmp_path, attribute_tokens: bool, num_docs=5, seq_len=8, n_qu
         run_path=str(run_path),
         model="EleutherAI/pythia-14m",
         data=DataConfig(dataset="unused", chunk_length=seq_len),
-        query=DataConfig(dataset="unused"),
+        query=QuerySetConfig(data=DataConfig(dataset="unused"), aggregation="none"),
         batch_size=4,
         attribute_tokens=attribute_tokens,
-        query_method="none",
         skip_validation=True,
     )
     worker(0, 0, 1, ds(num_docs), ds(n_query), num_docs, n_query, run_cfg)
@@ -267,13 +270,17 @@ def test_chunked_query_set_rejected_for_per_query():
     """Rejected at config time, before a run trains for hours."""
     from bergson.config.config import DataConfig
 
-    with pytest.raises(ValueError, match="query.chunk_length must be 0"):
+    with pytest.raises(ValueError, match="query.data.chunk_length must be 0"):
         MagicConfig(
-            run_path="x", query_method="none", query=DataConfig(chunk_length=32)
+            run_path="x",
+            query=QuerySetConfig(data=DataConfig(chunk_length=32), aggregation="none"),
         )
 
     # Chunked query sets are fine for the aggregate-query backward.
-    MagicConfig(run_path="x", query_method="mean", query=DataConfig(chunk_length=32))
+    MagicConfig(
+        run_path="x",
+        query=QuerySetConfig(data=DataConfig(chunk_length=32), aggregation="mean"),
+    )
 
 
 @pytest.mark.parametrize("grad_accum_steps", [1, 4])
@@ -328,11 +335,10 @@ def _per_query_resume_setup(tmp_path, num_docs=6, n_query=2):
     def run(run_path, resume):
         run_cfg = MagicConfig(
             run_path=str(run_path),
-            query_method="none",
             backward_save_every=1,
             resume=resume,
         )
-        run_cfg.query.prompt_column = "input_ids"
+        run_cfg.query.data.prompt_column = "input_ids"
         fwd_state.detach_()
         fwd_state.copy_(final_state)
         stream.requires_grad = True

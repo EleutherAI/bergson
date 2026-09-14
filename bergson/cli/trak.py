@@ -8,7 +8,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from ..build import build
+from ..build import build_query
 from ..config.config import HessianConfig, IndexConfig, InversionConfig, TrakConfig
 from ..config.config_io import save_run_config
 from ..data import pad_and_tensor
@@ -22,7 +22,7 @@ from ..utils.worker_utils import (
     setup_model_and_peft,
     validate_run_path,
 )
-from .commands import Build, Hessian, Score
+from .commands import Hessian, Score
 from .trackstar import _limit_split_for_hess, _step_complete
 
 
@@ -165,15 +165,14 @@ def _trak_single(
     parent_barrier(index_cfg.distributed)
 
     print("Step 2/4: Building the Gram-whitened query index...")
-    if not _step_complete(query_path, resume):
+    if trak_cfg.query.path:
+        query_path = trak_cfg.query.path
+        print(f"  using the existing query index at {query_path}")
+    elif not _step_complete(query_path, resume):
         query_cfg = deepcopy(index_cfg)
         query_cfg.run_path = query_path
-        query_cfg.data = deepcopy(trak_cfg.query)
-        if preprocess_cfg.aggregation != "none" and query_cfg.attribute_tokens:
-            query_cfg.attribute_tokens = False
         _validate(query_cfg)
-        save_run_config(Build(query_cfg, preprocess_cfg), query_cfg.partial_run_path)
-        build(query_cfg, preprocess_cfg)
+        build_query(query_cfg, trak_cfg.query, preprocess_cfg)
 
     print("Step 3/4: Scoring the training set...")
     if not _step_complete(scores_path, resume):

@@ -1337,7 +1337,7 @@ def test_worker_writes_doc_ids_for_fresh_per_token_run(tmp_path):
     Calls worker() rather than reimplementing it, so it covers what actually
     lands on disk.
     """
-    from bergson.config.config import DataConfig
+    from bergson.config.config import DataConfig, QuerySetConfig
     from bergson.magic.cli import worker
     from bergson.magic.config import MagicConfig
 
@@ -1349,10 +1349,12 @@ def test_worker_writes_doc_ids_for_fresh_per_token_run(tmp_path):
         run_path=str(tmp_path),
         model="EleutherAI/pythia-14m",
         data=DataConfig(dataset="unused", chunk_length=seq_len),
-        query=DataConfig(dataset="unused", chunk_length=seq_len),
+        query=QuerySetConfig(
+            data=DataConfig(dataset="unused", chunk_length=seq_len),
+            aggregation="mean",
+        ),
         batch_size=2,
         attribute_tokens=True,
-        query_method="mean",
         skip_validation=True,
     )
 

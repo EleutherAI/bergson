@@ -16,9 +16,10 @@ steps:
         chunk_length: 0
 
       query:
-        dataset: EleutherAI/bergson-wikitext-512-chunks
-        split: "test[0:1]"
-        chunk_length: 0
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "test[0:1]"
+          chunk_length: 0
 
       distributed:
         nproc_per_node: 8

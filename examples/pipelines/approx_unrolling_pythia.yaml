@@ -38,6 +38,7 @@ steps:
         lr_list: [1.0e-5, 1.0e-5, 1.0e-5]
         step_size_list: [1, 1, 1]
         query:
-          dataset: NeelNanda/pile-10k
-          split: train[:8]
-          truncation: true
+          data:
+            dataset: NeelNanda/pile-10k
+            split: train[:8]
+            truncation: true

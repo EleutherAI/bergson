@@ -11,7 +11,12 @@ Requires at least 2 CUDA devices.
 import pytest
 import torch
 
-from bergson.config import DataConfig, DistributedConfig, LRScheduleConfig
+from bergson.config import (
+    DataConfig,
+    DistributedConfig,
+    LRScheduleConfig,
+    QuerySetConfig,
+)
 from bergson.config.validation import LDSConfig
 from bergson.data import load_scores_loss_signed
 from bergson.magic.cli import MagicConfig, run_magic
@@ -48,7 +53,7 @@ def magic_cfg(
         split="train[:512]",
         chunk_length=32,
     )
-    # Single query doc: query_method="none" runs one backward per query, which
+    # Single query doc: query.aggregation="none" runs one backward per query, which
     # needs one document per row — so query the pre-chunked dataset the example
     # configs use, where a row is a document already.
     query = DataConfig(
@@ -60,7 +65,7 @@ def magic_cfg(
         model="trl-internal-testing/tiny-Phi3ForCausalLM",
         fsdp=fsdp,
         data=data,
-        query=query,
+        query=QuerySetConfig(data=query, aggregation="none"),
         lr_schedule=LRScheduleConfig(lr=lr) if lr is not None else _LR_SCHEDULE,
         batch_size=8,
         num_epochs=1,

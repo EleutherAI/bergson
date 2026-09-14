@@ -1,12 +1,13 @@
 import os
 import shutil
+from copy import deepcopy
 
 import torch
 import torch.distributed as dist
 from datasets import Dataset
 
 from bergson.collection import collect_gradients
-from bergson.config.config import IndexConfig, PreprocessConfig
+from bergson.config.config import IndexConfig, PreprocessConfig, QuerySetConfig
 from bergson.data import allocate_batches
 from bergson.distributed import (
     DIST_TIMEOUT,
@@ -143,3 +144,40 @@ def build(
 
     if dist_cfg.world_size < index_cfg.distributed.world_size:
         parent_barrier(index_cfg.distributed)
+
+
+def build_query(
+    index_cfg: IndexConfig,
+    query_set_cfg: QuerySetConfig,
+    preprocess_cfg: PreprocessConfig,
+) -> str:
+    """Build the query index at ``index_cfg.run_path`` and return its path.
+    ``query_set_cfg.path`` names an index built earlier and is returned as is.
+    ``index_cfg`` carries the model, projection and collection settings; the
+    dataset and aggregation come from ``query_set_cfg``.
+
+    Aggregating collapses per-token query gradients into one target gradient,
+    so a per-token query index is built per example instead.
+    """
+    if query_set_cfg.path:
+        if not os.path.exists(query_set_cfg.path):
+            raise FileNotFoundError(
+                f"query_set_cfg.path does not exist: {query_set_cfg.path}"
+            )
+        return query_set_cfg.path
+
+    # Imported here: cli.commands imports this module.
+    from bergson.cli.commands import Build, save_run_config
+
+    index_cfg.data = deepcopy(query_set_cfg.data)
+    preprocess_cfg = deepcopy(preprocess_cfg)
+    preprocess_cfg.aggregation = query_set_cfg.aggregation
+    if query_set_cfg.aggregation != "none" and index_cfg.attribute_tokens:
+        print(
+            "Query aggregation is not compatible with query-side token "
+            "attribution; building a per-example query instead."
+        )
+        index_cfg.attribute_tokens = False
+    save_run_config(Build(index_cfg, preprocess_cfg), index_cfg.partial_run_path)
+    build(index_cfg, preprocess_cfg)
+    return index_cfg.run_path

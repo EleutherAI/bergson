@@ -39,10 +39,11 @@ steps:
 
       hessian_pipeline_cfg:
         query:
-          dataset: EleutherAI/bergson-wikitext-512-chunks
-          split: "test[0:50]"
-          chunk_length: 0
-        # One score column per query, for per-query LDS.
-        query_aggregation: none
+          data:
+            dataset: EleutherAI/bergson-wikitext-512-chunks
+            split: "test[0:50]"
+            chunk_length: 0
+          # One score column per query, for per-query LDS.
+          aggregation: none
         inversion_cfg:
           damping_factor: 0.1

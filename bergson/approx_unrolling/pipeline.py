@@ -28,15 +28,13 @@ import shutil
 from copy import deepcopy
 from pathlib import Path
 
-from ..build import build
-from ..cli.commands import Build
+from ..build import build_query
 from ..config import (
     ApproxUnrollingConfig,
     HessianConfig,
     IndexConfig,
     PreprocessConfig,
 )
-from ..config.config_io import save_run_config
 from ..distributed import parent_barrier
 from ..utils.logger import get_logger
 from .adam_preconditioner import (
@@ -192,24 +190,19 @@ def approx_unrolling_pipeline(
         f"Building mean query gradient at the final checkpoint..."
     )
     query_path = Path(index_cfg.run_path) / "query"
-    if not index_cfg.overwrite and query_path.exists():
+    if approx_unrolling_cfg.query.path:
+        query_path = Path(approx_unrolling_cfg.query.path)
+        logger.info(f"  using the existing query index at {query_path}")
+    elif not index_cfg.overwrite and query_path.exists():
         logger.info(f"  skip — exists at {query_path}")
     else:
         if query_path.exists():
             shutil.rmtree(query_path)
         query_cfg = deepcopy(index_cfg)
         query_cfg.model = str(approx_unrolling_cfg.checkpoints[-1])
-        query_cfg.data = approx_unrolling_cfg.query
         query_cfg.run_path = str(query_path)
         query_cfg.projection_dim = 0
-        query_preprocess_cfg = PreprocessConfig(
-            aggregation=approx_unrolling_cfg.query_aggregation
-        )
-        save_run_config(
-            Build(query_cfg, query_preprocess_cfg),
-            query_cfg.partial_run_path,
-        )
-        build(query_cfg, query_preprocess_cfg)
+        build_query(query_cfg, approx_unrolling_cfg.query, PreprocessConfig())
 
     # Per-segment Adam preconditioners from the checkpoints' second moments
     preconditioner_paths: list[Path] = []
