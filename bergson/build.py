@@ -190,7 +190,6 @@ def build_query(
     save_run_config(Build(index_cfg, preprocess_cfg), index_cfg.partial_run_path)
     query_preprocess = preprocess_cfg
     if query_set_cfg.contrast is not None:
-        # subtract_control normalizes the difference, not each side of it.
         query_preprocess = deepcopy(preprocess_cfg)
         query_preprocess.normalize_aggregated_grad = False
     build(index_cfg, query_preprocess)
