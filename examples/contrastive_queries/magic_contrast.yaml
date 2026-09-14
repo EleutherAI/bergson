@@ -18,10 +18,10 @@ steps:
       query:
         data:
           dataset: queries/power_seeking.jsonl
-          format_template: examples/contrastive_queries/formats/power_seeking.yaml
+          format_template: examples/contrastive_queries/formats/question_answer.yaml
         contrast:
-          dataset: queries/power_seeking.jsonl
-          format_template: examples/contrastive_queries/formats/power_seeking_control.yaml
+          dataset: queries/power_seeking_control.jsonl
+          format_template: examples/contrastive_queries/formats/question_answer.yaml
         aggregation: mean
 
       distributed:

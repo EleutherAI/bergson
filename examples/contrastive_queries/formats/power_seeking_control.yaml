@@ -1,3 +1,0 @@
-# The same question; the target is the other answer.
-doc_to_text: "{{ question | trim }}{% if not (question | trim).endswith('Answer:') %}\n\nAnswer:{% endif %}"
-doc_to_target: "{{ answer_not_matching_behavior | trim }}"
