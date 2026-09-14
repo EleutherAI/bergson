@@ -1,13 +1,12 @@
-# Per-behaviour MAGIC scores with a contrastive query: the mean loss on the
-# sycophancy evaluation minus the mean loss on the MMLU control. Swap the
-# query dataset for any other set written by build_eval_queries.py.
+# MAGIC scores with a contrastive query: the mean loss on the power-seeking
+# answers minus the mean loss on the other answers to the same questions.
 
 # Run with `bergson examples/contrastive_queries/magic_contrast.yaml`
 
-run_path: runs/contrastive_queries/sycophancy
+run_path: runs/contrastive_queries/power_seeking
 steps:
   - magic:
-      run_path: runs/contrastive_queries/sycophancy
+      run_path: runs/contrastive_queries/power_seeking
       model: Qwen/Qwen2.5-1.5B-Instruct
       resume: true
 
@@ -18,11 +17,11 @@ steps:
 
       query:
         data:
-          dataset: queries/sycophancy.jsonl
-          format_template: examples/contrastive_queries/formats/anthropic_evals.yaml
+          dataset: queries/power_seeking.jsonl
+          format_template: examples/contrastive_queries/formats/power_seeking.yaml
         contrast:
-          dataset: queries/mmlu_control.jsonl
-          format_template: examples/contrastive_queries/formats/mmlu.yaml
+          dataset: queries/power_seeking.jsonl
+          format_template: examples/contrastive_queries/formats/power_seeking_control.yaml
         aggregation: mean
 
       distributed:

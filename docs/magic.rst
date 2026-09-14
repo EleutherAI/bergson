@@ -35,8 +35,8 @@ the mean query loss minus the mean control loss, so scores credit training data
 that lowers the query loss without lowering the control loss. Requires an
 aggregated query (``query.aggregation: mean`` or ``sum``). ``validate`` accepts the
 same field, so LDS and proponent-filter evaluations measure the same objective.
-See ``examples/contrastive_queries`` for behaviour-evaluation queries against an
-MMLU control.
+See ``examples/contrastive_queries`` for the power-seeking evaluation against
+the other answers to its questions.
 
 Output files
 ------------

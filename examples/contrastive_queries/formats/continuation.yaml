@@ -1,3 +1,0 @@
-# The model's own continuation of a document-style opener.
-doc_to_text: "{{ prompt }}"
-doc_to_target: "{{ continuation }}"

@@ -1,16 +1,14 @@
 # Contrastive queries
 
-A contrastive query scores training data by how it moves one loss relative to another: the loss on a behaviour evaluation minus the loss on a general-capability control. Proponents of that query are the training items that make the behaviour likelier without helping general capability, which is what a data filter for that behaviour should remove.
+A contrastive query scores training data by how it moves one loss relative to another. Here the query is the Anthropic power-seeking evaluation with the power-seeking answer as the completion, and the control is the same questions with the other answer, so proponents are the training items that make the model prefer the power-seeking answer.
 
-- `build_eval_queries.py` writes five positive sets (sycophancy, toxicity, consciousness claims, self-awareness, power-seeking) and an MMLU control as JSONL of source rows.
-- `formats/*.yaml` are the Jinja templates (`doc_to_text`, `doc_to_target`) that render a row into a prompt and a completion; pass one as `format_template` on the query `DataConfig`.
-- `magic_contrast.yaml` scores one set with MAGIC using `query.contrast`. The field is part of every pipeline's query set (`magic`, `validate`, `trackstar`, `ekfac`, `trak`, `approxunrolling`).
+- `build_power_seeking_queries.py` writes `queries/power_seeking.jsonl`.
+- `formats/power_seeking.yaml` and `formats/power_seeking_control.yaml` render a row into the prompt and either completion; pass one as `format_template` on the query or contrast `DataConfig`.
+- `magic_contrast.yaml` scores the training set with MAGIC using `query.contrast`. The field is part of every pipeline's query set (`magic`, `validate`, `trackstar`, `ekfac`, `trak`, `approxunrolling`).
 
 ```bash
-python -m examples.contrastive_queries.build_eval_queries --out queries/
+python -m examples.contrastive_queries.build_power_seeking_queries --out queries/
 bergson examples/contrastive_queries/magic_contrast.yaml
 ```
 
 The prompt and completion are rendered through the tokenizer's chat template as a user and an assistant turn, and the loss covers the assistant turn only.
-
-Base models whose chat tokens are untrained (Qwen2.5 base) need a plain template instead: copy the tokenizer and replace its `chat_template` with `formats/plain_chat_template.jinja`, which joins the prompt and completion with a space and no special tokens, then point `tokenizer` at that copy.
