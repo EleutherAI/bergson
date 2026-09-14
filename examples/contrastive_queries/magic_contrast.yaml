@@ -1,5 +1,4 @@
-# MAGIC scores with a contrastive query: the mean loss on the power-seeking
-# answers minus the mean loss on the other answers to the same questions.
+# MAGIC attribution of power-seeking behavior using a contrastive query.
 
 # Run with `bergson examples/contrastive_queries/magic_contrast.yaml`
 
