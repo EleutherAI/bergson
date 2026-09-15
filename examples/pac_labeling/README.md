@@ -120,9 +120,10 @@ python examples/pac_labeling/compare_subset.py --full $P/scores \
     --bank $P/bank_from_filter --pac $P/pac/main2
 ```
 
-Agreement with the full run on the 5065 expert-set documents (query 12 is
-the query the set was chosen for; query 3 shares the documents but not the
-selection):
+Agreement with the full run on the scored documents (query 12 is the query
+the set was chosen for; query 3 shares the documents but not the selection).
+For the background run the overlap and hybrid columns cover all 11465 scored
+documents; its Spearman is on the 5065 expert-set documents alone:
 
 | variant | query | Pearson | Spearman | scale | top-1% overlap | LDS, hybrid with subset scores | LDS, hybrid with full-run scores | LDS, EK-FAC only |
 |---|---|---|---|---|---|---|---|---|
