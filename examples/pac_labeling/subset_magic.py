@@ -61,6 +61,7 @@ def main() -> None:
     step["query"] = {**step["query"], "dataset": str(args.run_path / "query.hf")}
     step["resume"] = False
     step["overwrite"] = False
+    step["skip_validation"] = True
     step["distributed"] = {**step["distributed"], "nproc_per_node": args.nproc}
     for key in ("batch_size", "num_epochs", "grad_accum_steps"):
         value = getattr(args, key)

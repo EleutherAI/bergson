@@ -11,8 +11,11 @@ sample of ``m_cal`` expert scores fits the cheap scores onto the expert scale
 by least squares and fixes the loss; a second sample of ``m`` expert scores
 sets the PAC threshold. Two losses are run:
 
-* ``proponent``: 0-1 loss on membership in the strongest 1% of scores, the
-  cutoff being the 1% quantile of the calibration sample's expert scores.
+* ``proponent``: 0-1 loss on membership in the strongest 1% of scores. The
+  expert cutoff is the 1% quantile of the calibration sample's expert scores;
+  the cheap label is membership in the cheap scorer's own strongest 1%.
+* ``recall``: 0-1 loss on missing a member of that set, so ``eps`` is the
+  missed fraction of proponents times 1%.
 * ``score``: squared error of the calibrated cheap score in units of that
   cutoff, clipped to 1.
 
@@ -95,8 +98,8 @@ def learned_uncertainty(
 def uncertainties(
     task: str, yhat: np.ndarray, tau: float, cal: np.ndarray, cal_loss: np.ndarray, rng
 ) -> dict[str, np.ndarray]:
-    if task == "proponent":
-        own = ("boundary", rank01(-np.abs(yhat - tau)))
+    if task in ("proponent", "recall"):
+        own = ("boundary", rank01(-np.abs(yhat - cheap_cutoff(yhat))))
     else:
         own = ("magnitude", rank01(np.abs(yhat)))
     return {
@@ -107,9 +110,15 @@ def uncertainties(
     }
 
 
+def cheap_cutoff(yhat: np.ndarray) -> float:
+    return float(np.quantile(yhat, TOP_FRACTION))
+
+
 def task_loss(task: str, y: np.ndarray, yhat: np.ndarray, tau: float) -> np.ndarray:
     if task == "proponent":
-        return ((y <= tau) != (yhat <= tau)).astype(np.float64)
+        return ((y <= tau) != (yhat <= cheap_cutoff(yhat))).astype(np.float64)
+    if task == "recall":
+        return ((y <= tau) & (yhat > cheap_cutoff(yhat))).astype(np.float64)
     return np.minimum(1.0, ((y - yhat) / tau) ** 2)
 
 
@@ -232,7 +241,10 @@ def main() -> None:
     ap.add_argument("--alpha", type=float, default=0.05)
     ap.add_argument("--eps", type=float, nargs="+", default=[0.002, 0.005, 0.01, 0.02])
     ap.add_argument("--score-eps", type=float, nargs="+", default=[0.02, 0.05, 0.1])
-    ap.add_argument("--tasks", nargs="+", default=["proponent", "score"])
+    ap.add_argument(
+        "--recall-eps", type=float, nargs="+", default=[0.001, 0.002, 0.005]
+    )
+    ap.add_argument("--tasks", nargs="+", default=["proponent", "recall", "score"])
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument(
@@ -256,7 +268,11 @@ def main() -> None:
         "m": args.m,
         "m_cal": args.m_cal,
         "alpha": args.alpha,
-        "eps": {"proponent": args.eps, "score": args.score_eps},
+        "eps": {
+            "proponent": args.eps,
+            "recall": args.recall_eps,
+            "score": args.score_eps,
+        },
         "tasks": args.tasks,
         "export": (args.export[0], args.export[1], float(args.export[2])),
     }
