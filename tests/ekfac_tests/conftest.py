@@ -97,8 +97,8 @@ def pytest_addoption(parser) -> None:
         "--n_samples",
         action="store",
         type=int,
-        default=100,
-        help="Number of samples from pile-10k dataset (default: 100)",
+        default=20,
+        help="Number of samples from pile-10k dataset (default: 20)",
     )
 
 

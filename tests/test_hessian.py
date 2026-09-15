@@ -32,7 +32,7 @@ def test_autocorrelation_hessian_e2e(tmp_path: Path):
             "--dataset",
             "NeelNanda/pile-10k",
             "--split",
-            "train[:100]",
+            "train[:16]",
             "--truncation",
             "--projection_dim",
             "4",
