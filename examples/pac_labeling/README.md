@@ -154,3 +154,100 @@ scores for a subset is to keep its trajectory and restrict the backward's
 per-document gradient to the subset, which costs the full forward once and a
 backward proportional to the subset's share of each batch; that is not what
 this example measures.
+
+## Hill-climbing the uncertainty score
+
+`hillclimb.py` ranks uncertainty scores by two numbers per loss and `eps`:
+the oracle save (sort documents by uncertainty and keep the longest prefix
+whose mean loss is at most `eps`, what PAC labeling would certify with
+unlimited expert samples) and the certified save with `m` expert samples,
+net of those samples and the 1000-document calibration sample. Candidate
+scores are each feature's own rank, its rank disagreement with EK-FAC, and
+gradient-boosted regressions of the loss on all features fit on the
+calibration samples of every query. Features, all computed without MAGIC:
+
+| feature | source | Spearman with MAGIC |
+|---|---|---|
+| EK-FAC (calibrated) | the cheap scorer | 0.31 |
+| BM25 | `bm25_scores` | |
+| semantic | `cheap_features.py`, BGE-base cosine of decoded text | |
+| activation | `cheap_features.py`, cosine of mean-pooled module inputs | |
+| doc loss | `cheap_features.py`, mean token loss under the trained model | |
+| training gradients | `train_collect.py` + `score_collected.py`: the HuggingFace `GradientCollectorCallback` on a retrain of the same recipe, projection 32 per module, Adam-normalized and scaled by the step's learning rate, dotted with query gradients at the final model | 0.05 |
+| gradient cosine | `gradcos_*.yaml`: full-gradient cosine at the final model and at exported trajectory checkpoints 250 and 375 | 0.06 |
+| EK-FAC at checkpoints | `ekfac_step*.yaml` on the exported checkpoints | |
+| TrackStar | `trackstar_p64.yaml` | |
+
+```
+python examples/pac_labeling/export_checkpoint.py --reference $P/config.yaml \
+    --checkpoint $P/checkpoints/step_250.ckpt --out $P/pac/ckpt/step_250
+python examples/pac_labeling/train_collect.py --reference $P/config.yaml --run-path runs/collect
+python -m bergson runs/collect/query_build.yaml
+python examples/pac_labeling/score_collected.py --gradients runs/collect/gradients/train \
+    --query runs/collect/query --out runs/collect/scores
+python examples/pac_labeling/cheap_features.py --model $P/base/model --train <train.hf> \
+    --query <query.hf> --out runs/cheap
+python examples/pac_labeling/hillclimb.py --expert $P/scores --cheap $P/ekfac_scores/scores \
+    --feature bm25=$P/bm25_scores --feature semantic=runs/cheap/semantic_scores ... \
+    --doc-feature doc_loss=runs/cheap/doc_loss.npy --m 2000 4000 8000 --out runs/hill
+python examples/pac_labeling/plot_hillclimb.py --leaderboard runs/hill/leaderboard.csv --out fig
+```
+
+Certified save (net of the expert samples and the calibration sample) by
+expert sample size `m`, betting bound, 20 queries x 20 trials, and the
+oracle save of each score. `learned[cheap]` uses only EK-FAC-derived
+columns, `learned[cheap+retrieval]` adds BM25, semantic, activation and doc
+loss, `learned[cheap+gradients]` adds the training-gradient, gradient-cosine
+and checkpoint EK-FAC columns, `learned[all]` everything.
+
+| loss | eps | uncertainty | oracle | m=2000 | m=4000 | m=8000 |
+|---|---|---|---|---|---|---|
+| proponent | 0.005 | cheap_rank | 0.93 | 0.47 | 0.60 | 0.65 |
+| proponent | 0.005 | learned[cheap] | 0.91 | 0.44 | 0.58 | 0.64 |
+| proponent | 0.005 | learned[cheap+retrieval] | 0.93 | 0.56 | 0.67 | 0.70 |
+| proponent | 0.005 | learned[cheap+gradients] | 0.93 | 0.49 | 0.61 | 0.67 |
+| proponent | 0.005 | learned[all] | 0.93 | 0.55 | 0.68 | 0.70 |
+| proponent | 0.005 | random | 0.35 | 0.10 | 0.14 | 0.16 |
+| proponent | 0.01 | cheap_rank | 0.99 | 0.83 | 0.86 | 0.83 |
+| proponent | 0.01 | learned[all] | 0.99 | 0.85 | 0.87 | 0.83 |
+| recall | 0.002 | cheap_rank | 0.63 | 0.13 | 0.18 | 0.25 |
+| recall | 0.002 | learned[cheap+retrieval] | 0.71 | 0.18 | 0.21 | 0.30 |
+| recall | 0.002 | learned[all] | 0.72 | 0.17 | 0.21 | 0.31 |
+| recall | 0.005 | cheap_rank | 0.93 | 0.47 | 0.60 | 0.65 |
+| recall | 0.005 | learned[all] | 0.94 | 0.55 | 0.67 | 0.70 |
+| score | 0.05 | cheap_rank | 0.47 | 0.34 | 0.36 | 0.35 |
+| score | 0.05 | learned[cheap] | 0.55 | 0.43 | 0.44 | 0.43 |
+| score | 0.05 | learned[cheap+retrieval] | 0.60 | 0.50 | 0.50 | 0.48 |
+| score | 0.05 | learned[all] | 0.61 | 0.50 | 0.51 | 0.49 |
+| score | 0.05 | random | 0.46 | 0.35 | 0.36 | 0.35 |
+
+Violation rates stay at or below 2% throughout (`leaderboard.csv`). The CLT
+bound certifies 15-25 points more at `m = 2000` and violates `eps` in 6-10%
+of trials against the 5% allowed, so it is not used. Figure:
+`hillclimb.pdf`.
+
+What moved and what did not:
+
+* The finite expert sample, not the uncertainty score, is what binds the
+  binary losses. With EK-FAC's rank alone the oracle would certify 93% of the
+  corpus at `eps = 0.005`; the betting bound with 2000 samples certifies 47%,
+  with 8000 samples 65% net of the samples themselves. A loss that is 1 on
+  about 1.5% of documents needs tens of thousands of samples before a
+  prefix with mean 0.004 can be told from 0.005.
+* Retrieval features are the useful cheap signal. The learned score over
+  EK-FAC plus BM25, semantic, activation and doc loss adds 9-10 points at
+  `m = 2000` on the two binary losses, raises the missed-proponent oracle
+  from 0.63 to 0.71 at `eps = 0.002`, and lifts the score loss's oracle from
+  0.47 to 0.60, where EK-FAC's own rank is no better than random.
+* Gradient-family features carry nothing MAGIC-specific. Training-time
+  gradients from the HuggingFace callback and full-gradient cosines at three
+  trajectory points have Spearman 0.05-0.06 with MAGIC while agreeing with
+  EK-FAC at 0.34-0.56; EK-FAC at step 250 ranks like the final EK-FAC
+  (Spearman 0.95, top-1% overlap 0.79). Adding them to the learned score
+  moves the certified save by at most one point.
+* The learned score on EK-FAC columns alone is slightly worse than the plain
+  rank: with 1000 calibration documents per query the regression adds noise
+  and no information.
+* Importance-weighted sampling (the paper's `pi_i`, now supported by
+  `pac_threshold`) does not help: labels spent above the eventual threshold
+  buy nothing, and the loss below it is what the bound has to resolve.
