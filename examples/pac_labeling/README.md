@@ -174,9 +174,9 @@ calibration samples of every query. Features, all computed without MAGIC:
 | activation | `cheap_features.py`, cosine of mean-pooled module inputs | |
 | doc loss | `cheap_features.py`, mean token loss under the trained model | |
 | training gradients | `train_collect.py` + `score_collected.py`: the HuggingFace `GradientCollectorCallback` on a retrain of the same recipe, projection 32 per module, Adam-normalized and scaled by the step's learning rate, dotted with query gradients at the final model | 0.05 |
-| gradient cosine | `gradcos_*.yaml`: full-gradient cosine at the final model and at exported trajectory checkpoints 250 and 375 | 0.06 |
-| EK-FAC at checkpoints | `ekfac_step*.yaml` on the exported checkpoints | |
-| TrackStar | `trackstar_p64.yaml` | |
+| gradient cosine | `gradcos_*.yaml`: full-gradient cosine at the final model and at exported trajectory checkpoints 250 and 375; `gradcos_p32.yaml` the same with a 32-dimensional per-module projection | 0.06, 0.05 |
+| EK-FAC at checkpoints | `ekfac_step*.yaml` on the exported checkpoints 250 and 375 (Spearman 0.95 and 0.98 with the final EK-FAC) | 0.30, 0.31 |
+| TrackStar | `trackstar_p64.yaml`, projection 64 at the final model | 0.06 |
 
 ```
 python examples/pac_labeling/export_checkpoint.py --reference $P/config.yaml \
@@ -205,23 +205,23 @@ and checkpoint EK-FAC columns, `learned[all]` everything.
 | proponent | 0.005 | cheap_rank | 0.93 | 0.47 | 0.60 | 0.65 |
 | proponent | 0.005 | learned[cheap] | 0.91 | 0.44 | 0.58 | 0.64 |
 | proponent | 0.005 | learned[cheap+retrieval] | 0.93 | 0.56 | 0.67 | 0.70 |
-| proponent | 0.005 | learned[cheap+gradients] | 0.93 | 0.49 | 0.61 | 0.67 |
-| proponent | 0.005 | learned[all] | 0.93 | 0.55 | 0.68 | 0.70 |
+| proponent | 0.005 | learned[cheap+gradients] | 0.93 | 0.48 | 0.60 | 0.66 |
+| proponent | 0.005 | learned[all] | 0.94 | 0.58 | 0.68 | 0.71 |
 | proponent | 0.005 | random | 0.35 | 0.10 | 0.14 | 0.16 |
 | proponent | 0.01 | cheap_rank | 0.99 | 0.83 | 0.86 | 0.83 |
-| proponent | 0.01 | learned[all] | 0.99 | 0.85 | 0.87 | 0.83 |
+| proponent | 0.01 | learned[all] | 0.99 | 0.86 | 0.87 | 0.83 |
 | recall | 0.002 | cheap_rank | 0.63 | 0.13 | 0.18 | 0.25 |
 | recall | 0.002 | learned[cheap+retrieval] | 0.71 | 0.18 | 0.21 | 0.30 |
-| recall | 0.002 | learned[all] | 0.72 | 0.17 | 0.21 | 0.31 |
+| recall | 0.002 | learned[all] | 0.73 | 0.18 | 0.23 | 0.32 |
 | recall | 0.005 | cheap_rank | 0.93 | 0.47 | 0.60 | 0.65 |
-| recall | 0.005 | learned[all] | 0.94 | 0.55 | 0.67 | 0.70 |
+| recall | 0.005 | learned[all] | 0.94 | 0.55 | 0.67 | 0.71 |
 | score | 0.05 | cheap_rank | 0.47 | 0.34 | 0.36 | 0.35 |
 | score | 0.05 | learned[cheap] | 0.55 | 0.43 | 0.44 | 0.43 |
 | score | 0.05 | learned[cheap+retrieval] | 0.60 | 0.50 | 0.50 | 0.48 |
-| score | 0.05 | learned[all] | 0.61 | 0.50 | 0.51 | 0.49 |
+| score | 0.05 | learned[all] | 0.61 | 0.51 | 0.51 | 0.49 |
 | score | 0.05 | random | 0.46 | 0.35 | 0.36 | 0.35 |
 
-Violation rates stay at or below 2% throughout (`leaderboard.csv`). The CLT
+Violation rates stay at or below 2.3% throughout (`leaderboard.csv`). The CLT
 bound certifies 15-25 points more at `m = 2000` and violates `eps` in 6-10%
 of trials against the 5% allowed, so it is not used. Figure:
 `hillclimb.pdf`.
@@ -235,16 +235,19 @@ What moved and what did not:
   about 1.5% of documents needs tens of thousands of samples before a
   prefix with mean 0.004 can be told from 0.005.
 * Retrieval features are the useful cheap signal. The learned score over
-  EK-FAC plus BM25, semantic, activation and doc loss adds 9-10 points at
+  EK-FAC plus BM25, semantic, activation and doc loss adds 6-11 points at
   `m = 2000` on the two binary losses, raises the missed-proponent oracle
   from 0.63 to 0.71 at `eps = 0.002`, and lifts the score loss's oracle from
   0.47 to 0.60, where EK-FAC's own rank is no better than random.
 * Gradient-family features carry nothing MAGIC-specific. Training-time
-  gradients from the HuggingFace callback and full-gradient cosines at three
-  trajectory points have Spearman 0.05-0.06 with MAGIC while agreeing with
-  EK-FAC at 0.34-0.56; EK-FAC at step 250 ranks like the final EK-FAC
-  (Spearman 0.95, top-1% overlap 0.79). Adding them to the learned score
-  moves the certified save by at most one point.
+  gradients from the HuggingFace callback, full and projected gradient
+  cosines at three trajectory points and TrackStar have Spearman 0.05-0.06
+  with MAGIC while agreeing with EK-FAC at 0.34-0.57, so projection is not
+  what loses the signal: preconditioning is what lifts EK-FAC to 0.31.
+  EK-FAC at steps 250 and 375 ranks like the final EK-FAC (Spearman 0.95
+  and 0.98, top-1% overlap 0.79), so checkpoint disagreement is small.
+  Adding all of them to the learned score moves the certified save by at
+  most one point.
 * The learned score on EK-FAC columns alone is slightly worse than the plain
   rank: with 1000 calibration documents per query the regression adds noise
   and no information.
