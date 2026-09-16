@@ -45,7 +45,9 @@ class CovarianceCollector(HookCollectorBase):
         }
         tmp_path = self._checkpoint_path() + ".tmp"
         torch.save(state, tmp_path)
-        os.replace(tmp_path, self._checkpoint_path())  # atomic, avoids a corrupt checkpoint
+        os.replace(
+            tmp_path, self._checkpoint_path()
+        )  # atomic, avoids a corrupt checkpoint
         self.logger.info(
             f"[rank {self.rank}] Saved KFAC fit checkpoint at batch {cursor}"
         )
