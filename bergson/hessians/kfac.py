@@ -30,15 +30,9 @@ class CovarianceCollector(HookCollectorBase):
     def _checkpoint_path(self) -> str:
         return os.path.join(self.path, f"fit_state_shard_{self.rank}.pt")
 
+    # Each rank only holds its own row shard of A_cov_dict/S_cov_dict (see
+    # teardown), so every rank writes its own checkpoint file, not just rank 0.
     def save_checkpoint(self, cursor: int, total_processed: Tensor) -> None:
-        """Write this rank's covariance accumulator shard + cursor to disk.
-
-        Each rank only ever holds its own row shard of ``A_cov_dict`` /
-        ``S_cov_dict`` (see ``teardown``), so every rank writes its own
-        checkpoint file rather than only rank 0. Batches are processed in
-        lockstep across ranks (each forward/backward hook does a blocking
-        all-reduce), so ``cursor`` is the same value on every rank.
-        """
         if self.checkpoint_interval <= 0 or cursor % self.checkpoint_interval != 0:
             return
 
@@ -49,21 +43,14 @@ class CovarianceCollector(HookCollectorBase):
             "cursor": cursor,
             "total_processed": total_processed.detach().cpu(),
         }
-        # Write to a temp file and rename so a crash mid-write can't leave a
-        # corrupt checkpoint behind.
         tmp_path = self._checkpoint_path() + ".tmp"
         torch.save(state, tmp_path)
-        os.replace(tmp_path, self._checkpoint_path())
+        os.replace(tmp_path, self._checkpoint_path())  # atomic, avoids a corrupt checkpoint
         self.logger.info(
             f"[rank {self.rank}] Saved KFAC fit checkpoint at batch {cursor}"
         )
 
     def load_checkpoint(self) -> tuple[int, Tensor] | None:
-        """Restore this rank's accumulator shard from disk, if present.
-
-        Returns ``(cursor, total_processed)`` for the caller to skip already
-        processed batches, or ``None`` if there is no checkpoint to resume.
-        """
         path = self._checkpoint_path()
         if not os.path.exists(path):
             return None

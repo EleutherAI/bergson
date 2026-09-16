@@ -101,10 +101,7 @@ class HookCollectorBase(ContextDecorator, ABC):
     """Dtype gradients are cast to on the way out. Set in subclass ``setup()``."""
 
     checkpoint_interval: int = 0
-    """Write a resumable mid-run checkpoint every N processed batches, for
-    collectors that support it (see ``save_checkpoint``/``load_checkpoint``).
-    0 (default) disables checkpointing. Ignored by collectors that don't
-    override those hooks."""
+    """Checkpoint every N batches, for collectors that support it. 0 disables it."""
 
     logger = get_logger("HookCollectorBase", level="INFO")
 
@@ -532,28 +529,12 @@ class HookCollectorBase(ContextDecorator, ABC):
         pass
 
     def save_checkpoint(self, cursor: int, total_processed: Tensor) -> None:
-        """Persist accumulator state to support resuming an interrupted run.
-
-        Called from :meth:`CollectorComputer.run_with_collector_hooks` after
-        every processed batch; implementations decide their own checkpoint
-        cadence (e.g. every N batches). In distributed runs each rank
-        typically owns a different shard of the accumulator state (see e.g.
-        ``teardown``'s per-rank ``shard_{rank}`` outputs), so implementations
-        should generally have every rank write its own shard rather than
-        gating on rank 0. Collectors whose accumulation can span long,
-        interruptible runs (e.g. the KFAC Hessian fit) should override this.
-        No-op by default.
-        """
+        """Optionally persist accumulator state to resume an interrupted run.
+        No-op by default, override for collectors with long-running fits."""
         pass
 
     def load_checkpoint(self) -> tuple[int, Tensor] | None:
-        """Restore accumulator state saved by :meth:`save_checkpoint`, if any.
-
-        Returns ``(cursor, total_processed)`` — the number of batches already
-        processed and the running collected-token count — so the caller can
-        skip finished batches and resume the count. Returns ``None`` when
-        there is nothing to resume from. No-op by default.
-        """
+        """Restore state saved by save_checkpoint, or None if nothing to resume."""
         return None
 
     def forward_hook(self, module: nn.Module, a: Float[Tensor, "N S I"]) -> None:
