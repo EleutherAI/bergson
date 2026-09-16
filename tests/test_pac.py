@@ -107,3 +107,24 @@ def test_loss_curve_is_monotone():
 def test_rejects_invalid_losses():
     with pytest.raises(ValueError):
         pac_threshold([0.5, 1.5], [0.1, 0.2], 0.1, 0.1)
+
+
+def test_importance_weighted_sample_keeps_guarantee():
+    rng = np.random.default_rng(7)
+    n, eps, alpha, budget = 20000, 0.01, 0.1, 1000
+    u, loss = synthetic(n, rng)
+    pi = np.where(u > 0.8, 1.0, 0.2)
+    m = int(budget / pi.mean())
+    failures, saves = 0, []
+    for _ in range(40):
+        sample = sample_indices(n, m, rng)
+        labeled = rng.uniform(size=m) < pi[sample]
+        z = np.where(labeled, loss[sample] / pi[sample], 0.0)
+        out = pac_label(u, sample, z, eps, alpha, z_max=1 / pi.min(), labeled=labeled)
+        failures += realized_error(loss, out.expert) > eps
+        saves.append(out.budget_save)
+    uniform = pac_label(u, (s := sample_indices(n, budget, rng)), loss[s], eps, alpha)
+    assert failures / 40 <= alpha + 0.05
+    # Labels spent above the threshold buy nothing, so the weighted sample
+    # only matches the uniform one at the same label budget.
+    assert abs(np.mean(saves) - uniform.budget_save) < 0.1

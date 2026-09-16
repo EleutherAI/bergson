@@ -139,26 +139,33 @@ def pac_threshold(
     eps: float,
     alpha: float,
     method: BoundMethod = "betting",
+    z_max: float = 1.0,
 ) -> float:
     """Smallest uncertainty ``u`` among the sampled values at which the
     cumulative loss below ``u`` cannot be certified to be at most ``eps``.
 
     ``sample_loss[j]`` is the loss of the cheap label on sampled item ``j``
-    (``[0, 1]``) and ``sample_u[j]`` its uncertainty. Returns ``inf`` when
+    (``[0, z_max]``) and ``sample_u[j]`` its uncertainty. Returns ``inf`` when
     every threshold is certified, so the cheap labeler may label everything.
     Thresholds between consecutive sampled uncertainties share a bound, so
     testing the sampled values is exact.
+
+    ``z_max`` above 1 admits importance-weighted losses: draw the sample
+    uniformly, label item ``j`` with probability ``pi_j`` and pass
+    ``loss_j / pi_j`` for labeled items and ``0`` for the rest, with
+    ``z_max = 1 / min(pi)``. The mean is unchanged, so the guarantee holds,
+    and concentrating labels where losses are likely tightens the bound.
     """
-    loss = np.asarray(sample_loss, dtype=np.float64)
+    loss = np.asarray(sample_loss, dtype=np.float64) / z_max
     u = np.asarray(sample_u, dtype=np.float64)
     if loss.min() < 0 or loss.max() > 1:
-        raise ValueError("losses must lie in [0, 1]")
+        raise ValueError("losses must lie in [0, z_max]")
     if u.ndim != 1 or loss.shape != u.shape:
         raise ValueError("sample_loss and sample_u must be 1-D and equal length")
 
     for cand in np.unique(u):
         z = loss * (u <= cand)
-        if not _certifies(z, eps, alpha, method):
+        if not _certifies(z, eps / z_max, alpha, method):
             return float(cand)
     return float("inf")
 
@@ -170,6 +177,8 @@ def pac_label(
     eps: float,
     alpha: float,
     method: BoundMethod = "betting",
+    z_max: float = 1.0,
+    labeled: ArrayLike | None = None,
 ) -> PacLabeling:
     """Algorithm 1 of arXiv 2506.10908.
 
@@ -177,13 +186,15 @@ def pac_label(
     :func:`sample_indices` and ``sample_loss`` the cheap label's loss on each
     sampled item against its expert label. The result marks which items need
     expert labels so the final labeling has average loss at most ``eps`` with
-    probability at least ``1 - alpha``.
+    probability at least ``1 - alpha``. With importance-weighted losses (see
+    :func:`pac_threshold`), ``labeled`` says which sampled items received an
+    expert label.
     """
     u = np.asarray(u, dtype=np.float64)
     sample = np.asarray(sample, dtype=np.int64)
-    u_hat = pac_threshold(sample_loss, u[sample], eps, alpha, method)
+    u_hat = pac_threshold(sample_loss, u[sample], eps, alpha, method, z_max)
     expert = u >= u_hat
-    expert[sample] = True
+    expert[sample if labeled is None else sample[np.asarray(labeled, bool)]] = True
     return PacLabeling(u_hat=u_hat, expert=expert, sample=sample, eps=eps, alpha=alpha)
 
 
