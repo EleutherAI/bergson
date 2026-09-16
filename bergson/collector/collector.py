@@ -100,6 +100,12 @@ class HookCollectorBase(ContextDecorator, ABC):
     save_dtype: torch.dtype = torch.float32
     """Dtype gradients are cast to on the way out. Set in subclass ``setup()``."""
 
+    checkpoint_interval: int = 0
+    """Write a resumable mid-run checkpoint every N processed batches, for
+    collectors that support it (see ``save_checkpoint``/``load_checkpoint``).
+    0 (default) disables checkpointing. Ignored by collectors that don't
+    override those hooks."""
+
     logger = get_logger("HookCollectorBase", level="INFO")
 
     def __post_init__(
@@ -525,6 +531,31 @@ class HookCollectorBase(ContextDecorator, ABC):
         """
         pass
 
+    def save_checkpoint(self, cursor: int, total_processed: Tensor) -> None:
+        """Persist accumulator state to support resuming an interrupted run.
+
+        Called from :meth:`CollectorComputer.run_with_collector_hooks` after
+        every processed batch; implementations decide their own checkpoint
+        cadence (e.g. every N batches). In distributed runs each rank
+        typically owns a different shard of the accumulator state (see e.g.
+        ``teardown``'s per-rank ``shard_{rank}`` outputs), so implementations
+        should generally have every rank write its own shard rather than
+        gating on rank 0. Collectors whose accumulation can span long,
+        interruptible runs (e.g. the KFAC Hessian fit) should override this.
+        No-op by default.
+        """
+        pass
+
+    def load_checkpoint(self) -> tuple[int, Tensor] | None:
+        """Restore accumulator state saved by :meth:`save_checkpoint`, if any.
+
+        Returns ``(cursor, total_processed)`` — the number of batches already
+        processed and the running collected-token count — so the caller can
+        skip finished batches and resume the count. Returns ``None`` when
+        there is nothing to resume from. No-op by default.
+        """
+        return None
+
     def forward_hook(self, module: nn.Module, a: Float[Tensor, "N S I"]) -> None:
         """
         Cache activations for gradient computation with normalizer preprocessing
@@ -881,10 +912,24 @@ class CollectorComputer:
         total_processed = torch.tensor(0, device=self.device)
         prof = self._setup_profiler()
         step = 0
+        batches = self.batches
+
+        checkpoint = self.collector.load_checkpoint()
+        if checkpoint is not None:
+            step, total_processed = checkpoint
+            total_processed = total_processed.to(self.device)
+            batches = self.batches[step:]
+            self.logger.info(
+                f"Resuming from checkpoint: {step}/{len(self.batches)} batches "
+                "already processed"
+            )
+
         with prof:
             for indices in tqdm(
-                self.batches,
+                batches,
                 desc=f"Computing {desc}",
+                initial=step,
+                total=len(self.batches),
             ):
                 batch = self.data[indices]
 
@@ -919,6 +964,7 @@ class CollectorComputer:
                 step += 1
 
                 self.collector.process_batch(indices, losses=losses)
+                self.collector.save_checkpoint(step, total_processed)
 
         self.collector.teardown()
 

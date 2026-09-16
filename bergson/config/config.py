@@ -948,6 +948,13 @@ class HessianConfig(Serializable):
     """Whether to use dataset labels for Hessian (empirical Fisher) approximation.
     If false, the model predictions will be used."""
 
+    checkpoint_interval: int = 0
+    """Write a resumable checkpoint of the fit's accumulator state every N
+    processed batches, to ``<run_path>.part/fit_state.pt``. 0 (default)
+    disables checkpointing. Currently only honored by the ``kfac`` method;
+    other methods ignore it. On restart, if a checkpoint exists it is loaded
+    automatically and already-processed batches are skipped."""
+
 
 @dataclass
 class HessianPipelineConfig:
