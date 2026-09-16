@@ -10,7 +10,8 @@ document, the update that document contributed at the step it was trained
 on. Its dot product with a query's projected gradient at the final model is
 that document's first-order effect on the query loss through that update.
 Writes one loss-signed score directory per epoch (``epoch_*``) and their sum
-(``all``), plus ``update_norm.npy`` (per-document L2 norm of the summed
+(``all``), the same with each document's update unit-normalized
+(``*_cos``), plus ``update_norm.npy`` (per-document L2 norm of the summed
 update) and ``epoch_cosine.npy`` (per-document cosine between the epochs'
 updates).
 """
@@ -57,6 +58,8 @@ def main() -> None:
         per_epoch.append((ep.name, g))
         norms_sq.append(sq)
         save_sequence_scores(args.out / ep.name, -scores)
+        cos = scores / np.maximum(np.sqrt(sq), 1e-12)[:, None]
+        save_sequence_scores(args.out / f"{ep.name}_cos", -cos.astype(np.float32))
         total = scores if total is None else total + scores
         print(f"{ep.name}: {g.shape}, |score| mean {np.abs(scores).mean():.3g}")
     assert total is not None
@@ -76,7 +79,10 @@ def main() -> None:
         np.save(args.out / "epoch_cosine.npy", cos)
         np.save(args.out / "update_norm.npy", norm)
     else:
-        np.save(args.out / "update_norm.npy", np.sqrt(sum(norms_sq)))
+        norm = np.sqrt(sum(norms_sq))
+        np.save(args.out / "update_norm.npy", norm)
+    all_cos = total / np.maximum(norm, 1e-12)[:, None]
+    save_sequence_scores(args.out / "all_cos", -all_cos.astype(np.float32))
     print(f"wrote {args.out}")
 
 
