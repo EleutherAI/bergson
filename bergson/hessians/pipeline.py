@@ -20,12 +20,14 @@ from .apply_hessian import EkfacConfig, apply_worker
 from .hessian_approximations import approximate_hessians
 
 
-def _step_complete(path: str, resume: bool) -> bool:
+def _step_complete(path: str, resume: bool, resumable: bool = False) -> bool:
     """Whether the step writing to `path` is already done and can be skipped.
 
-    Clears any interrupted ``.part`` output so the step restarts cleanly.
+    Clears any interrupted ``.part`` output so the step restarts cleanly,
+    unless ``resumable`` is set, in which case an interrupted ``.part`` is
+    left for the step itself to resume from.
     """
-    if prepare_step(path, resume=resume):
+    if prepare_step(path, resume=resume, resumable=resumable):
         return False
     print(f"  Skipping (already complete at {path})")
     return True
@@ -97,7 +99,7 @@ def hessian_pipeline(
 
     # ── Step 2: Fit Hessian factors on training data ──────────────────────
     print(f"Step 2/4: Fitting {method} factors on training data...")
-    if not _step_complete(f"{hessian_path}/{method}", resume):
+    if not _step_complete(f"{hessian_path}/{method}", resume, resumable=True):
         with _timed("step2_fit_hessian", durations):
             hessian_index_cfg = deepcopy(index_cfg)
             # approximate_hessians writes to this exact path; step 3 reads it

@@ -948,6 +948,10 @@ class HessianConfig(Serializable):
     """Whether to use dataset labels for Hessian (empirical Fisher) approximation.
     If false, the model predictions will be used."""
 
+    checkpoint_interval: int = 0
+    """Checkpoint the fit's accumulator state every N batches, so it can
+    resume if interrupted. 0 disables it. Only honored by the kfac method."""
+
 
 @dataclass
 class HessianPipelineConfig:

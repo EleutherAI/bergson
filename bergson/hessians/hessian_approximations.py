@@ -263,6 +263,7 @@ def collect_hessians(
         "filter_modules": index_cfg.filter_modules,
         "processor": GradientProcessor(include_bias=index_cfg.include_bias),
         "dtype": hessian_dtype,
+        "checkpoint_interval": hessian_cfg.checkpoint_interval,
     }
     desc = f"Approximating Hessians with {hessian_cfg.method}"
     if ev_correction:

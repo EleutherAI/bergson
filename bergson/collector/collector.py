@@ -100,6 +100,9 @@ class HookCollectorBase(ContextDecorator, ABC):
     save_dtype: torch.dtype = torch.float32
     """Dtype gradients are cast to on the way out. Set in subclass ``setup()``."""
 
+    checkpoint_interval: int = 0
+    """Checkpoint every N batches, for collectors that support it. 0 disables it."""
+
     logger = get_logger("HookCollectorBase", level="INFO")
 
     def __post_init__(
@@ -525,6 +528,15 @@ class HookCollectorBase(ContextDecorator, ABC):
         """
         pass
 
+    def save_checkpoint(self, cursor: int, total_processed: Tensor) -> None:
+        """Optionally persist accumulator state to resume an interrupted run.
+        No-op by default, override for collectors with long-running fits."""
+        pass
+
+    def load_checkpoint(self) -> tuple[int, Tensor] | None:
+        """Restore state saved by save_checkpoint, or None if nothing to resume."""
+        return None
+
     def forward_hook(self, module: nn.Module, a: Float[Tensor, "N S I"]) -> None:
         """
         Cache activations for gradient computation with normalizer preprocessing
@@ -881,10 +893,24 @@ class CollectorComputer:
         total_processed = torch.tensor(0, device=self.device)
         prof = self._setup_profiler()
         step = 0
+        batches = self.batches
+
+        checkpoint = self.collector.load_checkpoint()
+        if checkpoint is not None:
+            step, total_processed = checkpoint
+            total_processed = total_processed.to(self.device)
+            batches = self.batches[step:]
+            self.logger.info(
+                f"Resuming from checkpoint: {step}/{len(self.batches)} batches "
+                "already processed"
+            )
+
         with prof:
             for indices in tqdm(
-                self.batches,
+                batches,
                 desc=f"Computing {desc}",
+                initial=step,
+                total=len(self.batches),
             ):
                 batch = self.data[indices]
 
@@ -919,6 +945,7 @@ class CollectorComputer:
                 step += 1
 
                 self.collector.process_batch(indices, losses=losses)
+                self.collector.save_checkpoint(step, total_processed)
 
         self.collector.teardown()
 

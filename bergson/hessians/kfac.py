@@ -27,6 +27,48 @@ class CovarianceCollector(HookCollectorBase):
     dtype: torch.dtype
     path: str
 
+    def _checkpoint_path(self) -> str:
+        return os.path.join(self.path, f"fit_state_shard_{self.rank}.pt")
+
+    # Each rank only holds its own row shard of A_cov_dict/S_cov_dict (see
+    # teardown), so every rank writes its own checkpoint file, not just rank 0.
+    def save_checkpoint(self, cursor: int, total_processed: Tensor) -> None:
+        if self.checkpoint_interval <= 0 or cursor % self.checkpoint_interval != 0:
+            return
+
+        os.makedirs(self.path, exist_ok=True)
+        state = {
+            "A_cov_dict": self.A_cov_dict,
+            "S_cov_dict": self.S_cov_dict,
+            "cursor": cursor,
+            "total_processed": total_processed.detach().cpu(),
+        }
+        tmp_path = self._checkpoint_path() + ".tmp"
+        torch.save(state, tmp_path)
+        os.replace(
+            tmp_path, self._checkpoint_path()
+        )  # atomic, avoids a corrupt checkpoint
+        self.logger.info(
+            f"[rank {self.rank}] Saved KFAC fit checkpoint at batch {cursor}"
+        )
+
+    def load_checkpoint(self) -> tuple[int, Tensor] | None:
+        path = self._checkpoint_path()
+        if not os.path.exists(path):
+            return None
+
+        state = torch.load(path, map_location="cpu", weights_only=False)
+        for name, tensor in state["A_cov_dict"].items():
+            self.A_cov_dict[name].copy_(tensor.to(self.A_cov_dict[name].device))
+        for name, tensor in state["S_cov_dict"].items():
+            self.S_cov_dict[name].copy_(tensor.to(self.S_cov_dict[name].device))
+
+        cursor = state["cursor"]
+        self.logger.info(
+            f"[rank {self.rank}] Resuming KFAC fit from checkpoint at batch {cursor}"
+        )
+        return cursor, state["total_processed"]
+
     def setup(self) -> None:
         """Initialize covariance storage dictionaries."""
         self.A_cov_dict = {}
