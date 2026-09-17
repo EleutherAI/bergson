@@ -756,11 +756,9 @@ def run_magic(
 
     # HF datasets caches are not safe for concurrent writers, so the main node
     # must finish populating the cache before others read from it.
-    barrier = run_path / ".preprocess_done" if multi_node else None
+    job_id = os.environ.get("SLURM_JOB_ID", "")
+    barrier = run_path / f".preprocess_done{job_id}" if multi_node else None
     if barrier is not None and not is_main_node:
-        # Don't create run_path here: if this mkdir lands before the main
-        # node's exists() check above, the main node dies with
-        # FileExistsError. Polling the barrier works without the parent dir.
         while not barrier.exists():
             time.sleep(0.5)
 
