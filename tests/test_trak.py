@@ -154,8 +154,6 @@ def test_trak_weights_rows_by_one_minus_p(trak_run):
     label-token probability; the pipeline saves those weights."""
     run_path = Path(trak_run.run_path)
     assert _load(run_path / "scores").shape == (12, 3)
-    # Batching affects floating-point rounding, so this must match the batch
-    # size the pipeline used to compute the saved weights.
     probs = _train_label_probs(trak_run, batch_size=TrakConfig().loss_batch_size)
     assert probs.shape == (12,) and (0 < probs).all() and (probs < 1).all()
     saved = np.load(run_path / "scores" / "trak_weights.npy")
