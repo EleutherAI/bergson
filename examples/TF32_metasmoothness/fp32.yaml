@@ -1,0 +1,38 @@
+# Metasmoothness of a LoRA fine-tune of Deep Ignorance 7B with fp32 matmuls.
+
+# Build the training data with `python examples/TF32_metasmoothness/build_mix.py`
+# Run with `bergson examples/TF32_metasmoothness/fp32.yaml`
+
+run_path: runs/TF32_metasmoothness/fp32
+steps:
+  - metasmoothness:
+      run_path: runs/TF32_metasmoothness/fp32
+      fd_step: 0.1
+      direction_seed: 0
+      model: EleutherAI/deep-ignorance-e2e-strong-filter
+      precision: fp32
+      use_tf32_matmuls: false
+      peft_init_kwargs: "r=32,lora_alpha=64,lora_dropout=0.0,target_modules=query_key_value|dense|dense_h_to_4h|dense_4h_to_h"
+      save_models: true
+      grad_checkpointing: true
+      data:
+        dataset: runs/TF32_metasmoothness/mix_85_15
+        split: train
+        chunk_length: 1024
+      distributed:
+        nproc_per_node: 4
+        nnode: 4
+      batch_size: 128
+      # 8 sequences per GPU runs out of memory on a 95GiB GH200
+      grad_accum_steps: 2
+      num_epochs: 1
+      lr_schedule:
+        lr_scheduler_type: constant_with_warmup
+        lr: 1.0e-5
+        warmup_steps: 20
+      adam_beta1: 0.9
+      adam_beta2: 0.999
+      adam_eps: 1.0e-8
+      eps_root: 1.0e-17
+      weight_decay: 0.0
+      seed: 42

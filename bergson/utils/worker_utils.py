@@ -109,6 +109,17 @@ def apply_force_math_sdp(cfg: ModelConfig) -> None:
     print("force_math_sdp: disabled flash and memory-efficient SDPA backends")
 
 
+def apply_matmul_precision(cfg: ModelConfig) -> None:
+    """Apply ``use_tf32_matmuls`` in the worker process.
+
+    ``AttributionConfig.__post_init__`` sets the matmul precision in the
+    launcher, but spawned workers receive the config via pickle, which does
+    not call ``__post_init__``, so it must be applied again here.
+    """
+    high = getattr(cfg, "use_tf32_matmuls", False)
+    torch.set_float32_matmul_precision("high" if high else "highest")
+
+
 def extract_peft_target_modules(model) -> set[str]:
     """Extract adapter module names from a PeftModel."""
     target_modules: set[str] = set()
@@ -149,6 +160,7 @@ def setup_model_and_peft(
 ) -> tuple[PreTrainedModel | PeftModel, set | None]:
     """Handle model loading, quantization, FSDP, and PEFT detection"""
     apply_force_math_sdp(cfg)
+    apply_matmul_precision(cfg)
 
     local_rank = cfg.distributed.local_rank
 
