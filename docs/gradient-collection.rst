@@ -134,3 +134,23 @@ Where a reward signal is available we compute gradients using a weighted advanta
 .. code-block:: bash
 
    bergson build <output_path> --model <model_name> --dataset <dataset_name> --reward_column <reward_column_name>
+
+Track Mixture-of-Experts Models
+-------------------------------
+
+Bergson tracks ``nn.Linear``, HF ``Conv1D`` and ``nn.Conv{1,2,3}d`` modules. In ``transformers`` 5.x an MoE layer holds every expert in a single 3D ``nn.Parameter`` rather than an ``nn.Linear`` each, so none of its experts is a module bergson recognizes and gradient collection silently covers only attention and ``lm_head`` — 5.8% of gpt-oss-20b's parameters. Older MoE layouts with one ``nn.Linear`` per expert are tracked as they are and need nothing here.
+
+Name the fused layers with ``--moe_experts`` and each expert projection becomes its own module:
+
+.. code-block:: bash
+
+   bergson build <output_path> --model openai/gpt-oss-20b --dataset <dataset_name> \
+       --moe_experts "model.layers.*.mlp.experts"
+
+The value is a comma-separated list of globs over ``model.named_modules()``, matched against the module that owns the ``gate_up_proj``/``down_proj`` parameters; pointing it at anything else is an error rather than a silent no-op. The pattern is matched at load time, against the whole model. Gradient collection then runs on the base model, so the index names the new modules ``layers.0.mlp.experts.expert_3.gate_up_proj`` -- without the ``model.`` prefix, exactly as it names every other module -- and ``filter_modules`` and ``AttentionConfig`` globs reach them like any other module. See ``examples/moe_experts.yaml`` for a runnable pipeline.
+
+The layer's fused matmul over all experts is replaced by a loop that runs each expert over the tokens routed to it, which is what lets the hooks see one expert's activations at a time. That loop is the cost of the option: it gives up the grouped-matmul kernel, so collection is several times slower. Nothing is enabled unless you pass the flag.
+
+``bergson build``, ``score``, ``ekfac`` and the rest all load the model through the same path, so the flag reaches every one of them. ``GradientCollectorCallback`` is the exception, since it is handed a model you loaded yourself: call ``bergson.expand_moe(model, "model.layers.*.mlp.experts")`` before you build the Trainer.
+
+Two limits follow from how routing works. ``attribute_tokens`` is rejected, because an expert's gradient rows are the tokens routed to it and those do not line up one-to-one with token positions. The router itself is still untracked; it is a 2D parameter rather than a module, and on gpt-oss-20b it holds about 92K of the model's 21B parameters.

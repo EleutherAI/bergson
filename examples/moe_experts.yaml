@@ -1,0 +1,72 @@
+# Per-expert attribution for an MoE model with fused expert parameters.
+#
+# `moe_experts` names the layers that keep all of their experts in one 3D
+# nn.Parameter. Without it those layers are skipped and only attention is
+# tracked; with it each expert projection becomes its own module in the index.
+#
+# The model is a 2-layer, 4-expert, top-2 gpt-oss with random weights, so the
+# scores are noise -- what this example demonstrates is that the pipeline runs
+# and that every expert lands in the index. Point `model` at openai/gpt-oss-20b
+# and the same pattern applies unchanged.
+#
+# Run with `bergson examples/moe_experts.yaml`
+#
+# Confirm the experts are tracked (8 expert projections per layer, 16 total):
+#
+#   python -c "
+#   import json
+#   sizes = json.load(open('runs/moe_experts/index/info.json'))['grad_sizes']
+#   experts = {k: v for k, v in sizes.items() if '.experts.expert_' in k}
+#   print(len(experts), 'expert projections'); print(experts)
+#   "
+#
+# Each gate_up_proj is [2*32, 8] = 512 and each down_proj [8, 32] = 256, which
+# together account for every weight in the fused parameters.
+
+run_path: runs/moe_experts
+steps:
+  # Step 1/2: build the gradient index that doubles as the query set.
+  - build:
+      index_cfg:
+        run_path: runs/moe_experts/index
+        model: trl-internal-testing/tiny-GptOssForCausalLM
+        overwrite: true
+        moe_experts: "model.layers.*.mlp.experts"
+        # Store raw gradients so grad_sizes reports each expert's true weight
+        # count rather than a projection dimension.
+        projection_dim: 0
+        # This model's embedding matrix is 201088 x 8, which would otherwise
+        # dwarf every other module in the index.
+        filter_modules: "lm_head"
+        token_batch_size: 2048
+        data:
+          dataset: NeelNanda/pile-10k
+          split: "train[:256]"
+          truncation: true
+        distributed:
+          nproc_per_node: 1
+      preprocess_cfg: {}
+
+  # Step 2/2: score the same dataset against that index, so entry (i, j) is the
+  # gradient inner product <g_i, g_j>. See examples/self_influence.yaml for what
+  # the diagonal means.
+  - score:
+      score_cfg:
+        query_path: runs/moe_experts/index
+        batch_size: 256
+
+      index_cfg:
+        run_path: runs/moe_experts/scores
+        model: trl-internal-testing/tiny-GptOssForCausalLM
+        overwrite: true
+        moe_experts: "model.layers.*.mlp.experts"
+        projection_dim: 0
+        filter_modules: "lm_head"
+        token_batch_size: 2048
+        data:
+          dataset: NeelNanda/pile-10k
+          split: "train[:256]"
+          truncation: true
+        distributed:
+          nproc_per_node: 1
+      preprocess_cfg: {}

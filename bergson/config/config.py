@@ -217,6 +217,15 @@ class ModelConfig(ABC):
     model_kwargs: str = ""
     """HF Model kwargs for in the format 'arg1=val1,arg2=val2'."""
 
+    moe_experts: str = ""
+    """Comma-separated globs naming MoE layers that hold all their experts in
+    one fused parameter, e.g. "model.layers.*.mlp.experts". Bergson skips such
+    a layer unless it is named here, attributing only attention and ``lm_head``
+    -- a few percent of such a model. Naming it gives each expert projection
+    its own module, at the cost of replacing the fused matmul with a loop over
+    experts. MoE layers with one ``nn.Linear`` per expert need nothing.
+    Incompatible with ``attribute_tokens``."""
+
     logit_scale: float = 1.0
     """Multiply the output logits by this factor. Experimental, subject to removal."""
 
