@@ -38,6 +38,7 @@ from bergson.data import (
 )
 from bergson.format import apply_format
 from bergson.gradients import GradientProcessor, Normalizer
+from bergson.moe import expand_moe
 from bergson.utils import assert_type, get_layer_list, weighted_causal_lm_ce
 from bergson.utils.utils import get_device, simple_parse_kwargs_string
 
@@ -225,6 +226,12 @@ def setup_model_and_peft(
     apply_logit_scale(model, getattr(cfg, "logit_scale", 1.0))
     loss_reduction = getattr(cfg, "loss_reduction", "mean")
     model.loss_function = partial(weighted_causal_lm_ce, reduction=loss_reduction)
+
+    # Before any PEFT wrapping, so the pattern matches the plain model's
+    # module names.
+    if cfg.moe_experts:
+        expand_moe(model, cfg.moe_experts)
+
     target_modules = None
 
     if cfg.peft_init_kwargs:

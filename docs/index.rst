@@ -17,6 +17,7 @@ We provide options for analyzing models and datasets at any scale or level of gr
 * Parallelize Bergson operations across multiple GPUs or nodes.
 * Load gradients with or without their module-wise structure.
 * Split attention module gradients by head.
+* Attribute Mixture-of-Experts models per expert, including fused expert parameters.
 
 .. TODO: Remove above, What data attribution is, cost/fidelity tradeoffs between methods,
    and a "what do you have?" decision guide:

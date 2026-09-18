@@ -217,6 +217,11 @@ class ModelConfig(ABC):
     model_kwargs: str = ""
     """HF Model kwargs for in the format 'arg1=val1,arg2=val2'."""
 
+    moe_experts: str = ""
+    """Comma-separated globs naming MoE layers with fused expert parameters, e.g.
+    "model.layers.*.mlp.experts". Each expert projection then becomes its own
+    module, run in a loop. Incompatible with ``attribute_tokens``."""
+
     logit_scale: float = 1.0
     """Multiply the output logits by this factor. Experimental, subject to removal."""
 

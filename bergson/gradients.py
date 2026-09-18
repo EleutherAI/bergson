@@ -9,6 +9,7 @@ import yaml
 from torch import Tensor
 from transformers.pytorch_utils import Conv1D as HFConv1D
 
+from bergson.moe import ExpertLinear
 from bergson.utils.logger import get_logger
 
 logger = get_logger("gradients", level="INFO")
@@ -305,12 +306,19 @@ class GradientProcessor:
 
 
 class LayerAdapter:
-    supported_modules = (nn.Linear, HFConv1D, nn.Conv1d, nn.Conv2d, nn.Conv3d)
+    supported_modules = (
+        nn.Linear,
+        HFConv1D,
+        nn.Conv1d,
+        nn.Conv2d,
+        nn.Conv3d,
+        ExpertLinear,
+    )
 
     @staticmethod
     def in_attr(layer: nn.Module) -> str:
         match layer:
-            case nn.Linear():
+            case nn.Linear() | ExpertLinear():
                 return "in_features"
             case HFConv1D():
                 return "nx"
@@ -322,7 +330,7 @@ class LayerAdapter:
     @staticmethod
     def out_attr(layer: nn.Module) -> str:
         match layer:
-            case nn.Linear():
+            case nn.Linear() | ExpertLinear():
                 return "out_features"
             case HFConv1D():
                 return "nf"
@@ -333,8 +341,10 @@ class LayerAdapter:
 
     @staticmethod
     def weight_transposed(layer: nn.Module) -> bool:
-        """Whether the layer stores its weight ``[in, out]`` (HF Conv1D)
-        rather than ``[out, in]``."""
+        """Whether the layer stores its weight ``[in, out]`` (HF Conv1D, and
+        MoE experts under ``is_transposed``) rather than ``[out, in]``."""
+        if isinstance(layer, ExpertLinear):
+            return layer.transposed
         return isinstance(layer, HFConv1D)
 
 
