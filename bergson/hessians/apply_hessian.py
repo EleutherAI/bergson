@@ -119,12 +119,6 @@ class EkfacApplicator:
         """The preconditioner chain for ``modules`` (all when ``None``)."""
         chain: list = []
         if self.cfg.preconditioner_path:
-            if modules is not None:
-                raise ValueError(
-                    "module_partitions > 1 is not supported with preconditioner_path."
-                )
-            if self.apply_fn is None:
-                raise ValueError("preconditioner_path requires apply_fn.")
             diagonal = DiagonalFactoredPreconditioner.from_shards(
                 self.path,
                 self.cfg.preconditioner_path,
@@ -165,6 +159,14 @@ class EkfacApplicator:
         return chain, preconditioner
 
     def compute_ivhp_sharded(self):
+        if self.cfg.preconditioner_path:
+            if self.apply_fn is None:
+                raise ValueError("preconditioner_path requires apply_fn.")
+            if self.cfg.module_partitions > 1:
+                raise ValueError(
+                    "module_partitions > 1 is not supported with preconditioner_path."
+                )
+
         names, o_dims, i_dims = self._factor_dims()
 
         p = self.cfg.projection_dim
