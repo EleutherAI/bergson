@@ -66,18 +66,14 @@ class AutocorrelationCollector(HookCollectorBase):
 
 @dataclass(kw_only=True)
 class JointAutocorrelationCollector(AutocorrelationCollector):
-    """The ``structure="joint"`` autocorrelation Hessian: one Gram over the
-    concatenation of every module's projected gradient — the TRAK kernel
-    ``Phi^T Phi`` — instead of a Gram per module.
-
-    Per-module projected gradients are concatenated in ``shapes()`` order (the
-    order the index stores them in) and the ``[D, D]`` Gram accumulates under the
-    key ``"joint"``. With ``projection_target="global"`` there is a single key
-    and the joint Gram is just the ``[k, k]`` Gram of the global sketch.
+    """The autocorrelation Hessian under ``projection_target="global"``: one
+    ``[k, k]`` Gram over the summed projected gradient, the TRAK kernel
+    ``Phi^T Phi``, accumulated under the key ``"joint"`` once the batch's
+    modules have all added their share.
     """
 
     def setup(self) -> None:
-        """A joint Gram is fit over the global sketch too, so skip the
+        """The global projection is what this Gram is over, so skip the
         per-module check in the base class."""
 
     @HookCollectorBase.split_attention_heads

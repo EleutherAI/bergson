@@ -11,7 +11,11 @@ import torch.distributed as dist
 from safetensors import safe_open
 from simple_parsing import ArgumentParser
 
-from bergson.collector.collector import create_module_projection_matrix
+from bergson.collector.collector import (
+    HookCollectorBase,
+    create_module_projection_matrix,
+    project_global,
+)
 from bergson.config import InversionConfig
 from bergson.data import column_offsets, create_index, load_gradients
 from bergson.distributed import init_dist
@@ -39,6 +43,9 @@ class EkfacConfig:
     projection_dim: int = 0
     """When set, compress each module's IVHP output to a ``[p, p]`` Kronecker
     random projection (``P_S @ (H^-1 G) @ P_A^T``)."""
+    projection_target: Literal["per_module", "global"] = "per_module"
+    """``per_module`` compresses each module to its own ``[p, p]`` block.
+    ``global`` sums every module's projection into one ``[p]`` vector."""
     projection_type: Literal["normal", "rademacher"] = "rademacher"
     projection_scale: Literal["jl", "row_norm"] = "jl"
     projection_seed: int | None = None
@@ -78,6 +85,10 @@ class EkfacApplicator:
             and not cfg.preconditioner_path
         ):
             raise ValueError("Pass either inversion_cfg or apply_fn, not both.")
+
+        self.global_projection = (
+            cfg.projection_dim > 0 and cfg.projection_target == "global"
+        )
 
         if cfg.projection_dim > 0 and cfg.ev_correction:
             raise ValueError(
@@ -170,14 +181,27 @@ class EkfacApplicator:
         names, o_dims, i_dims = self._factor_dims()
 
         p = self.cfg.projection_dim
-        grad_sizes = {
-            name: p * p if p > 0 else o_dims[name] * i_dims[name] for name in names
-        }
+        if self.global_projection:
+            grad_sizes = {"gradients": p}
+        else:
+            grad_sizes = {
+                name: p * p if p > 0 else o_dims[name] * i_dims[name] for name in names
+            }
 
         mmap = load_gradients(self.gradient_path)
         with open(os.path.join(self.gradient_path, "info.json")) as f:
             info = json.load(f)
         in_offsets = column_offsets(info["grad_sizes"])
+
+        # A global projection sums every module, so one without factors would
+        # leave the query a term short.
+        if self.global_projection:
+            missing = sorted(set(info["grad_sizes"]) - set(names))
+            if missing:
+                raise ValueError(
+                    f"{len(missing)} modules in {self.cfg.gradient_path} have no "
+                    f"Hessian factors: {missing[:5]}"
+                )
 
         num_queries = mmap.shape[0]
         grad_buffer = create_index(
@@ -232,6 +256,7 @@ class EkfacApplicator:
             projection_type=self.cfg.projection_type,
             projection_scale=self.cfg.projection_scale,
             projection_seed=self.cfg.projection_seed,
+            projection_target=self.cfg.projection_target,
             include_bias=include_bias,
         ).save(Path(self.cfg.run_path))
 
@@ -274,7 +299,17 @@ class EkfacApplicator:
                 transformed = preconditioner.apply(grads)[name]
                 del grads
 
-                if p > 0:
+                if self.global_projection:
+                    transformed = project_global(
+                        HookCollectorBase.projection_identifier(
+                            name, "single", self.cfg.projection_seed
+                        ),
+                        transformed.flatten(1),
+                        p,
+                        self.cfg.projection_type,
+                        self.cfg.projection_scale,
+                    )
+                elif p > 0:
                     g = transformed.view(-1, o_dims[name], i_dims[name])
                     P_l = create_module_projection_matrix(
                         name,
@@ -300,8 +335,15 @@ class EkfacApplicator:
                     )
                     transformed = torch.einsum("ps,nsa,ra->npr", P_l, g, P_r)
 
-                lo, hi = out_offsets[name]
-                grad_buffer[start:end, lo:hi] = transformed.flatten(1).cpu().numpy()
+                out = transformed.flatten(1).cpu().numpy()
+                if not self.global_projection:
+                    lo, hi = out_offsets[name]
+                    grad_buffer[start:end, lo:hi] = out
+                elif self.rank == 0:
+                    # Every module adds into the same columns and every rank
+                    # covers the same rows, so only one rank may add.
+                    lo, hi = out_offsets["gradients"]
+                    grad_buffer[start:end, lo:hi] += out
                 del transformed
                 self.logger.debug(
                     "%s: wrote H^-1 G for queries %d:%d", name, start, end

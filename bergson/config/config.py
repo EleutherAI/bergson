@@ -931,11 +931,6 @@ class HessianConfig(Serializable):
     method: Literal["kfac", "tkfac", "shampoo", "autocorrelation"]
     """Method for approximating the Hessian."""
 
-    structure: Literal["per_module", "joint"] = "per_module"
-    """Whether to produce a block-diagonal matrix of per-module autocorrelation
-    matrices, or the autocorrelation of full model gradients. Ignored by
-    factored methods."""
-
     ev_correction: bool = False
     """Whether to additionally compute eigenvalue correction."""
 
