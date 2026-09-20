@@ -143,15 +143,21 @@ def normalize_and_aggregate_grads(
     device: torch.device,
     aggregate_grads: Literal["mean", "sum", "none"] = "none",
     normalize_aggregated_grad: bool = False,
+    dtype: torch.dtype | None = None,
 ) -> dict[str, torch.Tensor]:
     """Preprocess the gradients. Returns a dictionary of preprocessed gradients
     with shape [N, grad_dim] or [1, grad_dim]. Preprocessing includes some
     combination of per-item unit normalization, aggregation, aggregated
-    gradient normalization, and dtype conversion."""
+    gradient normalization, and dtype conversion. ``dtype`` is the dtype the
+    gradients are moved to the device in when nothing needs computing on them,
+    so a caller scoring in a narrower dtype never stages a wider copy."""
 
     # Short-circuit if possible
     if aggregate_grads == "none" and not unit_normalize:
-        return {name: grad_dict[name].to(device=device) for name in grad_column_names}
+        return {
+            name: grad_dict[name].to(device=device, dtype=dtype)
+            for name in grad_column_names
+        }
 
     grads = {
         name: grad_dict[name].to(device=device, dtype=torch.float32)

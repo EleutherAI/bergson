@@ -29,7 +29,7 @@ class Scorer:
         unit_normalize: bool = False,
         score_mode: str = "individual",
         attribute_tokens: bool = False,
-        index_transform: Callable[[dict[str, Tensor]], dict[str, Tensor]] = lambda x: x,
+        index_transform: Callable[[dict[str, Tensor]], dict[str, Tensor]] | None = None,
         query_offset: int = 0,
     ):
         """
@@ -71,6 +71,13 @@ class Scorer:
         self.index_transform = index_transform
         self.query_offset = query_offset
 
+        # Without an index transform (which needs every module of a batch at
+        # once) modules can be scored as their gradients arrive, so a batch's
+        # gradients never sit on the device together.
+        self.streaming = index_transform is None
+        self._scores: Tensor | None = None
+        self._sq_norm: Tensor | None = None
+
         # Pre-transposed for scoring: per-module [dim_m, n_queries]
         self.query_grads_t = {
             m: query_grads[m].to(device=self.device, dtype=self.dtype).T
@@ -82,27 +89,61 @@ class Scorer:
         indices: list[int],
         mod_grads: dict[str, Tensor],
     ):
-        """Score a batch of training gradients against all queries."""
-        scores = self.score(mod_grads)
+        """Score a batch of training gradients against all queries, or finish
+        a batch whose modules were passed to :meth:`accumulate`."""
+        if self._scores is not None:
+            scores, sq_norm = self._scores, self._sq_norm
+            self._scores = self._sq_norm = None
+            scores = self._reduce(scores, sq_norm)
+        else:
+            scores = self.score(mod_grads)
         self.writer(indices, scores, query_offset=self.query_offset)
+
+    @torch.inference_mode()
+    def accumulate(self, name: str, g: Tensor) -> None:
+        """Add one module's gradients for the current batch; ``__call__``
+        then writes the batch's scores. Requires ``streaming``."""
+        assert self.streaming, "accumulate needs a scorer without index_transform"
+        if name not in self.query_grads_t:
+            return
+        self._scores, self._sq_norm = self._add_module(
+            name, g, self._scores, self._sq_norm
+        )
+
+    def _add_module(
+        self, name: str, g: Tensor, scores: Tensor | None, sq_norm: Tensor | None
+    ) -> tuple[Tensor, Tensor | None]:
+        """Add module ``name``'s GEMM against the queries to the running sums.
+
+        The per-module GEMMs run in the scoring dtype; their sum over modules
+        accumulates in fp32 so a bf16 dtype does not lose the small
+        per-module contributions.
+        """
+        g = g.to(self.device, self.dtype, non_blocking=True)
+        part = (g @ self.query_grads_t[name]).float()
+        scores = part if scores is None else scores.add_(part)
+        if self.unit_normalize:
+            n = g.float().pow(2).sum(dim=1)
+            sq_norm = n if sq_norm is None else sq_norm.add_(n)
+        return scores, sq_norm
 
     @torch.inference_mode()
     def score(self, index_grads: dict[str, Tensor]) -> Tensor:
         """Compute scores for a batch of gradients."""
-        index_grads = self.index_transform(index_grads)
+        if self.index_transform is not None:
+            index_grads = self.index_transform(index_grads)
 
         # scores[b, q] = sum_m g_b[m] . q_q[m]; per-module GEMMs avoid
         # materializing a [batch, total_dim] concat of the index gradients
         scores = None
         sq_norm = None
         for m in self.modules:
-            g = index_grads[m].to(self.device, self.dtype, non_blocking=True)
-            part = g @ self.query_grads_t[m]
-            scores = part if scores is None else scores.add_(part)
-            if self.unit_normalize:
-                n = g.pow(2).sum(dim=1)
-                sq_norm = n if sq_norm is None else sq_norm.add_(n)
+            scores, sq_norm = self._add_module(m, index_grads[m], scores, sq_norm)
 
+        return self._reduce(scores, sq_norm)
+
+    def _reduce(self, scores: Tensor | None, sq_norm: Tensor | None) -> Tensor:
+        """Normalize the summed scores and apply the score mode."""
         assert scores is not None, "Scorer requires at least one module"
         if self.unit_normalize:
             assert sq_norm is not None

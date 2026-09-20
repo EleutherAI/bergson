@@ -167,9 +167,11 @@ class LambdaCollector(HookCollectorBase):
 
         # Accumulate (with CPU offloading for memory efficiency)
         if name not in self.eigenvalue_corrections:
-            self.eigenvalue_corrections[name] = transformed_grad_shard[
-                start_row:end_row, :
-            ].contiguous()
+            self.eigenvalue_corrections[name] = (
+                transformed_grad_shard[start_row:end_row, :]
+                .contiguous()
+                .to(device="cpu", non_blocking=False)
+            )
         else:
             self.eigenvalue_corrections[name] = self.eigenvalue_corrections[name].to(
                 device=self.device
@@ -194,6 +196,10 @@ class LambdaCollector(HookCollectorBase):
             self.eigenvalue_corrections,
             os.path.join(output_path, f"shard_{self.rank}.safetensors"),
         )
+        self.eigen_a.clear()
+        self.eigen_g.clear()
+        self.transformed_a_cache.clear()
+        self.eigenvalue_corrections.clear()
 
 
 def _compute_full_matrix(

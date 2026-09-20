@@ -104,11 +104,6 @@ def get_query_grads(
     return grads, preprocess_cfg
 
 
-def _identity(grads: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-    """No-op index transform used when no split preconditioning is applied."""
-    return grads
-
-
 def _make_split_hessian(
     hessians: dict[str, torch.Tensor],
     modules: list[str],
@@ -184,7 +179,7 @@ def create_scorer(
     # case uses a batched matmul over the per-module ``h_inv`` matrices; the
     # factored case reuses ``apply`` (rotate / scale / rotate back per batch).
     if preconditioner is None or not preprocess_cfg.unit_normalize:
-        index_transform = _identity
+        index_transform = None
     elif isinstance(preconditioner, DensePreconditioner):
         index_transform = _make_split_hessian(
             preconditioner.h_inv, score_cfg.modules, device, dtype
@@ -214,6 +209,7 @@ def create_scorer(
         device=device,
         aggregate_grads=aggregation,
         normalize_aggregated_grad=normalize_aggregated_grad,
+        dtype=dtype,
     )
 
     if query_range is not None and aggregation != "none":
