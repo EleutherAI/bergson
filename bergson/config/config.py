@@ -949,11 +949,8 @@ class HessianConfig(Serializable):
     If false, the model predictions will be used."""
 
     module_partitions: int = 1
-    """Number of groups the target modules are split into when fitting the
-    factored methods. Each group is fit in its own pass over the data, so only
-    that group's covariances, eigenvectors and eigenvalue corrections sit on the
-    device at once, and the groups' shard files are merged afterwards. Raise it
-    when the whole model's factors do not fit on the available GPUs."""
+    """Fit the factored methods in this many module groups, one pass per group,
+    merging the shard files afterwards; raise it when the factors do not fit."""
 
 
 @dataclass

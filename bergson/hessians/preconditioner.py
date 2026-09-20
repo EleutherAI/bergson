@@ -224,8 +224,7 @@ class FactoredPreconditioner:
         ev_correction: bool = False,
         modules: Iterable[str] | None = None,
     ) -> "FactoredPreconditioner":
-        """Distributed: load this rank's shard of the factors, or only the
-        ``modules`` named."""
+        """Distributed: load this rank's shard of the factors, or only ``modules``."""
 
         def load(sub):
             return _load_shard(hessian_path, sub, rank, device, modules)
@@ -589,9 +588,8 @@ def _load_shard(
     device: str | torch.device,
     modules: Iterable[str] | None = None,
 ) -> dict[str, Tensor]:
-    """Load ``rank``'s shard of the factors under ``hessian_path/subdir``
-    onto ``device`` and cast to fp32. ``modules`` restricts the load to those
-    keys so a subset of the factors can be held on the device at a time."""
+    """Load ``rank``'s shard of the factors under ``hessian_path/subdir`` onto
+    ``device`` as fp32, restricted to ``modules`` when given."""
     path = os.path.join(str(hessian_path), subdir, f"shard_{rank}.safetensors")
     if modules is None:
         shard = load_file(path, device=str(device))

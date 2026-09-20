@@ -148,9 +148,8 @@ def normalize_and_aggregate_grads(
     """Preprocess the gradients. Returns a dictionary of preprocessed gradients
     with shape [N, grad_dim] or [1, grad_dim]. Preprocessing includes some
     combination of per-item unit normalization, aggregation, aggregated
-    gradient normalization, and dtype conversion. ``dtype`` is the dtype the
-    gradients are moved to the device in when nothing needs computing on them,
-    so a caller scoring in a narrower dtype never stages a wider copy."""
+    gradient normalization, and dtype conversion. ``dtype`` applies to the
+    device move when no preprocessing runs."""
 
     # Short-circuit if possible
     if aggregate_grads == "none" and not unit_normalize:

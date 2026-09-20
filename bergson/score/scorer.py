@@ -71,9 +71,7 @@ class Scorer:
         self.index_transform = index_transform
         self.query_offset = query_offset
 
-        # Without an index transform (which needs every module of a batch at
-        # once) modules can be scored as their gradients arrive, so a batch's
-        # gradients never sit on the device together.
+        # Only an index transform needs a batch's modules together.
         self.streaming = index_transform is None
         self._scores: Tensor | None = None
         self._sq_norm: Tensor | None = None
@@ -89,8 +87,7 @@ class Scorer:
         indices: list[int],
         mod_grads: dict[str, Tensor],
     ):
-        """Score a batch of training gradients against all queries, or finish
-        a batch whose modules were passed to :meth:`accumulate`."""
+        """Score a batch of training gradients, or finish one fed by ``accumulate``."""
         if self._scores is not None:
             scores, sq_norm = self._scores, self._sq_norm
             self._scores = self._sq_norm = None
@@ -101,8 +98,7 @@ class Scorer:
 
     @torch.inference_mode()
     def accumulate(self, name: str, g: Tensor) -> None:
-        """Add one module's gradients for the current batch; ``__call__``
-        then writes the batch's scores. Requires ``streaming``."""
+        """Add one module's gradients to the current batch; ``__call__`` finishes it."""
         assert self.streaming, "accumulate needs a scorer without index_transform"
         if name not in self.query_grads_t:
             return
@@ -113,12 +109,8 @@ class Scorer:
     def _add_module(
         self, name: str, g: Tensor, scores: Tensor | None, sq_norm: Tensor | None
     ) -> tuple[Tensor, Tensor | None]:
-        """Add module ``name``'s GEMM against the queries to the running sums.
-
-        The per-module GEMMs run in the scoring dtype; their sum over modules
-        accumulates in fp32 so a bf16 dtype does not lose the small
-        per-module contributions.
-        """
+        """Add module ``name``'s GEMM against the queries to the running sums,
+        accumulating in fp32 so a bf16 scoring dtype keeps small contributions."""
         g = g.to(self.device, self.dtype, non_blocking=True)
         part = (g @ self.query_grads_t[name]).float()
         scores = part if scores is None else scores.add_(part)

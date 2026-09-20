@@ -112,8 +112,7 @@ def hessian_pipeline(
     print(f"Step 3/4: Applying {method} inverse Hessian to mean query gradient...")
     if not _step_complete(transformed_query_path, resume):
         hessian_method_path = f"{hessian_path}/{method}"
-        # Write to the .part directory and promote it once every rank has
-        # finished, so an interrupted apply is rerun rather than skipped.
+        # Written to .part and promoted below, so an interrupted apply reruns.
         ekfac_cfg = EkfacConfig(
             hessian_method_path=hessian_method_path,
             gradient_path=query_path,

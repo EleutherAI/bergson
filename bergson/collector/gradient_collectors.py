@@ -103,7 +103,6 @@ class GradientCollector(HookCollectorBase):
             return
 
         if self.scorer is not None and self.scorer.streaming:
-            # Score the module now instead of holding the batch's gradients.
             self.scorer.accumulate(name, P.to(dtype=self.save_dtype))
             return
 

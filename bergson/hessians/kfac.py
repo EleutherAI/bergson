@@ -118,8 +118,5 @@ class CovarianceCollector(HookCollectorBase):
             self.S_cov_dict,
             os.path.join(gradient_path, f"shard_{self.rank}.safetensors"),
         )
-        # Release the device factors now: the collector outlives this call
-        # through the hook and computer references, and the next pass loads
-        # the same amount again.
         self.A_cov_dict.clear()
         self.S_cov_dict.clear()

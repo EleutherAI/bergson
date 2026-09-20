@@ -45,9 +45,8 @@ class EkfacConfig:
     """Safetensors of a diagonal optimizer preconditioner (module name ->
     [out, in] grid), for the Adam SOURCE variant."""
     module_partitions: int = 1
-    """Apply the inverse in this many module groups, holding only one group's
-    factors on the device at a time. Set it when the factors do not fit on the
-    device together, as for ``HessianConfig.module_partitions``."""
+    """Apply the inverse in this many module groups, one group's factors on the
+    device at a time."""
     debug: bool = False
 
 
@@ -101,8 +100,7 @@ class EkfacApplicator:
         self.device = get_device(self.rank)
 
     def _factor_dims(self) -> tuple[list[str], dict[str, int], dict[str, int]]:
-        """Module names and their ``[O]``/``[I]`` sizes from this rank's
-        eigenvector shard headers, without loading the tensors."""
+        """Module names and their [O]/[I] sizes from the eigenvector shard headers."""
         shard = f"shard_{self.rank}.safetensors"
         with safe_open(
             os.path.join(self.path, "eigen_activation_sharded", shard), framework="pt"
@@ -191,8 +189,6 @@ class EkfacApplicator:
             f"Loaded gradients for {num_queries} queries and computing IVHP..."
         )
 
-        # Precondition the queries, one module group at a time so only that
-        # group's factors are on the device.
         groups = partition_modules(names, self.cfg.module_partitions)
         for group in groups:
             chain, preconditioner = self._build_preconditioner(
@@ -229,12 +225,7 @@ class EkfacApplicator:
         o_dims,
         i_dims,
     ):
-        """Write ``H^-1 G`` for the modules in ``group`` for every query.
-
-        The inverse is applied one module at a time so only that module's
-        query gradients are on the device; a batch of full-model queries would
-        not fit beside the factors (two 14B queries in fp32 are 106GB).
-        """
+        """Write ``H^-1 G`` for the modules in ``group``, one module at a time."""
         p = self.cfg.projection_dim
         num_queries = mmap.shape[0]
         for start in range(0, num_queries, self.cfg.apply_batch_size):
@@ -242,9 +233,8 @@ class EkfacApplicator:
 
             for name in group:
                 lo, hi = in_offsets[name]
-                # The gradients are mmap'd read-only which pytorch doesn't
-                # support: suppress the warning (the preconditioner returns
-                # fresh tensors).
+                # The mmap is read-only, which torch warns about; the
+                # preconditioner returns fresh tensors.
                 with warnings.catch_warnings():
                     warnings.filterwarnings(
                         "ignore",

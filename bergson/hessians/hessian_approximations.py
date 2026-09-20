@@ -58,13 +58,11 @@ FACTOR_SUBDIRS = (
     "factor_eig_g",
     "eigenvalue_correction_sharded",
 )
-"""Per-module factor stores written under a Hessian run path, each holding one
-``shard_{rank}.safetensors`` per rank keyed by module name."""
+"""Factor stores under a Hessian run path, one ``shard_{rank}.safetensors`` each."""
 
 
 def partition_modules(names: list[str], num_partitions: int) -> list[list[str]]:
-    """Split ``names`` into ``num_partitions`` contiguous groups of near-equal
-    size, in the order given so a group covers adjacent layers."""
+    """Split ``names`` into ``num_partitions`` contiguous groups of near-equal size."""
     if num_partitions < 1:
         raise ValueError(f"module_partitions must be >= 1, got {num_partitions}")
     num_partitions = min(num_partitions, len(names))
@@ -78,14 +76,8 @@ def partition_modules(names: list[str], num_partitions: int) -> list[list[str]]:
 
 
 def merge_partitions(run_path: str | os.PathLike, num_partitions: int, rank: int):
-    """Merge this rank's shard file from every ``partition_{i}`` directory under
-    ``run_path`` into the run's own factor stores.
-
-    Partitions hold disjoint modules, so a merge is a union of the per-module
-    tensors; they are read through the safetensors mmap so the merged file is
-    never held in memory twice. Rank 0 deletes the partition directories once
-    every rank has merged.
-    """
+    """Merge this rank's shard from every ``partition_{i}`` under ``run_path`` into
+    the run's factor stores; rank 0 then deletes the partition directories."""
     part_dirs = [
         os.path.join(run_path, f"partition_{p}") for p in range(num_partitions)
     ]
@@ -273,8 +265,6 @@ def hessian_worker(
         )
         return
 
-    # Fit the factors one module group at a time so only a group's factors are
-    # on the device, then merge the groups' shard files into the run layout.
     target_info = HookCollectorBase.discover_targets(
         model.base_model,  # type: ignore
         target_modules,
@@ -367,13 +357,8 @@ def fit_factored_hessians(
 
 
 def _release_device_memory():
-    """Drop a finished collector's device tensors before the next pass.
-
-    The collector, its computer and the model hooks reference each other, so
-    the tensors only go when the cycle collector runs; on a 14B model that
-    left the covariance shards (20GB per rank) resident under the eigenvalue
-    correction pass.
-    """
+    """Drop a finished collector's device tensors; the collector, computer and
+    hooks form a reference cycle, so they otherwise outlive the pass."""
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -396,8 +381,7 @@ def collect_hessians(
     """
     Compute Hessian approximations using the hooks specified in the collector.
     If ev_correction is True, uses LambdaCollector to compute eigenvalue corrections.
-    ``path`` overrides where the collector writes; it defaults to the partial
-    run path.
+    ``path`` overrides where the collector writes.
     """
 
     hessian_dtype = convert_precision_to_torch(hessian_cfg.hessian_dtype)
