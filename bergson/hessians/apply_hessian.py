@@ -11,7 +11,7 @@ import torch.distributed as dist
 from safetensors import safe_open
 from simple_parsing import ArgumentParser
 
-from bergson.collector.collector import create_projection_matrix
+from bergson.collector.collector import create_module_projection_matrix
 from bergson.config import InversionConfig
 from bergson.data import column_offsets, create_index, load_gradients
 from bergson.distributed import init_dist
@@ -254,23 +254,27 @@ class EkfacApplicator:
 
                 if p > 0:
                     g = transformed.view(-1, o_dims[name], i_dims[name])
-                    P_l = create_projection_matrix(
-                        f"{name}/left",
+                    P_l = create_module_projection_matrix(
+                        name,
+                        "left",
                         p,
                         o_dims[name],
                         g.dtype,
                         g.device,
                         self.cfg.projection_type,
                         self.cfg.projection_scale,
+                        None,
                     )
-                    P_r = create_projection_matrix(
-                        f"{name}/right",
+                    P_r = create_module_projection_matrix(
+                        name,
+                        "right",
                         p,
                         i_dims[name],
                         g.dtype,
                         g.device,
                         self.cfg.projection_type,
                         self.cfg.projection_scale,
+                        None,
                     )
                     transformed = torch.einsum("ps,nsa,ra->npr", P_l, g, P_r)
 
