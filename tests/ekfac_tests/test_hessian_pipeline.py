@@ -29,6 +29,23 @@ def test_hessian_pipeline_rejects_unit_normalize(tmp_path):
         )
 
 
+def test_hessian_pipeline_rejects_global_projection(tmp_path):
+    """The query is saved per module, so it can't be scored against a globally
+    projected index."""
+    with pytest.raises(ValueError, match="projection_target"):
+        hessian_pipeline(
+            IndexConfig(
+                run_path=str(tmp_path / "run"),
+                projection_dim=16,
+                projection_target="global",
+            ),
+            HessianConfig(method="kfac"),
+            ScoreConfig(),
+            PreprocessConfig(),
+            HessianPipelineConfig(),
+        )
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_hessian_pipeline_resume_reruns_interrupted_steps(tmp_path):
     """A fit or apply that died mid-way leaves only its ``.part`` output, and a

@@ -66,6 +66,12 @@ def hessian_pipeline(
             "Hessian."
         )
 
+    if index_cfg.projection_dim and index_cfg.projection_target == "global":
+        raise ValueError(
+            "hessian_pipeline doesn't support projection_target='global'. Use "
+            "projection_target='per_module', or set projection_dim=0."
+        )
+
     run_path = index_cfg.run_path
     method = hessian_cfg.method
     query_path = f"{run_path}/query"
