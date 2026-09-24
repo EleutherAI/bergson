@@ -1,5 +1,4 @@
 import functools
-import hashlib
 import math
 import os
 from abc import ABC, abstractmethod
@@ -8,7 +7,6 @@ from dataclasses import astuple, dataclass, field
 from fnmatch import fnmatchcase
 from typing import Callable, Iterator, Literal, Mapping, Optional
 
-import numpy as np
 import torch
 import torch.distributed as dist
 import torch.nn as nn
@@ -28,6 +26,7 @@ from torch.utils.hooks import RemovableHandle
 from tqdm.auto import tqdm
 from transformers import PreTrainedModel
 
+from bergson.collector.projection_matrix import random_matrix
 from bergson.config import AttentionConfig, HessianConfig, IndexConfig
 from bergson.data import compute_num_token_grads, pad_and_tensor
 from bergson.gradients import (
@@ -1072,18 +1071,9 @@ def global_projection_blocks(
     cols = max(1, CHUNKED_PROJECTION_INSTANTIATION_NUMEL // m)
     for start in range(0, n, cols):
         stop = min(n, start + cols)
-        digest = hashlib.md5(f"{identifier}/{start}".encode()).digest()
-        seed = int.from_bytes(digest, byteorder="big") % (2**63 - 1)
-        prng = torch.Generator(device).manual_seed(seed)
-        if projection_type == "normal":
-            block = torch.randn(
-                m, stop - start, device=device, dtype=dtype, generator=prng
-            )
-        elif projection_type == "rademacher":
-            block = torch.empty(m, stop - start, device=device, dtype=dtype)
-            block.bernoulli_(0.5, generator=prng).mul_(2).sub_(1)
-        else:
-            raise ValueError(f"Unknown projection type: {projection_type}")
+        block = random_matrix(
+            f"{identifier}/{start}", m, stop - start, device, projection_type, dtype
+        )
         yield start, stop, block
 
 
@@ -1150,23 +1140,7 @@ def create_projection_matrix(
     projection_scale: Literal["jl", "row_norm"] = "jl",
 ) -> Tensor:
     """Create a projection matrix deterministically based on identifier."""
-    # Seed the PRNG deterministically from the identifier string
-    message = bytes(identifier, "utf-8")
-    digest = hashlib.md5(message).digest()
-    seed = int.from_bytes(digest, byteorder="big") % (2**63 - 1)
-
-    if projection_type == "normal":
-        prng = torch.Generator(device).manual_seed(seed)
-        A = torch.randn(m, n, device=device, dtype=dtype, generator=prng)
-    elif projection_type == "rademacher":
-        numpy_rng = np.random.Generator(np.random.PCG64(seed))
-        random_bytes = numpy_rng.bytes((m * n + 7) // 8)
-        random_bytes = np.frombuffer(random_bytes, dtype=np.uint8)
-        A = np.unpackbits(random_bytes)[: m * n].reshape((m, n))
-        A = torch.from_numpy(A).to(device, dtype=dtype)
-        A = A.add_(-0.5).mul_(2)
-    else:
-        raise ValueError(f"Unknown projection type: {projection_type}")
+    A = random_matrix(identifier, m, n, device, projection_type, dtype)
 
     if projection_scale == "row_norm":
         A /= A.norm(dim=1, keepdim=True)
