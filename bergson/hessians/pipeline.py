@@ -120,6 +120,8 @@ def hessian_pipeline(
             ev_correction=hessian_cfg.ev_correction,
             projection_dim=index_cfg.projection_dim,
             projection_type=index_cfg.projection_type,
+            projection_scale=index_cfg.projection_scale,
+            projection_seed=index_cfg.projection_seed,
             apply_batch_size=hessian_pipeline_cfg.inversion_cfg.apply_batch_size,
             module_partitions=hessian_cfg.module_partitions,
         )
