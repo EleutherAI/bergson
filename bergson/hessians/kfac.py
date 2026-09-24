@@ -118,3 +118,5 @@ class CovarianceCollector(HookCollectorBase):
             self.S_cov_dict,
             os.path.join(gradient_path, f"shard_{self.rank}.safetensors"),
         )
+        self.A_cov_dict.clear()
+        self.S_cov_dict.clear()

@@ -102,6 +102,10 @@ class GradientCollector(HookCollectorBase):
         if self.accumulate_global_projection(name, P):
             return
 
+        if self.scorer is not None and self.scorer.streaming:
+            self.scorer.accumulate(name, P.to(dtype=self.save_dtype))
+            return
+
         if self.save_index and self.preprocess_cfg.aggregation == "none":
             # Asynchronously move the gradient to CPU and convert to the final
             # dtype

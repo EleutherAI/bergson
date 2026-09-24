@@ -948,6 +948,10 @@ class HessianConfig(Serializable):
     """Whether to use dataset labels for Hessian (empirical Fisher) approximation.
     If false, the model predictions will be used."""
 
+    module_partitions: int = 1
+    """Fit the factored methods in this many module groups, one pass per group,
+    merging the shard files afterwards; raise it when the factors do not fit."""
+
 
 @dataclass
 class HessianPipelineConfig:

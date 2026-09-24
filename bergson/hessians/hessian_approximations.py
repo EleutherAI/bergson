@@ -1,14 +1,19 @@
+import gc
 import os
 import shutil
 import warnings
+from contextlib import ExitStack
 
 import torch
 import torch.distributed as dist
 from datasets import Dataset
+from safetensors import safe_open
+from safetensors.torch import save_file
 from transformers import PreTrainedModel
 
 from bergson.collector.collector import (
     CollectorComputer,
+    HookCollectorBase,
     fwd_bwd_hessian_factory,
 )
 from bergson.config.config import AttentionConfig, HessianConfig, IndexConfig
@@ -42,6 +47,63 @@ HESSIAN_APPROXIMATIONS = {
     "tkfac": TraceCovarianceCollector,
     "shampoo": ShampooCollector,
 }
+
+FACTOR_SUBDIRS = (
+    "activation_sharded",
+    "gradient_sharded",
+    "eigen_activation_sharded",
+    "eigen_gradient_sharded",
+    "eigenvalue_sharded",
+    "factor_eig_a",
+    "factor_eig_g",
+    "eigenvalue_correction_sharded",
+)
+"""Factor stores under a Hessian run path, one ``shard_{rank}.safetensors`` each."""
+
+
+def partition_modules(names: list[str], num_partitions: int) -> list[list[str]]:
+    """Split ``names`` into ``num_partitions`` contiguous groups of near-equal size."""
+    if num_partitions < 1:
+        raise ValueError(f"module_partitions must be >= 1, got {num_partitions}")
+    num_partitions = min(num_partitions, len(names))
+    size, extra = divmod(len(names), num_partitions)
+    groups, start = [], 0
+    for i in range(num_partitions):
+        end = start + size + (1 if i < extra else 0)
+        groups.append(names[start:end])
+        start = end
+    return groups
+
+
+def merge_partitions(run_path: str | os.PathLike, num_partitions: int, rank: int):
+    """Merge this rank's shard from every ``partition_{i}`` under ``run_path`` into
+    the run's factor stores; rank 0 then deletes the partition directories."""
+    part_dirs = [
+        os.path.join(run_path, f"partition_{p}") for p in range(num_partitions)
+    ]
+    shard = f"shard_{rank}.safetensors"
+    for sub in FACTOR_SUBDIRS:
+        files = [os.path.join(d, sub, shard) for d in part_dirs]
+        present = [os.path.exists(f) for f in files]
+        if not any(present):
+            continue
+        if not all(present):
+            missing = [f for f, ok in zip(files, present) if not ok]
+            raise FileNotFoundError(f"Partition shards missing for {sub}: {missing}")
+
+        merged = {}
+        with ExitStack() as stack:
+            for f in files:
+                handle = stack.enter_context(safe_open(f, framework="pt", device="cpu"))
+                for key in handle.keys():
+                    merged[key] = handle.get_tensor(key)
+            os.makedirs(os.path.join(run_path, sub), exist_ok=True)
+            save_file(merged, os.path.join(run_path, sub, shard))
+
+    dist.barrier() if dist.is_initialized() else None
+    if rank == 0:
+        for d in part_dirs:
+            shutil.rmtree(d)
 
 
 def approximate_hessians(
@@ -190,12 +252,70 @@ def hessian_worker(
         "data": ds,
         "index_cfg": index_cfg,
         "hessian_cfg": hessian_cfg,
+        "attention_cfgs": attention_cfgs,
+        "batches": batches,
+        "do_eigendecomposition": do_eigendecomposition,
+    }
+
+    if hessian_cfg.module_partitions == 1:
+        fit_factored_hessians(
+            **kwargs,
+            target_modules=target_modules,
+            path=str(index_cfg.partial_run_path),
+        )
+        return
+
+    target_info = HookCollectorBase.discover_targets(
+        model.base_model,  # type: ignore
+        target_modules,
+        index_cfg.include_bias,
+        index_cfg.filter_modules,
+    )
+    groups = partition_modules(list(target_info), hessian_cfg.module_partitions)
+    for i, group in enumerate(groups):
+        print(f"Fitting module partition {i + 1}/{len(groups)} ({len(group)} modules)")
+        fit_factored_hessians(
+            **kwargs,
+            target_modules=set(group),
+            path=os.path.join(index_cfg.partial_run_path, f"partition_{i}"),
+        )
+
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    merge_partitions(index_cfg.partial_run_path, len(groups), rank)
+
+
+def fit_factored_hessians(
+    model: PreTrainedModel,
+    data: Dataset,
+    index_cfg: IndexConfig,
+    hessian_cfg: HessianConfig,
+    *,
+    target_modules: set[str] | None,
+    attention_cfgs: dict[str, AttentionConfig],
+    batches: list[list[int]],
+    path: str,
+    do_eigendecomposition: bool,
+):
+    """Fit the covariances of ``target_modules``, eigendecompose them and, for
+    EK-FAC, collect the eigenvalue corrections, writing everything under ``path``."""
+    if target_modules is not None:
+        attention_cfgs = {
+            k: v for k, v in attention_cfgs.items() if k in target_modules
+        }
+
+    kwargs = {
+        "model": model,
+        "data": data,
+        "index_cfg": index_cfg,
+        "hessian_cfg": hessian_cfg,
         "target_modules": target_modules,
         "attention_cfgs": attention_cfgs,
         "batches": batches,
+        "path": path,
     }
 
     collect_hessians(**kwargs)
+    _release_device_memory()
 
     dist.barrier() if dist.is_initialized() else None
 
@@ -212,18 +332,18 @@ def hessian_worker(
     )
 
     eigenvalues_a = compute_eigendecomposition(
-        os.path.join(index_cfg.partial_run_path, "activation_sharded"),
+        os.path.join(path, "activation_sharded"),
         total_processed=total_processed,
     )
     eigenvalues_g = compute_eigendecomposition(
-        os.path.join(index_cfg.partial_run_path, "gradient_sharded"),
+        os.path.join(path, "gradient_sharded"),
         total_processed=total_processed,
     )
 
     dist.barrier() if dist.is_initialized() else None
 
     save_uncorrected_eigenvalues(
-        partial_run_path=index_cfg.partial_run_path,
+        partial_run_path=path,
         eigenvalues_a=eigenvalues_a,
         eigenvalues_g=eigenvalues_g,
         total_processed=total_processed,
@@ -233,6 +353,15 @@ def hessian_worker(
 
     if hessian_cfg.ev_correction:
         collect_hessians(**kwargs, ev_correction=True)
+        _release_device_memory()
+
+
+def _release_device_memory():
+    """Drop a finished collector's device tensors; the collector, computer and
+    hooks form a reference cycle, so they otherwise outlive the pass."""
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 def collect_hessians(
@@ -247,10 +376,12 @@ def collect_hessians(
     ev_correction: bool = False,
     eigen_path: str | None = None,
     output_subdir: str = "eigenvalue_correction_sharded",
+    path: str | None = None,
 ):
     """
     Compute Hessian approximations using the hooks specified in the collector.
     If ev_correction is True, uses LambdaCollector to compute eigenvalue corrections.
+    ``path`` overrides where the collector writes.
     """
 
     hessian_dtype = convert_precision_to_torch(hessian_cfg.hessian_dtype)
@@ -259,7 +390,7 @@ def collect_hessians(
         "model": model.base_model,  # type: ignore
         "target_modules": target_modules,
         "attention_cfgs": attention_cfgs or {},
-        "path": str(index_cfg.partial_run_path),
+        "path": path or str(index_cfg.partial_run_path),
         "filter_modules": index_cfg.filter_modules,
         "processor": GradientProcessor(include_bias=index_cfg.include_bias),
         "dtype": hessian_dtype,

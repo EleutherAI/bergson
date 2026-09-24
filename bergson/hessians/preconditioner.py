@@ -21,10 +21,11 @@ The eigenvalue math lives in :mod:`bergson.hessians.inversion`.
 import os
 from glob import glob
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Iterable, Protocol, runtime_checkable
 
 import torch
 import torch.distributed as dist
+from safetensors import safe_open
 from safetensors.torch import load_file
 from torch import Tensor
 
@@ -221,11 +222,12 @@ class FactoredPreconditioner:
         apply_fn=None,
         power: float = -1.0,
         ev_correction: bool = False,
+        modules: Iterable[str] | None = None,
     ) -> "FactoredPreconditioner":
-        """Distributed: load this rank's shard of the factors."""
+        """Distributed: load this rank's shard of the factors, or only ``modules``."""
 
         def load(sub):
-            return _load_shard(hessian_path, sub, rank, device)
+            return _load_shard(hessian_path, sub, rank, device, modules)
 
         # Each rank's shard of factor_eig_a is already the full replicated [I].
         return cls._from_loaded(
@@ -580,12 +582,18 @@ def _load_full(
 
 
 def _load_shard(
-    hessian_path: str | Path, subdir: str, rank: int, device: str | torch.device
+    hessian_path: str | Path,
+    subdir: str,
+    rank: int,
+    device: str | torch.device,
+    modules: Iterable[str] | None = None,
 ) -> dict[str, Tensor]:
-    """Load ``rank``'s shard of the factors under ``hessian_path/subdir``
-    onto ``device`` and cast to fp32."""
-    shard = load_file(
-        os.path.join(str(hessian_path), subdir, f"shard_{rank}.safetensors"),
-        device=str(device),
-    )
+    """Load ``rank``'s shard of the factors under ``hessian_path/subdir`` onto
+    ``device`` as fp32, restricted to ``modules`` when given."""
+    path = os.path.join(str(hessian_path), subdir, f"shard_{rank}.safetensors")
+    if modules is None:
+        shard = load_file(path, device=str(device))
+    else:
+        with safe_open(path, framework="pt", device=str(device)) as f:
+            shard = {k: f.get_tensor(k) for k in modules}
     return {k: v.to(torch.float32) for k, v in shard.items()}

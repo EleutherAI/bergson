@@ -8,12 +8,14 @@ from typing import Literal
 import numpy as np
 import torch
 import torch.distributed as dist
+from safetensors import safe_open
 from simple_parsing import ArgumentParser
 
 from bergson.collector.collector import create_projection_matrix
 from bergson.config import InversionConfig
 from bergson.data import column_offsets, create_index, load_gradients
 from bergson.distributed import init_dist
+from bergson.hessians.hessian_approximations import partition_modules
 from bergson.hessians.preconditioner import (
     DiagonalFactoredPreconditioner,
     FactoredPreconditioner,
@@ -42,6 +44,9 @@ class EkfacConfig:
     preconditioner_path: str = ""
     """Safetensors of a diagonal optimizer preconditioner (module name ->
     [out, in] grid), for the Adam SOURCE variant."""
+    module_partitions: int = 1
+    """Apply the inverse in this many module groups, one group's factors on the
+    device at a time."""
     debug: bool = False
 
 
@@ -94,11 +99,24 @@ class EkfacApplicator:
         self.world_size = dist.get_world_size() if dist.is_initialized() else 1
         self.device = get_device(self.rank)
 
-    def compute_ivhp_sharded(self):
+    def _factor_dims(self) -> tuple[list[str], dict[str, int], dict[str, int]]:
+        """Module names and their [O]/[I] sizes from the eigenvector shard headers."""
+        shard = f"shard_{self.rank}.safetensors"
+        with safe_open(
+            os.path.join(self.path, "eigen_activation_sharded", shard), framework="pt"
+        ) as f:
+            names = list(f.keys())
+            i_dims = {n: f.get_slice(n).get_shape()[1] for n in names}
+        with safe_open(
+            os.path.join(self.path, "eigen_gradient_sharded", shard), framework="pt"
+        ) as f:
+            o_dims = {n: f.get_slice(n).get_shape()[1] for n in names}
+        return names, o_dims, i_dims
+
+    def _build_preconditioner(self, modules: list[str] | None):
+        """The preconditioner chain for ``modules`` (all when ``None``)."""
         chain: list = []
         if self.cfg.preconditioner_path:
-            if self.apply_fn is None:
-                raise ValueError("preconditioner_path requires apply_fn.")
             diagonal = DiagonalFactoredPreconditioner.from_shards(
                 self.path,
                 self.cfg.preconditioner_path,
@@ -134,21 +152,24 @@ class EkfacApplicator:
                 ),
                 apply_fn=self.apply_fn,
                 ev_correction=self.cfg.ev_correction,
+                modules=modules,
             )
+        return chain, preconditioner
 
-        o_dims = {
-            name: preconditioner.eigen_g[name].shape[1]
-            for name in preconditioner.eigen_a
-        }
-        i_dims = {
-            name: preconditioner.eigen_a[name].shape[1]
-            for name in preconditioner.eigen_a
-        }
+    def compute_ivhp_sharded(self):
+        if self.cfg.preconditioner_path:
+            if self.apply_fn is None:
+                raise ValueError("preconditioner_path requires apply_fn.")
+            if self.cfg.module_partitions > 1:
+                raise ValueError(
+                    "module_partitions > 1 is not supported with preconditioner_path."
+                )
+
+        names, o_dims, i_dims = self._factor_dims()
 
         p = self.cfg.projection_dim
         grad_sizes = {
-            name: p * p if p > 0 else o_dims[name] * i_dims[name]
-            for name in preconditioner.eigen_a
+            name: p * p if p > 0 else o_dims[name] * i_dims[name] for name in names
         }
 
         mmap = load_gradients(self.gradient_path)
@@ -168,38 +189,71 @@ class EkfacApplicator:
             f"Loaded gradients for {num_queries} queries and computing IVHP..."
         )
 
-        # Precondition the queries
+        groups = partition_modules(names, self.cfg.module_partitions)
+        for group in groups:
+            chain, preconditioner = self._build_preconditioner(
+                group if len(groups) > 1 else None
+            )
+            self._apply_group(
+                group,
+                chain,
+                preconditioner,
+                mmap,
+                in_offsets,
+                grad_buffer,
+                out_offsets,
+                o_dims,
+                i_dims,
+            )
+            del chain, preconditioner
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+        grad_buffer.flush()
+
+        self.logger.info(f"Saved IVHP gradients to {self.cfg.run_path}")
+
+    def _apply_group(
+        self,
+        group,
+        chain,
+        preconditioner,
+        mmap,
+        in_offsets,
+        grad_buffer,
+        out_offsets,
+        o_dims,
+        i_dims,
+    ):
+        """Write ``H^-1 G`` for the modules in ``group``, one module at a time."""
+        p = self.cfg.projection_dim
+        num_queries = mmap.shape[0]
         for start in range(0, num_queries, self.cfg.apply_batch_size):
             end = min(start + self.cfg.apply_batch_size, num_queries)
 
-            # The gradients are mmap'd read-only which pytorch doesn't
-            # support: suppress the warning (the preconditioner returns
-            # fresh tensors.
-            grads: dict[str, torch.Tensor] = {}
-            for name in preconditioner.eigen_a:
+            for name in group:
                 lo, hi = in_offsets[name]
+                # The mmap is read-only, which torch warns about; the
+                # preconditioner returns fresh tensors.
                 with warnings.catch_warnings():
                     warnings.filterwarnings(
                         "ignore",
                         message="The given NumPy array is not writable",
                         category=UserWarning,
                     )
-                    grads[name] = numpy_to_tensor(mmap[start:end, lo:hi]).to(
-                        device=self.device, dtype=torch.float32
-                    )
+                    grads = {
+                        name: numpy_to_tensor(mmap[start:end, lo:hi]).to(
+                            device=self.device, dtype=torch.float32
+                        )
+                    }
 
-            for pre in chain:
-                grads = pre.apply(grads)
-            transformed = preconditioner.apply(grads)
-            del grads
+                for pre in chain:
+                    grads = pre.apply(grads)
+                transformed = preconditioner.apply(grads)[name]
+                del grads
 
-            self.logger.debug("Finished H^{-1} G = Q_S @ (G' / lambda) @ Q_A^T batch")
-
-            if p > 0:
-                for name, flat in transformed.items():
-                    if name not in o_dims:
-                        continue
-                    g = flat.view(-1, o_dims[name], i_dims[name])
+                if p > 0:
+                    g = transformed.view(-1, o_dims[name], i_dims[name])
                     P_l = create_projection_matrix(
                         f"{name}/left",
                         p,
@@ -218,28 +272,16 @@ class EkfacApplicator:
                         self.cfg.projection_type,
                         self.cfg.projection_scale,
                     )
-                    transformed[name] = torch.einsum("ps,nsa,ra->npr", P_l, g, P_r)
-                self.logger.debug("Compressed IVHP output to [p, p] per module")
+                    transformed = torch.einsum("ps,nsa,ra->npr", P_l, g, P_r)
 
-            # Stage the async D2H copies, synchronize once, then read them
-            # into the numpy buffer. `.numpy()` is a host read so the
-            # sync must sit between it and the copies.
-            staged = {
-                name: v.to(device="cpu", non_blocking=True)
-                for name, v in transformed.items()
-            }
-            del transformed
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-            for name, t in staged.items():
                 lo, hi = out_offsets[name]
-                grad_buffer[start:end, lo:hi] = t.flatten(1).numpy()
+                grad_buffer[start:end, lo:hi] = transformed.flatten(1).cpu().numpy()
+                del transformed
+                self.logger.debug(
+                    "%s: wrote H^-1 G for queries %d:%d", name, start, end
+                )
 
         self.logger.debug("Finished H^{-1} G = Q_S @ (G' / lambda) @ Q_A^T")
-
-        grad_buffer.flush()
-
-        self.logger.info(f"Saved IVHP gradients to {self.cfg.run_path}")
 
 
 def apply_worker(
