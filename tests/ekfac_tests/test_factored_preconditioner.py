@@ -24,7 +24,6 @@ from bergson.data import column_offsets, create_index, load_module_gradients
 from bergson.hessians.apply_hessian import EkfacApplicator, EkfacConfig
 from bergson.hessians.preconditioner import FactoredPreconditioner
 from bergson.hessians.sharded_computation import shard_bounds
-from bergson.utils.utils import get_device
 from bergson.utils.worker_utils import processor_for
 
 
@@ -316,11 +315,7 @@ def test_apply_hessian_compression_matches_collector(tmp_path, model, dataset):
     what the collector writes for the same example.
     """
     p = 4
-    # "normal" projection matrices depend on the device they're generated on,
-    # so collect on the device EkfacApplicator uses.
-    device = get_device()
-    model.to(device)
-    tokens = torch.tensor([dataset[0]["input_ids"]], device=device)
+    tokens = torch.tensor([dataset[0]["input_ids"]])
     cfg = IndexConfig(run_path=str(tmp_path))
 
     def collect(processor: GradientProcessor) -> dict[str, torch.Tensor]:
