@@ -457,8 +457,9 @@ class TrainingConfig(AttributionConfig, Serializable):
     resume: bool = False
     """Resume a previously interrupted run from the last checkpoint."""
 
-    wandb_project: str = ""
-    """Weights & Biases project name. If set, logs training loss to W&B."""
+    wandb_project: str = "bergson"
+    """Weights & Biases project name. The run will be logged to W&B if an API
+    key is set, or otherwise to a local directory. Set to "" to disable."""
 
     def __post_init__(self):
         super().__post_init__()
