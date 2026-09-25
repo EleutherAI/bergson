@@ -44,6 +44,7 @@ from bergson.utils.utils import (
 )
 from bergson.utils.worker_utils import (
     create_processor,
+    processor_for,
     setup_data_pipeline,
     setup_model_and_peft,
 )
@@ -405,6 +406,13 @@ def score_dataset(
 
     if score_cfg.candidates.scores and index_cfg.attribute_tokens:
         raise ValueError("score_cfg.candidates does not support attribute_tokens.")
+
+    processor = processor_for(index_cfg)
+    processor.check_saved_projection(score_cfg.query_path, "The query")
+    if preprocess_cfg.hessian_path and not is_factored_hessian(
+        preprocess_cfg.hessian_path
+    ):
+        processor.check_saved_projection(preprocess_cfg.hessian_path, "The Hessian")
 
     index_cfg.partial_run_path.mkdir(parents=True, exist_ok=True)
 

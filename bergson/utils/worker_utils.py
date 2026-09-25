@@ -2,6 +2,7 @@ import shutil
 import warnings
 from functools import partial
 from pathlib import Path
+from typing import Mapping
 
 import numpy as np
 import pandas as pd
@@ -79,8 +80,19 @@ def create_processor(
             target_modules=target_modules,
         )
 
-    processor = GradientProcessor(
-        normalizers,
+    processor = processor_for(cfg, normalizers)
+    if rank == 0:
+        processor.save(cfg.partial_run_path)
+
+    return processor
+
+
+def processor_for(
+    cfg: IndexConfig, normalizers: Mapping[str, Normalizer] | None = None
+) -> GradientProcessor:
+    """The processor ``cfg`` describes."""
+    return GradientProcessor(
+        normalizers or {},
         projection_dim=cfg.projection_dim or None,
         reshape_to_square=cfg.reshape_to_square,
         projection_type=cfg.projection_type,
@@ -89,10 +101,6 @@ def create_processor(
         include_bias=cfg.include_bias,
         projection_seed=cfg.projection_seed,
     )
-    if rank == 0:
-        processor.save(cfg.partial_run_path)
-
-    return processor
 
 
 def apply_force_math_sdp(cfg: ModelConfig) -> None:
