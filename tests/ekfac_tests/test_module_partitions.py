@@ -9,7 +9,13 @@ import pytest
 import torch
 from safetensors.torch import load_file
 
-from bergson.config import DataConfig, HessianConfig, IndexConfig, InversionConfig
+from bergson.config import (
+    DataConfig,
+    DistributedConfig,
+    HessianConfig,
+    IndexConfig,
+    InversionConfig,
+)
 from bergson.data import create_index, load_gradients
 from bergson.hessians.apply_hessian import EkfacApplicator, EkfacConfig
 from bergson.hessians.hessian_approximations import (
@@ -40,6 +46,7 @@ def test_module_partitions_match_single_pass(tmp_path: Path):
             token_batch_size=512,
             precision="fp32",
             filter_modules="embed_out",
+            distributed=DistributedConfig(nproc_per_node=1),
         )
         # Dataset labels: sampled labels would differ between the two fits.
         hessian_cfg = HessianConfig(
