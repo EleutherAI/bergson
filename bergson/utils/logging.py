@@ -7,7 +7,6 @@ os.environ.setdefault("WANDB_INIT_TIMEOUT", "60")
 
 
 def _api_key_available(wandb) -> bool:
-    """Whether a W&B API key can be found without prompting or network."""
     if os.environ.get("WANDB_API_KEY"):
         return True
     try:
@@ -26,10 +25,8 @@ def wandb_log_fn(
         log_fn = wandb_log_fn("my-project", config={"lr": 1e-4})
         trainer.train(state, data, log_fn=log_fn)
 
-    When no API key is available (and ``WANDB_MODE`` is unset), the run is
-    created in offline mode so losses are still written to the local ``wandb``
-    directory; upload later with ``wandb sync``. This also avoids wandb's
-    interactive login prompt inside batch jobs.
+    When no API key is available and ``WANDB_MODE`` is unset, the run is
+    logged to a local wandb directory.
 
     Logging degrades to a no-op (without importing wandb) when
     ``WANDB_MODE=disabled`` is set, or when wandb is not installed. This keeps

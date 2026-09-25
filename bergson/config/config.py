@@ -458,9 +458,8 @@ class TrainingConfig(AttributionConfig, Serializable):
     """Resume a previously interrupted run from the last checkpoint."""
 
     wandb_project: str = "bergson"
-    """Weights & Biases project name. Training loss is logged to W&B by
-    default; without an API key the run is written to the local ``wandb``
-    directory (offline mode) for later ``wandb sync``. Set to "" to disable."""
+    """Weights & Biases project name. The run will be logged to W&B if an API
+    key is set, or otherwise to a local directory. Set to "" to disable."""
 
     def __post_init__(self):
         super().__post_init__()
