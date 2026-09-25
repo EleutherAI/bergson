@@ -495,3 +495,38 @@ class AdamNormalizer(Normalizer):
             col=self.weight_avg_sq.mean(dim=0),  # shape [I]
             bias_avg_sq=self.bias_avg_sq,
         )
+
+
+@dataclass
+class OuterProductGradients:
+    """A module's gradients ``g ⊗ a + bias ⊗ bias_col``, kept as the vectors
+    they are formed from.
+
+    With ``g`` of shape [T, O] there is one gradient per token. With shape
+    [N, S, O] there is one per example, summed over its S positions.
+    """
+
+    g: Tensor
+    """Output gradients, [T, O] or [N, S, O]."""
+
+    a: Tensor
+    """Inputs, [T, W] or [N, S, W], zero in the bias column if there is one."""
+
+    bias: Tensor | None = None
+    """Bias gradients, [T, O] or [N, O]."""
+
+    bias_col: Tensor | None = None
+    """The [W] vector the bias gradients are paired with: the bias column's
+    indicator, or its projection."""
+
+    def materialize(self) -> Tensor:
+        """Form the gradients, [T, O, W] or [N, O, W]."""
+        if self.g.ndim == 2:
+            P = self.g.unsqueeze(-1) * self.a.unsqueeze(-2)
+        else:
+            P = self.g.mT @ self.a
+
+        if self.bias is not None:
+            assert self.bias_col is not None
+            P.addcmul_(self.bias.unsqueeze(-1), self.bias_col)
+        return P
