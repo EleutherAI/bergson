@@ -8,7 +8,13 @@ from safetensors.torch import save_file
 from torch import Tensor
 
 from bergson.collector.collector import HookCollectorBase
-from bergson.hessians.sharded_computation import ShardedMul
+from bergson.hessians.sharded_computation import (
+    ShardedMul,
+    assign_module_owners,
+    gather_batch_shapes,
+    gather_to_owner,
+    owned_to_row_shards,
+)
 from bergson.utils.utils import assert_type
 
 
@@ -22,6 +28,9 @@ class CovarianceCollector(HookCollectorBase):
         S_cov = sum over batches of (G^T @ G)  for gradients
 
     where X is input activations [N*S, I] and G is output gradients [N*S, O].
+
+    Distributed, each module's covariances belong to one rank, which receives
+    every rank's positions for that module; teardown saves the usual row shards.
     """
 
     dtype: torch.dtype
@@ -32,23 +41,52 @@ class CovarianceCollector(HookCollectorBase):
         self.A_cov_dict = {}
         self.S_cov_dict = {}
         self.shard_computer = ShardedMul()
-        # Initialize sharded covariance matrices for ALL modules in target_info
-        self.shard_computer._init_covariance_dict(
-            activation_covariance_dict=self.A_cov_dict,
-            gradient_covariance_dict=self.S_cov_dict,
-            dtype=self.dtype,
-            target_info=self.target_info,
-        )
+        self.A_shapes, self.S_shapes = {}, {}
+        for name, (_, (out_dim, in_dim), collect_bias) in self.target_info.items():
+            self.A_shapes[name] = (in_dim + collect_bias,) * 2
+            self.S_shapes[name] = (out_dim, out_dim)
+
+        # Each module's owning rank; None in a single process.
+        self.owners: dict[str, int] | None = None
+        if not dist.is_initialized():
+            self.shard_computer._init_covariance_dict(
+                activation_covariance_dict=self.A_cov_dict,
+                gradient_covariance_dict=self.S_cov_dict,
+                dtype=self.dtype,
+                target_info=self.target_info,
+            )
+            return
+
+        self.owners = assign_module_owners(self.target_info, self.world_size)
+        self._rows = 0  # set per batch by with_batch
+        device = self.shard_computer.device
+        for name, owner in self.owners.items():
+            if owner == self.rank:
+                self.A_cov_dict[name] = torch.zeros(
+                    self.A_shapes[name], device=device, dtype=self.dtype
+                )
+                self.S_cov_dict[name] = torch.zeros(
+                    self.S_shapes[name], device=device, dtype=self.dtype
+                )
+
+    def with_batch(self, collection_mask: Tensor | None = None):
+        super().with_batch(collection_mask)
+        if self.owners is not None and collection_mask is not None:
+            # Every rank pads its positions to the batch's largest count.
+            counts = gather_batch_shapes(
+                int(collection_mask.sum()), device=collection_mask.device
+            )
+            self._rows = max(count for (count,) in counts)
+        return self
 
     def forward_hook(self, module: nn.Module, a: Tensor) -> None:
         """Compute activation covariance: A^T @ A."""
         name = assert_type(str, module._name)
-        A_cov_ki = self.A_cov_dict[name]
         mask = self.collection_mask(module)
         assert mask is not None, "Collection mask not set for forward hook."
 
         # a: [N, S, I], collection mask: [N, S] -> select gradient-carrying positions
-        a_bi = a[mask].to(self.dtype)  # [num_valid, I]
+        a_bi = a[mask]  # [num_valid, I]
 
         # Augment with a ones column so A matches the [O, I+1] gradient layout
         # produced when the bias gradient is collected.
@@ -57,42 +95,32 @@ class CovarianceCollector(HookCollectorBase):
                 [a_bi, a_bi.new_ones(a_bi.shape[0], 1)], dim=1
             )  # [num_valid, I+1]
 
-        # Compute local covariance
-        local_update_ii = a_bi.mT @ a_bi
-
-        # All-reduce across ranks
-        if dist.is_initialized():
-            dist.all_reduce(local_update_ii, op=dist.ReduceOp.SUM)
-
-        # Extract our shard
-        start_row, end_row = self.shard_computer.shard_bounds(local_update_ii.shape[0])
-        update_slice_ki = local_update_ii[start_row:end_row, :]
-
-        # Accumulate
-        A_cov_ki.add_(update_slice_ki)
+        self._accumulate(self.A_cov_dict, name, a_bi)
 
     def backward_hook(self, module: nn.Module, g: Tensor) -> None:
         """Compute gradient covariance: G^T @ G."""
         name = assert_type(str, module._name)
-        S_cov_po = self.S_cov_dict[name]
         mask = self.collection_mask(module)
 
         # g: [N, S, O], mask: [N, S] -> select gradient-carrying positions
-        g_bo = g[mask].to(self.dtype)  # [num_valid, O]
+        g_bo = g[mask]  # [num_valid, O]
 
-        # Compute local covariance
-        local_update_oo = g_bo.mT @ g_bo
+        self._accumulate(self.S_cov_dict, name, g_bo)
 
-        # All-reduce across ranks
-        if dist.is_initialized():
-            dist.all_reduce(local_update_oo, op=dist.ReduceOp.SUM)
+    def _accumulate(self, covariances: dict[str, Tensor], name: str, x: Tensor):
+        """Add ``X^T @ X`` to ``name``'s covariance, where ``X`` stacks every
+        rank's ``x``, in the accumulation dtype."""
+        if self.owners is None:
+            x = x.to(self.dtype)
+            covariances[name].addmm_(x.mT, x)
+            return
 
-        # Extract our shard
-        start_row, end_row = self.shard_computer.shard_bounds(local_update_oo.shape[0])
-        update_slice_po = local_update_oo[start_row:end_row, :]
-
-        # Accumulate
-        S_cov_po.add_(update_slice_po)
+        # Sent in the model's dtype and cast on the owner, which moves less data.
+        stacked = gather_to_owner(x, self._rows, self.owners[name])
+        if stacked is not None:
+            # Padding rows are zero, so they add nothing.
+            stacked = stacked.to(self.dtype)
+            covariances[name].addmm_(stacked.mT, stacked)
 
     def process_batch(self, indices: list[int], **kwargs) -> None:
         """No per-batch processing needed for covariance collection."""
@@ -109,14 +137,19 @@ class CovarianceCollector(HookCollectorBase):
             f"Saving sharded covariance matrices to {activation_path} "
             f"and {gradient_path}"
         )
-        # Save sharded covariance matrices
-        save_file(
-            self.A_cov_dict,
-            os.path.join(activation_path, f"shard_{self.rank}.safetensors"),
-        )
-        save_file(
-            self.S_cov_dict,
-            os.path.join(gradient_path, f"shard_{self.rank}.safetensors"),
-        )
-        self.A_cov_dict.clear()
-        self.S_cov_dict.clear()
+        for covariances, shapes, path in (
+            (self.A_cov_dict, self.A_shapes, activation_path),
+            (self.S_cov_dict, self.S_shapes, gradient_path),
+        ):
+            if self.owners is not None:
+                shards = owned_to_row_shards(
+                    covariances,
+                    shapes,
+                    self.owners,
+                    self.dtype,
+                    self.shard_computer.device,
+                )
+            else:
+                shards = covariances
+            save_file(shards, os.path.join(path, f"shard_{self.rank}.safetensors"))
+            covariances.clear()
