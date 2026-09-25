@@ -12,8 +12,6 @@ where :math:`\theta_c` are checkpoints from one training run and :math:`\eta_c` 
 :math:`c`. Gradients are uncompressed unless ``projection_dim`` is set, in which case every checkpoint uses the same
 random projection.
 
-The scores match `Captum <https://captum.ai>`_'s ``TracInCP`` on the same checkpoints (``tests/test_tracin.py``).
-
 What It Produces
 ----------------
 
