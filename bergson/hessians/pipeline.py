@@ -66,12 +66,6 @@ def hessian_pipeline(
             "Hessian."
         )
 
-    if index_cfg.projection_dim and index_cfg.projection_target == "global":
-        raise ValueError(
-            "hessian_pipeline doesn't support projection_target='global'. Use "
-            "projection_target='per_module', or set projection_dim=0."
-        )
-
     run_path = index_cfg.run_path
     method = hessian_cfg.method
     query_path = f"{run_path}/query"
@@ -96,6 +90,8 @@ def hessian_pipeline(
         print(f"  using the existing query index at {query_path}")
     elif not _step_complete(query_path, resume):
         with _timed("step1_build_query", durations):
+            # The preconditioner keys on module names, so the query stays
+            # uncompressed; only its output is randomly down-projected.
             query_cfg = deepcopy(index_cfg)
             query_cfg.run_path = query_path
             query_cfg.projection_dim = 0
@@ -125,6 +121,7 @@ def hessian_pipeline(
             run_path=str(partial_path(transformed_query_path)),
             ev_correction=hessian_cfg.ev_correction,
             projection_dim=index_cfg.projection_dim,
+            projection_target=index_cfg.projection_target,
             projection_type=index_cfg.projection_type,
             projection_scale=index_cfg.projection_scale,
             projection_seed=index_cfg.projection_seed,

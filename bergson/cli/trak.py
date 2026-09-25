@@ -154,9 +154,7 @@ def _trak_single(
         _limit_split_for_hess(gram_cfg, trak_cfg.stats_sample_size)
         _validate(gram_cfg)
         # The Gram is over the training examples' own negative log-odds gradients.
-        hess_cfg = HessianConfig(
-            method="autocorrelation", structure="joint", use_dataset_labels=True
-        )
+        hess_cfg = HessianConfig(method="autocorrelation", use_dataset_labels=True)
         save_run_config(
             Hessian(hessian_cfg=hess_cfg, index_cfg=gram_cfg),
             gram_cfg.partial_run_path,

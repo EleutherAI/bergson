@@ -152,6 +152,8 @@ class GradientProcessor:
         # Configs use 0 for no projection.
         if self.projection_dim == 0:
             self.projection_dim = None
+        if self.projection_dim is None:
+            self.projection_target = "per_module"
         self._projection_matrices: dict[
             tuple[str, Literal["left", "right", "single"], torch.device], Tensor
         ] = {}

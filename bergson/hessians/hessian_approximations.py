@@ -217,13 +217,14 @@ def hessian_worker(
     }
     batches = allocate_batches(ds["length"][:], index_cfg.token_batch_size)
 
-    # The autocorrelation Hessian is a dense per-module gradient Gram so
-    # it computes in one pass and skips the factored eigendecomposition
+    # The autocorrelation Hessian is a dense gradient Gram, one per module or
+    # one over the global projection, so it computes in one pass and skips the
+    # factored eigendecomposition.
     if hessian_cfg.method == "autocorrelation":
         processor = create_processor(model, index_cfg, target_modules)
         collector_cls = (
             JointAutocorrelationCollector
-            if hessian_cfg.structure == "joint"
+            if processor.projection_target == "global"
             else AutocorrelationCollector
         )
         collector = collector_cls(

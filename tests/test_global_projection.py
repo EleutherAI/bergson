@@ -17,34 +17,10 @@ from bergson.config import IndexConfig
 from bergson.data import load_module_gradients
 
 
-def test_global_shapes_requires_projection_dim():
-    from bergson.collector.collector import HookCollectorBase
-
-    class _Stub(HookCollectorBase):
-        def __init__(self, processor, target_info):
-            self.processor = processor
-            self.target_info = target_info
-            self.attention_cfgs = {}
-
-        def setup(self):
-            pass
-
-        def teardown(self):
-            pass
-
-        def discover_targets(self, *_a, **_kw):
-            return {}
-
-        def backward_hook(self, module, g):
-            pass
-
-        def process_batch(self, indices, **kwargs):
-            pass
-
-    proc = GradientProcessor(projection_dim=None, projection_target="global")
-    stub = _Stub(proc, target_info={})
-    with pytest.raises(AssertionError):
-        stub.shapes()
+def test_global_without_a_projection_is_per_module():
+    for dim in (None, 0):
+        proc = GradientProcessor(projection_dim=dim, projection_target="global")
+        assert proc.projection_target == "per_module"
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")

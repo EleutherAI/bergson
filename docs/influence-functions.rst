@@ -7,7 +7,7 @@ Neural networks do not have invertible Hessians, but it `has been shown <https:/
 
 Work on the theory of influence functions continues, for example `Mlodozeniec et al. <https://proceedings.neurips.cc/paper_files/paper/2025/file/0e8909cae8248c98279f6cd82074aa6d-Paper-Conference.pdf>`_. But for now, I think applied researchers could do worse than viewing influence functions as simply computing a similarity metric with an empirically useful definition of similarity. Theory that aligns more closely with this view tends to use terms like `kernels, metric matrices <https://proceedings.neurips.cc/paper_files/paper/1998/file/db1915052d15f7815c8b88e879465a1e-Paper.pdf>`_, or `preconditioners <https://docs.modula.systems/algorithms/manifold/>`_.
 
-We offer several such matrices, which we hereafter refer to as Hessians, and expose other hyperparameters such as the inversion damping factor that affect some results. We also provide gradient unit normalization, which can be interpreted as inducing the normalized linear kernel.
+We offer several such matrices, which we refer to as either Hessians or preconditioners, and expose other hyperparameters such as the inversion damping factor that affect some results. We also provide gradient unit normalization, which can be interpreted as inducing the normalized linear kernel.
 
 Preconditioners
 ---------------
@@ -54,3 +54,19 @@ Reranking candidates
 The candidates are the union over the earlier run's query columns of each column's ``top_k`` rows (or ``fraction``) at the ``direction`` end. ``scores`` may also be the CSV written by ``bergson query --record``, whose ``Top`` (or ``Bottom``) rows per query are the candidates, the first ``top_k`` of each when set. The Hessian is still fitted on the whole training set. The store has one row per candidate in training order; ``candidates.npy`` beside it holds their training rows, which ``load_scores`` returns as ``candidates``.
 
 See ``examples/pipelines/trackstar_then_shampoo.yaml``.
+
+Compressing the gradients
+-------------------------
+
+``index_cfg.projection_dim`` randomly down-projects the gradients before they are scored. ``projection_target: per_module`` compresses each module's gradient to its own ``[projection_dim, projection_dim]`` block; ``global`` compresses the whole gradient to one ``[projection_dim]`` vector:
+
+.. code-block:: yaml
+
+   steps:
+     - ekfac:
+         index_cfg:
+           projection_dim: 4096
+           projection_target: global
+         hessian_cfg: {method: kfac}
+
+The factored preconditioners apply :math:`H^{-1}` to the unprojected query and down-project the result to match the index. EK-FAC (``ev_correction``) doesn't support projection.
