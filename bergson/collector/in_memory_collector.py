@@ -13,6 +13,7 @@ from torch import Tensor, nn
 from bergson.builder import Builder
 from bergson.collector.collector import HookCollectorBase
 from bergson.config.config import IndexConfig, PreprocessConfig
+from bergson.gradients import OuterProductGradients
 from bergson.process_autocorrelation import (
     process_autocorrelation_matrices,
 )
@@ -144,23 +145,29 @@ class InMemoryCollector(HookCollectorBase):
     ) -> None:
         """Compute per-sample gradient, accumulate hessian, and store."""
         name: str = module._name  # type: ignore[assignment]
-        P = self._compute_gradient(module, g)
+        grads = self._module_gradient(module, g)
 
         if not self.skip_hessians:
-            P = P.float()
+            grads = self._materialize_gradient(grads)
+            P = grads.float()
             if name in self.processor.hessians:
                 self.processor.hessians[name].addmm_(P.mT, P)
             else:
                 self.processor.hessians[name] = P.mT @ P
 
         # In global mode every module sums into one "gradients" key.
-        if self.accumulate_global_projection(name, P):
+        if self.accumulate_global_projection(name, grads):
             return
 
         if self.scorer is not None and self.scorer.streaming and self.builder is None:
-            self.scorer.accumulate(name, P.to(dtype=self.save_dtype))
+            if isinstance(grads, OuterProductGradients):
+                self.scorer.accumulate(name, grads)
+            else:
+                P = self._materialize_gradient(grads)
+                self.scorer.accumulate(name, P.to(dtype=self.save_dtype))
             return
 
+        P = self._materialize_gradient(grads)
         # GPU for scorer/reduce, CPU for builder
         if self.scorer is not None or self.preprocess_cfg.aggregation != "none":
             self.mod_grads[name] = P.to(dtype=self.save_dtype)

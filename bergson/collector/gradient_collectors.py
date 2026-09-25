@@ -12,6 +12,7 @@ from torch import Tensor
 from bergson.builder import Builder
 from bergson.collector.collector import HookCollectorBase
 from bergson.config import IndexConfig, PreprocessConfig
+from bergson.gradients import OuterProductGradients
 from bergson.score.scorer import Scorer
 from bergson.utils.utils import get_gradient_dtype
 
@@ -97,15 +98,20 @@ class GradientCollector(HookCollectorBase):
     def backward_hook(self, module: nn.Module, g: Float[Tensor, "N S O"]):
         """Compute the per-sample gradient and store it for the index."""
         name: str = module._name  # type: ignore[assignment]
-        P = self._compute_gradient(module, g)
+        grads = self._module_gradient(module, g)
 
-        if self.accumulate_global_projection(name, P):
+        if self.accumulate_global_projection(name, grads):
             return
 
         if self.scorer is not None and self.scorer.streaming:
-            self.scorer.accumulate(name, P.to(dtype=self.save_dtype))
+            if isinstance(grads, OuterProductGradients):
+                self.scorer.accumulate(name, grads)
+            else:
+                P = self._materialize_gradient(grads)
+                self.scorer.accumulate(name, P.to(dtype=self.save_dtype))
             return
 
+        P = self._materialize_gradient(grads)
         if self.save_index and self.preprocess_cfg.aggregation == "none":
             # Asynchronously move the gradient to CPU and convert to the final
             # dtype
