@@ -954,6 +954,38 @@ class HessianConfig(Serializable):
 
 
 @dataclass
+class AstraConfig(Serializable):
+    """Refine the EK-FAC inverse-Hessian-vector products with ASTRA
+    (https://arxiv.org/abs/2507.14740).
+
+    Each query's ``x = (H + D)^-1 q`` is refined by momentum SGD on
+    ``x^T (H + D) x / 2 - x^T q``, starting from the EK-FAC solution, with each
+    step preconditioned by the damped EK-FAC inverse. ``H`` is the Gauss-Newton
+    Hessian of the training loss, estimated on a random batch of training
+    documents per step, and ``D`` is the EK-FAC damping ``c·mean(λ)`` of each
+    module."""
+
+    num_steps: int = 0
+    """Steps per query; 0 scores the EK-FAC solution unchanged."""
+
+    lr: float = 0.01
+    """Step size. Too large a step diverges; tune it by the logged objective."""
+
+    momentum: float = 0.9
+
+    batch_size: int = 16
+    """Training documents per Hessian-vector product."""
+
+    lr_decay: float = 0.9
+    """Factor the step size is multiplied by every ``lr_decay_interval`` steps."""
+
+    lr_decay_interval: int = 100
+
+    seed: int = 0
+    """Seeds the training batches, which are drawn separately for each query."""
+
+
+@dataclass
 class HessianPipelineConfig:
     """Config for the Hessian-preconditioned influence pipeline."""
 
@@ -963,6 +995,9 @@ class HessianPipelineConfig:
 
     inversion_cfg: InversionConfig = field(default_factory=InversionConfig)
     """How to invert the fitted EKFAC Hessian when applying it to the query."""
+
+    astra: AstraConfig = field(default_factory=AstraConfig)
+    """Refine the inverse-Hessian-vector products iteratively before scoring."""
 
     resume: bool = False
     """Skip pipeline steps whose output directory already exists."""

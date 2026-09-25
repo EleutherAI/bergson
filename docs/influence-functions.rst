@@ -31,6 +31,11 @@ Preconditioners
    * - Optimizer state (Adam / Adafactor)
      - ``--optimizer_state <path>`` on ``build`` / ``score``
 
+ASTRA
+-----
+
+`ASTRA <https://arxiv.org/abs/2507.14740>`_ refines the EK-FAC solution :math:`(H + D)^{-1} g_q` with momentum SGD on :math:`\tfrac12 x^\top (H + D) x - x^\top g_q`, preconditioned by the damped EK-FAC inverse, where :math:`H` is the Gauss-Newton Hessian estimated on a random batch of training documents per step. Enable it on ``ekfac`` with ``hessian_pipeline_cfg.astra.num_steps``; each step costs about five forward passes over the batch, per query. See ``examples/replicate_bae_approx_unrolling_source/wikitext_gpt2_astra.yaml``.
+
 Reranking candidates
 --------------------
 
