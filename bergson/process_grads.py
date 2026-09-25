@@ -78,6 +78,7 @@ def mix_autocorrelation_matrices(
 
     q_proc = GradientProcessor.load(query_path)
     i_proc = GradientProcessor.load(index_path)
+    q_proc.check_projection_matches(i_proc, f"The index Hessian at {index_path}")
 
     # Compute mixing coefficient (§A.1.3 of Chang et al., 2024)
     mixing_coefficient = compute_lambda(

@@ -9,6 +9,10 @@ import yaml
 from torch import Tensor
 from transformers.pytorch_utils import Conv1D as HFConv1D
 
+from bergson.utils.logger import get_logger
+
+logger = get_logger("gradients", level="INFO")
+
 NORMALIZER_TYPES: dict[str, type["Normalizer"]] = {}
 
 
@@ -74,6 +78,19 @@ class Normalizer(ABC):
         }
 
 
+PROJECTION_SETTINGS = (
+    "projection_dim",
+    "projection_type",
+    "projection_scale",
+    "projection_seed",
+    "projection_target",
+    "include_bias",
+)
+"""Settings that must match between gradients projected separately.
+``include_bias`` widens the right projection matrix of modules with a bias,
+which changes all of its entries."""
+
+
 @dataclass
 class GradientProcessor:
     """Configuration for processing and compressing gradients."""
@@ -132,6 +149,9 @@ class GradientProcessor:
     """Seed of the random projection."""
 
     def __post_init__(self):
+        # Configs use 0 for no projection.
+        if self.projection_dim == 0:
+            self.projection_dim = None
         self._projection_matrices: dict[
             tuple[str, Literal["left", "right", "single"], torch.device], Tensor
         ] = {}
@@ -222,6 +242,38 @@ class GradientProcessor:
                 )
                 cfg[new_key] = cfg.pop(legacy_key)
         return cfg
+
+    def check_projection_matches(self, other: "GradientProcessor", what: str) -> None:
+        """Raise if ``other``, the processor ``what`` was built with, projected
+        gradients differently from this one."""
+        # Without a projection, the other settings don't do anything.
+        names = PROJECTION_SETTINGS if self.projection_dim else ("projection_dim",)
+        differences = [
+            (name, getattr(other, name), getattr(self, name))
+            for name in names
+            if getattr(other, name) != getattr(self, name)
+        ]
+        if differences:
+            listed = "; ".join(
+                f"{name}={theirs!r}, not {ours!r}" for name, theirs, ours in differences
+            )
+            raise ValueError(
+                f"{what} was projected with different settings than this run: "
+                f"{listed}. Rebuild it with matching settings."
+            )
+
+    def check_saved_projection(self, path: Path | str, what: str) -> None:
+        """``check_projection_matches`` against the processor saved with the
+        gradients or hessians at ``path``."""
+        if not (Path(path) / "processor_config.yaml").exists():
+            logger.warning(
+                f"{what} at {path} has no processor_config.yaml, so its projection "
+                "settings can't be checked."
+            )
+            return
+        self.check_projection_matches(
+            GradientProcessor.load_config(path), f"{what} at {path}"
+        )
 
     def save(self, path: Path):
         """

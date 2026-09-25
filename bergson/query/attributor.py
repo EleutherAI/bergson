@@ -13,6 +13,7 @@ from bergson.gradients import GradientProcessor
 from bergson.hessians.preconditioner import (
     DensePreconditioner,
     FactoredPreconditioner,
+    is_factored_hessian,
     load_preconditioner,
 )
 from bergson.query.faiss_index import FaissConfig, FaissIndex
@@ -69,6 +70,8 @@ class Attributor:
 
         # Load the gradient processor
         self.processor = GradientProcessor.load(index_path, map_location=device)
+        if hessian_path is not None and not is_factored_hessian(hessian_path):
+            self.processor.check_saved_projection(hessian_path, "The Hessian")
 
         # Set `hessian_path` to enable preconditioning. Two-sided
         # preconditioning (H^(-1/2) on index as well as query) is

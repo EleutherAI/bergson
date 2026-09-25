@@ -26,6 +26,7 @@ from bergson.hessians.inversion import INVERSIONS
 from bergson.hessians.preconditioner import FactoredPreconditioner
 from bergson.hessians.sharded_computation import shard_bounds
 from bergson.utils.utils import get_device
+from bergson.utils.worker_utils import processor_for
 
 
 def _make_query_gradients(query_path: str, grad_sizes: dict[str, int], num_grads: int):
@@ -288,6 +289,9 @@ def test_apply_hessian_compresses_per_module(tmp_path):
     assert GradientProcessor.load_config(tmp_path / "out_full").projection_dim is None
     saved = GradientProcessor.load_config(tmp_path / "out_compressed")
     assert (saved.projection_dim, saved.projection_type) == (p, "rademacher")
+    processor_for(IndexConfig(run_path="", projection_dim=p)).check_saved_projection(
+        tmp_path / "out_compressed", "The compressed query"
+    )
 
     for name, (o, i) in modules.items():
         full = torch.from_numpy(np.asarray(ref[name][:])).view(num_grads, o, i)
