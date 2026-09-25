@@ -350,10 +350,11 @@ def fit_factored_hessians(
         total_processed=total_processed,
         rank=rank,
         world_size=world_size,
+        num_documents=len(data),
     )
 
     if hessian_cfg.ev_correction:
-        collect_hessians(**kwargs, ev_correction=True)
+        collect_hessians(**kwargs, ev_correction=True, num_documents=len(data))
         _release_device_memory()
 
 
@@ -378,10 +379,12 @@ def collect_hessians(
     eigen_path: str | None = None,
     output_subdir: str = "eigenvalue_correction_sharded",
     path: str | None = None,
+    num_documents: int = 1,
 ):
     """
     Compute Hessian approximations using the hooks specified in the collector.
-    If ev_correction is True, uses LambdaCollector to compute eigenvalue corrections.
+    If ev_correction is True, uses LambdaCollector to compute eigenvalue corrections,
+    divided by ``num_documents``.
     ``path`` overrides where the collector writes.
     """
 
@@ -402,6 +405,7 @@ def collect_hessians(
             **collector_args,
             eigen_path=eigen_path,
             output_subdir=output_subdir,
+            num_documents=num_documents,
         )
         desc += " (eigenvalue correction)"
     else:

@@ -90,6 +90,9 @@ class LambdaCollector(HookCollectorBase):
     gradients, and eigenvectors are cast to this before the rotation and
     squared accumulation, and shards are saved in it."""
 
+    num_documents: int = 1
+    """Divides the summed corrections into a mean over documents."""
+
     def setup(self) -> None:
         """Load eigenvectors and initialize storage."""
         self.shard_computer = ShardedMul()
@@ -193,7 +196,7 @@ class LambdaCollector(HookCollectorBase):
         os.makedirs(output_path, exist_ok=True)
 
         save_file(
-            self.eigenvalue_corrections,
+            {k: v / self.num_documents for k, v in self.eigenvalue_corrections.items()},
             os.path.join(output_path, f"shard_{self.rank}.safetensors"),
         )
         self.eigen_a.clear()
@@ -367,10 +370,15 @@ def save_uncorrected_eigenvalues(
     total_processed: int | Tensor,
     rank: int,
     world_size: int,
+    num_documents: int = 1,
 ) -> None:
     """Take sharded eigenvalues_a and eigenvalues_g. Computes the sharded
     outer product by keeping eigenvalues_g in its sharded form and gathering
     eigenvalues_a to all ranks.
+
+    The factors are means over positions, so the outer product is scaled by
+    ``total_processed / num_documents`` to a mean over documents, the scale of
+    the eigenvalue corrections.
     """
     out_dir = os.path.join(str(partial_run_path), "eigenvalue_sharded")
     os.makedirs(out_dir, exist_ok=True)
@@ -427,13 +435,13 @@ def save_uncorrected_eigenvalues(
         else:
             eigenvalue_a_full = eigenvalue_a_shard
 
-        outer = torch.outer(eigenvalue_g_shard, eigenvalue_a_full) * total_processed
+        per_document = total_processed / num_documents
+        outer = torch.outer(eigenvalue_g_shard, eigenvalue_a_full) * per_document
         outer_product_sharded[key] = outer.to(device="cpu").contiguous()
 
-        # Scale the per-factor eigenvalues by total_processed so they remain
-        # consistent with the outer product, whose product carries one factor
-        # of total_processed. Splitting it as sqrt keeps λ_A·λ_G == outer.
-        scale = total_processed.to(eigenvalue_a_full.dtype).sqrt()
+        # Scale the per-factor eigenvalues by the same factor as the outer
+        # product; splitting it as sqrt keeps λ_A·λ_G == outer.
+        scale = per_document.to(eigenvalue_a_full.dtype).sqrt()
         factor_eig_a[key] = (eigenvalue_a_full * scale).to(device="cpu").contiguous()
         factor_eig_g[key] = (eigenvalue_g_shard * scale).to(device="cpu").contiguous()
 
