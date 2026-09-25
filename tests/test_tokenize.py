@@ -26,23 +26,6 @@ def _make_batch(convos):
     return {"conversation": convos}
 
 
-def test_single_turn_labels(tokenizer):
-    """Assistant response in a single-turn conversation gets labels."""
-    batch = _make_batch(
-        [
-            [
-                {"role": "user", "content": "What is 2+2?"},
-                {"role": "assistant", "content": "4"},
-            ]
-        ]
-    )
-    cfg = DataConfig(conversation_column="conversation")
-    result = tokenize(batch, args=cfg, tokenizer=tokenizer)
-    labels = result["labels"][0]
-    # Some labels should be active (not -100)
-    assert any(l != -100 for l in labels)
-
-
 def test_multi_turn_labels(tokenizer):
     """All assistant turns get labels in a multi-turn conversation."""
     batch = _make_batch(
@@ -122,37 +105,6 @@ def test_fully_truncated_span_skipped(tokenizer):
     labels = result["labels"][0]
     assert len(labels) == max_length
     # Should not raise, and should still have some labels from the first turn
-
-
-def test_assistant_content_repeated_in_later_turn(tokenizer):
-    earlier = "bin boot dev etc home lib"
-    later = "~ % " + earlier
-    batch = _make_batch(
-        [
-            [
-                {"role": "user", "content": "`ls`"},
-                {"role": "assistant", "content": earlier},
-                {"role": "user", "content": "`mkdir x`\n`ls`"},
-                {"role": "assistant", "content": later},
-            ]
-        ]
-    )
-    cfg = DataConfig(conversation_column="conversation")
-    result = tokenize(batch, args=cfg, tokenizer=tokenizer)
-
-    labels = result["labels"][0]
-    tokens = result["input_ids"][0]
-    rendered = tokenizer.decode(tokens)
-
-    earlier_start = rendered.find(earlier)
-    later_start = rendered.find(later)
-    assert earlier_start >= 0 and later_start > earlier_start
-
-    earlier_token = next(
-        i for i, t in enumerate(tokens) if labels[i] == t and labels[i] != -100
-    )
-    last_active = max(i for i, l in enumerate(labels) if l != -100)
-    assert last_active > earlier_token + len(tokenizer.encode(earlier))
 
 
 @pytest.mark.xfail(

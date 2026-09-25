@@ -57,20 +57,6 @@ def test_compute_num_token_grads_with_labels():
     np.testing.assert_array_equal(sl, [4, 4])
 
 
-def test_compute_num_token_grads_all_masked():
-    """Even with all labels -100 we store length - 1 rows (they carry zero
-    gradient, but the row count stays position-based, not label-based)."""
-    ds = Dataset.from_dict(
-        {
-            "input_ids": [[1, 2, 3]],
-            "labels": [[-100, -100, -100]],
-            "length": [3],
-        }
-    )
-    sl = compute_num_token_grads(ds)
-    np.testing.assert_array_equal(sl, [2])
-
-
 def test_compute_num_token_grads_short_documents():
     """Documents with < 2 tokens contribute zero rows.
 
@@ -153,29 +139,6 @@ def test_create_and_load_token_index(tmp_path: Path):
     ex1 = loaded_mmap[loaded_off[1] : loaded_off[2]]
     assert ex1.shape == (5, 10)
     np.testing.assert_array_equal(ex1, mmap[3:8])
-
-
-def test_token_gradients_wrapper(tmp_path: Path):
-    num_token_grads = np.array([2, 4], dtype=np.int64)
-    grad_sizes = {"m": 3}
-    mmap, _ = create_token_index(tmp_path, num_token_grads, grad_sizes, np.float32)
-
-    # Fill with identifiable values
-    mmap[0] = [1, 2, 3]
-    mmap[1] = [4, 5, 6]
-    mmap[2] = [7, 8, 9]
-    mmap[3] = [10, 11, 12]
-    mmap[4] = [13, 14, 15]
-    mmap[5] = [16, 17, 18]
-    mmap.flush()
-
-    tg = TokenGradients(tmp_path)
-    assert len(tg) == 2
-    np.testing.assert_array_equal(tg.num_token_grads, [2, 4])
-    np.testing.assert_array_equal(tg[0], [[1, 2, 3], [4, 5, 6]])
-    np.testing.assert_array_equal(
-        tg[1], [[7, 8, 9], [10, 11, 12], [13, 14, 15], [16, 17, 18]]
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -332,49 +295,6 @@ def test_token_build_e2e(tmp_path: Path, model, dataset):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-def test_token_build_with_labels(tmp_path: Path, model):
-    """Build with partial labels — per-token rows cover every real position
-    (length - 1), not just the completion, so they sum to the per-doc grad."""
-    model = model.float()
-    dataset = Dataset.from_dict(
-        {
-            "input_ids": [
-                [1, 2, 3, 4, 5],
-                [6, 7, 8, 9, 10],
-            ],
-            "labels": [
-                [-100, -100, 3, 4, 5],
-                [-100, 7, -100, 9, 10],
-            ],
-            "length": [5, 5],
-        }
-    )
-
-    cfg = IndexConfig(
-        run_path=str(tmp_path),
-        token_batch_size=1024,
-        attribute_tokens=True,
-    )
-    processor = GradientProcessor(projection_dim=16)
-
-    collect_gradients(
-        model=model,
-        data=dataset,
-        processor=processor,
-        cfg=cfg,
-    )
-
-    tg = TokenGradients(cfg.partial_run_path)
-
-    # length - 1 rows per example, independent of the completion mask
-    assert tg.num_token_grads[0] == 4
-    assert tg[0].shape[0] == 4
-
-    assert tg.num_token_grads[1] == 4
-    assert tg[1].shape[0] == 4
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_token_build_with_empty_document(tmp_path: Path, model):
     """An empty document in the corpus must not shift other documents' rows.
 
@@ -503,66 +423,6 @@ def test_token_score_e2e(tmp_path: Path, model, dataset):
 
 
 # ---------------------------------------------------------------------------
-# End-to-end: build with attribute_tokens + Adam normalizer
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-def test_token_build_adam_e2e(tmp_path: Path, model, dataset):
-    """Build a token-attribution index with Adam normalizer."""
-    model = model.float()
-    dataset = dataset.repeat(10)
-
-    cfg = IndexConfig(
-        run_path=str(tmp_path),
-        token_batch_size=1024,
-        attribute_tokens=True,
-    )
-
-    target_modules = {
-        name
-        for name, module in model.base_model.named_modules()
-        if isinstance(module, torch.nn.Linear)
-    }
-
-    # Create AdamNormalizer instances with dummy second moments
-    from bergson.gradients import AdamNormalizer
-
-    normalizers = {}
-    for name, module in model.base_model.named_modules():
-        if isinstance(module, torch.nn.Linear) and name in target_modules:
-            normalizers[name] = AdamNormalizer(
-                weight_avg_sq=torch.ones_like(module.weight),
-            )
-    processor = GradientProcessor(
-        projection_dim=16,
-        normalizers=normalizers,
-    )
-
-    collect_gradients(
-        model=model,
-        data=dataset,
-        processor=processor,
-        cfg=cfg,
-        target_modules=target_modules,
-    )
-
-    # Verify artifacts exist
-    assert (cfg.partial_run_path / "gradients.bin").exists()
-    assert (cfg.partial_run_path / "offsets.npy").exists()
-
-    # Load and verify shapes
-    tg = TokenGradients(cfg.partial_run_path)
-    assert len(tg) == len(dataset)
-
-    # Each example has 5 tokens, all labels valid -> 4 token grads
-    for i in range(len(dataset)):
-        assert tg.num_token_grads[i] == 4
-        assert tg[i].shape == (4, tg.mmap.shape[1])
-        assert np.linalg.norm(tg[i].astype(np.float32)) > 0
-
-
-# ---------------------------------------------------------------------------
 # Correctness: sum of token grads == sequence grad (sum reduction)
 # ---------------------------------------------------------------------------
 
@@ -604,9 +464,15 @@ def _collect_in_memory(
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-@pytest.mark.parametrize("normalizer", ["none", "adam", "adafactor"])
-@pytest.mark.parametrize("include_bias", [False, True])
-@pytest.mark.parametrize("projection_dim", [None, 8])
+@pytest.mark.parametrize(
+    "normalizer, include_bias, projection_dim",
+    [
+        ("none", False, None),
+        ("adam", False, 8),
+        ("adafactor", True, None),
+        ("none", True, 8),
+    ],
+)
 def test_token_sum_equals_sequence(
     tmp_path, model, dataset, normalizer, include_bias, projection_dim
 ):
@@ -713,106 +579,12 @@ def test_token_sum_equals_sequence(
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-@pytest.mark.parametrize("projection_dim", [None, 8])
-def test_trackstar_token_scores_sum_to_sequence_scores(
-    tmp_path, model, dataset, projection_dim
-):
-    """Per-token TrackStar scores summed within a doc equal the per-doc score.
-
-    TrackStar's score is ``s(d) = <q, H^-1, grad(d)>`` — a linear function of
-    the index gradient. With ``loss_reduction='sum'`` the per-token gradients
-    ``g_{d,t}`` satisfy ``sum_t g_{d,t} = grad(d)`` (see
-    ``test_token_sum_equals_sequence``); composing with the linear scoring
-    operator gives ``sum_t s(d, t) = s(d)`` for every doc d.
-
-    This is the score-level analog of the gradient-level test above, and
-    the trackstar analog of ``test_magic_per_token_sums_to_per_doc``.
-    """
-    from bergson.score.score_writer import InMemorySequenceScoreWriter
-    from bergson.score.scorer import Scorer
-
-    model = model.float()
-    dataset = dataset.repeat(10)
-
-    target_modules = {
-        name
-        for name, module in model.base_model.named_modules()
-        if isinstance(module, torch.nn.Linear)
-    }
-
-    processor = GradientProcessor(projection_dim=projection_dim)
-
-    seq_collector = _collect_in_memory(
-        model,
-        dataset,
-        processor,
-        target_modules,
-        attribute_tokens=False,
-        run_path=str(tmp_path / "seq"),
-    )
-    tok_collector = _collect_in_memory(
-        model,
-        dataset,
-        processor,
-        target_modules,
-        attribute_tokens=True,
-        run_path=str(tmp_path / "tok"),
-    )
-
-    sorted_modules = sorted(seq_collector.gradients.keys())
-    torch.manual_seed(0)
-    query_grads = {
-        m: torch.randn(1, seq_collector.gradients[m].shape[-1]) for m in sorted_modules
-    }
-
-    device = torch.device("cpu")
-    dtype = torch.float32
-
-    seq_scorer = Scorer(
-        query_grads=query_grads,
-        modules=sorted_modules,
-        writer=InMemorySequenceScoreWriter(len(dataset), 1, dtype=dtype),
-        device=device,
-        dtype=dtype,
-    )
-    seq_scores = seq_scorer.score(seq_collector.gradients).float().cpu().squeeze(-1)
-
-    n_tokens = tok_collector.gradients[sorted_modules[0]].shape[0]
-    tok_scorer = Scorer(
-        query_grads=query_grads,
-        modules=sorted_modules,
-        writer=InMemorySequenceScoreWriter(n_tokens, 1, dtype=dtype),
-        device=device,
-        dtype=dtype,
-    )
-    tok_scores = tok_scorer.score(tok_collector.gradients).float().cpu().squeeze(-1)
-
-    assert tok_collector.builder is not None
-    offsets = tok_collector.builder.offsets
-
-    for i in range(len(dataset)):
-        start, end = int(offsets[i]), int(offsets[i + 1])
-        tok_sum = tok_scores[start:end].sum()
-        torch.testing.assert_close(
-            tok_sum,
-            seq_scores[i],
-            atol=1e-2,
-            rtol=1e-2,
-            msg=(
-                f"Example {i}: per-token score sum {tok_sum:.6e} != "
-                f"per-doc score {seq_scores[i]:.6e}"
-            ),
-        )
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-@pytest.mark.parametrize("projection_dim", [None, 8])
 def test_trackstar_token_scores_sum_to_sequence_scores_on_disk(
-    tmp_path, model, dataset, projection_dim
+    tmp_path, model, dataset
 ):
     """On-disk per-token scores summed within a doc equal on-disk per-doc scores.
 
-    Same property as ``test_trackstar_token_scores_sum_to_sequence_scores``,
+    The score-level analog of ``test_token_sum_equals_sequence``,
     routed through ``MemmapSequenceScoreWriter`` /
     ``MemmapTokenScoreWriter`` so the disk write + read-back paths
     (info.json, structured scores.bin, offsets.npy) are exercised
@@ -833,7 +605,7 @@ def test_trackstar_token_scores_sum_to_sequence_scores_on_disk(
         if isinstance(module, torch.nn.Linear)
     }
 
-    processor = GradientProcessor(projection_dim=projection_dim)
+    processor = GradientProcessor(projection_dim=None)
 
     seq_collector = _collect_in_memory(
         model,

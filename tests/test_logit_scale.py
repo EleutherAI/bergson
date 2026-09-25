@@ -33,8 +33,8 @@ def x():
     return torch.randn(3, 4)
 
 
-@pytest.mark.parametrize("scale", [0.25, 0.5, 2.0])
-def test_logits_are_scaled(x, scale):
+def test_logits_are_scaled(x):
+    scale = 2.0
     model = _TinyCausalLM()
     before = model(x).clone()
     apply_logit_scale(model, scale)

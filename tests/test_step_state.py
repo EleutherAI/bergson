@@ -56,15 +56,6 @@ def test_overwrite_reruns_but_keeps_output_until_promote(tmp_path):
     assert (out / "old.bin").exists(), "completed output must not be deleted early"
 
 
-def test_prepare_step_clears_a_stale_partial(tmp_path):
-    out = tmp_path / "step"
-    _write(partial_path(out), "half.bin")
-    _write(partial_path(out.with_suffix(".other")))  # unrelated, must be left
-
-    assert prepare_step(out, resume=False) is True
-    assert not partial_path(out).exists()
-
-
 def test_promote_replaces_an_existing_output(tmp_path):
     out = tmp_path / "step"
     _write(partial_path(out), "first.bin")

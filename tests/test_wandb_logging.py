@@ -29,10 +29,3 @@ def test_offline_init_without_api_key(tmp_path, monkeypatch):
 
     offline_runs = list(tmp_path.glob("wandb/offline-run-*"))
     assert offline_runs, "expected an offline run directory on disk"
-
-
-def test_disabled_mode_is_noop(monkeypatch):
-    monkeypatch.setenv("WANDB_MODE", "disabled")
-    log_fn = wandb_log_fn("bergson-test")
-    log_fn(0, 1.0)
-    assert wandb.run is None

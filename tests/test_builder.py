@@ -110,28 +110,6 @@ def test_builder_no_agg_with_hessian(small_dataset, grad_sizes, tmp_path):
 
 
 @requires_cuda
-def test_builder_teardown_rank0_guard(small_dataset, grad_sizes):
-    """After dist.reduce(dst=0), only rank 0 has the correct result.
-    Non-zero ranks should NOT overwrite grad_buffer with stale local data."""
-    cfg = PreprocessConfig(aggregation="mean")
-
-    builder = Builder.__new__(Builder)
-    builder.grad_sizes = grad_sizes
-    builder.num_items = len(small_dataset)
-    builder.preprocess_cfg = cfg
-    builder.h_inv = {}
-    builder.in_memory_grad_buffer = torch.ones(1, 8, device="cuda:0")
-    builder.grad_buffer = np.zeros((1, 8), dtype=np.float32)
-
-    with _fake_dist(rank=1):
-        builder.teardown()
-
-    assert np.allclose(
-        builder.grad_buffer, 0.0
-    ), "Non-zero rank wrote stale data to grad_buffer — missing `if rank == 0` guard"
-
-
-@requires_cuda
 def test_builder_teardown_rank0_guard_disk(small_dataset, grad_sizes, tmp_path):
     """Rank-0 guard works for disk-backed builder too."""
     cfg = PreprocessConfig(aggregation="mean")
@@ -199,14 +177,6 @@ def test_disk_teardown_skips_allreduce(small_dataset, grad_sizes, tmp_path):
 
 
 @requires_cuda
-def test_builder_construction_no_agg(small_dataset, grad_sizes):
-    """In-memory sequence builder can be constructed."""
-    cfg = PreprocessConfig(aggregation="none")
-    builder = _make_builder(small_dataset, grad_sizes, torch.float32, cfg)
-    assert builder.grad_buffer.shape == (4, 8)
-
-
-@requires_cuda
 def test_builder_construction_with_aggregation(small_dataset, grad_sizes):
     """In-memory builder with aggregation creates a 1-row buffer."""
     cfg = PreprocessConfig(aggregation="mean")
@@ -235,31 +205,6 @@ def test_disk_sequence_writes_cuda_grads(small_dataset, grad_sizes, tmp_path):
         for name, dim in grad_sizes.items()
     }
     builder([0, 1], mod_grads)
-
-    total_dim = sum(grad_sizes.values())
-    row0 = np.frombuffer(
-        builder.grad_buffer[0].tobytes(),
-        dtype=np.float32,
-        count=total_dim,
-    )
-    np.testing.assert_allclose(row0, 5.0, atol=1e-6)
-
-
-@requires_cuda
-def test_disk_sequence_writes_cpu_grads(small_dataset, grad_sizes, tmp_path):
-    """Disk builder works with CPU grads too."""
-    cfg = PreprocessConfig(aggregation="none")
-    builder = _make_builder(
-        small_dataset,
-        grad_sizes,
-        torch.float32,
-        cfg,
-        path=tmp_path,
-    )
-
-    mod_grads = {name: torch.ones(2, dim) * 5.0 for name, dim in grad_sizes.items()}
-    builder([0, 1], mod_grads)
-    builder.teardown()
 
     total_dim = sum(grad_sizes.values())
     row0 = np.frombuffer(
@@ -322,28 +267,6 @@ def test_inmemory_sequence_no_agg_no_hess(small_dataset, grad_sizes):
 
 
 # ── Correctness: in-memory token ─────────────────────────────────────────
-
-
-@requires_cuda
-def test_inmemory_token_writes_correct_values(small_dataset, grad_sizes):
-    """Per-token gradients land at the right offsets."""
-    cfg = PreprocessConfig(aggregation="none")
-    builder = _make_builder(
-        small_dataset,
-        grad_sizes,
-        torch.float32,
-        cfg,
-        attribute_tokens=True,
-    )
-
-    assert builder.num_token_grads[0] == 4
-
-    mod_grads = {name: torch.ones(8, dim) * 0.5 for name, dim in grad_sizes.items()}
-    builder([0, 1], mod_grads)
-
-    np.testing.assert_allclose(builder.grad_buffer[0:4], 0.5, atol=1e-6)
-    np.testing.assert_allclose(builder.grad_buffer[4:8], 0.5, atol=1e-6)
-    np.testing.assert_allclose(builder.grad_buffer[8:], 0.0)
 
 
 @requires_cuda

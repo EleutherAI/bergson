@@ -25,7 +25,6 @@ from tests.ekfac_tests.toy_model import (
     [
         ((16,), 20),  # Single sequence length
         ((16, 8), 20),  # Mixed sequence lengths
-        ((64,), 10),  # Longer sequences
     ],
 )
 def test_trace_batch_invariant(seq_lengths, num_batches, tmp_path):

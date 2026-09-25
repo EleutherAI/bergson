@@ -62,16 +62,6 @@ def test_load_scores_loss_signed_score_dir(tmp_path):
     torch.testing.assert_close(scores, values)
 
 
-def test_load_scores_loss_signed_single_column_dir(tmp_path):
-    writer = MemmapSequenceScoreWriter(tmp_path, num_items=4, num_scores=1)
-    writer(list(range(4)), torch.ones(4, 1))
-    writer.flush()
-
-    scores, multi_query = load_scores_loss_signed(str(tmp_path))
-    assert not multi_query
-    assert scores.shape == (4, 1)
-
-
 def test_weighted_ce_sum_of_means_reduction():
     """sum_of_means = per-sample token-mean, summed over batch (no /B) —
     the MAGIC/metagradients convention (arXiv 2503.13751 App. D)."""

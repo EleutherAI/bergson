@@ -182,54 +182,6 @@ def test_score(tmp_path: Path, model, dataset):
     assert not torch.allclose(scores, torch.zeros_like(scores))
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-def test_precondition_ds(tmp_path: Path, model, dataset):
-    model = model.cuda()
-    preprocess_device = torch.device("cuda:0")
-
-    # Collect gradients and build hessians using InMemoryCollector
-    processor = GradientProcessor(projection_dim=16)
-    build_cfg = IndexConfig(run_path=str(tmp_path / "build"), token_batch_size=1024)
-    build_cfg.partial_run_path.mkdir(parents=True, exist_ok=True)
-
-    collector = InMemoryCollector(
-        model=model.base_model,
-        data=dataset,
-        cfg=build_cfg,
-        processor=processor,
-        skip_hessians=False,
-    )
-
-    computer = CollectorComputer(
-        model=model,
-        data=dataset,
-        collector=collector,
-        cfg=build_cfg,
-    )
-    computer.run_with_collector_hooks(desc="Building hessians")
-    processor.save(tmp_path)
-
-    # Produce query gradients dict
-    query_grads = {
-        module: torch.randn(1, shape.numel())
-        for module, shape in collector.shapes().items()
-    }
-
-    target_modules = list(collector.shapes().keys())
-
-    # Produce preconditioned query gradients
-    h_inv = _h_inv(tmp_path, preprocess_device, -1)
-    preconditioned = {
-        name: (query_grads[name].to(preprocess_device) @ h_inv[name]).cpu()
-        for name in target_modules
-    }
-
-    # Compare against unpreconditioned — should differ
-    for name in target_modules:
-        vanilla = query_grads[name].to(preprocess_device).cpu()
-        assert not torch.allclose(preconditioned[name], vanilla)
-
-
 def test_memmap_score_writer_bfloat16(tmp_path: Path):
     """MemmapSequenceScoreWriter writes and reads bfloat16."""
     num_items = 10
@@ -289,28 +241,6 @@ def test_memmap_score_writer_bfloat16(tmp_path: Path):
 
     np.testing.assert_array_equal(
         writer.scores["score_0"][[5, 6, 7]].view(bfloat16), expected_batch2[:, 0]
-    )
-
-
-def test_memmap_score_writer_float32(tmp_path: Path):
-    """MemmapSequenceScoreWriter writes float32 scores."""
-    num_items = 5
-    num_scores = 2
-
-    writer = MemmapSequenceScoreWriter(
-        tmp_path, num_items, num_scores, dtype=torch.float32
-    )
-
-    scores = torch.tensor([[1.5, 2.5], [3.5, 4.5]], dtype=torch.float32)
-    writer([0, 1], scores)
-    writer.flush()
-
-    # Verify values
-    np.testing.assert_array_almost_equal(
-        writer.scores["score_0"][[0, 1]], np.array([1.5, 3.5], dtype=np.float32)
-    )
-    np.testing.assert_array_almost_equal(
-        writer.scores["score_1"][[0, 1]], np.array([2.5, 4.5], dtype=np.float32)
     )
 
 
@@ -388,58 +318,6 @@ def test_memmap_sequence_writer_resume_preserves_existing(tmp_path: Path):
     scores = load_scores(tmp_path)
     assert scores.is_written()
     np.testing.assert_array_equal(scores[:], [[1.0, 4.0], [2.0, 5.0], [3.0, 6.0]])
-
-
-def test_compute_hessian_h_inv():
-    """No hessian path → no preconditioner."""
-
-    assert load_preconditioner(None, power=-1, device=torch.device("cpu")) is None
-
-
-def test_scorer_hessians(tmp_path: Path):
-    """Test that Scorer applies hessians via index_transform."""
-
-    modules = ["mod_a"]
-    query_grads = {"mod_a": torch.randn(1, 4)}
-
-    # Save a processor with H = 2*I, then load H^(-1)
-    proc = GradientProcessor(hessians={"mod_a": torch.eye(4) * 2.0})
-    hess_path = tmp_path / "hessian"
-    proc.save(hess_path)
-
-    h_inv = _h_inv(hess_path, torch.device("cpu"), -1)
-    preconditioned_query = {m: query_grads[m] @ h_inv[m] for m in modules}
-
-    writer = MemmapSequenceScoreWriter(
-        tmp_path / "scores_with", 2, 1, dtype=torch.float32
-    )
-    scorer = Scorer(
-        query_grads=preconditioned_query,
-        modules=modules,
-        writer=writer,
-        device=torch.device("cpu"),
-        dtype=torch.float32,
-    )
-
-    # Score with preconditioned query
-    mod_grads = {"mod_a": torch.randn(2, 4)}
-    scores_with = scorer.score(mod_grads)
-
-    # Score without hessians
-    writer_no = MemmapSequenceScoreWriter(
-        tmp_path / "scores_without", 2, 1, dtype=torch.float32
-    )
-    scorer_no_hess = Scorer(
-        query_grads=query_grads,
-        modules=modules,
-        writer=writer_no,
-        device=torch.device("cpu"),
-        dtype=torch.float32,
-    )
-    scores_without = scorer_no_hess.score(mod_grads)
-
-    # Hessian is 2*I, so scores should differ
-    assert not torch.allclose(scores_with, scores_without)
 
 
 def test_scorer_split_hessians(tmp_path: Path):

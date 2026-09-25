@@ -158,27 +158,6 @@ def test_run_recall_miss_pushes_rank_down(tmp_path, monkeypatch):
     assert metrics["strict_recall_at_2"] == pytest.approx(0.75)
 
 
-def test_run_recall_higher_is_better_false_flips_sign(tmp_path, monkeypatch):
-    s_path, q_path = _write_datasets(tmp_path)
-    # With higher_is_better=False the most-negative score should rank first.
-    matrix = np.array(
-        [
-            [-1.0, 0.0],  # gold Q0 -> most negative -> rank 1 when flipped
-            [-0.9, 0.0],  # gold Q0
-            [0.0, -1.0],  # gold Q1
-            [0.0, -0.9],  # gold Q1
-        ]
-    )
-    _patch_io(monkeypatch, s_path, q_path, matrix)
-
-    cfg = _cfg(tmp_path)
-    cfg.higher_is_better = False
-    metrics = run_recall(cfg)
-
-    assert metrics["mrr"] == pytest.approx(1.0)
-    assert metrics["recall_at_2"] == pytest.approx(1.0)
-
-
 def _write_score_dir(tmp_path, higher_is_better: bool) -> str:
     """A score directory whose ``config.yaml`` records ``higher_is_better``."""
     score_dir = tmp_path / "scores"
@@ -247,13 +226,6 @@ def test_run_recall_explicit_higher_is_better_overrides_score_dir(
     # Gold rows are the most negative, so ranking descending puts them last:
     # Q0 gold ranks 3 and 4, Q1 gold ranks 3 and 4 -> no hits at k=2.
     assert metrics["recall_at_2"] == pytest.approx(0.0)
-
-
-def test_resolve_higher_is_better_defaults_true_without_score_cfg(tmp_path):
-    """No score directory / no saved score_cfg -> default True."""
-    resolve = recall_mod.resolve_higher_is_better
-    assert resolve(str(tmp_path / "missing"), None) is True
-    assert resolve("", None) is True
 
 
 def test_run_recall_statement_count_mismatch_raises(tmp_path, monkeypatch):

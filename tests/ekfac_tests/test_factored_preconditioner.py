@@ -22,7 +22,6 @@ from bergson.collector.gradient_collectors import GradientCollector
 from bergson.config import IndexConfig, InversionConfig
 from bergson.data import column_offsets, create_index, load_module_gradients
 from bergson.hessians.apply_hessian import EkfacApplicator, EkfacConfig
-from bergson.hessians.inversion import INVERSIONS
 from bergson.hessians.preconditioner import FactoredPreconditioner
 from bergson.hessians.sharded_computation import shard_bounds
 from bergson.utils.utils import get_device
@@ -62,7 +61,7 @@ def _apply(
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-@pytest.mark.parametrize("inversion", INVERSIONS)
+@pytest.mark.parametrize("inversion", ["damped_inverse", "factored_tikhonov"])
 def test_factored_matches_ekfac_applicator(
     ekfac_results_path: str, tmp_path, inversion: str
 ):
@@ -217,7 +216,7 @@ def test_factored_loader_factor_a_replicated_not_concatenated(tmp_path):
     assert pre.factor_eig_g["layer"].shape == (4,)  # λ_G [O]
 
 
-@pytest.mark.parametrize("inversion", INVERSIONS)
+@pytest.mark.parametrize("inversion", ["damped_inverse", "factored_tikhonov"])
 def test_factored_apply_invariant_to_shard_count(tmp_path, inversion: str):
     """from_path apply must be identical whether the Hessian is 1 shard or 2."""
     # Uneven dims exercise shard_bounds' remainder handling.

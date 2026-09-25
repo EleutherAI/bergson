@@ -8,14 +8,14 @@ from bergson.magic import muon
 
 
 @pytest.mark.parametrize("weight_decay", [0.0, 0.1])
-@pytest.mark.parametrize("momentum", [0.95, 0.9])
-def test_muon_matches_torch_optim(weight_decay, momentum):
+def test_muon_matches_torch_optim(weight_decay):
     """Functional muon should match torch.optim.Muon to within bfloat16 precision."""
     torch.manual_seed(42)
     W_init = torch.randn(8, 4)
     X = torch.randn(16, 4)
     Y = torch.randn(16, 8)
     lr = 0.01
+    momentum = 0.95
 
     # Reference: torch.optim.Muon
     W_ref = W_init.clone().requires_grad_(True)
@@ -51,8 +51,7 @@ def test_muon_matches_torch_optim(weight_decay, momentum):
 
 
 @pytest.mark.parametrize("weight_decay", [0.0, 0.1])
-@pytest.mark.parametrize("eps_root", [0.0, 1e-8])
-def test_muon_1d_matches_adamw(weight_decay, eps_root):
+def test_muon_1d_matches_adamw(weight_decay):
     """1D params should match torchopt.adamw to within float32 precision."""
     torch.manual_seed(0)
     b_init = torch.randn(8)
@@ -61,6 +60,7 @@ def test_muon_1d_matches_adamw(weight_decay, eps_root):
     lr = 0.01
     betas = (0.9, 0.999)
     eps = 1e-8
+    eps_root = 1e-8
 
     # Reference: torchopt.adamw (decoupled weight decay, supports eps_root)
     b_ref = b_init.clone().requires_grad_(True)

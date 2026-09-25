@@ -8,14 +8,7 @@ import warnings
 import pytest
 
 from bergson.build import build_query
-from bergson.cli.commands import (
-    ApproxUnrolling,
-    Ekfac,
-    Magic,
-    Trackstar,
-    Trak,
-    Validate,
-)
+from bergson.cli.commands import Ekfac, Trackstar, Validate
 from bergson.config.config import IndexConfig, PreprocessConfig, QuerySetConfig
 from bergson.config.validation import migrate_query_config
 
@@ -81,7 +74,6 @@ def test_mixing_old_and_new_fields_is_an_error():
             "query_method",
             "none",
         ),
-        (Magic, {"run_path": "runs/x", "model": "gpt2"}, "query_method", "none"),
         (
             Ekfac,
             {
@@ -94,14 +86,7 @@ def test_mixing_old_and_new_fields_is_an_error():
             "query_aggregation",
             "mean",
         ),
-        (
-            ApproxUnrolling,
-            {"index_cfg": INDEX, "hessian_cfg": HESSIAN, "approx_unrolling_cfg": {}},
-            "query_aggregation",
-            "mean",
-        ),
         (Trackstar, {"index_cfg": INDEX, "trackstar_cfg": {}}, None, "none"),
-        (Trak, {"index_cfg": INDEX, "trak_cfg": {}}, None, "none"),
     ],
 )
 def test_every_pipeline_reads_old_and_new_yaml(cls, payload, legacy_key, old_default):

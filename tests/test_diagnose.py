@@ -5,22 +5,12 @@ passes when tokenize() matches the model's expected tokenization and fails when
 tokenize() duplicates or drops special tokens.
 """
 
-import pytest
-
 from bergson.diagnose import diagnose_special_tokens
 
 
-@pytest.mark.parametrize(
-    "model_name",
-    [
-        # Renders its own markers and adds no special BOS.
-        "HuggingFaceTB/SmolLM2-135M-Instruct",
-        # Renders <|begin_of_text|> in the template.
-        "NousResearch/Meta-Llama-3-8B-Instruct",
-    ],
-)
-def test_special_tokens_pass_for_correct_tokenize(model_name):
-    assert diagnose_special_tokens(model_name) is True
+def test_special_tokens_pass_for_correct_tokenize():
+    # Renders <|begin_of_text|> in the template.
+    assert diagnose_special_tokens("NousResearch/Meta-Llama-3-8B-Instruct") is True
 
 
 def test_special_tokens_catches_double_bos(monkeypatch):

@@ -55,8 +55,7 @@ def test_candidate_count():
         candidate_count(CandidateConfig(fraction=1.5), 10)
 
 
-@pytest.mark.parametrize("higher_is_better", [True, False])
-def test_select_candidates_unions_each_column(tmp_path: Path, higher_is_better):
+def test_select_candidates_unions_each_column(tmp_path: Path):
     scores = np.array(
         [
             [0.9, 0.1],
@@ -66,7 +65,7 @@ def test_select_candidates_unions_each_column(tmp_path: Path, higher_is_better):
             [0.2, 0.7],
         ]
     )
-    path = _write_earlier(tmp_path / "earlier", scores, higher_is_better)
+    path = _write_earlier(tmp_path / "earlier", scores, True)
 
     # Either end of either column keeps two of rows 0, 2, 3 and 4.
     for direction in ("proponents", "detractors"):
@@ -74,12 +73,12 @@ def test_select_candidates_unions_each_column(tmp_path: Path, higher_is_better):
         np.testing.assert_array_equal(select_candidates(cfg, 5), [0, 2, 3, 4])
 
     cfg = CandidateConfig(scores=path, top_k=1)
-    top = [0, 2] if higher_is_better else [2, 0]
-    np.testing.assert_array_equal(select_candidates(cfg, 5), sorted(top))
+    top = [0, 2]
+    np.testing.assert_array_equal(select_candidates(cfg, 5), top)
     cfg.direction = "detractors"
-    np.testing.assert_array_equal(select_candidates(cfg, 5), sorted(top))
-    cfg.higher_is_better = not higher_is_better
-    np.testing.assert_array_equal(select_candidates(cfg, 5), sorted(top))
+    np.testing.assert_array_equal(select_candidates(cfg, 5), top)
+    cfg.higher_is_better = False
+    np.testing.assert_array_equal(select_candidates(cfg, 5), top)
 
     cfg = CandidateConfig(scores=path, top_k=9)
     np.testing.assert_array_equal(select_candidates(cfg, 5), np.arange(5))

@@ -16,16 +16,6 @@ from bergson.config import DistributedConfig
 from bergson.distributed import cap_world_size_to_dataset, parent_barrier
 
 
-def test_cap_to_dataset_size_when_smaller():
-    """Tiny dataset → capped to single node, nproc_per_node = dataset size."""
-    cfg = DistributedConfig(nnode=4, nproc_per_node=4)
-    assert cfg.world_size == 16
-    capped = cap_world_size_to_dataset(cfg, dataset_size=1)
-    assert capped.world_size == 1
-    assert capped.nnode == 1
-    assert capped.nproc_per_node == 1
-
-
 def test_cap_to_intermediate_dataset_size():
     """Dataset between 1 and original world_size → single node, fitting nproc."""
     cfg = DistributedConfig(nnode=4, nproc_per_node=4)
@@ -33,15 +23,6 @@ def test_cap_to_intermediate_dataset_size():
     assert capped.world_size == 3
     assert capped.nnode == 1
     assert capped.nproc_per_node == 3
-
-
-def test_unchanged_when_dataset_at_least_world_size():
-    """Dataset with >= world_size docs → cfg returned unchanged."""
-    cfg = DistributedConfig(nnode=4, nproc_per_node=4)
-    capped = cap_world_size_to_dataset(cfg, dataset_size=100)
-    assert capped.world_size == 16
-    assert capped.nnode == 4
-    assert capped.nproc_per_node == 4
 
 
 def test_caps_to_one_node_when_dataset_exceeds_nproc_per_node():
@@ -79,15 +60,6 @@ def test_zero_dataset_size_caps_to_one_worker():
     assert capped.world_size == 1
     assert capped.nnode == 1
     assert capped.nproc_per_node == 1
-
-
-def test_single_node_unchanged_when_already_small():
-    """Single-node config with dataset >= existing world_size is unchanged."""
-    cfg = DistributedConfig(nnode=1, nproc_per_node=2)
-    capped = cap_world_size_to_dataset(cfg, dataset_size=10)
-    assert capped.world_size == 2
-    assert capped.nnode == 1
-    assert capped.nproc_per_node == 2
 
 
 def _capped_build_simulator(

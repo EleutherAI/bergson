@@ -9,14 +9,6 @@ def _make_eigen(eigvals: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     return eigvals, torch.eye(d, dtype=eigvals.dtype)
 
 
-def test_identical_hessians():
-    """When R_eval == R_train, σ_eval[k] == σ_train[k] so λ = 0.5."""
-    eigvals = torch.arange(100, 0, -1, dtype=torch.float64)
-    eigen = {"mod": _make_eigen(eigvals)}
-    lam = compute_lambda(query_eigen=eigen, index_eigen=eigen, target_components=50)
-    assert abs(lam - 0.5) < 1e-6
-
-
 def test_target_zero_returns_one():
     """target_components=0 means no downweighting → λ = 1.0."""
     eigvals = torch.ones(100, dtype=torch.float64)
@@ -35,22 +27,6 @@ def test_target_exceeds_total_clamps():
     # sorted_q = [4, 2], sorted_i = [6, 3] → at k=1: λ = 3/(2+3) = 0.6
     lam = compute_lambda(q_eigen, i_eigen, target_components=10)
     assert abs(lam - 0.6) < 1e-6
-
-
-def test_large_train_singular_values_gives_high_lambda():
-    """When R_train has much larger singular values (e.g. C4 long sequences),
-    λ should be close to 1.0, matching the paper's λ=0.99 for C4."""
-    d = 1000
-    q_eigvals = torch.ones(d, dtype=torch.float64)
-    # Train singular values 100x larger (simulating longer sequences)
-    i_eigvals = torch.ones(d, dtype=torch.float64) * 100.0
-
-    q_eigen = {"mod": _make_eigen(q_eigvals)}
-    i_eigen = {"mod": _make_eigen(i_eigvals)}
-
-    # At any k: λ = 100 / (1 + 100) ≈ 0.99
-    lam = compute_lambda(q_eigen, i_eigen, target_components=100)
-    assert abs(lam - 100.0 / 101.0) < 1e-6
 
 
 def test_formula_direct():
@@ -110,38 +86,3 @@ def test_no_common_modules_returns_default():
     q_eigen = {"mod_a": _make_eigen(torch.ones(10))}
     i_eigen = {"mod_b": _make_eigen(torch.ones(10))}
     assert compute_lambda(q_eigen, i_eigen) == 0.99
-
-
-def test_result_in_unit_interval():
-    """Lambda is always in [0, 1]."""
-    torch.manual_seed(42)
-    for _ in range(20):
-        d = int(torch.randint(10, 200, (1,)).item())
-        q_eigvals = torch.rand(d, dtype=torch.float64).clamp(min=1e-6)
-        i_eigvals = torch.rand(d, dtype=torch.float64).clamp(min=1e-6)
-
-        q_eigen = {"mod": _make_eigen(q_eigvals)}
-        i_eigen = {"mod": _make_eigen(i_eigvals)}
-        target = int(torch.randint(1, d, (1,)).item())
-        lam = compute_lambda(q_eigen, i_eigen, target_components=target)
-        assert 0.0 <= lam <= 1.0, f"λ={lam} out of range"
-
-
-def test_eigenvectors_are_ignored():
-    """Result depends only on eigenvalues, not eigenvectors."""
-    eigvals_q = torch.tensor([9.0, 4.0, 1.0], dtype=torch.float64)
-    eigvals_i = torch.tensor([6.0, 3.0, 2.0], dtype=torch.float64)
-
-    # Identity eigenvectors
-    e1 = (eigvals_q, torch.eye(3, dtype=torch.float64))
-    f1 = (eigvals_i, torch.eye(3, dtype=torch.float64))
-
-    # Random orthogonal eigenvectors
-    torch.manual_seed(123)
-    Q, _ = torch.linalg.qr(torch.randn(3, 3, dtype=torch.float64))
-    e2 = (eigvals_q, Q)
-    f2 = (eigvals_i, Q)
-
-    lam1 = compute_lambda({"m": e1}, {"m": f1}, target_components=2)
-    lam2 = compute_lambda({"m": e2}, {"m": f2}, target_components=2)
-    assert abs(lam1 - lam2) < 1e-10

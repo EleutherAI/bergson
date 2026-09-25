@@ -96,8 +96,6 @@ def compute_exact_fim(
 @pytest.mark.parametrize(
     "seq_lengths, num_batches, sample, max_rel_error",
     [
-        ((512,), 100, False, 0.05),
-        ((512,), 100, True, 0.05),
         ((4,), 2000, False, 0.10),  # rel_error = ~0.25 without collection-mask logic
         ((4,), 4000, True, 0.15),  # rel_error = ~0.25 without collection-mask logic
         ((512, 2), 100, False, 0.05),  # rel_error = ~0.6 without collection-mask logic

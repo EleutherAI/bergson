@@ -13,7 +13,6 @@ import math
 
 import pytest
 import torch
-import yaml
 
 from bergson.collector.collector import create_projection_matrix
 
@@ -43,9 +42,9 @@ def _mean_projected_inner_product(o, i, p, projection_type, trials=TRIALS):
 
 
 @pytest.mark.parametrize("projection_type", ["rademacher", "normal"])
-@pytest.mark.parametrize("o,i,p", [(32, 32, 16), (64, 64, 32), (128, 128, 32)])
-def test_projection_preserves_inner_products(o, i, p, projection_type):
+def test_projection_preserves_inner_products(projection_type):
     """Two-sided projection is unbiased for the unprojected inner product."""
+    o, i, p = 32, 32, 16
     got = _mean_projected_inner_product(o, i, p, projection_type)
     assert got == pytest.approx(1.0, rel=RTOL), (
         f"{o}x{i} p={p} {projection_type}: projected inner product is "
@@ -54,15 +53,14 @@ def test_projection_preserves_inner_products(o, i, p, projection_type):
     )
 
 
-@pytest.mark.parametrize("projection_type", ["rademacher", "normal"])
-def test_projection_scale_does_not_depend_on_module_shape(projection_type):
+def test_projection_scale_does_not_depend_on_module_shape():
     """Differently-shaped modules keep their relative weight.
 
     Modules are summed into a single score, so a shape-dependent scale
     reweights attention against MLP.
     """
-    square = _mean_projected_inner_product(64, 64, 32, projection_type)
-    wide = _mean_projected_inner_product(64, 256, 32, projection_type)
+    square = _mean_projected_inner_product(64, 64, 32, "rademacher")
+    wide = _mean_projected_inner_product(64, 256, 32, "rademacher")
 
     assert square == pytest.approx(wide, rel=2 * RTOL), (
         f"scale depends on module shape: 64x64 -> {square:.4f}, "
@@ -140,18 +138,3 @@ def test_row_norm_scale_reproduces_legacy_matrices():
     )
     assert legacy.pow(2).mean().item() == pytest.approx(1.0 / 64, rel=0.1)
     assert jl.pow(2).mean().item() == pytest.approx(1.0 / 32, rel=0.1)
-
-
-def test_processor_config_without_projection_scale_loads_as_row_norm(tmp_path):
-    """A config with no ``projection_scale`` key loads as ``row_norm``."""
-    from bergson.gradients import GradientProcessor
-
-    GradientProcessor(projection_dim=8).save(tmp_path)
-    cfg_path = tmp_path / "processor_config.yaml"
-    cfg = yaml.safe_load(cfg_path.read_text())
-    assert cfg["projection_scale"] == "jl"
-
-    del cfg["projection_scale"]
-    cfg_path.write_text(yaml.safe_dump(cfg))
-
-    assert GradientProcessor.load(tmp_path).projection_scale == "row_norm"

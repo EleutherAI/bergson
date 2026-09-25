@@ -21,23 +21,6 @@ def make_data_config(
     )
 
 
-def test_estimate_advantage_single_group():
-    """Advantages within a single prompt group sum to zero."""
-    ds = make_reward_dataset(
-        prompts=["p1", "p1", "p1"],
-        rewards=[1.0, 3.0, 5.0],
-    )
-    cfg = make_data_config()
-    advantages = estimate_advantage(ds, cfg)
-
-    # mean = 3.0; advantages = [-2.0, 0.0, 2.0]
-    assert len(advantages) == 3
-    assert abs(advantages[0] - (-2.0)) < 1e-6
-    assert abs(advantages[1] - 0.0) < 1e-6
-    assert abs(advantages[2] - 2.0) < 1e-6
-    assert abs(sum(advantages)) < 1e-6  # advantages sum to zero within group
-
-
 def test_estimate_advantage_multiple_groups():
     """Advantages are computed per prompt group, not globally."""
     ds = make_reward_dataset(

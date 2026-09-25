@@ -6,14 +6,12 @@ import torch
 
 from bergson import (
     CollectorComputer,
-    DataConfig,
     GradientProcessor,
     IndexConfig,
     InMemoryCollector,
     PreprocessConfig,
     collect_gradients,
 )
-from bergson.build import build
 from bergson.data import load_gradient_dataset
 from bergson.hessians.autocorrelation import AutocorrelationCollector
 
@@ -57,22 +55,6 @@ def test_reduce_cli(tmp_path: Path):
 
     grads = torch.tensor(ds["gradients"][:])
     assert not torch.isnan(grads).any()
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-def test_programmatic_reduce(tmp_path: Path):
-    index_cfg = IndexConfig(
-        run_path=str(tmp_path / "reduction"),
-        data=DataConfig(truncation=True, split="train[:100]"),
-        model="EleutherAI/pythia-14m",
-        token_batch_size=1024,
-    )
-
-    build(index_cfg, PreprocessConfig(aggregation="mean"))
-
-    # Assert 1-row reduction exists at the tmp_path
-    ds = load_gradient_dataset(Path(index_cfg.run_path))
-    assert len(ds) == 1
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")

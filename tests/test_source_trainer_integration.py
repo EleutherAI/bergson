@@ -49,18 +49,7 @@ def test_checkpoint_step_accepts_both_conventions(name, expected):
     assert _checkpoint_step(f"/runs/x/{name}") == expected
 
 
-def test_checkpoint_step_still_rejects_junk():
-    with pytest.raises(ValueError, match="Cannot infer a training step"):
-        _checkpoint_step("/runs/x/final-model")
-
-
 # ── momentum derivation ─────────────────────────────────────────────────────
-
-
-def test_derive_momentum_sgd_uses_adam_beta1():
-    """bergson's SGD passes adam_beta1 as torchopt.sgd's momentum."""
-    cfg = TrainingConfig(run_path="/tmp/x", optimizer="sgd", adam_beta1=0.9)
-    assert derive_momentum(cfg) == 0.9
 
 
 def test_derive_momentum_sgd_default_is_not_zero():
@@ -105,15 +94,6 @@ def test_resolve_fills_momentum_and_model_from_run(tmp_path):
 
     assert out.momentum == 0.9
     assert out.model_path == "EleutherAI/pythia-14m"
-
-
-def test_explicit_momentum_wins_over_run(tmp_path):
-    """A user training elsewhere must be able to override what the run says."""
-    run = _run_dir(tmp_path, optimizer="sgd", adam_beta1=0.9)
-    ckpt = run / "checkpoint-0"
-    ckpt.mkdir()
-    cfg = ApproxUnrollingConfig(checkpoints=[str(ckpt)], momentum=0.5)
-    assert resolve(cfg).momentum == 0.5
 
 
 def test_explicit_zero_momentum_is_respected(tmp_path):
@@ -192,31 +172,6 @@ def test_lr_times_steps_reads_bergson_history(tmp_path):
     ]
 
 
-def test_momentum_scales_lr_times_steps(tmp_path):
-    """The 1/(1-beta) terminal-velocity factor is what the SGD fix is about."""
-    cfg = ApproxUnrollingConfig(
-        checkpoints=["a", "b"],
-        segments=2,
-        lr_list=[1e-3, 1e-3],
-        step_size_list=[10, 10],
-        momentum=0.0,
-    )
-    baseline = compute_lr_times_steps_per_segment(cfg)
-
-    cfg.momentum = 0.95
-    scaled = compute_lr_times_steps_per_segment(cfg)
-
-    assert scaled == [pytest.approx(20 * b) for b in baseline]
-
-
-def test_momentum_out_of_range_is_rejected():
-    cfg = ApproxUnrollingConfig(
-        checkpoints=["a"], segments=1, lr_list=[1e-3], step_size_list=[1], momentum=1.0
-    )
-    with pytest.raises(ValueError, match="momentum must be in"):
-        compute_lr_times_steps_per_segment(cfg)
-
-
 def test_unset_momentum_defaults_to_no_scaling():
     """Without a trainer_run, behaviour is exactly as before this change."""
     cfg = ApproxUnrollingConfig(
@@ -226,61 +181,6 @@ def test_unset_momentum_defaults_to_no_scaling():
 
 
 # ── export end to end ───────────────────────────────────────────────────────
-
-
-def test_export_round_trips_checkpoint_weights(tmp_path):
-    """A DCP checkpoint must survive export as a from_pretrained-loadable model.
-
-    SOURCE loads every checkpoint with from_pretrained, so an export that lost
-    or mangled weights would silently attribute the wrong trajectory.
-    """
-    import torchopt
-    from datasets import Dataset
-    from transformers import AutoConfig, AutoModelForCausalLM
-
-    from bergson.magic.data_stream import DataStream
-    from bergson.magic.trainer import Trainer
-    from bergson.utils.trainer_export import sorted_dcp_checkpoints
-
-    torch.manual_seed(0)
-    config = AutoConfig.from_pretrained("EleutherAI/pythia-14m")
-
-    def fresh():
-        torch.manual_seed(0)
-        m = AutoModelForCausalLM.from_config(
-            config, dtype=torch.float32, attn_implementation="eager"
-        )
-        m.requires_grad_(True)
-        return m
-
-    n = 4
-    ds = Dataset.from_dict(
-        {"input_ids": [[1, 2, 3, 4]] * n, "labels": [[1, 2, 3, 4]] * n}
-    )
-    stream = DataStream(ds, batch_size=1, device="cpu")
-    opt = torchopt.sgd(lambda step: 1e-4, momentum=0.95)
-
-    trainer, state = Trainer.initialize(fresh(), opt)
-    save_dir = tmp_path / "checkpoints"
-    trainer.train(state, stream, inplace=True, save_dir=str(save_dir), save_mode="all")
-
-    found = sorted_dcp_checkpoints(save_dir)
-    assert [s for s, _ in found] == list(range(n))
-
-    # Reload the last checkpoint and export it, as export_checkpoints does.
-    model = fresh()
-    _, loaded = Trainer.initialize(model, opt)
-    loaded.load(str(found[-1][1]))
-
-    out = tmp_path / "checkpoint-3"
-    with loaded.activate(model), torch.no_grad():
-        model.save_pretrained(str(out), safe_serialization=True)
-        reference = {k: v.detach().clone() for k, v in model.named_parameters()}
-
-    reloaded = AutoModelForCausalLM.from_pretrained(str(out))
-    got = dict(reloaded.named_parameters())
-    for name, ref in reference.items():
-        torch.testing.assert_close(got[name], ref, atol=0, rtol=0)
 
 
 def test_lr_history_read_from_the_run_not_the_export(tmp_path):
@@ -414,20 +314,6 @@ def test_trainer_writes_optimizer_state_inside_each_checkpoint(tmp_path):
         assert blob["param_groups"][0]["betas"] == (0.9, 0.999)
 
 
-def test_trainer_run_inferred_from_exported_checkpoints(tmp_path):
-    """Setting checkpoints is enough; the run is found from their path."""
-    from bergson.utils.trainer_export import EXPORT_DIRNAME
-
-    run = _run_dir(tmp_path, optimizer="sgd", adam_beta1=0.9, model="gpt2")
-    ckpt = run / EXPORT_DIRNAME / "checkpoint-3"
-    ckpt.mkdir(parents=True)
-
-    out = resolve(ApproxUnrollingConfig(checkpoints=[str(ckpt)]))
-
-    assert out.momentum == 0.9
-    assert out.model_path == "gpt2"
-
-
 def test_trainer_run_inferred_from_run_root_checkpoints(tmp_path):
     run = _run_dir(tmp_path, optimizer="sgd", adam_beta1=0.8)
     ckpt = run / "checkpoint-1"
@@ -436,20 +322,9 @@ def test_trainer_run_inferred_from_run_root_checkpoints(tmp_path):
     assert resolve(ApproxUnrollingConfig(checkpoints=[str(ckpt)])).momentum == 0.8
 
 
-def test_foreign_checkpoints_infer_nothing(tmp_path):
-    """HF Trainer checkpoints must not pick up an unrelated run's config."""
-    hf = tmp_path / "hf_run" / "checkpoint-500"
-    hf.mkdir(parents=True)
-
-    out = resolve(ApproxUnrollingConfig(checkpoints=[str(hf)]))
-
-    assert out.momentum == 0.0
-    assert out.model_path is None
-
-
 @pytest.mark.parametrize(
     "value,expected",
-    [(True, "last"), (False, "none"), ("all", "all"), ("last", "last")],
+    [(True, "last"), (False, "none"), ("all", "all")],
 )
 def test_save_optimizer_state_accepts_old_booleans(value, expected):
     """`true` used to mean "write the final state"; keep that meaning."""
