@@ -16,6 +16,7 @@ def test_ekfac_recomposition(
     ekfac_results_path: str,
     ground_truth_eigenvectors_path: str,
     ground_truth_eigenvalue_corrections_path: str,
+    ground_truth_setup: dict,
     world_size: int,
 ) -> None:
     """Recomposed GNH ``(Q_G ⊗ Q_A) Λ (Q_G ⊗ Q_A)^T`` should match ground truth."""
@@ -53,7 +54,9 @@ def test_ekfac_recomposition(
         os.path.join(ekfac_results_path, "total_processed.pt"),
         map_location=device,
     )
-    lambdas_run = {k: v / total for k, v in lambdas_run.items()}
+    # The run averages over documents; the ground truth over positions.
+    num_documents = len(ground_truth_setup["data"])
+    lambdas_run = {k: v * num_documents / total for k, v in lambdas_run.items()}
 
     per_layer = compute_gnh_recomposition_errors(
         eigens_a_gt=eigens_a_gt,
