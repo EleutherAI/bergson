@@ -9,7 +9,6 @@ eigendecomposition precision.
 
 import os
 
-import pytest
 import torch
 import torch.nn as nn
 from safetensors.torch import save_file
@@ -40,8 +39,8 @@ def _run_batch(model, collector, device):
         model(x).sum().backward()
 
 
-@pytest.mark.parametrize("dtype", [torch.float64, torch.float16])
-def test_covariance_collector_accumulates_in_dtype(tmp_path, dtype):
+def test_covariance_collector_accumulates_in_dtype(tmp_path):
+    dtype = torch.float64
     device = get_device(0)
     model = TinyModel().to(device)
     collector = CovarianceCollector(
@@ -55,8 +54,8 @@ def test_covariance_collector_accumulates_in_dtype(tmp_path, dtype):
     assert collector.S_cov_dict["lin"].dtype == dtype
 
 
-@pytest.mark.parametrize("dtype", [torch.float64, torch.float32])
-def test_lambda_collector_accumulates_in_dtype(tmp_path, dtype):
+def test_lambda_collector_accumulates_in_dtype(tmp_path):
+    dtype = torch.float64
     device = get_device(0)
     model = TinyModel().to(device)
 

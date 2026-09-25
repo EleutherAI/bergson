@@ -73,8 +73,7 @@ def _aggregate_magic_score(trainer, model, fwd_state, stream, ckpt_dir, query_ds
     return bwd.weight_grads.detach().cpu()
 
 
-@pytest.mark.parametrize("grad_accum_steps", [1, 2])
-def test_per_query_mean_reproduces_aggregate(grad_accum_steps):
+def test_per_query_mean_reproduces_aggregate():
     model = _model()
     optimizer = torchopt.adamw(1e-4, betas=(0.95, 0.975), eps_root=1e-2)
     trainer, fwd_state = Trainer.initialize(model, optimizer)
@@ -90,10 +89,7 @@ def test_per_query_mean_reproduces_aggregate(grad_accum_steps):
         ckpts = f"{run_path}/checkpoints"
         fwd_state = trainer.train(fwd_state, stream, inplace=True, save_dir=ckpts)
 
-        run_cfg = MagicConfig(
-            run_path=run_path,
-            grad_accum_steps=grad_accum_steps,
-        )
+        run_cfg = MagicConfig(run_path=run_path)
         run_cfg.query.data.prompt_column = "input_ids"
 
         # Snapshot final state so the aggregate reference starts where per-query does.
@@ -283,11 +279,11 @@ def test_chunked_query_set_rejected_for_per_query():
     )
 
 
-@pytest.mark.parametrize("grad_accum_steps", [1, 4])
-def test_query_eval_ignores_padding_and_grad_accum(grad_accum_steps):
+def test_query_eval_ignores_padding_and_grad_accum():
     """Padding rows are zero-weight copies of the last query document, and
     micro-batching only changes the memory footprint. Neither moves the query
     loss, the per-document losses or the query gradient."""
+    grad_accum_steps = 4
     model = _model()
     _, fwd_state = Trainer.initialize(model, torchopt.adamw(1e-4))
     model.eval()

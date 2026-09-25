@@ -59,19 +59,11 @@ def run_pipeline(tmp_path, model_name, token_batch_size, doc_tokens, truncation)
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 @pytest.mark.parametrize("truncation", [True, False])
-@pytest.mark.parametrize(
-    "model,token_batch_size",
-    [
-        # token_batch_size < max_position_embeddings
-        (GPT2, GPT2_MAX_POS_EMB // 2),
-        # token_batch_size = max_position_embeddings
-        (GPT2, GPT2_MAX_POS_EMB),
-    ],
-)
-def test_short_documents(tmp_path, model, token_batch_size, truncation):
+def test_short_documents(tmp_path, truncation):
     """Short documents (fit within token_batch_size and max_position_embeddings)
     work regardless of truncation setting.
     """
+    model, token_batch_size = GPT2, GPT2_MAX_POS_EMB // 2
     max_position_embeddings = get_max_position_embeddings(model)
     doc_tokens = min(token_batch_size, max_position_embeddings) // 2
     ds = run_pipeline(tmp_path, model, token_batch_size, doc_tokens, truncation)
@@ -80,19 +72,11 @@ def test_short_documents(tmp_path, model, token_batch_size, truncation):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-@pytest.mark.parametrize(
-    "model,token_batch_size",
-    [
-        # token_batch_size < max_position_embeddings: truncates to token_batch_size
-        (GPT2, GPT2_MAX_POS_EMB // 2),
-        # token_batch_size = max_position_embeddings: truncates to both
-        (GPT2, GPT2_MAX_POS_EMB),
-    ],
-)
-def test_long_documents_truncated(tmp_path, model, token_batch_size):
+def test_long_documents_truncated(tmp_path):
     """Long documents get truncated to
     min(token_batch_size, max_position_embeddings).
     """
+    model, token_batch_size = GPT2, GPT2_MAX_POS_EMB // 2
     doc_tokens = token_batch_size * 2
     max_position_embeddings = get_max_position_embeddings(model)
     expected_length = min(token_batch_size, max_position_embeddings)

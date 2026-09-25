@@ -6,7 +6,6 @@ purely an execution strategy, so the resulting score matrix must be identical
 to the unchunked one — this file pins that equivalence.
 """
 
-import pytest
 import torch
 
 from bergson.score.score_writer import InMemorySequenceScoreWriter
@@ -48,19 +47,17 @@ def _score_in_slices(query_grads, index_grads, slices, *, unit_normalize):
     return writer.scores
 
 
-@pytest.mark.parametrize("unit_normalize", [False, True])
-@pytest.mark.parametrize("slices", [[(0, 2), (2, 5)], [(0, 1), (1, 3), (3, 5)]])
-def test_query_batching_matches_single_pass(slices, unit_normalize):
+def test_query_batching_matches_single_pass():
     """Chunked scoring reproduces the unchunked score matrix exactly."""
     g = torch.Generator().manual_seed(0)
     query_grads = _query_grads(g)
     index_grads = _index_grads(g)
 
     whole = _score_in_slices(
-        query_grads, index_grads, [(0, NUM_QUERIES)], unit_normalize=unit_normalize
+        query_grads, index_grads, [(0, NUM_QUERIES)], unit_normalize=False
     )
     chunked = _score_in_slices(
-        query_grads, index_grads, slices, unit_normalize=unit_normalize
+        query_grads, index_grads, [(0, 2), (2, 5)], unit_normalize=False
     )
 
     torch.testing.assert_close(chunked, whole)

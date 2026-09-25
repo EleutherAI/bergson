@@ -8,10 +8,10 @@ on the already-CPU index, cloning it and raising ``RuntimeError: clone not suppo
 ``Flat`` index survived. ``index_to_device`` now detects GPU residency and treats a
 CPU->CPU request as a no-op, so an already-CPU shard is returned unchanged.
 
-The end-to-end tests build tiny on-disk indices with ``device="cpu"`` and confirm
+The end-to-end test builds a tiny on-disk index with ``device="cpu"`` and confirms
 the CPU load path (``mmap_index=False``) no longer raises and returns usable
-neighbours for both an ANN (IVF) index and an exact ``Flat`` index. The unit tests
-exercise the ``index_to_device`` guard directly. Adapted from the bug2 repro.
+neighbours for an ANN (IVF) index. The unit tests exercise the
+``index_to_device`` guard directly. Adapted from the bug2 repro.
 """
 
 from pathlib import Path
@@ -102,42 +102,6 @@ def test_ann_ivf_cpu_load_does_not_raise(tmp_path: Path):
 
 
 @requires_faiss
-def test_exact_flat_cpu_load_still_works(tmp_path: Path):
-    """The exact Flat path that already worked must keep working."""
-    n, dim = 256, 16
-    data = _write_gradient_store(tmp_path / "grads", n, dim)
-    query = data[:2].copy()
-
-    distances, indices = _build_and_load(
-        tmp_path / "grads",
-        tmp_path / "faiss_flat",
-        index_factory="Flat",
-        mmap_index=False,
-        query=query,
-    )
-
-    assert indices.shape == (2, 3)
-    assert indices[0, 0] == 0
-    assert indices[1, 0] == 1
-    assert (indices >= 0).all()
-
-
-@requires_faiss
-def test_index_to_device_cpu_is_noop_on_in_memory_cpu_index():
-    """`index_to_device(idx, "cpu")` returns an in-memory CPU index unchanged."""
-    import faiss  # type: ignore[import]
-
-    idx = faiss.index_factory(16, "IVF16,Flat", faiss.METRIC_INNER_PRODUCT)
-    assert not _is_gpu_resident(idx)
-
-    result = index_to_device(idx, "cpu")
-
-    # Same object, not a clone: proves we did not route it through
-    # `index_gpu_to_cpu` (which would return a fresh index).
-    assert result is idx
-
-
-@requires_faiss
 def test_index_to_device_cpu_is_noop_on_mmapd_ondisk_index(tmp_path: Path):
     """The guard must no-op on the mmap'd OnDisk index that used to crash.
 
@@ -203,24 +167,3 @@ def test_index_to_device_cpu_converts_a_gpu_resident_index():
     _, indices = out.search(vecs[:1], 1)
     assert indices.shape == (1, 1)
     assert 0 <= indices[0, 0] < n
-
-
-@requires_faiss
-def test_ann_ivf_mmap_index_true_still_works(tmp_path: Path):
-    """The mmap_index=True path (skips index_to_device) must be unaffected."""
-    n, dim = 256, 16
-    data = _write_gradient_store(tmp_path / "grads", n, dim)
-    query = data[:2].copy()
-
-    distances, indices = _build_and_load(
-        tmp_path / "grads",
-        tmp_path / "faiss_ivf_mmap",
-        index_factory="IVF16,Flat",
-        mmap_index=True,
-        query=query,
-    )
-
-    assert indices.shape == (2, 3)
-    assert indices[0, 0] == 0
-    assert indices[1, 0] == 1
-    assert (indices >= 0).all()

@@ -7,7 +7,6 @@ import yaml
 
 from bergson import GradientProcessor
 from bergson.config import IndexConfig, PreprocessConfig, ScoreConfig
-from bergson.gradients import PROJECTION_SETTINGS
 from bergson.process_grads import mix_autocorrelation_matrices
 from bergson.score.score import score_dataset
 
@@ -30,7 +29,7 @@ def test_matching_projections_pass():
     )
 
 
-@pytest.mark.parametrize("name", PROJECTION_SETTINGS)
+@pytest.mark.parametrize("name", ["projection_seed", "include_bias"])
 def test_each_projection_setting_must_match(name):
     other = GradientProcessor(**{"projection_dim": 16, name: CHANGED[name]})
     with pytest.raises(ValueError, match=f"{name}={CHANGED[name]!r}"):

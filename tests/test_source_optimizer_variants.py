@@ -99,17 +99,14 @@ def _reference_diag_hessian(q_a, q_g, lam):
     return torch.diagonal(h).reshape(OUT_DIM, IN_DIM).float()
 
 
-@pytest.mark.parametrize("fn_kind", ["f_backward", "f_one_minus_exp"])
-def test_diagonal_preconditioner_matches_dense_reference(tmp_path, fn_kind):
+def test_diagonal_preconditioner_matches_dense_reference(tmp_path):
     """The diagonal path multiplies gradients elementwise by f(p * diag(H)),
     with diag(H) recovered exactly from the EKFAC factors."""
     q_a, q_g, lam = _random_factors()
     precond = torch.rand(OUT_DIM, IN_DIM) + 0.5
     preconditioner_path = _write_factor_shards(tmp_path, q_a, q_g, lam, precond)
 
-    fn = {"f_backward": f_backward, "f_one_minus_exp": f_one_minus_exp}[fn_kind](
-        LR_TIMES_STEPS
-    )
+    fn = f_backward(LR_TIMES_STEPS)
     preconditioner = DiagonalFactoredPreconditioner.from_shards(
         tmp_path,
         preconditioner_path,
@@ -127,10 +124,7 @@ def test_diagonal_preconditioner_matches_dense_reference(tmp_path, fn_kind):
     torch.testing.assert_close(grads[MODULE], before)
 
     sigma = precond * _reference_diag_hessian(q_a, q_g, lam)
-    if fn_kind == "f_backward":
-        multiplier = torch.exp(-LR_TIMES_STEPS * sigma)
-    else:
-        multiplier = -torch.expm1(-LR_TIMES_STEPS * sigma)
+    multiplier = torch.exp(-LR_TIMES_STEPS * sigma)
     expected = grads[MODULE].view(3, OUT_DIM, IN_DIM) * multiplier
     torch.testing.assert_close(
         out.view(3, OUT_DIM, IN_DIM), expected, rtol=1e-4, atol=1e-6

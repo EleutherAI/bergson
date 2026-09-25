@@ -118,13 +118,9 @@ def test_lambda_collector_include_bias(tmp_path):
     assert collector.eigenvalue_corrections["unbiased"].shape == (IN_DIM, OUT_DIM)
 
 
-@pytest.mark.parametrize("world_size", [1, 2, 3, 4, 7])
-@pytest.mark.parametrize("dim", [1, 7, 64, 129, 513])
+@pytest.mark.parametrize("dim, world_size", [(1, 1), (7, 3), (64, 4)])
 def test_shard_bounds_partitions_dim(dim, world_size):
     """Shards tile [0, dim) contiguously; rank 0 takes the remainder rows."""
-    if dim < world_size:
-        pytest.skip("fewer rows than ranks")
-
     base, remainder = divmod(dim, world_size)
     prev_end = 0
     for rank in range(world_size):

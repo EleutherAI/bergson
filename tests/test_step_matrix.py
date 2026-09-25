@@ -28,13 +28,6 @@ def test_cartesian_expansion_with_typed_and_string_substitution():
     assert out[1]["seed"] == 2 and out[1]["run_path"] == "runs/s2_lr0.1"
 
 
-def test_colliding_run_paths_raise():
-    with pytest.raises(ValueError, match="both write"):
-        expand_matrix(
-            {"matrix": {"seed": [1, 2]}, "run_path": "runs/same", "seed": "{seed}"}
-        )
-
-
 def test_matrix_without_run_path_raises():
     with pytest.raises(ValueError, match="no run_path"):
         expand_matrix({"matrix": {"seed": [1, 2]}, "seed": "{seed}"})

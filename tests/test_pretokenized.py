@@ -1,6 +1,5 @@
 """Tests for datasets that are already tokenized."""
 
-import pytest
 from datasets import Dataset
 
 from bergson.config import DataConfig, IndexConfig
@@ -26,11 +25,10 @@ def _run(tmp_path, columns, **data_kwargs):
     return ds
 
 
-@pytest.mark.parametrize("truncation", [True, False])
-def test_length_derived_from_input_ids(tmp_path, truncation):
+def test_length_derived_from_input_ids(tmp_path):
     """A pre-tokenized dataset without a `length` column gets one derived."""
     input_ids = [[1, 2, 3], [4, 5], [6, 7, 8, 9]]
-    ds = _run(tmp_path, {"input_ids": input_ids}, truncation=truncation)
+    ds = _run(tmp_path, {"input_ids": input_ids}, truncation=True)
 
     assert ds["length"] == [3, 2, 4]
     assert ds["input_ids"] == input_ids

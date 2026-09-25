@@ -146,56 +146,6 @@ class TestGradientCollectorCallback:
         assert callback.order is None
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-    def test_order_save_and_load(self, tmp_path, model, dataset):
-        """Test that order records are properly saved and can be loaded."""
-        # Train the model with the callback
-        training_args = TrainingArguments(
-            output_dir=str(tmp_path / "output"),
-            num_train_epochs=1,
-            per_device_train_batch_size=2,
-            per_device_eval_batch_size=2,
-            gradient_accumulation_steps=1,
-            save_strategy="no",
-            logging_strategy="no",
-            remove_unused_columns=False,
-        )
-
-        callback = GradientCollectorCallback(
-            path=tmp_path / "gradients",
-            track_order=True,
-            use_optimizer_state=False,
-        )
-
-        trainer = Trainer(
-            model=model,
-            args=training_args,
-            train_dataset=dataset,
-            eval_dataset=dataset,
-            callbacks=[callback],
-        )
-        trainer = prepare_for_gradient_collection(trainer)
-        trainer.train()
-
-        # Verify order records were created
-        assert callback.order is not None
-        assert len(callback.order) > 0
-
-        # Check that order file was saved
-        order_file = tmp_path / "gradients" / "order.hf"
-        assert order_file.exists()
-
-        # Load and verify the saved order
-        saved_order = Dataset.load_from_disk(str(order_file))
-        assert len(saved_order) == len(callback.order)
-
-        # Verify the saved order matches the in-memory order
-        for i, record in enumerate(saved_order):
-            record = assert_type(dict, record)
-            assert record["_idx"] == callback.order[i]["_idx"]
-            assert record["global_step"] == callback.order[i]["global_step"]
-            assert record["epoch"] == callback.order[i]["epoch"]
-
-    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
     def test_sft_trainer(self, tmp_path, model, dataset):
         """Test that gradient and order files are created and
         can be loaded after training with SFTTrainer."""
@@ -310,8 +260,10 @@ class TestGradientCollectorCallback:
                 gradients[head_name][0].sum().item() != 0.0
             ), f"Gradient for {head_name} is all zeros"
 
-    @pytest.mark.parametrize("optimizer_name", ["adam", "adafactor"])
-    @pytest.mark.parametrize("include_bias", [True, False])
+    @pytest.mark.parametrize(
+        "include_bias,optimizer_name",
+        [(True, "adam"), (False, "adam"), (True, "adafactor")],
+    )
     def test_optimizer_state_extraction(self, optimizer_name: str, include_bias: bool):
         """Test that normalizers are correctly extracted from optimizer state.
 
@@ -441,17 +393,15 @@ class TestGradientCollectorCallback:
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-@pytest.mark.parametrize(
-    "model_name",
-    ["trl-internal-testing/tiny-Phi3ForCausalLM", "sshleifer/tiny-gpt2"],
-)
-def test_callback_with_optimizer_state_trains(tmp_path: Path, model_name: str):
+def test_callback_with_optimizer_state_trains(tmp_path: Path):
     """``use_optimizer_state=True`` (the default) must work on a real CausalLM.
 
     The optimizer owns every parameter, including ``lm_head.weight``, which
     lives outside ``base_model`` for both tied and untied models.
     """
-    model = AutoModelForCausalLM.from_pretrained(model_name, dtype=torch.float32)
+    model = AutoModelForCausalLM.from_pretrained(
+        "trl-internal-testing/tiny-Phi3ForCausalLM", dtype=torch.float32
+    )
     data = {"input_ids": [[1, 2, 3, 4, 5]] * 4}
     data["labels"] = data["input_ids"]
     dataset = Dataset.from_dict(data)

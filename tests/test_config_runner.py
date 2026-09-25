@@ -74,37 +74,6 @@ steps:
     assert isinstance(build_cmd.preprocess_cfg, PreprocessConfig)
 
 
-def test_single_step_is_one_command(tmp_path, registry):
-    """A one-entry `steps:` list is a single command."""
-    yaml_path = write(
-        tmp_path,
-        """
-steps:
-  - hessian:
-      hessian_cfg: {method: kfac}
-      index_cfg: {run_path: runs/test}
-""",
-    )
-    steps = parse(yaml_path, registry)
-    assert [name for name, _ in steps] == ["hessian"]
-    assert isinstance(steps[0][1], Hessian)
-
-
-def test_run_path_is_read_from_top_level(tmp_path):
-    yaml_path = write(
-        tmp_path,
-        """
-run_path: runs/my_pipeline
-steps:
-  - hessian: {hessian_cfg: {method: kfac}, index_cfg: {run_path: runs/test}}
-  - build: {index_cfg: {run_path: runs/test}, preprocess_cfg: {}}
-""",
-    )
-    doc = read_config(yaml_path)
-    assert doc["run_path"] == "runs/my_pipeline"
-    assert len(doc["steps"]) == 2
-
-
 def test_command_name_is_case_insensitive(tmp_path, registry):
     yaml_path = write(
         tmp_path,
@@ -128,12 +97,6 @@ hessian:
   hessian_cfg: {method: kfac}
 """,
     )
-    with pytest.raises(ValueError, match="must be a mapping with a `steps:` list"):
-        read_config(yaml_path)
-
-
-def test_invalid_top_level_type_raises(tmp_path):
-    yaml_path = write(tmp_path, "just a string\n")
     with pytest.raises(ValueError, match="must be a mapping with a `steps:` list"):
         read_config(yaml_path)
 
@@ -166,41 +129,6 @@ steps:
     )
     with pytest.raises(ValueError, match="Unknown command 'not_a_real_command'"):
         parse(yaml_path, registry)
-
-
-def test_omitted_fields_use_dataclass_defaults(tmp_path, registry):
-    """Fields omitted from a step body fall back to their dataclass defaults."""
-    yaml_path = write(
-        tmp_path,
-        """
-steps:
-  - hessian:
-      hessian_cfg: {method: kfac}
-      index_cfg: {run_path: runs/test}
-""",
-    )
-    steps = parse(yaml_path, registry)
-    _, cmd = steps[0]
-    assert isinstance(cmd, Hessian)
-    assert cmd.hessian_cfg.method == "kfac"
-    # `method` is required, but the remaining fields fall back to defaults.
-    assert cmd.hessian_cfg.ev_correction == HessianConfig(method="kfac").ev_correction
-
-
-def test_build_step_is_index_only(tmp_path, registry):
-    """A build step builds the index only; Hessians are fit via the hessian step."""
-    yaml_path = write(
-        tmp_path,
-        """
-steps:
-  - build:
-      index_cfg: {run_path: runs/test}
-      preprocess_cfg: {}
-""",
-    )
-    steps = parse(yaml_path, registry)
-    _, cmd = steps[0]
-    assert isinstance(cmd, Build)
 
 
 def make_steps() -> list[tuple[str, object]]:

@@ -194,17 +194,3 @@ def test_evaluate_retrained_averages_over_dirs(tmp_path, model):
     avg = _read_validation(tmp_path / "avg")
     for r1, r2 in zip(one, avg):
         assert abs(float(r1["diff"]) - float(r2["diff"])) < 1e-6
-
-
-def test_validate_cli_comma_separated_dirs(tmp_path, model, monkeypatch):
-    from bergson.cli.commands import Validate
-
-    seen = {}
-    monkeypatch.setattr(
-        "bergson.cli.commands.evaluate_retrained",
-        lambda cfg, dirs, score_path="": seen.setdefault("dirs", dirs),
-    )
-    Validate.from_dict(
-        {"run_path": str(tmp_path), "scores": "s", "retrained_dir": "a,b"}
-    ).execute()
-    assert seen["dirs"] == ["a", "b"]

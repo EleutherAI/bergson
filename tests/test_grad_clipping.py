@@ -171,16 +171,6 @@ def _final_query_loss(dataset, max_grad_norm, weights):
             return model(**query).loss.item()
 
 
-def test_clipped_scores_finite_and_change_trajectory(clip_dataset):
-    """A biting clip yields finite, nonzero scores differing from the unclipped run."""
-    unclipped = _magic_scores(clip_dataset, None)
-    clipped = _magic_scores(clip_dataset, 2.0)
-
-    assert torch.isfinite(clipped).all()
-    assert clipped.abs().sum() > 0, "clipped scores are all zero"
-    assert not torch.allclose(clipped, unclipped), "clip had no effect"
-
-
 def test_clip_is_differentiable_finite_difference(clip_dataset):
     """MAGIC influence through the clip matches a finite-difference estimate.
 

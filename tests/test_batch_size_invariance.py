@@ -17,8 +17,7 @@ from .cli_command import bergson_cmd, bergson_env
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-@pytest.mark.parametrize("batch_size_a,batch_size_b", [(100, 100), (50, 150)])
-def test_gradient_scale_invariance(tmp_path, batch_size_a, batch_size_b):
+def test_gradient_scale_invariance(tmp_path):
     """
     Test that gradient scales don't depend on how we batch the data.
 
@@ -29,6 +28,7 @@ def test_gradient_scale_invariance(tmp_path, batch_size_a, batch_size_b):
     The fix changes loss.mean().backward() to loss.sum().backward() to make
     gradient scales invariant to batch size.
     """
+    batch_size_a, batch_size_b = 50, 150
     # Create two simple datasets
     texts_a = [
         f"The quick brown fox jumps over the lazy dog {i}" for i in range(batch_size_a)

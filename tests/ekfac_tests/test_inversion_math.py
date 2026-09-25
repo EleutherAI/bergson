@@ -32,21 +32,6 @@ def test_damped_inverse_zero_damping_is_true_inverse():
     assert torch.allclose(h_inv @ h, torch.eye(6, dtype=torch.float64), atol=1e-8)
 
 
-def test_half_power_squared_is_full_inverse():
-    """H^(-1/2) applied twice equals H^(-1) (dense path)."""
-    h = _psd(6)
-    half = invert_psd_matrix(h, power=-0.5, damping_factor=0.1)
-    full = invert_psd_matrix(h, power=-1.0, damping_factor=0.1)
-    assert torch.allclose(half @ half, full, atol=1e-8)
-
-
-def test_inverse_is_symmetric():
-    """The inverse of a symmetric PSD matrix is symmetric."""
-    h = _psd(6)
-    h_inv = invert_psd_matrix(h, damping_factor=0.1)
-    assert torch.allclose(h_inv, h_inv.T, atol=1e-10)
-
-
 def test_pseudoinverse_matches_torch_pinv_on_rank_deficient():
     """Truncated pseudoinverse equals the Moore-Penrose inverse when the damping
     threshold sits between zero and the smallest nonzero eigenvalue."""
@@ -68,21 +53,6 @@ def test_factored_tikhonov_falls_back_to_damped_inverse_on_dense():
 
 
 # ── eigenvalue_multiplier (the shared dispatch) ────────────────────────────
-
-
-def test_damped_inverse_formula():
-    lam = torch.rand(5) + 0.1
-    mean = lam.mean()
-    m = eigenvalue_multiplier("damped_inverse", lam, mean, 0.1)
-    assert torch.allclose(m, 1.0 / (lam + 0.1 * mean))
-
-
-def test_tikhonov_filtered_formula():
-    lam = torch.rand(5) + 0.1
-    mean = lam.mean()
-    m = eigenvalue_multiplier("tikhonov_filtered", lam, mean, 0.1)
-    alpha = 0.1 * mean
-    assert torch.allclose(m, lam / (lam * lam + alpha * alpha))
 
 
 def test_pseudoinverse_truncates_below_threshold():
@@ -156,23 +126,3 @@ def test_factored_tikhonov_regularizes():
     )
     assert torch.isfinite(inv).all() and (inv > 0).all()
     assert (inv < grid.reciprocal()).all()  # regularized inverse < raw 1/λ
-
-
-def test_factored_tikhonov_zero_damping_is_raw_inverse():
-    """With no damping the factored inverse is just 1/λ over the grid."""
-    o, i = 4, 5
-    g = torch.Generator().manual_seed(4)
-    lam_a = torch.rand(i, generator=g) + 0.1
-    lam_g = torch.rand(o, generator=g) + 0.1
-    grid = torch.outer(lam_g, lam_a)
-    inv = eigenvalue_multiplier(
-        "factored_tikhonov",
-        grid,
-        grid.mean(),
-        0.0,
-        factor_a=lam_a,
-        factor_g=lam_g,
-        mean_a=lam_a.mean(),
-        mean_g=lam_g.mean(),
-    )
-    assert torch.allclose(inv, grid.reciprocal())

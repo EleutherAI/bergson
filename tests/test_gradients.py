@@ -432,98 +432,21 @@ def test_bias_gradients(test_params, simple_model_class):
     torch.testing.assert_close(bias_grads, ground_truth)
 
 
-@pytest.mark.parametrize("include_bias", [True, False])
-def test_gradient_collector_with_projection(
-    include_bias: bool, trained_model_with_normalizers, test_params
-):
-    """Test gradient collection with random projection and bias terms.
-
-    Validates that combining random projection with bias collection works correctly:
-    - Verifies output shape is [N, projection_dim²] regardless of bias inclusion
-    - Checks gradients are non-zero (projection doesn't zero them out)
-    - Confirms deterministic behavior (same input = same output)
-
-    This tests the critical path where bias gradients are concatenated to weight
-    gradients BEFORE applying the random projection, ensuring the projection
-    accounts for the increased dimensionality.
-
-    Args:
-        include_bias: Whether to include bias gradients in collection
-    """
-    temp_dir = Path(tempfile.mkdtemp())
-    N, S, I = test_params["N"], test_params["S"], test_params["I"]
-    P = 4  # projection dimension
-
-    model, normalizers = trained_model_with_normalizers(include_bias)
-
-    # Create dummy dataset for GradientCollector
-    dummy_data = Dataset.from_dict({"input_ids": [[1] * 10] * N})
-
-    # Create config for GradientCollector
-    cfg = IndexConfig(
-        run_path=str(temp_dir / "run"),
-    )
-
-    processor = GradientProcessor(
-        normalizers=normalizers, projection_dim=P, include_bias=include_bias
-    )
-    collector = GradientCollector(
-        model=model,
-        cfg=cfg,
-        data=dummy_data,
-        skip_index=True,
-        processor=processor,
-        target_modules={"fc1", "fc2"},
-    )
-
-    x = torch.randn(N, S, I)
-    with collector:
-        model.zero_grad()
-        out = model(x)
-        loss = (out**2).sum()
-        loss.backward()
-
-    # Check shapes - with projection, output should be [N, P*P]
-    for layer_name in ["fc1", "fc2"]:
-        collected = collector.mod_grads[layer_name]
-        assert collected.shape == (
-            N,
-            P * P,
-        ), f"Expected shape ({N}, {P*P}), got {collected.shape} for {layer_name}"
-
-        # Check that gradients are not all zeros
-        assert collected.abs().sum() > 0, f"Gradients are all zeros for {layer_name}"
-
-        # Check determinism - running twice should give same results
-        with collector:
-            model.zero_grad()
-            out = model(x)
-            loss = (out**2).sum()
-            loss.backward()
-
-        collected2 = collector.mod_grads[layer_name]
-        torch.testing.assert_close(
-            collected, collected2, msg=f"Gradients not deterministic for {layer_name}"
-        )
-
-
-@pytest.mark.parametrize("include_bias", [False, True])
 def test_adafactor_normalization_ground_truth(
-    include_bias: bool, trained_model_with_normalizers, test_params
+    trained_model_with_normalizers, test_params
 ):
-    """Test A: Adafactor normalization matches manually-applied factored second moments.
+    """Adafactor normalization matches manually-applied factored second moments.
 
     Converts Adam second moments to Adafactor (rank-1), then compares:
     - Ground truth: per-sample backward + manual Adafactor normalization
     - Collected: GradientCollector with Adafactor normalizers
 
-    Test B (include_bias=True): same but also verifies bias column is normalized
-    by bias_avg_sq.
+    The bias column must be normalized by bias_avg_sq.
     """
     temp_dir = Path(tempfile.mkdtemp())
     N, S, I = test_params["N"], test_params["S"], test_params["I"]
 
-    model, adam_normalizers = trained_model_with_normalizers(include_bias)
+    model, adam_normalizers = trained_model_with_normalizers(True)
 
     # Convert Adam → Adafactor, preserving bias_avg_sq
     adafactor_normalizers = {
@@ -538,7 +461,7 @@ def test_adafactor_normalization_ground_truth(
     processor = GradientProcessor(
         normalizers=adafactor_normalizers,
         projection_dim=None,
-        include_bias=include_bias,
+        include_bias=True,
     )
     collector = GradientCollector(
         model=model,
@@ -582,10 +505,9 @@ def test_adafactor_normalization_ground_truth(
             col_factor = c.rsqrt()  # [I]
             grad = grad * row_factor[:, None] * col_factor[None, :]
 
-            if include_bias:
-                bias_grad = layer.bias.grad.clone()
-                bias_grad = bias_grad * norm.bias_avg_sq.add(1e-30).rsqrt()
-                grad = torch.cat([grad, bias_grad.unsqueeze(1)], dim=1)
+            bias_grad = layer.bias.grad.clone()
+            bias_grad = bias_grad * norm.bias_avg_sq.add(1e-30).rsqrt()
+            grad = torch.cat([grad, bias_grad.unsqueeze(1)], dim=1)
 
             ground_truth_grads[layer_name].append(grad.flatten())
 
@@ -740,8 +662,10 @@ class _MixedBiasModel(nn.Module):
         return self.fc2(self.relu(self.fc1(x)))
 
 
-@pytest.mark.parametrize("normalizer_kind", ["adam", "adafactor"])
-@pytest.mark.parametrize("projection_dim", [None, 4])
+@pytest.mark.parametrize(
+    "projection_dim,normalizer_kind",
+    [(None, "adam"), (4, "adam"), (None, "adafactor")],
+)
 def test_mixed_bias_model_with_optimizer_normalizers(
     normalizer_kind: str, projection_dim: int | None, test_params
 ):

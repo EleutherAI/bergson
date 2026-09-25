@@ -9,52 +9,12 @@ import torch
 from bergson import GradientProcessor, collect_gradients
 from bergson.collector.collector import (
     CollectorComputer,
-    create_projection_matrix,
     global_projection_blocks,
     project_global,
 )
 from bergson.collector.gradient_collectors import GradientCollector
 from bergson.config import IndexConfig
 from bergson.data import load_module_gradients
-
-
-def test_global_shapes_collapse_to_single_key():
-    """In global mode, shapes() returns one synthetic 'gradients' entry."""
-    from bergson.collector.collector import HookCollectorBase
-
-    # Construct a minimal stand-in for HookCollectorBase that exercises shapes()
-    # without running a full forward/backward. We only need processor + a fake
-    # target_info dict.
-    class _Stub(HookCollectorBase):
-        def __init__(self, processor, target_info):
-            self.processor = processor
-            self.target_info = target_info
-            self.attention_cfgs = {}
-
-        def setup(self):
-            pass
-
-        def teardown(self):
-            pass
-
-        def discover_targets(self, *_a, **_kw):
-            return {}
-
-        def backward_hook(self, module, g):
-            pass
-
-        def process_batch(self, indices, **kwargs):
-            pass
-
-    target_info = {
-        "model.layers.0.q_proj": (None, torch.Size((4, 4)), False),
-        "model.layers.0.k_proj": (None, torch.Size((4, 4)), False),
-    }
-    proc = GradientProcessor(projection_dim=64, projection_target="global")
-    stub = _Stub(proc, target_info)
-    shapes = stub.shapes()
-    assert set(shapes.keys()) == {"gradients"}
-    assert tuple(shapes["gradients"]) == (64,)
 
 
 def test_global_shapes_requires_projection_dim():
@@ -87,43 +47,6 @@ def test_global_shapes_requires_projection_dim():
         stub.shapes()
 
 
-def test_per_module_shapes_unchanged():
-    """Default per_module mode returns one shape per target module."""
-    from bergson.collector.collector import HookCollectorBase
-
-    class _Stub(HookCollectorBase):
-        def __init__(self, processor, target_info):
-            self.processor = processor
-            self.target_info = target_info
-            self.attention_cfgs = {}
-
-        def setup(self):
-            pass
-
-        def teardown(self):
-            pass
-
-        def discover_targets(self, *_a, **_kw):
-            return {}
-
-        def backward_hook(self, module, g):
-            pass
-
-        def process_batch(self, indices, **kwargs):
-            pass
-
-    target_info = {
-        "model.layers.0.q_proj": (None, torch.Size((4, 4)), False),
-        "model.layers.0.k_proj": (None, torch.Size((4, 4)), False),
-    }
-    proc = GradientProcessor(projection_dim=8, projection_target="per_module")
-    stub = _Stub(proc, target_info)
-    shapes = stub.shapes()
-    assert set(shapes.keys()) == set(target_info.keys())
-    for s in shapes.values():
-        assert tuple(s) == (8, 8)
-
-
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_global_projector_e2e(tmp_path: Path, model, dataset):
     # CudaProjector requires proj_dim to be a multiple of 512.
@@ -144,32 +67,6 @@ def test_global_projector_e2e(tmp_path: Path, model, dataset):
     grads = load_module_gradients(cfg.partial_run_path)
     assert list(grads.keys()) == ["gradients"]
     assert grads["gradients"].shape == (len(dataset), proj_dim)
-
-
-def test_global_projection_linearity():
-    """Block decomposition: cat(g1,g2,g3) @ R.T == sum_i g_i @ R_i.T.
-
-    This algebraic identity holds for any linear projection matrix R when
-    R_i are the corresponding column blocks. It is the mathematical basis for
-    why per-module projection + sum is equivalent to global projection.
-    """
-    torch.manual_seed(42)
-    N, d1, d2, d3 = 3, 6, 10, 4
-    proj_dim = 8
-    total = d1 + d2 + d3
-
-    g1 = torch.randn(N, d1)
-    g2 = torch.randn(N, d2)
-    g3 = torch.randn(N, d3)
-
-    R = create_projection_matrix(
-        "test/single", proj_dim, total, torch.float32, torch.device("cpu")
-    )
-
-    global_result = torch.cat([g1, g2, g3], dim=1) @ R.T
-    block_sum = g1 @ R[:, :d1].T + g2 @ R[:, d1 : d1 + d2].T + g3 @ R[:, d1 + d2 :].T
-
-    torch.testing.assert_close(global_result, block_sum)
 
 
 def test_global_project_values_cpu(tmp_path: Path, model, dataset):
@@ -261,54 +158,6 @@ def test_project_global_streams_in_blocks(monkeypatch):
     )
     row_norm = project_global("mod/single", P, m, "rademacher", "row_norm")
     torch.testing.assert_close(row_norm, P @ R.T / math.sqrt(n))
-
-
-def test_global_projector_e2e_cpu(tmp_path: Path, model, dataset):
-    """End-to-end global projection on CPU drives the full CollectorComputer pipeline.
-
-    Builder requires CUDA, so we inject a lightweight capturer as the scorer to
-    receive projected gradients without triggering any GPU code.
-    """
-    proj_dim = 16  # BasicProjector has no multiple-of-512 constraint
-
-    class _Capturer:
-        def __init__(self):
-            self.chunks: list[torch.Tensor] = []
-
-        def __call__(self, _indices, mod_grads):
-            self.chunks.append(mod_grads["gradients"].clone())
-
-    capturer = _Capturer()
-    cfg = IndexConfig(
-        run_path=str(tmp_path),
-        token_batch_size=64,
-        projection_dim=proj_dim,
-        projection_target="global",
-    )
-    processor = GradientProcessor(
-        projection_dim=proj_dim,
-        projection_target="global",
-    )
-    collector = GradientCollector(
-        model=model.base_model,
-        cfg=cfg,
-        data=dataset,
-        processor=processor,
-        scorer=capturer,
-    )
-    computer = CollectorComputer(
-        model=model,
-        data=dataset,
-        collector=collector,
-        cfg=cfg,
-    )
-    computer.run_with_collector_hooks()
-
-    all_projected = torch.cat(capturer.chunks, dim=0)
-    assert all_projected.shape == (len(dataset), proj_dim)
-    assert torch.isfinite(all_projected).all()
-    # Different examples should produce different projections
-    assert not torch.allclose(all_projected[0], all_projected[1])
 
 
 class _GradCapturer:

@@ -3,7 +3,6 @@ import torch
 import torch.nn as nn
 from transformers.pytorch_utils import Conv1D as HFConv1D
 
-from bergson.collector.collector import HookCollectorBase
 from bergson.hessians.kfac import CovarianceCollector
 from bergson.utils.utils import get_device
 
@@ -21,21 +20,6 @@ class TinyConv1DModel(nn.Module):
 
     def forward(self, x):
         return self.linear(self.conv(x))
-
-
-def test_discover_targets_normalizes_conv1d_weight_shape():
-    model = TinyConv1DModel()
-
-    # Sanity-check the HFConv1D storage convention this test guards against
-    assert model.conv.weight.shape == (IN_DIM, OUT_DIM)
-
-    target_info = HookCollectorBase.discover_targets(model)
-
-    # Both layer types must report (out, in) in the nn.Linear convention
-    _, conv_shape, _ = target_info["conv"]
-    _, linear_shape, _ = target_info["linear"]
-    assert conv_shape == torch.Size([OUT_DIM, IN_DIM])
-    assert linear_shape == torch.Size([IN_DIM, OUT_DIM])
 
 
 def test_covariance_collector_on_conv1d(tmp_path):

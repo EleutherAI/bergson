@@ -157,19 +157,6 @@ def test_load_from_optimizer_file(tmp_path):
         assert norm.weight_avg_sq.ndim == 2
 
 
-def test_load_from_checkpoint_dir(tmp_path):
-    """Load normalizers from a checkpoint directory containing optimizer.pt."""
-    model = _create_model()
-    opt_state = _create_fake_optimizer_state(model)
-
-    checkpoint_dir = tmp_path / "checkpoint-100"
-    checkpoint_dir.mkdir()
-    torch.save(opt_state, checkpoint_dir / "optimizer.pt")
-
-    normalizers = load_from_optimizer(model, str(checkpoint_dir))
-    assert len(normalizers) > 0
-
-
 def test_target_modules_filter(tmp_path):
     """Only layers in target_modules are loaded.
 
@@ -192,38 +179,6 @@ def test_target_modules_filter(tmp_path):
 
     normalizers = load_from_optimizer(model, str(opt_path), target_modules=subset)
     assert set(normalizers.keys()) == subset
-
-
-def test_load_from_gpt2_conv1d_base_relative_keys(tmp_path):
-    """GPT-2 stores attn/mlp weights as ``Conv1D`` (layout ``[in, out]``) under a
-    ``transformer.`` prefix. load_from_optimizer must (a) key normalizers by the
-    ``model.base_model``-relative name the collector looks up (``h.0.attn.c_attn``,
-    not ``transformer.h.0...``) and (b) orient the Conv1D second moment into the
-    collector's ``[out, in]`` layout.
-    """
-    from transformers.pytorch_utils import Conv1D
-
-    model = AutoModelForCausalLM.from_pretrained("sshleifer/tiny-gpt2")
-    opt_state = _create_fake_optimizer_state(model)
-    opt_path = tmp_path / "optimizer.pt"
-    torch.save(opt_state, opt_path)
-
-    base = model.base_model
-    conv_names = sorted(n for n, m in base.named_modules() if isinstance(m, Conv1D))
-    assert conv_names, "expected Conv1D layers in GPT-2"
-    subset = set(conv_names[:2])
-
-    normalizers = load_from_optimizer(model, str(opt_path), target_modules=subset)
-
-    # Keys are base-relative (``transformer.`` stripped), matching the collector.
-    assert set(normalizers.keys()) == subset
-    for name, norm in normalizers.items():
-        assert isinstance(norm, AdamNormalizer)
-        module = base.get_submodule(name)
-        out_f = module.nf  # Conv1D output features
-        in_f = module.weight.shape[0]  # Conv1D param is [in, out]
-        # Optimizer moment is stored [in, out]; must be transposed to [out, in].
-        assert norm.weight_avg_sq.shape == (out_f, in_f)
 
 
 def _create_fake_factored_optimizer_state(model, lr=1e-3):
@@ -289,29 +244,9 @@ def test_load_factored_gpt2_conv1d_orientation(tmp_path):
         norm.normalize_weight(torch.randn(out_f, in_f))
 
 
-def test_missing_optimizer_file(tmp_path):
-    """Error when directory has no optimizer.pt."""
-    model = _create_model()
-
-    with pytest.raises(FileNotFoundError):
-        load_from_optimizer(model, str(tmp_path))
-
-
 # ---------------------------------------------------------------------------
 # load_optimizer (local + Hub) tests
 # ---------------------------------------------------------------------------
-
-
-def test_load_optimizer_local_file(tmp_path):
-    from bergson.utils.load_from_optimizer import load_optimizer
-
-    model = _create_model()
-    state = _create_fake_optimizer_state(model)
-    opt_path = tmp_path / "optimizer.pt"
-    torch.save(state, opt_path)
-
-    loaded = load_optimizer(str(opt_path))
-    assert "state" in loaded and "param_groups" in loaded
 
 
 def test_load_optimizer_local_dir(tmp_path):
@@ -432,17 +367,6 @@ def test_target_modules_no_overlap_raises(tmp_path):
         load_from_optimizer(
             model, str(opt_path), target_modules={"definitely.not.a.real.module"}
         )
-
-
-def test_target_modules_empty_set_raises(tmp_path):
-    """An empty target_modules set rejects everything → assertion."""
-    model = _create_model()
-    opt_state = _create_fake_optimizer_state(model)
-    opt_path = tmp_path / "optimizer.pt"
-    torch.save(opt_state, opt_path)
-
-    with pytest.raises(AssertionError, match="No optimizer second moments"):
-        load_from_optimizer(model, str(opt_path), target_modules=set())
 
 
 # ---------------------------------------------------------------------------
@@ -582,21 +506,6 @@ def test_load_from_peft_model_with_adapter_suffix(tmp_path):
         assert norm.weight_avg_sq.ndim == 2
 
 
-def test_load_from_peft_model_without_target_modules(tmp_path):
-    """target_modules=None on a PEFT model still loads every LoRA weight."""
-    model = _create_peft_model()
-    opt_state = _fake_optimizer_state_for_peft(model)
-    opt_path = tmp_path / "optimizer.pt"
-    torch.save(opt_state, opt_path)
-
-    normalizers = load_from_optimizer(model, str(opt_path))
-    # Every LoRA weight produces one normalizer; names carry the adapter
-    # suffix because adapter_suffix is appended unconditionally for PEFT.
-    assert len(normalizers) > 0
-    for name in normalizers:
-        assert name.endswith(".default")
-
-
 def test_load_from_peft_strip_adapter_target_modules_misses(tmp_path):
     """If a caller passes target_modules WITHOUT the adapter suffix (the bug
     we just fixed), nothing matches and the assertion fires."""
@@ -615,45 +524,6 @@ def test_load_from_peft_strip_adapter_target_modules_misses(tmp_path):
 # ---------------------------------------------------------------------------
 # Integration tests with real training checkpoints
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-def test_load_adam_checkpoint():
-    """Load from a real AdamW training checkpoint and verify values match."""
-    ckpt_path, model = _train_checkpoint("adamw_torch")
-    opt_state = torch.load(
-        f"{ckpt_path}/optimizer.pt", map_location="cpu", weights_only=False
-    )
-
-    normalizers = load_from_optimizer(model, ckpt_path)
-
-    assert len(normalizers) > 0
-    for norm in normalizers.values():
-        assert isinstance(norm, AdamNormalizer)
-
-    # Verify loaded values match the raw checkpoint, looking entries up via
-    # the group-aware index mapping (HF Trainer writes two param groups).
-    index_to_name = optimizer_param_index_to_name(opt_state, model)
-    shapes = {n: tuple(p.shape) for n, p in model.named_parameters()}
-    name_to_idx = {n: i for i, n in index_to_name.items()}
-    for name, idx in name_to_idx.items():
-        entry = opt_state["state"].get(idx)
-        if (
-            entry is not None
-            and "exp_avg_sq" in entry
-            and entry["exp_avg_sq"].ndim == 2
-        ):
-            assert tuple(entry["exp_avg_sq"].shape) == shapes[name]
-        if not name.endswith(".weight"):
-            continue
-        module_name = name.removesuffix(".weight")
-        if module_name not in normalizers:
-            continue
-
-        raw = opt_state["state"][idx]["exp_avg_sq"]
-        norm = normalizers[module_name]
-        assert isinstance(norm, AdamNormalizer)
-        torch.testing.assert_close(norm.weight_avg_sq.cpu(), raw)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")

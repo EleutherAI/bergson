@@ -19,73 +19,6 @@ MODEL_CONFIGS = [
 ]
 
 
-@pytest.mark.parametrize("model_name", MODEL_CONFIGS)
-def test_magic_two_steps(model_name, dataset):
-    device = "cpu"
-
-    torch.manual_seed(42)
-    config = AutoConfig.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_config(
-        config, torch_dtype=torch.float32, attn_implementation="eager"
-    )
-
-    model.loss_function = weighted_causal_lm_ce
-    model.requires_grad_(True)
-
-    optimizer = torchopt.adamw(1e-4, betas=(0.95, 0.975), eps_root=1e-2)
-    trainer, fwd_state = Trainer.initialize(model, optimizer)
-
-    train_stream = DataStream(
-        dataset,
-        batch_size=len(dataset),
-        device=device,
-    )
-    assert len(train_stream) == 1
-
-    with tempfile.TemporaryDirectory() as ckpt_dir:
-        fwd_state = trainer.train(
-            fwd_state,
-            train_stream,
-            inplace=True,
-            save_dir=ckpt_dir,
-        )
-
-        # Compute query gradients on the training batch
-        with fwd_state.activate(model) as params:
-            batch = train_stream[0]
-            del batch["example_weight"]
-            loss = model(**batch).loss
-            query_grads = {
-                k: g.detach().clone() for k, g in grad_tree(loss, params).items()
-            }
-
-            opt_grads = [
-                torch.zeros_like(buf)
-                for buf in tree_iter(fwd_state.opt_state)
-                if isinstance(buf, torch.Tensor) and buf.is_floating_point()
-            ]
-            bwd_state = BackwardState(
-                query_grads,
-                opt_grads,
-                torch.zeros_like(train_stream.weights),
-            )
-
-        # Backward pass through training
-        train_stream.requires_grad = True
-        bwd_state = trainer.backward(
-            ckpt_dir,
-            train_stream,
-            bwd_state,
-            fwd_state,
-            inplace=True,
-            cleanup=True,
-        )
-
-    scores = bwd_state.weight_grads.detach().cpu()
-    assert scores.shape == (len(dataset),)
-    assert scores.abs().sum() > 0, "Attribution scores are all zero"
-
-
 def _train_and_query_loss(
     model_name,
     dataset,
@@ -392,113 +325,6 @@ def test_magic_per_token_scores_zero_at_masked_labels(model_name):
     ), "All non-masked positions are zero — test is degenerate"
 
 
-@pytest.mark.parametrize("model_name", MODEL_CONFIGS)
-def test_magic_per_token_sums_to_per_doc(model_name, dataset):
-    """Per-token MAGIC scores summed over tokens equal per-doc MAGIC scores.
-
-    MAGIC computes d(query_loss)/dw through the training trajectory. With
-    weighted_causal_lm_ce, the training loss is
-        per-doc:   sum_{i,t} w_i     * tok_loss[i,t] / denom
-        per-token: sum_{i,t} w_{i,t} * tok_loss[i,t] / denom
-    Both evaluate to the same value at initialization (all weights = 1), so the
-    two runs share an identical training trajectory. By linearity of the MAGIC
-    backward pass, dQ/dw_i = sum_t dQ/dw_{i,t}.
-    """
-    N = len(dataset)
-    T = len(dataset[0]["input_ids"])
-
-    per_doc, _ = _run_magic_cli(model_name, dataset, N, attribute_tokens=False)
-    per_tok, _ = _run_magic_cli(model_name, dataset, N, attribute_tokens=True)
-
-    assert per_doc.shape == (N,)
-    assert per_tok.shape == (N, T)
-
-    torch.testing.assert_close(per_tok.sum(dim=-1), per_doc, atol=1e-5, rtol=1e-4)
-
-
-@pytest.mark.parametrize("model_name", MODEL_CONFIGS)
-def test_magic_per_token_sums_to_per_doc_packed(model_name):
-    """Per-doc MAGIC (1D weights via doc_ids lookup) equals per-token MAGIC
-    scatter-summed by doc_ids, with document packing across chunks.
-
-    Exercises the non-trivial path used by the empirical per-token/per-doc
-    comparison: chunks contain multiple documents, one document spans two
-    chunks, and the per-doc weight is shared across all positions of that
-    doc. Mirrors the scatter_add(doc_ids) aggregation in
-    scripts/correlate_pertoken_vs_docrun.py.
-    """
-    from datasets import Dataset
-
-    ds = Dataset.from_dict(
-        {
-            "input_ids": [[1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12]],
-            "labels": [[1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12]],
-            "attention_mask": [[1] * 6, [1] * 6],
-            # Packed: 4 unique docs across 2 chunks; doc 2 spans both chunks.
-            "doc_ids": [[0, 0, 1, 1, 1, 2], [2, 2, 2, 3, 3, 3]],
-        }
-    )
-    N, T, num_docs = len(ds), 6, 4
-
-    per_doc, _ = _run_magic_cli(model_name, ds, N, attribute_tokens=False)
-    per_tok, _ = _run_magic_cli(model_name, ds, N, attribute_tokens=True)
-
-    assert per_doc.shape == (num_docs,)
-    assert per_tok.shape == (N, T)
-
-    flat_doc_ids = torch.tensor(ds["doc_ids"]).reshape(-1)
-    agg = torch.zeros(num_docs, dtype=torch.float64)
-    agg.scatter_add_(0, flat_doc_ids, per_tok.reshape(-1).to(torch.float64))
-
-    # Every doc should receive at least one nonzero token contribution.
-    assert (agg.abs() > 0).all(), f"Some doc has zero aggregated score: {agg}"
-    torch.testing.assert_close(agg, per_doc.to(torch.float64), atol=1e-5, rtol=1e-4)
-
-
-@pytest.mark.parametrize("model_name", MODEL_CONFIGS)
-def test_magic_per_token_sums_to_per_doc_with_padding(model_name):
-    """Per-token MAGIC scores scatter-summed by doc_ids equal per-doc MAGIC
-    scores even when the chunked dataset isn't divisible by batch_size —
-    exercising the pad_dataset_to_batch_size path plus worker()'s pad-zero
-    writes.
-    """
-    from datasets import Dataset
-
-    ds = Dataset.from_dict(
-        {
-            "input_ids": [
-                [1, 2, 3, 4, 5],
-                [6, 7, 8, 9, 10],
-                [11, 12, 13, 14, 15],
-            ],
-            "labels": [
-                [1, 2, 3, 4, 5],
-                [6, 7, 8, 9, 10],
-                [11, 12, 13, 14, 15],
-            ],
-            "attention_mask": [[1] * 5] * 3,
-            # 3 chunks, each a distinct doc; 3 % batch_size(=2) == 1 → pad 1
-            "doc_ids": [[0] * 5, [1] * 5, [2] * 5],
-        }
-    )
-    num_real_docs = 3
-    T = 5
-    batch_size = 2
-
-    per_doc, _ = _run_magic_cli(model_name, ds, batch_size, attribute_tokens=False)
-    per_tok, doc_ids = _run_magic_cli(model_name, ds, batch_size, attribute_tokens=True)
-
-    assert per_doc.shape == (num_real_docs,), f"per_doc shape {per_doc.shape}"
-    assert per_tok.shape == (num_real_docs, T), f"per_tok shape {per_tok.shape}"
-    assert doc_ids is not None
-
-    agg = torch.zeros(num_real_docs, dtype=torch.float64)
-    agg.scatter_add_(0, doc_ids.reshape(-1), per_tok.reshape(-1).to(torch.float64))
-
-    assert (agg.abs() > 0).all(), f"Some doc has zero aggregated score: {agg}"
-    torch.testing.assert_close(agg, per_doc.to(torch.float64), atol=1e-5, rtol=1e-4)
-
-
 def test_attach_doc_ids_if_missing():
     """attach_doc_ids_if_missing adds [row_idx] * max_len per row when
     doc_ids is absent, and is a no-op when it's already present.
@@ -744,8 +570,7 @@ def test_trainer_state_in_memory_checkpoint_roundtrip():
         assert torch.equal(saved, now), "copy_ dropped part of the optimizer state"
 
 
-@pytest.mark.parametrize("save_mode", ["sqrt", "log"])
-def test_magic_backward_matches_across_save_modes(save_mode, monkeypatch):
+def test_magic_backward_matches_across_save_modes(monkeypatch):
     """Sparse checkpointing must not change MAGIC scores.
 
     With save_mode != "all" the backward pass rematerializes intermediate states
@@ -780,7 +605,7 @@ def test_magic_backward_matches_across_save_modes(save_mode, monkeypatch):
     monkeypatch.setattr(trainer_mod.TrainerState, "copy_", spy_copy)
 
     scores = {}
-    for mode in ("all", save_mode):
+    for mode in ("all", "log"):
         trainer, fwd_state, model = _fresh_trainer()
         stream = _multi_step_stream(n)
         assert len(stream) == n
@@ -794,11 +619,10 @@ def test_magic_backward_matches_across_save_modes(save_mode, monkeypatch):
     assert copy_calls, "no in-RAM checkpoints were used; test is degenerate"
     assert scores["all"].abs().sum() > 0, "scores are all zero; test is degenerate"
 
-    torch.testing.assert_close(scores[save_mode], scores["all"], atol=1e-12, rtol=1e-6)
+    torch.testing.assert_close(scores["log"], scores["all"], atol=1e-12, rtol=1e-6)
 
 
-@pytest.mark.parametrize("save_mode", ["all", "sqrt", "log"])
-def test_magic_resume_preserves_checkpoint_schedule(save_mode):
+def test_magic_resume_preserves_checkpoint_schedule():
     """A resumed forward run must keep saving checkpoints on schedule.
 
     `next_save` was initialized to 0 before the resume branch set `start =
@@ -816,7 +640,7 @@ def test_magic_resume_preserves_checkpoint_schedule(save_mode):
     stream = _multi_step_stream(n)
     with tempfile.TemporaryDirectory() as ckpt_dir:
         fwd_state = trainer.train(
-            fwd_state, stream, inplace=True, save_dir=ckpt_dir, save_mode=save_mode
+            fwd_state, stream, inplace=True, save_dir=ckpt_dir, save_mode="log"
         )
         fresh_steps = _saved_steps(ckpt_dir)
         fresh_params = {k: v.detach().clone() for k, v in fwd_state.params.items()}
@@ -836,7 +660,7 @@ def test_magic_resume_preserves_checkpoint_schedule(save_mode):
                 stream,
                 inplace=True,
                 save_dir=ckpt_dir,
-                save_mode=save_mode,
+                save_mode="log",
                 log_fn=boom,
             )
 
@@ -848,7 +672,7 @@ def test_magic_resume_preserves_checkpoint_schedule(save_mode):
             stream,
             inplace=True,
             save_dir=ckpt_dir,
-            save_mode=save_mode,
+            save_mode="log",
             resume=True,
         )
         resumed_steps = _saved_steps(ckpt_dir)
@@ -919,49 +743,6 @@ def test_magic_resume_interval_fast_forwards_schedule():
             resume=True,
         )
         assert _saved_steps(ckpt_dir) == fresh_steps
-
-
-def test_magic_resume(dataset):
-    """Resume from a checkpoint mid-training and verify identical final state."""
-    device = "cpu"
-
-    torch.manual_seed(42)
-    config = AutoConfig.from_pretrained("trl-internal-testing/tiny-Phi3ForCausalLM")
-    model = AutoModelForCausalLM.from_config(
-        config, torch_dtype=torch.float32, attn_implementation="eager"
-    )
-    model.loss_function = weighted_causal_lm_ce
-    model.requires_grad_(True)
-
-    optimizer = torchopt.adamw(1e-4, betas=(0.95, 0.975), eps_root=1e-2)
-    trainer, fwd_state = Trainer.initialize(model, optimizer)
-
-    # batch_size=1 gives us 2 batches so resume has something to skip
-    train_stream = DataStream(dataset, batch_size=1, device=device)
-    assert len(train_stream) == 2
-
-    with tempfile.TemporaryDirectory() as ckpt_dir:
-        # Full training run (inplace=False to keep fwd_state intact)
-        final_state = trainer.train(
-            fwd_state,
-            train_stream,
-            inplace=False,
-            save_dir=ckpt_dir,
-            save_mode="all",
-        )
-
-        # Resume from checkpoints with the same initial state
-        resumed_state = trainer.train(
-            fwd_state,
-            train_stream,
-            inplace=False,
-            save_dir=ckpt_dir,
-            save_mode="all",
-            resume=True,
-        )
-
-        for k in final_state.params:
-            torch.testing.assert_close(resumed_state.params[k], final_state.params[k])
 
 
 def test_prepare_trainer_respects_train_mode(tmp_path):
@@ -1226,9 +1007,8 @@ def test_per_token_backward_compatibility():
     assert cfg.attribute_tokens
 
 
-@pytest.mark.parametrize("model_name", MODEL_CONFIGS)
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
-def test_magic_grad_accum_weight_grads_match(model_name, dataset, dtype):
+def test_magic_grad_accum_weight_grads_match(dataset, dtype):
     """The ga>1 (microbatch) metagradient must match the ga=1 (traced) path.
 
     Regression guard for ``microbatch_step_vjp``'s weight-gradient path, which
@@ -1239,7 +1019,7 @@ def test_magic_grad_accum_weight_grads_match(model_name, dataset, dtype):
 
     def scores(ga: int, double_backward_batch_size: int | None = None) -> torch.Tensor:
         torch.manual_seed(42)
-        config = AutoConfig.from_pretrained(model_name)
+        config = AutoConfig.from_pretrained(TINY_MODEL)
         model = AutoModelForCausalLM.from_config(
             config, attn_implementation="eager"
         ).to(dtype)

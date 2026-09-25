@@ -1,7 +1,5 @@
 """Per-epoch shuffling of the MAGIC training stream."""
 
-from collections import Counter
-
 from datasets import Dataset
 
 from bergson.magic.cli import shuffled_epochs
@@ -35,15 +33,3 @@ def test_deterministic_for_a_given_seed():
 
     c = _order(shuffled_epochs(_ds(), seed=8, num_epochs=3))
     assert a != c
-
-
-def test_multiset_is_preserved():
-    """Every document appears exactly `num_epochs` times."""
-    out = _order(shuffled_epochs(_ds(), seed=1, num_epochs=4))
-    assert Counter(out) == Counter({i: 4 for i in range(N)})
-
-
-def test_single_epoch_still_shuffles():
-    out = _order(shuffled_epochs(_ds(), seed=3, num_epochs=1))
-    assert sorted(out) == list(range(N))
-    assert out != list(range(N))

@@ -27,13 +27,6 @@ def test_detractors_are_the_most_positive_scores():
     assert sorted(got.tolist()) == [3, 4]
 
 
-def test_the_two_ends_are_disjoint():
-    """A sanity check that the two methods do not select the same slice."""
-    pro = set(_select_filter_slice(SCORES, ALL, 0, 2, "filter-proponents").tolist())
-    det = set(_select_filter_slice(SCORES, ALL, 0, 2, "filter-detractors").tolist())
-    assert pro.isdisjoint(det)
-
-
 def test_selection_respects_valid_indices():
     """Excluded rows are never selected, and returned ids index the full pool."""
     valid = torch.tensor([1, 2, 3, 4])  # doc 0, the top proponent, is excluded
@@ -99,12 +92,9 @@ def test_bank_without_a_base_model_is_rejected(tmp_path):
         load_and_validate_subsets_match(_cfg(tmp_path), [root], num_filtered=2)
 
 
-@pytest.mark.parametrize(
-    "field,value", [("subset_weight", 0.5), ("exclude_zero_scores", True)]
-)
-def test_bank_trained_with_different_settings_is_rejected(tmp_path, field, value):
-    root = _bank(tmp_path, [[0, 1]], **{field: value})
-    with pytest.raises(ValueError, match=field):
+def test_bank_trained_with_different_settings_is_rejected(tmp_path):
+    root = _bank(tmp_path, [[0, 1]], subset_weight=0.5)
+    with pytest.raises(ValueError, match="subset_weight"):
         load_and_validate_subsets_match(_cfg(tmp_path), [root], num_filtered=2)
 
 

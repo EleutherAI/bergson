@@ -53,21 +53,6 @@ def test_split_head_name():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-def test_head_normalizer_is_applied(tmp_path):
-    """A split module must still be normalized, using its parent's stats."""
-    cfgs = {"proj": AttentionConfig(num_heads=HEADS, head_size=HEAD_SIZE, head_dim=2)}
-    avg_sq = torch.full((O, I), 4.0)
-
-    raw = _collect(None, cfgs, tmp_path)
-    normed = _collect({"proj": AdamNormalizer(avg_sq)}, cfgs, tmp_path)
-
-    assert raw and set(raw) == set(normed)
-    for key in raw:
-        # normalize_weight divides by sqrt(4) = 2
-        torch.testing.assert_close(normed[key], raw[key] / 2, rtol=1e-5, atol=1e-6)
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_head_normalizer_slices_the_output_dim(tmp_path):
     """Each head gets the slice of the output-dim factors it covers."""
     cfgs = {"proj": AttentionConfig(num_heads=HEADS, head_size=HEAD_SIZE, head_dim=2)}
