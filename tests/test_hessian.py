@@ -42,6 +42,8 @@ def test_autocorrelation_hessian_e2e(tmp_path: Path):
             "bf16",
             "--method",
             "autocorrelation",
+            "--nproc_per_node",
+            "1",
         ),
         cwd=tmp_path,
         env=bergson_env(),
