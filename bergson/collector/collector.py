@@ -599,75 +599,50 @@ class HookCollectorBase(ContextDecorator, ABC):
             mask = self._current_collection_mask
             g, a = g[mask], a[mask]  # [T, O], [T, I/q]
 
-        if isinstance(normalizer, AdamNormalizer):
-            # Gate on the per-module flag, as shapes(), discover_targets() and
-            # the forward hook do: in a mixed-bias model (e.g. Qwen2) the
-            # biasless modules have no bias_avg_sq. The bias gradient takes g's
-            # dtype, which fp32 normalizers would otherwise promote.
-            if module._collect_bias:
-                if self.attribute_tokens:
-                    bias_grad = normalizer.normalize_bias(g).type_as(g)  # [T, O]
-                else:
-                    bias_grad = normalizer.normalize_bias(g).sum(dim=1).type_as(g)
-            else:
-                bias_grad = None
+        adam = isinstance(normalizer, AdamNormalizer)
 
-            if self.attribute_tokens:
-                # Per-position outer product: [T,O,1]*[T,1,I] → [T,O,I]
-                P = g.unsqueeze(-1) * a.unsqueeze(-2)
+        # Gate on the per-module flag, as shapes(), discover_targets() and
+        # the forward hook do: in a mixed-bias model (e.g. Qwen2) the
+        # biasless modules have no bias_avg_sq. The bias gradient takes g's
+        # dtype, which fp32 normalizers would otherwise promote.
+        bias = None
+        if module._collect_bias:
+            bias = g if normalizer is None else normalizer.normalize_bias(g)
+            if not self.attribute_tokens:
+                bias = bias.sum(dim=1)  # [N, O]
+            bias = bias.type_as(g)
 
-                P = normalizer.normalize_weight(P)  # broadcasts [O,I] over [T,O,I]
-                if bias_grad is not None:
-                    P = torch.cat([P, bias_grad.unsqueeze(-1)], dim=-1)
-                    i += 1
+        if isinstance(normalizer, AdafactorNormalizer):
+            # Apply row normalization to g (for weights)
+            g_factor = normalizer.row.add(1e-30)
+            g_factor = g_factor.mean().sqrt() * g_factor.rsqrt()
+            g = g * g_factor.type_as(g)  # [..., O] * [O] → [..., O]
 
-                if p is not None:
-                    P = self.double_sided_projection(name, P, g, p, o, i)
+        divisor = normalizer.weight_denominator() if adam else None
+        bias_col = None
+        if p is not None and not adam:
+            # The forward hook already projected a, unless it has to be
+            # projected together with the bias column
+            g_projection = self.projection(name, p, o, "left", g.device, g.dtype)
+            g = g @ g_projection.T
+            if bias is not None:
+                a_projection = self.projection(
+                    name, p, i + 1, "right", g.device, g.dtype
+                )
+                a = a @ a_projection[:, :i].T
+                bias = bias @ g_projection.T
+                bias_col = a_projection[:, i]
+        elif bias is not None:
+            a = F.pad(a, (0, 1))
+            bias_col = a.new_zeros(i + 1)
+            bias_col[i] = 1
+            if divisor is not None:
+                divisor = F.pad(divisor, (0, 1), value=1.0)
 
-            else:
-                P = g.mT @ a  # [N,O,S] @ [N,S,I] → [N,O,I]
-
-                P = normalizer.normalize_weight(P)  # broadcasts [O,I] over [N,O,I]
-                if bias_grad is not None:
-                    P = torch.cat([P, bias_grad.unsqueeze(2)], dim=2)  # [N,O,I+1]
-                    i += 1
-
-                if p is not None:
-                    P = self.double_sided_projection(name, P, g, p, o, i)
-
-        else:
-            bias_grad = None
-            if module._collect_bias:
-                bias_grad = g if normalizer is None else normalizer.normalize_bias(g)
-                if not self.attribute_tokens:
-                    bias_grad = bias_grad.sum(dim=1)  # [N, O]
-                bias_grad = bias_grad.type_as(g)
-
-            if isinstance(normalizer, AdafactorNormalizer):
-                # Apply row normalization to g (for weights)
-                g_factor = normalizer.row.add(1e-30)
-                g_factor = g_factor.mean().sqrt() * g_factor.rsqrt()
-                g = g * g_factor.type_as(g)  # [..., O] * [O] → [..., O]
-
-            bias_col = None
-            if p is not None:
-                # The forward hook already projected a, unless it has to be
-                # projected together with the bias column
-                g_projection = self.projection(name, p, o, "left", g.device, g.dtype)
-                g = g @ g_projection.T  # [..., p]
-                if bias_grad is not None:
-                    a_projection = self.projection(
-                        name, p, i + 1, "right", g.device, g.dtype
-                    )
-                    a = a @ a_projection[:, :i].T
-                    bias_grad = bias_grad @ g_projection.T
-                    bias_col = a_projection[:, i]
-            elif bias_grad is not None:
-                # g ⊗ a is zero in the bias column, which holds bias_grad
-                a = F.pad(a, (0, 1))
-                bias_col = a.new_zeros(i + 1)
-                bias_col[i] = 1
-            P = OuterProductGradients(g, a, bias_grad, bias_col).materialize()
+        P = OuterProductGradients(g, a, bias, bias_col, divisor).materialize()
+        if p is not None and adam:
+            # Adam divides each entry, so it projects the formed gradients
+            P = self.double_sided_projection(name, P, g, p, o, a.shape[-1])
 
         P = P.flatten(1).clamp_(self.lo, self.hi)
         return P
