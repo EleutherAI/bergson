@@ -147,8 +147,8 @@ Gradients for fused MoE modules, which do not use ``nn.Linear``, can be collecte
 
 The value is a comma-separated list of globs over ``model.named_modules()``. Collection runs on the base model, so the index names the new modules ``layers.0.mlp.experts.expert_3.gate_up_proj``, which ``filter_modules`` globs match like any other. See ``examples/moe_experts.yaml``.
 
-The fused matmul is replaced by a loop over experts, which is what lets the hooks see one expert's activations at a time. The loop gives up the grouped-matmul kernel, so collection is several times slower.
+When collecting MoE gradients a grouped-matmul kernel is disabled, reducing performance somewhat.
 
-Every pipeline loads its model through the same path, so the flag reaches all of them. ``GradientCollectorCallback`` is handed a model you loaded yourself: call ``bergson.expand_moe(model, "model.layers.*.mlp.experts")`` before building the Trainer.
+For programmatic usage, call ``bergson.expand_moe(model, "model.layers.*.mlp.experts")`` before building the Trainer.
 
-``attribute_tokens`` is rejected, since an expert's gradient rows are the tokens routed to it and do not line up with token positions. The router is untracked, being a 2D parameter rather than a module; on gpt-oss-20b it holds about 92K of 21B parameters.
+``attribute_tokens`` is rejected because an expert's gradient rows are the tokens routed to it and do not line up with token positions. The router is untracked, being a 2D parameter rather than a module; on gpt-oss-20b it holds about 92K of 21B parameters.
