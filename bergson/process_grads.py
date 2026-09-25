@@ -1,4 +1,5 @@
 import warnings
+from dataclasses import replace
 from pathlib import Path
 from typing import Literal
 
@@ -77,6 +78,7 @@ def mix_autocorrelation_matrices(
 
     q_proc = GradientProcessor.load(query_path)
     i_proc = GradientProcessor.load(index_path)
+    q_proc.check_projection_matches(i_proc, f"The index Hessian at {index_path}")
 
     # Compute mixing coefficient (§A.1.3 of Chang et al., 2024)
     mixing_coefficient = compute_lambda(
@@ -91,17 +93,7 @@ def mix_autocorrelation_matrices(
         for k in q_proc.hessians
     }
 
-    # Build a new processor with the mixed hessians
-    mixed_proc = GradientProcessor(
-        normalizers=q_proc.normalizers,
-        hessians=mixed_hessians,
-        hessians_eigen={},
-        projection_dim=q_proc.projection_dim,
-        reshape_to_square=q_proc.reshape_to_square,
-        projection_type=q_proc.projection_type,
-        projection_target=q_proc.projection_target,
-        include_bias=q_proc.include_bias,
-    )
+    mixed_proc = replace(q_proc, hessians=mixed_hessians, hessians_eigen={})
     mixed_proc.save(output_path)
 
     return output_path

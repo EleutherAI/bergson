@@ -26,6 +26,7 @@ from bergson.hessians.inversion import INVERSIONS
 from bergson.hessians.preconditioner import FactoredPreconditioner
 from bergson.hessians.sharded_computation import shard_bounds
 from bergson.utils.utils import get_device
+from bergson.utils.worker_utils import processor_for
 
 
 def _make_query_gradients(query_path: str, grad_sizes: dict[str, int], num_grads: int):
@@ -284,6 +285,13 @@ def test_apply_hessian_compresses_per_module(tmp_path):
     )
     EkfacApplicator(compressed_cfg, inversion_cfg=inversion_cfg).compute_ivhp_sharded()
     got = load_module_gradients(str(tmp_path / "out_compressed"))
+    # Scoring checks the saved projection against the index's.
+    assert GradientProcessor.load_config(tmp_path / "out_full").projection_dim is None
+    saved = GradientProcessor.load_config(tmp_path / "out_compressed")
+    assert (saved.projection_dim, saved.projection_type) == (p, "rademacher")
+    processor_for(IndexConfig(run_path="", projection_dim=p)).check_saved_projection(
+        tmp_path / "out_compressed", "The compressed query"
+    )
 
     for name, (o, i) in modules.items():
         full = torch.from_numpy(np.asarray(ref[name][:])).view(num_grads, o, i)
@@ -386,6 +394,17 @@ def test_apply_hessian_compression_matches_collector(tmp_path, model, dataset):
         apply_cfg, inversion_cfg=InversionConfig(damping_factor=0.0)
     ).compute_ivhp_sharded()
     got = load_module_gradients(str(tmp_path / "out"))
+    # Scoring checks the saved projection, seed included, against the index's.
+    assert GradientProcessor.load_config(tmp_path / "out").projection_seed == 7
+    processor_for(
+        IndexConfig(
+            run_path="",
+            projection_dim=p,
+            projection_type="normal",
+            projection_scale="row_norm",
+            projection_seed=7,
+        )
+    ).check_saved_projection(tmp_path / "out", "The compressed query")
 
     for name in modules:
         torch.testing.assert_close(
@@ -394,6 +413,26 @@ def test_apply_hessian_compression_matches_collector(tmp_path, model, dataset):
             atol=1e-5,
             rtol=1e-4,
         )
+
+
+def test_apply_hessian_records_the_query_include_bias(tmp_path):
+    """The factors include a bias column exactly when the query gradients do,
+    so the output is projected like an index with the same include_bias."""
+    modules = {"a": (4, 6)}
+    hessian_path = tmp_path / "hessian"
+    _write_factored_hessian(hessian_path, modules, num_shards=1, seed=0)
+    query_path = tmp_path / "query"
+    _make_query_gradients(str(query_path), {"a": 24}, num_grads=2)
+    GradientProcessor(include_bias=True).save(query_path)
+
+    _apply(
+        str(hessian_path),
+        str(query_path),
+        str(tmp_path / "out"),
+        "damped_inverse",
+        ev_correction=False,
+    )
+    assert GradientProcessor.load_config(tmp_path / "out").include_bias
 
 
 def test_apply_hessian_rejects_compression_with_ev_correction():

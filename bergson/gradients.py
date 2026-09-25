@@ -9,6 +9,10 @@ import yaml
 from torch import Tensor
 from transformers.pytorch_utils import Conv1D as HFConv1D
 
+from bergson.utils.logger import get_logger
+
+logger = get_logger("gradients", level="INFO")
+
 NORMALIZER_TYPES: dict[str, type["Normalizer"]] = {}
 
 
@@ -74,6 +78,19 @@ class Normalizer(ABC):
         }
 
 
+PROJECTION_SETTINGS = (
+    "projection_dim",
+    "projection_type",
+    "projection_scale",
+    "projection_seed",
+    "projection_target",
+    "include_bias",
+)
+"""Settings that must match between gradients projected separately.
+``include_bias`` widens the right projection matrix of modules with a bias,
+which changes all of its entries."""
+
+
 @dataclass
 class GradientProcessor:
     """Configuration for processing and compressing gradients."""
@@ -132,6 +149,9 @@ class GradientProcessor:
     """Seed of the random projection."""
 
     def __post_init__(self):
+        # Configs use 0 for no projection.
+        if self.projection_dim == 0:
+            self.projection_dim = None
         self._projection_matrices: dict[
             tuple[str, Literal["left", "right", "single"], torch.device], Tensor
         ] = {}
@@ -148,7 +168,6 @@ class GradientProcessor:
         Load the normalizers and hessians from a file.
         """
         path = Path(path)
-        cfg_path = path / "processor_config.yaml"
         norm_path = path / "normalizers.pth"
 
         # Fall back to legacy "preconditioners*.pth" filenames if the new
@@ -161,26 +180,7 @@ class GradientProcessor:
         if not hess_eigen_path.exists():
             hess_eigen_path = path / "preconditioners_eigen.pth"
 
-        with cfg_path.open("r") as f:
-            cfg = yaml.safe_load(f)
-
-        # Backward compatibility
-        if "projection_type" not in cfg:
-            cfg["projection_type"] = "normal"
-        if "include_bias" not in cfg:
-            cfg["include_bias"] = False
-        if "projection_scale" not in cfg:
-            cfg["projection_scale"] = "row_norm"
-        # Defensive: rename any legacy preconditioner* keys that may appear in
-        # configs saved by older versions of this code.
-        for legacy_key in list(cfg.keys()):
-            if "preconditioner" in legacy_key or "precond" in legacy_key:
-                new_key = (
-                    legacy_key.replace("preconditioners", "hessians")
-                    .replace("preconditioner", "hessian")
-                    .replace("precond", "hess")
-                )
-                cfg[new_key] = cfg.pop(legacy_key)
+        cfg = cls._read_config(path)
 
         # Load normalizers
         norm_state = torch.load(
@@ -211,6 +211,68 @@ class GradientProcessor:
             hessians=hessians,
             hessians_eigen=hessians_eigen,
             **cfg,
+        )
+
+    @classmethod
+    def load_config(cls, path: Path | str) -> "GradientProcessor":
+        """Load the processor saved at ``path`` without its normalizers or
+        hessians."""
+        return cls(**cls._read_config(Path(path)))
+
+    @staticmethod
+    def _read_config(path: Path) -> dict:
+        with (path / "processor_config.yaml").open("r") as f:
+            cfg = yaml.safe_load(f)
+
+        # Backward compatibility
+        if "projection_type" not in cfg:
+            cfg["projection_type"] = "normal"
+        if "include_bias" not in cfg:
+            cfg["include_bias"] = False
+        if "projection_scale" not in cfg:
+            cfg["projection_scale"] = "row_norm"
+        # Defensive: rename any legacy preconditioner* keys that may appear in
+        # configs saved by older versions of this code.
+        for legacy_key in list(cfg.keys()):
+            if "preconditioner" in legacy_key or "precond" in legacy_key:
+                new_key = (
+                    legacy_key.replace("preconditioners", "hessians")
+                    .replace("preconditioner", "hessian")
+                    .replace("precond", "hess")
+                )
+                cfg[new_key] = cfg.pop(legacy_key)
+        return cfg
+
+    def check_projection_matches(self, other: "GradientProcessor", what: str) -> None:
+        """Raise if ``other``, the processor ``what`` was built with, projected
+        gradients differently from this one."""
+        # Without a projection, the other settings don't do anything.
+        names = PROJECTION_SETTINGS if self.projection_dim else ("projection_dim",)
+        differences = [
+            (name, getattr(other, name), getattr(self, name))
+            for name in names
+            if getattr(other, name) != getattr(self, name)
+        ]
+        if differences:
+            listed = "; ".join(
+                f"{name}={theirs!r}, not {ours!r}" for name, theirs, ours in differences
+            )
+            raise ValueError(
+                f"{what} was projected with different settings than this run: "
+                f"{listed}. Rebuild it with matching settings."
+            )
+
+    def check_saved_projection(self, path: Path | str, what: str) -> None:
+        """``check_projection_matches`` against the processor saved with the
+        gradients or hessians at ``path``."""
+        if not (Path(path) / "processor_config.yaml").exists():
+            logger.warning(
+                f"{what} at {path} has no processor_config.yaml, so its projection "
+                "settings can't be checked."
+            )
+            return
+        self.check_projection_matches(
+            GradientProcessor.load_config(path), f"{what} at {path}"
         )
 
     def save(self, path: Path):
