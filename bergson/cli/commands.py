@@ -3,7 +3,8 @@
 Each command is a thin dataclass that validates, persists its ``config.yaml``,
 and dispatches. They live here rather than in ``__main__`` so pipelines can
 import lower-level commands for config serialization without importing the
-corresponding CLI entrypoint.
+corresponding CLI entrypoint. Implementations are imported inside ``execute``
+so that parsing args (and ``--help``) doesn't import the pipelines.
 """
 
 from dataclasses import dataclass
@@ -13,9 +14,9 @@ from typing import cast
 from simple_parsing import Serializable
 from simple_parsing.helpers.serialization import register_decoding_fn
 
-from ..build import build
 from ..config.config import (
     ApproxUnrollingConfig,
+    DiagnoseConfig,
     HessianConfig,
     HessianPipelineConfig,
     IndexConfig,
@@ -33,16 +34,7 @@ from ..config.config import (
 )
 from ..config.config_io import save_run_config
 from ..config.validation import LDSConfig, migrate_query_config
-from ..diagnose import DiagnoseConfig, diagnose
-from ..hessians.hessian_approximations import approximate_hessians
-from ..magic import MagicConfig, run_magic
-from ..magic.metasmoothness import run_metasmoothness
-from ..process_grads import mix_autocorrelation_matrices
-from ..query.query_index import query
-from ..recall.recall import run_recall
-from ..score.score import score_dataset
-from ..utils.worker_utils import validate_run_path
-from ..validate import evaluate_retrained
+from ..magic.config import MagicConfig
 
 register_decoding_fn(cast(type, str | list[str]), lambda v: v)
 
@@ -94,6 +86,9 @@ class Build(Serializable):
 
     def execute(self):
         """Build the gradient index."""
+        from ..build import build
+        from ..utils.worker_utils import validate_run_path
+
         validate_run_path(self.index_cfg)
 
         save_run_config(self, self.index_cfg.partial_run_path)
@@ -147,6 +142,9 @@ class Hessian(Serializable):
 
     def execute(self):
         """Compute Hessian approximation."""
+        from ..hessians.hessian_approximations import approximate_hessians
+        from ..utils.worker_utils import validate_run_path
+
         validate_run_path(self.index_cfg)
         save_run_config(self, self.index_cfg.partial_run_path)
         approximate_hessians(self.index_cfg, self.hessian_cfg)
@@ -158,6 +156,8 @@ class Magic(MagicConfig):
 
     def execute(self):
         """Run MAGIC attribution, then validate the scores unless skipped."""
+        from ..magic.cli import run_magic
+
         run_magic(self)
         if self.skip_validation:
             return
@@ -187,6 +187,8 @@ class Metasmoothness(MetasmoothnessConfig):
     MAGIC training configuration via three perturbed-data-weight trainings."""
 
     def execute(self):
+        from ..magic.metasmoothness import run_metasmoothness
+
         save_run_config(self, self.run_path)
         run_metasmoothness(self)
 
@@ -201,6 +203,8 @@ class Mix(MixConfig):
     """
 
     def execute(self):
+        from ..process_grads import mix_autocorrelation_matrices
+
         if not self.query_path or not self.index_path or not self.output_path:
             raise ValueError(
                 "mix requires --query_path, --index_path, and --output_path to be set."
@@ -220,6 +224,8 @@ class Query(QueryConfig):
 
     def execute(self):
         """Query an existing gradient index."""
+        from ..query.query_index import query
+
         query(self)
 
 
@@ -229,6 +235,8 @@ class Recall(RecallConfig):
 
     def execute(self):
         """Run the recall evaluation."""
+        from ..recall.recall import run_recall
+
         assert self.scores, "Path to attribution scores must be provided."
         save_run_config(self, self.run_path)
         run_recall(self)
@@ -244,6 +252,9 @@ class Reduce(Serializable):
 
     def execute(self):
         """Reduce a gradient index."""
+        from ..build import build
+        from ..utils.worker_utils import validate_run_path
+
         if self.index_cfg.projection_dim != 0:
             print(f"Using a projection dimension of {self.index_cfg.projection_dim}. ")
 
@@ -264,6 +275,9 @@ class Score(Serializable):
 
     def execute(self):
         """Score a dataset against an existing gradient index."""
+        from ..score.score import score_dataset
+        from ..utils.worker_utils import validate_run_path
+
         assert self.score_cfg.query_path
 
         if self.index_cfg.projection_dim != 0:
@@ -341,6 +355,8 @@ class Train(TrainingConfig):
 
     def execute(self):
         """Train the model."""
+        from ..magic.cli import run_magic
+
         run_magic(self)
 
 
@@ -356,6 +372,8 @@ class Test_Model_Configuration:
 
     def execute(self):
         """Run the diagnostic."""
+        from ..diagnose import diagnose
+
         diagnose(self.diagnose_cfg)
 
 
@@ -371,6 +389,9 @@ class Validate(ValidationConfig):
 
     def execute(self):
         """Run the validation."""
+        from ..magic.cli import run_magic
+        from ..validate import evaluate_retrained
+
         assert self.scores, "Path to attribution scores must be provided."
 
         if isinstance(self.method, LDSConfig) and self.method.subsets == "bank":

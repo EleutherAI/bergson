@@ -9,6 +9,7 @@ import torch
 from simple_parsing import Serializable, field
 
 from ..hessians.inversion import Inversion
+from ..utils.utils import get_device
 from .validation import (
     FilterConfig,
     LDSConfig,
@@ -1061,3 +1062,44 @@ class TrakConfig:
 
     resume: bool = False
     """Skip pipeline steps whose output directory already exists."""
+
+
+@dataclass
+class DiagnoseConfig:
+    """Config for the numerical stability test."""
+
+    model: str = "EleutherAI/pythia-160m"
+    """HuggingFace model to test."""
+
+    dataset: str = "NeelNanda/pile-10k"
+    """Dataset to sample document pairs from."""
+
+    split: str = "train"
+    """Dataset split."""
+
+    n_trials: int = 100
+    """Number of random document pairs to test per configuration."""
+
+    seed: int = 42
+    """Random seed for reproducibility."""
+
+    precision: str = field(
+        default="bf16", metadata=dict(choices=["bf16", "fp16", "fp32"])
+    )
+    """Base precision for model parameters."""
+
+    device: str = field(default_factory=get_device)
+    """Device to run the test on."""
+
+    max_len: int = 512
+    """Truncate documents longer than this."""
+
+    min_len: int = 4
+    """Skip documents shorter than this."""
+
+    threshold: float = 0.99
+    """Cosine similarity below this is flagged as problematic."""
+
+    model_kwargs: str = ""
+    """Extra kwargs forwarded to ``from_pretrained`` as ``a=b,c=d`` (e.g.
+    ``trust_remote_code=True`` for custom model architectures)."""

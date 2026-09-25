@@ -6,59 +6,16 @@ Includes:
 """
 
 import random
-from dataclasses import dataclass
 
 import torch
 import torch.nn.functional as F
 from datasets import load_dataset
-from simple_parsing import field
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from bergson.config import DataConfig
+from bergson.config.config import DiagnoseConfig as DiagnoseConfig
 from bergson.data import pad_and_tensor, tokenize
-from bergson.utils.utils import get_device, simple_parse_kwargs_string
-
-
-@dataclass
-class DiagnoseConfig:
-    """Config for the numerical stability test."""
-
-    model: str = "EleutherAI/pythia-160m"
-    """HuggingFace model to test."""
-
-    dataset: str = "NeelNanda/pile-10k"
-    """Dataset to sample document pairs from."""
-
-    split: str = "train"
-    """Dataset split."""
-
-    n_trials: int = 100
-    """Number of random document pairs to test per configuration."""
-
-    seed: int = 42
-    """Random seed for reproducibility."""
-
-    precision: str = field(
-        default="bf16", metadata=dict(choices=["bf16", "fp16", "fp32"])
-    )
-    """Base precision for model parameters."""
-
-    device: str = field(default_factory=get_device)
-    """Device to run the test on."""
-
-    max_len: int = 512
-    """Truncate documents longer than this."""
-
-    min_len: int = 4
-    """Skip documents shorter than this."""
-
-    threshold: float = 0.99
-    """Cosine similarity below this is flagged as problematic."""
-
-    model_kwargs: str = ""
-    """Extra kwargs forwarded to ``from_pretrained`` as ``a=b,c=d`` (e.g.
-    ``trust_remote_code=True`` for custom model architectures)."""
-
+from bergson.utils.utils import simple_parse_kwargs_string
 
 DTYPE_MAP = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}
 

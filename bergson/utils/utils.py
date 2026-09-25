@@ -1,12 +1,14 @@
 import os
 import random
-from typing import Any, Literal, Type, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Literal, Type, TypeVar, cast
 
 import numpy as np
 import torch
 from ml_dtypes import bfloat16
 from torch import Tensor, nn
-from transformers import PreTrainedModel
+
+if TYPE_CHECKING:
+    from transformers import PreTrainedModel
 
 T = TypeVar("T")
 
@@ -19,7 +21,7 @@ def assert_type(typ: Type[T], obj: Any) -> T:
     return cast(typ, obj)  # type: ignore[return-value]
 
 
-def get_layer_list(model: PreTrainedModel) -> nn.ModuleList:
+def get_layer_list(model: "PreTrainedModel") -> nn.ModuleList:
     """Get the list of layers to train on."""
     N = assert_type(int, model.config.num_hidden_layers)
     candidates = [
