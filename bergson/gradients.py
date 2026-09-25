@@ -542,12 +542,7 @@ class OuterProductGradients:
         dtype = q.dtype
         q = q.to(self.g.dtype).reshape(len(q), o, w)
 
-        if (
-            self.per_example
-            or len(q) >= max(o, w)
-            or self.bias is not None
-            or self.divisor is not None
-        ):
+        if self.per_example or len(q) >= max(o, w) or self.divisor is not None:
             return (self.materialize().flatten(1) @ q.flatten(1).T).to(dtype)
 
         # ⟨g ⊗ a, q⟩ = gᵀ q a
@@ -558,16 +553,29 @@ class OuterProductGradients:
         else:
             # [T, O] @ [Q, O, W] → [Q, T, W]
             part = torch.einsum("qtw,tw->tq", self.g @ q, self.a)
+        if self.bias is not None:
+            assert self.bias_col is not None
+            part.add_(self.bias @ (q @ self.bias_col).T)
         return part.to(dtype)
 
     def sq_norm(self) -> Tensor:
         """Squared norms [T] of per-token gradients, in float32."""
         assert not self.per_example, "Form per-example gradients to take norms"
-        if self.bias is not None or self.divisor is not None:
+        if self.divisor is not None:
             return self.materialize().flatten(1).float().pow(2).sum(-1)
 
         g, a = self.g.float(), self.a.float()
-        return g.pow(2).sum(-1) * a.pow(2).sum(-1)  # ‖g ⊗ a‖ = ‖g‖·‖a‖
+        n = g.pow(2).sum(-1) * a.pow(2).sum(-1)  # ‖g ⊗ a‖ = ‖g‖·‖a‖
+
+        if self.bias is not None:
+            assert self.bias_col is not None
+            # The bias term and its cross term with g ⊗ a
+            bias, bias_col = self.bias.float(), self.bias_col.float()
+            n += bias.pow(2).sum(-1) * bias_col.pow(2).sum()
+            n += 2 * (g * bias).sum(-1) * (a * bias_col).sum(-1)
+
+        # The cross term can round the total below zero
+        return n.clamp_min_(0)
 
     def materialize(self) -> Tensor:
         """Form the gradients, [T, O, W] or [N, O, W]."""
