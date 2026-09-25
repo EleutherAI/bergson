@@ -569,21 +569,21 @@ class HookCollectorBase(ContextDecorator, ABC):
 
         module._inputs = a
 
-    def double_sided_projection(
-        self, name: str, P: Tensor, g: Tensor, p: int, o: int, i: int
-    ):
-        g_projection = self.projection(name, p, o, "left", g.device, g.dtype)
-        a_projection = self.projection(name, p, i, "right", g.device, g.dtype).T
+    def double_sided_projection(self, name: str, P: Tensor, p: int, o: int, i: int):
+        g_projection = self.projection(name, p, o, "left", P.device, P.dtype)
+        a_projection = self.projection(name, p, i, "right", P.device, P.dtype).T
         return g_projection @ P @ a_projection
 
-    def _compute_gradient(self, module: nn.Module, g: Float[Tensor, "N S O"]) -> Tensor:
-        """Compute the per-sample (or per-token) module gradient from cached activations
-        and the output gradient.
+    def _module_gradient(
+        self, module: nn.Module, g: Float[Tensor, "N S O"]
+    ) -> OuterProductGradients | Tensor:
+        """Return the per-sample (or per-token) module gradients as the vectors
+        they are formed from.
 
-        Handles normalizer preprocessing, bias appending, double-sided random
-        projection, and ``attribute_tokens`` per-position paths.  Does not handle
-        global (all modules) random projection. Returns the flattened, clamped module
-        gradient tensor ``P``.
+        Handles normalizer preprocessing, bias gradients, per-module random
+        projection and ``attribute_tokens``, but not global random projection.
+        Adam normalizes each entry, so with projection its gradients are formed
+        before they are projected, and returned as a [rows, p, p] tensor.
         """
         a = module._inputs  # [N, S, I/q]
         assert isinstance(a, torch.Tensor), "Activation cache missing for module"
@@ -639,13 +639,22 @@ class HookCollectorBase(ContextDecorator, ABC):
             if divisor is not None:
                 divisor = F.pad(divisor, (0, 1), value=1.0)
 
-        P = OuterProductGradients(g, a, bias, bias_col, divisor).materialize()
+        grads = OuterProductGradients(g, a, bias, bias_col, divisor)
         if p is not None and adam:
-            # Adam divides each entry, so it projects the formed gradients
-            P = self.double_sided_projection(name, P, g, p, o, a.shape[-1])
+            P = grads.materialize()
+            return self.double_sided_projection(name, P, p, o, a.shape[-1])
+        return grads
 
-        P = P.flatten(1).clamp_(self.lo, self.hi)
-        return P
+    def _materialize_gradient(self, grads: OuterProductGradients | Tensor) -> Tensor:
+        """Flatten and clamp the gradients, forming them if needed."""
+        if isinstance(grads, OuterProductGradients):
+            grads = grads.materialize()
+        return grads.flatten(1).clamp_(self.lo, self.hi)
+
+    def _compute_gradient(self, module: nn.Module, g: Float[Tensor, "N S O"]) -> Tensor:
+        """Compute the flattened, clamped per-sample (or per-token) module
+        gradients. Does not handle global random projection."""
+        return self._materialize_gradient(self._module_gradient(module, g))
 
     @abstractmethod
     def backward_hook(self, module: nn.Module, g: Float[Tensor, "N S O"]) -> None:
