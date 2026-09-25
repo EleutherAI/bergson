@@ -357,18 +357,16 @@ class HookCollectorBase(ContextDecorator, ABC):
         if key in self.processor._projection_matrices:
             return self.processor._projection_matrices[key]
 
-        identifier = self.projection_identifier(
-            name, role, self.processor.projection_seed
-        )
-
-        A = create_projection_matrix(
-            identifier,
+        A = create_module_projection_matrix(
+            name,
+            role,
             m,
             n,
             dtype,
             device,
             self.processor.projection_type,
             self.processor.projection_scale,
+            self.processor.projection_seed,
         )
         self.processor._projection_matrices[key] = A
         return A
@@ -1117,6 +1115,29 @@ def project_global(
     else:
         out.div_(math.sqrt(m))
     return out
+
+
+def create_module_projection_matrix(
+    name: str,
+    role: Literal["left", "right", "single"],
+    m: int,
+    n: int,
+    dtype: torch.dtype,
+    device: torch.device,
+    projection_type: Literal["normal", "rademacher"],
+    projection_scale: Literal["jl", "row_norm"],
+    seed: int | None,
+) -> Tensor:
+    """Create parameter ``name``'s ``role`` projection matrix of shape [m, n]."""
+    return create_projection_matrix(
+        HookCollectorBase.projection_identifier(name, role, seed),
+        m,
+        n,
+        dtype,
+        device,
+        projection_type,
+        projection_scale,
+    )
 
 
 def create_projection_matrix(

@@ -16,13 +16,16 @@ import pytest
 import torch
 from safetensors.torch import load_file, save_file
 
+from bergson import GradientProcessor
 from bergson.collector.collector import create_projection_matrix
-from bergson.config import InversionConfig
-from bergson.data import create_index, load_module_gradients
+from bergson.collector.gradient_collectors import GradientCollector
+from bergson.config import IndexConfig, InversionConfig
+from bergson.data import column_offsets, create_index, load_module_gradients
 from bergson.hessians.apply_hessian import EkfacApplicator, EkfacConfig
 from bergson.hessians.inversion import INVERSIONS
 from bergson.hessians.preconditioner import FactoredPreconditioner
 from bergson.hessians.sharded_computation import shard_bounds
+from bergson.utils.utils import get_device
 
 
 def _make_query_gradients(query_path: str, grad_sizes: dict[str, int], num_grads: int):
@@ -297,6 +300,100 @@ def test_apply_hessian_compresses_per_module(tmp_path):
         assert torch.allclose(
             compressed, expected, atol=1e-4, rtol=1e-4
         ), f"{name}: compressed IVHP output doesn't match manual post-projection"
+
+
+def test_apply_hessian_compression_matches_collector(tmp_path, model, dataset):
+    """The compressed IVHP output must use the same projection matrices as the
+    gradient collector, including with a non-default type, scale and seed.
+    With an identity Hessian, compressing the full gradient must give exactly
+    what the collector writes for the same example.
+    """
+    p = 4
+    # "normal" projection matrices depend on the device they're generated on,
+    # so collect on the device EkfacApplicator uses.
+    device = get_device()
+    model.to(device)
+    tokens = torch.tensor([dataset[0]["input_ids"]], device=device)
+    cfg = IndexConfig(run_path=str(tmp_path))
+
+    def collect(processor: GradientProcessor) -> dict[str, torch.Tensor]:
+        collector = GradientCollector(
+            model=model,
+            cfg=cfg,
+            data=dataset,
+            processor=processor,
+            skip_index=True,
+        )
+        with collector:
+            model.zero_grad()
+            model(input_ids=tokens, labels=tokens).loss.backward()
+        return {k: v.clone().float().cpu() for k, v in collector.mod_grads.items()}
+
+    full = collect(GradientProcessor(projection_dim=None))
+    compressed = collect(
+        GradientProcessor(
+            projection_dim=p,
+            projection_type="normal",
+            projection_scale="row_norm",
+            projection_seed=7,
+        )
+    )
+
+    modules = {}
+    for name in full:
+        o, i = model.get_submodule(name).weight.shape
+        modules[name] = (o, i)
+
+    hessian_path = tmp_path / "hessian"
+    for sub, make in [
+        ("eigen_activation_sharded", lambda o, i: torch.eye(i)),
+        ("eigen_gradient_sharded", lambda o, i: torch.eye(o)),
+        ("eigenvalue_sharded", lambda o, i: torch.ones(o, i)),
+        ("factor_eig_a", lambda o, i: torch.ones(i)),
+        ("factor_eig_g", lambda o, i: torch.ones(o)),
+    ]:
+        (hessian_path / sub).mkdir(parents=True)
+        save_file(
+            {name: make(o, i) for name, (o, i) in modules.items()},
+            str(hessian_path / sub / "shard_0.safetensors"),
+        )
+
+    query_path = tmp_path / "query"
+    index = create_index(
+        root=query_path,
+        num_grads=1,
+        grad_sizes={name: o * i for name, (o, i) in modules.items()},
+        dtype=np.float32,
+    )
+    for name, (lo, hi) in column_offsets(
+        {name: o * i for name, (o, i) in modules.items()}
+    ).items():
+        index[:, lo:hi] = full[name].numpy()
+    index.flush()
+
+    apply_cfg = EkfacConfig(
+        hessian_method_path=str(hessian_path),
+        gradient_path=str(query_path),
+        run_path=str(tmp_path / "out"),
+        ev_correction=False,
+        projection_dim=p,
+        projection_type="normal",
+        projection_scale="row_norm",
+        projection_seed=7,
+    )
+    # With unit eigenvalues and no damping, H^-1 is the identity.
+    EkfacApplicator(
+        apply_cfg, inversion_cfg=InversionConfig(damping_factor=0.0)
+    ).compute_ivhp_sharded()
+    got = load_module_gradients(str(tmp_path / "out"))
+
+    for name in modules:
+        torch.testing.assert_close(
+            torch.from_numpy(np.asarray(got[name][:])),
+            compressed[name],
+            atol=1e-5,
+            rtol=1e-4,
+        )
 
 
 def test_apply_hessian_rejects_compression_with_ev_correction():
