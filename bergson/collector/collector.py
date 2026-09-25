@@ -459,11 +459,7 @@ class HookCollectorBase(ContextDecorator, ABC):
             isinstance(self.model.get_submodule(name), ExpertLinear)
             for name in self.target_info
         ):
-            raise ValueError(
-                "attribute_tokens is incompatible with fused MoE experts: an "
-                "expert's gradient rows are the tokens routed to it, which do "
-                "not line up with token positions."
-            )
+            raise ValueError("attribute_tokens is incompatible with fused MoE experts.")
 
         for name in self.target_info:
             layer = self.model.get_submodule(name)

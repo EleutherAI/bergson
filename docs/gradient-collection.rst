@@ -135,19 +135,17 @@ Where a reward signal is available we compute gradients using a weighted advanta
 
    bergson build <output_path> --model <model_name> --dataset <dataset_name> --reward_column <reward_column_name>
 
-Track Mixture-of-Experts Models
--------------------------------
+Mixture-of-Experts Models
+-------------------------
 
-Bergson tracks ``nn.Linear``, HF ``Conv1D`` and ``nn.Conv{1,2,3}d`` modules. In ``transformers`` 5.x an MoE layer holds every expert in a single 3D ``nn.Parameter``, so gradient collection covers only attention and ``lm_head`` -- 5.8% of gpt-oss-20b's parameters. MoE layouts with one ``nn.Linear`` per expert are tracked as they are.
-
-Name the fused layers with ``--moe_experts`` and each expert projection becomes its own module:
+Gradients for fused MoE modules, which do not use ``nn.Linear``, can be collected using:
 
 .. code-block:: bash
 
    bergson build <output_path> --model openai/gpt-oss-20b --dataset <dataset_name> \
        --moe_experts "model.layers.*.mlp.experts"
 
-The value is a comma-separated list of globs over ``model.named_modules()``, matched at load time against the module owning the ``gate_up_proj``/``down_proj`` parameters; pointing it elsewhere raises. Collection runs on the base model, so the index names the new modules ``layers.0.mlp.experts.expert_3.gate_up_proj``, which ``filter_modules`` globs match like any other. See ``examples/moe_experts.yaml``.
+The value is a comma-separated list of globs over ``model.named_modules()``. Collection runs on the base model, so the index names the new modules ``layers.0.mlp.experts.expert_3.gate_up_proj``, which ``filter_modules`` globs match like any other. See ``examples/moe_experts.yaml``.
 
 The fused matmul is replaced by a loop over experts, which is what lets the hooks see one expert's activations at a time. The loop gives up the grouped-matmul kernel, so collection is several times slower.
 
