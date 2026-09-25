@@ -7,8 +7,13 @@ import torch
 from datasets import Dataset
 from transformers import AutoConfig, AutoModelForCausalLM
 
+import bergson.collector.collector as collector_module
 from bergson import GradientProcessor, InMemoryCollector
-from bergson.collector.collector import CollectorComputer, HookCollectorBase
+from bergson.collector.collector import (
+    CollectorComputer,
+    HookCollectorBase,
+    project_global,
+)
 from bergson.collector.gradient_collectors import GradientCollector
 from bergson.config import AttentionConfig, IndexConfig
 from bergson.gradients import (
@@ -107,8 +112,6 @@ def module_grads(request, tmp_path) -> dict[str, OuterProductGradients]:
     return recorder.grads
 
 
-# With 9 inputs and 5 or 12 outputs, 3 queries contract each way and 64 form
-# the gradients.
 @pytest.mark.parametrize("bias", [False, True])
 @pytest.mark.parametrize("divisor", [False, True])
 @pytest.mark.parametrize("num_queries", [3, 64])
@@ -127,8 +130,8 @@ def test_random_vectors_match_formed_gradients(bias, divisor, num_queries, o):
     )
     formed = grads.materialize().flatten(1)
     torch.testing.assert_close(grads.sq_norm(), formed.pow(2).sum(1))
-    q = torch.randn(num_queries, o * w)
-    torch.testing.assert_close(grads.dot(q), formed @ q.T)
+    q = torch.randn(num_queries, o * w - 3)
+    torch.testing.assert_close(grads.dot(q, 1), formed[:, 1:-2] @ q.T)
 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
@@ -148,8 +151,9 @@ def test_half_precision_with_small_adam_denominators(dtype, num_queries):
     half = grads.to(torch.device("cpu"), dtype)
     assert half.divisor is not None and half.divisor.dtype == torch.float32
 
+    tol = dict(atol=0.0, rtol=0.05)
     torch.testing.assert_close(
-        half.sq_norm(), formed.pow(2).sum(1), check_dtype=False, atol=0.0, rtol=0.05
+        half.sq_norm(), formed.pow(2).sum(1), check_dtype=False, **tol
     )
     q = torch.randn(num_queries, o * w)
     expected = formed @ q.T
@@ -159,16 +163,24 @@ def test_half_precision_with_small_adam_denominators(dtype, num_queries):
         atol=0.05 * expected.abs().max(),
         rtol=0,
     )
+    projected = project_global("m", half, 4, "rademacher", "row_norm")
+    assert projected.dtype == dtype and projected.isfinite().all()
 
 
 # The tiny model's modules have at most 33 inputs or outputs, so 3 queries are
 # contracted with the vectors and 64 are taken against the formed gradients.
 @pytest.mark.parametrize("num_queries", [3, 64])
 def test_dot_matches_formed_gradients(module_grads, num_queries):
+    """Including column ranges that start and end partway through a row, as
+    global projection blocks do."""
     for name, grads in module_grads.items():
         formed = grads.materialize().flatten(1)
-        q = torch.randn(num_queries, formed.shape[1])
-        torch.testing.assert_close(grads.dot(q), formed @ q.T, msg=name)
+        n = formed.shape[1]
+        for start, stop in [(0, n), (1, n - 2), (n // 3, n // 3 + 5)]:
+            q = torch.randn(num_queries, stop - start)
+            torch.testing.assert_close(
+                grads.dot(q, start), formed[:, start:stop] @ q.T, msg=name
+            )
 
 
 def test_sq_norm_matches_formed_gradients(module_grads):
@@ -205,6 +217,21 @@ def test_scorer_matches_formed_gradients(
         ).score(grads)
 
     torch.testing.assert_close(scores(module_grads), scores(formed))
+
+
+@pytest.mark.parametrize("m", [3, 64])
+def test_project_global_matches_formed_gradients(module_grads, m, monkeypatch):
+    # 50-column blocks start and end partway through the gradients' rows
+    monkeypatch.setattr(
+        collector_module, "CHUNKED_PROJECTION_INSTANTIATION_NUMEL", m * 50
+    )
+    for name, grads in module_grads.items():
+        formed = grads.materialize().flatten(1)
+        torch.testing.assert_close(
+            project_global(name, grads, m, "rademacher", "row_norm"),
+            project_global(name, formed, m, "rademacher", "row_norm"),
+            msg=name,
+        )
 
 
 @pytest.mark.parametrize("normalizer", ["none", "adam"])
