@@ -525,6 +525,50 @@ class OuterProductGradients:
     divisor: Tensor | None = None
     """[O, W] entry-wise divisor of ``g ⊗ a``, from Adam normalization."""
 
+    @property
+    def per_example(self) -> bool:
+        """Whether each row sums an example's positions."""
+        return self.g.ndim == 3
+
+    def dot(self, q: Tensor) -> Tensor:
+        """Dot products [rows, Q] of the flattened gradients with each row of
+        ``q`` [Q, O * W].
+
+        Per-token gradients are contracted with ``q`` one vector at a time,
+        which builds a [T, Q, min(O, W)] tensor instead of the [T, O, W]
+        gradients, unless that is larger.
+        """
+        o, w = self.g.shape[-1], self.a.shape[-1]
+        dtype = q.dtype
+        q = q.to(self.g.dtype).reshape(len(q), o, w)
+
+        if (
+            self.per_example
+            or len(q) >= max(o, w)
+            or self.bias is not None
+            or self.divisor is not None
+        ):
+            return (self.materialize().flatten(1) @ q.flatten(1).T).to(dtype)
+
+        # ⟨g ⊗ a, q⟩ = gᵀ q a
+        if o <= w:
+            # [T, W] @ [W, Q * O] → [T, Q, O]
+            a_q = self.a @ q.reshape(-1, w).T
+            part = torch.einsum("tqo,to->tq", a_q.view(len(self.a), -1, o), self.g)
+        else:
+            # [T, O] @ [Q, O, W] → [Q, T, W]
+            part = torch.einsum("qtw,tw->tq", self.g @ q, self.a)
+        return part.to(dtype)
+
+    def sq_norm(self) -> Tensor:
+        """Squared norms [T] of per-token gradients, in float32."""
+        assert not self.per_example, "Form per-example gradients to take norms"
+        if self.bias is not None or self.divisor is not None:
+            return self.materialize().flatten(1).float().pow(2).sum(-1)
+
+        g, a = self.g.float(), self.a.float()
+        return g.pow(2).sum(-1) * a.pow(2).sum(-1)  # ‖g ⊗ a‖ = ‖g‖·‖a‖
+
     def materialize(self) -> Tensor:
         """Form the gradients, [T, O, W] or [N, O, W]."""
         if self.g.ndim == 2:
