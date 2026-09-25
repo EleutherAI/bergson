@@ -562,8 +562,7 @@ class HookCollectorBase(ContextDecorator, ABC):
             a_factor = a_factor.rsqrt()
             a = a * a_factor.type_as(a)  # [N, S, I] * [I] → [N, S, I]
 
-        # Defer a-projection when bias is included — backward needs full a to
-        # compute the outer product before concatenating the bias column.
+        # With a bias, the backward hook projects a together with the bias column
         if p is not None and not module._collect_bias:
             a_projection = self.projection(name, p, i, "right", a.device, a.dtype).T
             a = a @ a_projection  # [N, S, I(+1)] @ [I(+1), p] → [N, S, p]
@@ -576,46 +575,6 @@ class HookCollectorBase(ContextDecorator, ABC):
         g_projection = self.projection(name, p, o, "left", g.device, g.dtype)
         a_projection = self.projection(name, p, i, "right", g.device, g.dtype).T
         return g_projection @ P @ a_projection
-
-    def double_sided_projection_with_bias(
-        self,
-        name: str,
-        g: Tensor,
-        a: Tensor,
-        bias_grad: Tensor,
-        p: int,
-        o: int,
-        i: int,
-    ) -> Tensor:
-        """Double-sided projection of the gradient with the bias column appended,
-        without materializing the full [O, I+1] gradient with an outer product.
-
-        Equivalent to forming ``cat([g ⊗ a, bias_grad], -1)`` and calling
-        ``double_sided_projection`` with ``i + 1``, because
-
-            ``let L = left side projection matrix``
-            ``let R = right side projection matrix``
-            ``L @ cat([gᵀa, b], -1) @ Rᵀ = (g @ Lᵀ)ᵀ @ (a @ Rᵀ[:i]) + (b @ Lᵀ) ⊗ Rᵀ[i]``
-
-        Only valid when nothing elementwise (e.g. Adam normalization) is applied
-        to the outer product.
-        """
-        g_projection = self.projection(name, p, o, "left", g.device, g.dtype)
-        a_projection = self.projection(name, p, i + 1, "right", g.device, g.dtype).T
-
-        g = g @ g_projection.T  # [..., p]
-        a = a @ a_projection[:i]  # [N, S, p]
-        bias_grad = bias_grad @ g_projection.T  # [N, p] or [N, S, p]
-
-        if self.attribute_tokens:
-            # [N, S, p, 1] * [N, S, 1, p] → [N, S, p, p]
-            P = g.unsqueeze(-1) * a.unsqueeze(-2)
-        else:
-            P = g.mT @ a  # [N, p, S] @ [N, S, p] → [N, p, p]
-
-        # Outer product of the projected bias gradient with the bias row of the
-        # right projection: [..., p, 1] * [p] → [..., p, p]
-        return P + bias_grad.unsqueeze(-1) * a_projection[i]
 
     def _compute_gradient(self, module: nn.Module, g: Float[Tensor, "N S O"]) -> Tensor:
         """Compute the per-sample (or per-token) module gradient from cached activations
@@ -690,28 +649,25 @@ class HookCollectorBase(ContextDecorator, ABC):
                 g_factor = g_factor.mean().sqrt() * g_factor.rsqrt()
                 g = g * g_factor.type_as(g)  # [..., O] * [O] → [..., O]
 
-            if bias_grad is not None and p is not None:
-                # a was not projected in forward; project both factors and
-                # add the projected bias column without forming [..., O, I+1]
-                P = self.double_sided_projection_with_bias(
-                    name, g, a, bias_grad, p, o, i
-                )
-            else:
-                # a was already projected in forward if p is set;
-                # project g individually
-                if p is not None:
-                    g_projection = self.projection(
-                        name, p, o, "left", g.device, g.dtype
-                    )
-                    g = g @ g_projection.T  # [..., p]
-
-                bias_col = None
+            bias_col = None
+            if p is not None:
+                # The forward hook already projected a, unless it has to be
+                # projected together with the bias column
+                g_projection = self.projection(name, p, o, "left", g.device, g.dtype)
+                g = g @ g_projection.T  # [..., p]
                 if bias_grad is not None:
-                    # g ⊗ a is zero in the bias column, which holds bias_grad
-                    a = F.pad(a, (0, 1))
-                    bias_col = a.new_zeros(i + 1)
-                    bias_col[i] = 1
-                P = OuterProductGradients(g, a, bias_grad, bias_col).materialize()
+                    a_projection = self.projection(
+                        name, p, i + 1, "right", g.device, g.dtype
+                    )
+                    a = a @ a_projection[:, :i].T
+                    bias_grad = bias_grad @ g_projection.T
+                    bias_col = a_projection[:, i]
+            elif bias_grad is not None:
+                # g ⊗ a is zero in the bias column, which holds bias_grad
+                a = F.pad(a, (0, 1))
+                bias_col = a.new_zeros(i + 1)
+                bias_col[i] = 1
+            P = OuterProductGradients(g, a, bias_grad, bias_col).materialize()
 
         P = P.flatten(1).clamp_(self.lo, self.hi)
         return P
