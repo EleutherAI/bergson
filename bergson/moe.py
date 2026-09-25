@@ -55,8 +55,13 @@ class ExpertLinear(nn.Module):
 
 
 def projection_names(experts: nn.Module) -> tuple[str, str]:
-    """Name the fused parameters holding each expert's projections."""
-    return ("gate_up_proj" if experts.has_gate else "up_proj", "down_proj")  # type: ignore[attr-defined]
+    """Name the fused parameters holding each expert's projections.
+
+    A fused gate shows up in the name of the up projection, which
+    ``transformers`` reports as ``has_gate`` from 5.3 on.
+    """
+    up = "gate_up_proj" if hasattr(experts, "gate_up_proj") else "up_proj"
+    return (up, "down_proj")
 
 
 def moe_forward(
@@ -81,6 +86,7 @@ def moe_forward(
     top_k_index = top_k_index.reshape(num_tokens, -1)
     top_k_weights = top_k_weights.reshape(num_tokens, -1)
     up_name, down_name = projection_names(self)
+    gated = up_name == "gate_up_proj"
     out = torch.zeros_like(hidden_states)
 
     for expert_idx in range(self.num_experts):  # type: ignore[attr-defined]
@@ -107,7 +113,7 @@ def moe_forward(
         a[example, col] = hidden_states[token]
 
         h = getattr(expert, up_name)(a)
-        h = self._apply_gate(h) if self.has_gate else self.act_fn(h)  # type: ignore[attr-defined]
+        h = self._apply_gate(h) if gated else self.act_fn(h)  # type: ignore[attr-defined]
         h = getattr(expert, down_name)(h)
 
         h = h[example, col] * weights[token].unsqueeze(-1)
@@ -131,10 +137,13 @@ def _record_num_examples(experts: nn.Module):
 def _check_fused(name: str, experts: nn.Module) -> None:
     """Fail on a pattern that matched something other than a fused MoE layer."""
     down = getattr(experts, "down_proj", None)
-    attrs = ("num_experts", "has_gate", "is_transposed")
+    up = getattr(experts, projection_names(experts)[0], None)
+    attrs = ("num_experts", "is_transposed")
     if (
         not isinstance(down, nn.Parameter)
+        or not isinstance(up, nn.Parameter)
         or down.ndim != 3
+        or up.ndim != 3
         or not all(hasattr(experts, attr) for attr in attrs)
     ):
         raise ValueError(
