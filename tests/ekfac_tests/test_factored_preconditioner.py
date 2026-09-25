@@ -394,6 +394,17 @@ def test_apply_hessian_compression_matches_collector(tmp_path, model, dataset):
         apply_cfg, inversion_cfg=InversionConfig(damping_factor=0.0)
     ).compute_ivhp_sharded()
     got = load_module_gradients(str(tmp_path / "out"))
+    # Scoring checks the saved projection, seed included, against the index's.
+    assert GradientProcessor.load_config(tmp_path / "out").projection_seed == 7
+    processor_for(
+        IndexConfig(
+            run_path="",
+            projection_dim=p,
+            projection_type="normal",
+            projection_scale="row_norm",
+            projection_seed=7,
+        )
+    ).check_saved_projection(tmp_path / "out", "The compressed query")
 
     for name in modules:
         torch.testing.assert_close(

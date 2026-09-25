@@ -231,6 +231,7 @@ class EkfacApplicator:
             projection_dim=self.cfg.projection_dim or None,
             projection_type=self.cfg.projection_type,
             projection_scale=self.cfg.projection_scale,
+            projection_seed=self.cfg.projection_seed,
             include_bias=include_bias,
         ).save(Path(self.cfg.run_path))
 
