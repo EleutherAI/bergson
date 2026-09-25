@@ -460,9 +460,12 @@ class AdamNormalizer(Normalizer):
         eps: float = 1e-8,
     ) -> Tensor:
         """Normalize the gradients by the square root of the second moments."""
+        return grad.div_(self.weight_denominator(eps))
+
+    def weight_denominator(self, eps: float = 1e-8) -> Tensor:
+        """The [O, I] tensor ``normalize_weight`` divides the gradients by."""
         # Adam-style epsilon is added outside the square root
-        denom = self.weight_avg_sq.sqrt()
-        return grad.div_(denom.add_(eps))
+        return self.weight_avg_sq.sqrt().add_(eps)
 
     def normalize_bias(
         self,
@@ -499,8 +502,8 @@ class AdamNormalizer(Normalizer):
 
 @dataclass
 class OuterProductGradients:
-    """A module's gradients ``g ⊗ a + bias ⊗ bias_col``, kept as the vectors
-    they are formed from.
+    """A module's gradients ``(g ⊗ a) ⊘ divisor + bias ⊗ bias_col``, kept as the
+    vectors they are formed from.
 
     With ``g`` of shape [T, O] there is one gradient per token. With shape
     [N, S, O] there is one per example, summed over its S positions.
@@ -519,6 +522,9 @@ class OuterProductGradients:
     """The [W] vector the bias gradients are paired with: the bias column's
     indicator, or its projection."""
 
+    divisor: Tensor | None = None
+    """[O, W] entry-wise divisor of ``g ⊗ a``, from Adam normalization."""
+
     def materialize(self) -> Tensor:
         """Form the gradients, [T, O, W] or [N, O, W]."""
         if self.g.ndim == 2:
@@ -526,6 +532,8 @@ class OuterProductGradients:
         else:
             P = self.g.mT @ self.a
 
+        if self.divisor is not None:
+            P.div_(self.divisor)
         if self.bias is not None:
             assert self.bias_col is not None
             P.addcmul_(self.bias.unsqueeze(-1), self.bias_col)
