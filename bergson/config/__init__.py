@@ -1,5 +1,6 @@
 from .config import (
     ApproxUnrollingConfig,
+    AstraConfig,
     AttentionConfig,
     AttributionConfig,
     CandidateConfig,
@@ -37,6 +38,7 @@ __all__ = [
     "LDSConfig",
     "WeightStepConfig",
     "ApproxUnrollingConfig",
+    "AstraConfig",
     "AttentionConfig",
     "AttributionConfig",
     "CandidateConfig",
