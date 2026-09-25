@@ -114,7 +114,7 @@ def compute_exact_fim(
     "seq_lengths, num_batches, sample, max_rel_error",
     [
         ((4,), 2000, False, 0.10),  # rel_error = ~0.25 without collection-mask logic
-        ((4,), 2000, True, 0.15),  # rel_error = ~0.25 without collection-mask logic
+        ((4,), 4000, True, 0.15),  # rel_error = ~0.25 without collection-mask logic
         ((512, 2), 100, False, 0.05),  # rel_error = ~0.6 without collection-mask logic
         ((512, 2), 100, True, 0.20),  # rel_error = ~1.2 without collection-mask logic
     ],
