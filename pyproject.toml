@@ -44,6 +44,7 @@ dev = [
     "pytest",
     "pytest-xdist",
     "pyright==1.1.378", # pinned to match CI (build.yml)
+    "matplotlib", # for the score-vs-step plot (also exposed as the `plot` extra)
     "trl",
     # Generate documentation
     "furo",
@@ -70,6 +71,9 @@ example = [
 ]
 faiss = [
     "faiss-gpu-cu12",
+]
+plot = [
+    "matplotlib", # score-vs-step plot written at the end of a MAGIC run
 ]
 
 [project.scripts]
