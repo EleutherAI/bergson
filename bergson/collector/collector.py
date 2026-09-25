@@ -35,6 +35,7 @@ from bergson.gradients import (
     AdamNormalizer,
     GradientProcessor,
     LayerAdapter,
+    OuterProductGradients,
 )
 from bergson.moe import ExpertLinear
 from bergson.utils.logger import get_logger
@@ -675,73 +676,23 @@ class HookCollectorBase(ContextDecorator, ABC):
                 if p is not None:
                     P = self.double_sided_projection(name, P, g, p, o, i)
 
-        elif isinstance(normalizer, AdafactorNormalizer):
-            if module._collect_bias:
-                if self.attribute_tokens:
-                    bias_grad = normalizer.normalize_bias(g).type_as(g)  # [T, O]
-                else:
-                    bias_grad = normalizer.normalize_bias(g).sum(dim=1).type_as(g)
-            else:
-                bias_grad = None
-
-            # Apply row normalization to g (for weights)
-            g_factor = normalizer.row.add(1e-30)
-            g_factor = g_factor.mean().sqrt() * g_factor.rsqrt()
-            g = g * g_factor.type_as(g)  # [..., O] * [O] → [..., O]
-
-            if self.attribute_tokens:
-                if bias_grad is not None and p is not None:
-                    # a was not projected in forward; project both factors and
-                    # add the projected bias column without forming [T,O,I+1]
-                    P = self.double_sided_projection_with_bias(
-                        name, g, a, bias_grad, p, o, i
-                    )
-                elif bias_grad is not None:
-                    # a was not projected in forward
-                    # [T, O, 1] * [T, 1, I] → [T, O, I]
-                    P = g.unsqueeze(-1) * a.unsqueeze(-2)
-                    # [T, O, I+1]
-                    P = torch.cat([P, bias_grad.unsqueeze(-1)], dim=-1)
-                else:
-                    # a was already projected in forward; project g individually
-                    if p is not None:
-                        g_projection = self.projection(
-                            name, p, o, "left", g.device, g.dtype
-                        )
-                        g = g @ g_projection.T
-                    # [T, O/p, 1] * [T, 1, I/q] → [T, O/p, I/q]
-                    P = g.unsqueeze(-1) * a.unsqueeze(-2)
-            else:
-                if bias_grad is not None and p is not None:
-                    P = self.double_sided_projection_with_bias(
-                        name, g, a, bias_grad, p, o, i
-                    )
-                elif bias_grad is not None:
-                    P = g.mT @ a  # [N, O, I]
-                    P = torch.cat([P, bias_grad.unsqueeze(2)], dim=2)  # [N, O, I+1]
-                else:
-                    # a was already projected in forward; project g individually
-                    if p is not None:
-                        g_projection = self.projection(
-                            name, p, o, "left", g.device, g.dtype
-                        )
-                        g = g @ g_projection.T  # [..., p]
-
-                    P = g.mT @ a  # [N, O/p, S] @ [N, S, I/q] → [N, O/p, I/q]
         else:
-            # No normalizer
+            bias_grad = None
             if module._collect_bias:
-                if self.attribute_tokens:
-                    bias_grad = g  # [T, O]
-                else:
-                    bias_grad = g.sum(dim=1)  # [N, O]
-            else:
-                bias_grad = None
+                bias_grad = g if normalizer is None else normalizer.normalize_bias(g)
+                if not self.attribute_tokens:
+                    bias_grad = bias_grad.sum(dim=1)  # [N, O]
+                bias_grad = bias_grad.type_as(g)
 
-            if p is not None and module._collect_bias:
-                # a was not projected in forward; project both factors and add
-                # the projected bias column without forming [N, (S,) O, I+1]
-                assert bias_grad is not None
+            if isinstance(normalizer, AdafactorNormalizer):
+                # Apply row normalization to g (for weights)
+                g_factor = normalizer.row.add(1e-30)
+                g_factor = g_factor.mean().sqrt() * g_factor.rsqrt()
+                g = g * g_factor.type_as(g)  # [..., O] * [O] → [..., O]
+
+            if bias_grad is not None and p is not None:
+                # a was not projected in forward; project both factors and
+                # add the projected bias column without forming [..., O, I+1]
                 P = self.double_sided_projection_with_bias(
                     name, g, a, bias_grad, p, o, i
                 )
@@ -754,15 +705,13 @@ class HookCollectorBase(ContextDecorator, ABC):
                     )
                     g = g @ g_projection.T  # [..., p]
 
-                if self.attribute_tokens:
-                    # [T, O/p, 1] * [T, 1, I/q] → [T, O/p, I/q]
-                    P = g.unsqueeze(-1) * a.unsqueeze(-2)
-                    if bias_grad is not None:
-                        P = torch.cat([P, bias_grad.unsqueeze(-1)], dim=-1)
-                else:
-                    P = g.mT @ a  # [N, O/p, I/p]
-                    if bias_grad is not None:
-                        P = torch.cat([P, bias_grad.unsqueeze(2)], dim=2)  # [N,O,I+1]
+                bias_col = None
+                if bias_grad is not None:
+                    # g ⊗ a is zero in the bias column, which holds bias_grad
+                    a = F.pad(a, (0, 1))
+                    bias_col = a.new_zeros(i + 1)
+                    bias_col[i] = 1
+                P = OuterProductGradients(g, a, bias_grad, bias_col).materialize()
 
         P = P.flatten(1).clamp_(self.lo, self.hi)
         return P
