@@ -1061,3 +1061,24 @@ class TrakConfig:
 
     resume: bool = False
     """Skip pipeline steps whose output directory already exists."""
+
+
+@dataclass
+class TracInConfig:
+    """Config for TracIn: the dot products of training and query gradients,
+    summed over training checkpoints weighted by their learning rates."""
+
+    query: QuerySetConfig = field(default_factory=QuerySetConfig)
+    """Query dataset and aggregation. ``none`` produces one score column
+    per query."""
+
+    score_cfg: ScoreConfig = field(default_factory=ScoreConfig)
+
+    checkpoints: list[str] = field(default_factory=list)
+    """Checkpoints from one training run to sum over."""
+
+    lr_list: list[float] = field(default_factory=list)
+    """Learning rate at each checkpoint; length must equal ``checkpoints``."""
+
+    resume: bool = False
+    """Skip pipeline steps whose output directory already exists."""

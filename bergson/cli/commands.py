@@ -25,6 +25,7 @@ from ..config.config import (
     QueryConfig,
     RecallConfig,
     ScoreConfig,
+    TracInConfig,
     TrackstarConfig,
     TrackstarIndexConfig,
     TrainingConfig,
@@ -333,6 +334,22 @@ class Trak(Serializable):
 
         save_run_config(self, self.index_cfg.run_path)
         trak(self.index_cfg, self.trak_cfg)
+
+
+@dataclass
+class Tracin(Serializable):
+    """Run TracIn: learning-rate-weighted gradient dot products summed over
+    training checkpoints."""
+
+    index_cfg: IndexConfig
+
+    tracin_cfg: TracInConfig
+
+    def execute(self):
+        from .tracin import tracin
+
+        save_run_config(self, self.index_cfg.run_path)
+        tracin(self.index_cfg, self.tracin_cfg)
 
 
 @dataclass
