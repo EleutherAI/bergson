@@ -442,8 +442,9 @@ class HookCollectorBase(ContextDecorator, ABC):
         return self
 
     def collection_mask(self, module: nn.Module) -> Tensor | None:
-        """The mask over ``module``'s gradient-carrying positions, read through
-        the ``_positions`` grid an expanded MoE expert records in its forward."""
+        """The mask over ``module``'s gradient-carrying positions. Supports the
+        ``_positions`` grid, each row's source sequence position, which an expanded
+        MoE expert must populate in the forward pass."""
         positions = getattr(module, "_positions", None)
         if positions is None:
             return self._current_collection_mask
