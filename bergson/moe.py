@@ -6,6 +6,7 @@ which gradient collection skips. :func:`expand_moe` attaches an
 """
 
 import types
+from dataclasses import dataclass
 from fnmatch import fnmatchcase
 
 import torch
@@ -15,6 +16,41 @@ from torch import Tensor
 # The experts module only sees hidden states flattened to [N*S, hidden], so a
 # pre-hook on its parent records the batch size here for the forward to read.
 NUM_EXAMPLES_ATTR = "_bergson_num_examples"
+
+
+@dataclass
+class ExpertRows:
+    """Where an expert's routed rows came from, and where they pack to.
+
+    ``example`` and ``column`` place each row in a grid of one row per example,
+    which is the layout the gradient reduction needs; ``position`` and ``valid``
+    map a row back to the token it was routed from, for the collection mask.
+    """
+
+    example: Tensor
+    """Which example each row was routed from, [T]."""
+
+    position: Tensor
+    """Which sequence position each row was routed from, [T]."""
+
+    valid: Tensor
+    """False for the placeholder row of an expert that was routed nothing, [T]."""
+
+    column: Tensor
+    """Each row's slot within its example, [T]."""
+
+    num_examples: int
+    width: int
+    """Grid shape: the number of examples and the widest example's row count."""
+
+    def to_grid(self, x: Tensor) -> Tensor:
+        """Pack rows ``[T, C]`` into one row per example, ``[N, width, C]``.
+
+        Slots no row landed on stay zero and drop out of the sum over the grid.
+        """
+        grid = x.new_zeros(self.num_examples, self.width, x.shape[-1])
+        grid[self.example, self.column] = x
+        return grid
 
 
 class ExpertLinear(nn.Module):
@@ -72,11 +108,11 @@ def moe_forward(
 ) -> Tensor:
     """Run each expert over the tokens routed to it, one ExpertLinear at a time.
 
-    An expert with no tokens still runs, or its backward hook never fires and
-    the index comes up a module short.
+    Each expert sees only its routed rows, and records an :class:`ExpertRows`
+    telling the collector which example and position each row came from.
     """
     assert hidden_states.ndim == 2, f"Expected [N*S, hidden], got {hidden_states.shape}"
-    num_tokens, hidden_dim = hidden_states.shape
+    num_tokens = hidden_states.shape[0]
     num_examples = getattr(self, NUM_EXAMPLES_ATTR)
     assert (
         num_tokens % num_examples == 0
@@ -96,27 +132,28 @@ def moe_forward(
         weights = (top_k_weights * picked).sum(-1)  # [N*S]
         routed = picked.any(-1).view(num_examples, seq_len)  # [N, S]
 
-        # One row per example, padded to the widest. positions holds each row's
-        # source position, -1 for padding.
         example, pos = routed.nonzero(as_tuple=True)
-        token = example * seq_len + pos
         col = (routed.cumsum(1) - 1)[example, pos]
-        width = max(int(routed.sum(1).max()), 1)
+        valid = torch.ones_like(pos, dtype=torch.bool)
+        if not len(pos):
+            # An expert with no tokens still runs, or its backward hook never
+            # fires and the index comes up a module short. Its routing weight is
+            # zero, so the row it borrows contributes nothing.
+            example = col = pos = pos.new_zeros(1)
+            valid = valid.new_zeros(1)
 
         expert = getattr(self, f"expert_{expert_idx}")
-        positions = pos.new_full((num_examples, width), -1)
-        positions[example, col] = pos
+        width = max(int(routed.sum(1).max()), 1)
+        rows = ExpertRows(example, pos, valid, col, num_examples, width)
         for projection in expert.children():
-            projection._positions = positions
+            projection._rows = rows
 
-        a = hidden_states.new_zeros(num_examples, width, hidden_dim)
-        a[example, col] = hidden_states[token]
-
-        h = getattr(expert, up_name)(a)
+        token = example * seq_len + pos
+        h = getattr(expert, up_name)(hidden_states[token])  # [T, up]
         h = self._apply_gate(h) if gated else self.act_fn(h)  # type: ignore[attr-defined]
         h = getattr(expert, down_name)(h)
 
-        h = h[example, col] * weights[token].unsqueeze(-1)
+        h = h * weights[token].unsqueeze(-1)
         out = out.index_add(0, token, h.to(out.dtype))
 
     return out
