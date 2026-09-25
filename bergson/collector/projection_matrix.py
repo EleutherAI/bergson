@@ -15,6 +15,7 @@ import math
 from typing import Callable, Literal
 
 import numpy as np
+import numpy.typing as npt
 import torch
 from torch import Tensor
 
@@ -238,7 +239,7 @@ def _disable_kernels(e: Exception) -> None:
 
 
 def philox4x32(
-    counter: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+    counter: tuple[npt.ArrayLike, npt.ArrayLike, npt.ArrayLike, npt.ArrayLike],
     key: tuple[int, int],
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Philox4x32-10 on uint32 counter words, which broadcast together."""
