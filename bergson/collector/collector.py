@@ -443,16 +443,15 @@ class HookCollectorBase(ContextDecorator, ABC):
 
     def collection_mask(self, module: nn.Module) -> Tensor | None:
         """The mask over ``module``'s gradient-carrying positions. Supports the
-        ``_positions`` grid, each row's source sequence position, which an expanded
+        ``_rows`` layout, the token each row was routed from, which an expanded
         MoE expert must populate in the forward pass."""
-        positions = getattr(module, "_positions", None)
-        if positions is None:
+        rows = getattr(module, "_rows", None)
+        if rows is None:
             return self._current_collection_mask
 
-        real = positions >= 0
         if self._current_collection_mask is None:
-            return real
-        return real & self._current_collection_mask.gather(1, positions.clamp(min=0))
+            return rows.valid
+        return rows.valid & self._current_collection_mask[rows.example, rows.position]
 
     def __enter__(self):
         """Register forward and backward hooks on all target modules."""
@@ -481,7 +480,9 @@ class HookCollectorBase(ContextDecorator, ABC):
     def _process_input(self, module: nn.Module, inp: tuple, _):
         """Internal forward hook that extracts input and delegates to subclass."""
         x = inp[0].detach()
-        assert x.ndim == 3, f"Expected input of shape [N, S, I], got {x.shape}"
+        # An expanded MoE expert is handed its routed rows, [T, I].
+        expected = 2 if hasattr(module, "_rows") else 3
+        assert x.ndim == expected, f"Expected a {expected}D input, got {x.shape}"
 
         self.forward_hook(module, x)
 
@@ -503,7 +504,7 @@ class HookCollectorBase(ContextDecorator, ABC):
         """Clean up hooks and allow subclass cleanup."""
         # Clean up temporary attributes
         for layer in self.model.modules():
-            for attr in ("_inputs", "_name", "_positions"):
+            for attr in ("_inputs", "_name", "_rows"):
                 if hasattr(layer, attr):
                     delattr(layer, attr)
 
@@ -627,6 +628,13 @@ class HookCollectorBase(ContextDecorator, ABC):
         """
         a = module._inputs  # [N, S, I/q]
         assert isinstance(a, torch.Tensor), "Activation cache missing for module"
+
+        # An expanded MoE expert's rows are the tokens routed to it; lay them out
+        # one row per example, which is the axis the reduction below sums over.
+        rows = getattr(module, "_rows", None)
+        if rows is not None:
+            a, g = rows.to_grid(a), rows.to_grid(g)
+
         name = assert_type(str, module._name)
         p = self.per_module_projection_dim
         i = getattr(module, LayerAdapter.in_attr(module))
