@@ -3,6 +3,7 @@ from collections.abc import Callable
 import torch
 from torch import Tensor
 
+from bergson.gradients import OuterProductGradients
 from bergson.score.score_writer import ScoreWriter
 
 
@@ -85,7 +86,7 @@ class Scorer:
     def __call__(
         self,
         indices: list[int],
-        mod_grads: dict[str, Tensor],
+        mod_grads: dict[str, Tensor | OuterProductGradients],
     ):
         """Score a batch of training gradients, or finish one fed by ``accumulate``."""
         if self._scores is not None:
@@ -97,7 +98,7 @@ class Scorer:
         self.writer(indices, scores, query_offset=self.query_offset)
 
     @torch.inference_mode()
-    def accumulate(self, name: str, g: Tensor) -> None:
+    def accumulate(self, name: str, g: Tensor | OuterProductGradients) -> None:
         """Add one module's gradients to the current batch; ``__call__`` finishes it."""
         assert self.streaming, "accumulate needs a scorer without index_transform"
         if name not in self.query_grads_t:
@@ -107,23 +108,39 @@ class Scorer:
         )
 
     def _add_module(
-        self, name: str, g: Tensor, scores: Tensor | None, sq_norm: Tensor | None
+        self,
+        name: str,
+        g: Tensor | OuterProductGradients,
+        scores: Tensor | None,
+        sq_norm: Tensor | None,
     ) -> tuple[Tensor, Tensor | None]:
         """Add module ``name``'s GEMM against the queries to the running sums,
         accumulating in fp32 so a bf16 scoring dtype keeps small contributions."""
         g = g.to(self.device, self.dtype, non_blocking=True)
-        part = (g @ self.query_grads_t[name]).float()
+        if isinstance(g, OuterProductGradients) and g.per_example:
+            g = _materialized(g)
+
+        if isinstance(g, OuterProductGradients):
+            part = g.dot(self.query_grads_t[name].T).float()
+        else:
+            part = (g @ self.query_grads_t[name]).float()
         scores = part if scores is None else scores.add_(part)
+
         if self.unit_normalize:
-            n = g.float().pow(2).sum(dim=1)
+            if isinstance(g, OuterProductGradients):
+                n = g.sq_norm()
+            else:
+                n = g.float().pow(2).sum(dim=1)
             sq_norm = n if sq_norm is None else sq_norm.add_(n)
         return scores, sq_norm
 
     @torch.inference_mode()
-    def score(self, index_grads: dict[str, Tensor]) -> Tensor:
+    def score(self, index_grads: dict[str, Tensor | OuterProductGradients]) -> Tensor:
         """Compute scores for a batch of gradients."""
         if self.index_transform is not None:
-            index_grads = self.index_transform(index_grads)
+            index_grads = self.index_transform(
+                {m: _materialized(grads) for m, grads in index_grads.items()}
+            )  # type: ignore[assignment]
 
         # scores[b, q] = sum_m g_b[m] . q_q[m]; per-module GEMMs avoid
         # materializing a [batch, total_dim] concat of the index gradients
@@ -146,3 +163,9 @@ class Scorer:
             return scores.max(dim=-1, keepdim=True).values
 
         return scores
+
+
+def _materialized(grads: Tensor | OuterProductGradients) -> Tensor:
+    if isinstance(grads, OuterProductGradients):
+        return grads.materialize().flatten(1)
+    return grads

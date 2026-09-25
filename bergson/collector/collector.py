@@ -373,7 +373,9 @@ class HookCollectorBase(ContextDecorator, ABC):
         self.processor._projection_matrices[key] = A
         return A
 
-    def accumulate_global_projection(self, name: str, P: Tensor) -> bool:
+    def accumulate_global_projection(
+        self, name: str, P: Tensor | OuterProductGradients
+    ) -> bool:
         """Project ``P`` with module ``name``'s block of the global projection
         matrix and accumulate it into the single ``"gradients"`` key of
         ``self.mod_grads``.
@@ -386,6 +388,7 @@ class HookCollectorBase(ContextDecorator, ABC):
             return False
 
         assert self.processor.projection_dim is not None
+        P = self._materialize_gradient(P)
         projected = project_global(
             self.projection_identifier(name, "single", self.processor.projection_seed),
             P,
