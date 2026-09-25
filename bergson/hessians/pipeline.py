@@ -1,3 +1,4 @@
+import json
 import shutil
 import time
 from contextlib import contextmanager
@@ -13,11 +14,13 @@ from ..config.config import (
     ScoreConfig,
 )
 from ..config.config_io import save_run_config
+from ..data import create_index, load_gradients
 from ..distributed import launch_distributed_run
 from ..score.score import score_dataset
 from ..utils.step_state import partial_path, prepare_step
 from ..utils.worker_utils import validate_run_path
 from .apply_hessian import EkfacConfig, apply_worker
+from .astra import AstraPaths, astra_worker
 from .hessian_approximations import approximate_hessians
 
 
@@ -55,7 +58,8 @@ def hessian_pipeline(
 
     1. Build mean query gradient.
     2. Fit Hessian factors (kfac, tkfac, shampoo) on the training dataset.
-    3. Apply the inverse Hessian to the mean query gradient.
+    3. Apply the inverse Hessian to the mean query gradient, refining it with
+       ASTRA when ``hessian_pipeline_cfg.astra.num_steps > 0``.
     4. Score each training example against the transformed query gradient.
     """
     if preprocess_cfg.unit_normalize:
@@ -137,6 +141,22 @@ def hessian_pipeline(
         if index_cfg.distributed.rank == 0:
             shutil.move(ekfac_cfg.run_path, transformed_query_path)
 
+    astra_cfg = hessian_pipeline_cfg.astra
+    if astra_cfg.num_steps > 0:
+        print(f"Step 3/4: Refining with ASTRA ({astra_cfg.num_steps} steps)...")
+        astra_query_path = f"{run_path}/astra_query"
+        if not _step_complete(astra_query_path, resume):
+            with _timed("step3_astra", durations):
+                _run_astra(
+                    index_cfg,
+                    hessian_cfg,
+                    hessian_pipeline_cfg,
+                    query_path,
+                    transformed_query_path,
+                    astra_query_path,
+                )
+        transformed_query_path = astra_query_path
+
     # ── Step 4: Score training examples ───────────────────────────────────
     print("Step 4/4: Scoring training data against transformed query...")
     if not _step_complete(scores_path, resume):
@@ -156,3 +176,45 @@ def hessian_pipeline(
     if durations:
         total = sum(durations.values())
         print(f"Step timings (s): {durations} | total {total:.1f}s")
+
+
+def _run_astra(
+    index_cfg: IndexConfig,
+    hessian_cfg: HessianConfig,
+    hessian_pipeline_cfg: HessianPipelineConfig,
+    query_path: str,
+    init_path: str,
+    out_path: str,
+):
+    """Refine the EK-FAC solutions in ``init_path`` and write them to ``out_path``."""
+    if index_cfg.distributed.nnode > 1:
+        raise ValueError("ASTRA runs on a single node.")
+    if index_cfg.projection_dim > 0:
+        raise ValueError("ASTRA needs projection_dim=0.")
+
+    init = load_gradients(init_path)
+    with open(f"{init_path}/info.json") as f:
+        grad_sizes = json.load(f)["grad_sizes"]
+    part = partial_path(out_path)
+    create_index(part, init.shape[0], grad_sizes, init.dtype)
+    shutil.copy(f"{init_path}/processor_config.yaml", part)
+
+    paths = AstraPaths(
+        query_path=query_path,
+        init_path=init_path,
+        hessian_path=f"{index_cfg.run_path}/hessian/{hessian_cfg.method}",
+        run_path=str(part),
+    )
+    launch_distributed_run(
+        "astra",
+        astra_worker,
+        [
+            paths,
+            index_cfg,
+            hessian_pipeline_cfg.inversion_cfg,
+            hessian_pipeline_cfg.astra,
+            hessian_cfg.ev_correction,
+        ],
+        index_cfg.distributed,
+    )
+    shutil.move(part, out_path)

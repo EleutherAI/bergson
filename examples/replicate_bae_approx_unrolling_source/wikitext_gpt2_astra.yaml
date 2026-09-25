@@ -1,0 +1,113 @@
+# ASTRA vs EK-FAC influence functions (Wang et al. 2025, Fig. 1, WikiText-2 /
+# GPT-2) at the final checkpoint, MLP layers only as in the paper, then LDS
+# against the retrained models. Runs after the SOURCE step, which exports the
+# checkpoint.
+#
+#   PYTHONPATH=$PWD python -m bergson examples/replicate_bae_approx_unrolling_source/wikitext_gpt2_astra.yaml
+
+steps:
+- ekfac: &ekfac
+    index_cfg:
+      run_path: runs/wikitext_repro/ekfac_mlp_scores
+      model: runs/wikitext_repro/train/exported/checkpoint-1746
+      overwrite: true
+      precision: fp32
+      token_batch_size: 1024
+      max_batch_size: 64
+      filter_modules: "lm_head,*attn*"
+      distributed:
+        nproc_per_node: 8
+        nnode: 1
+      data:
+        dataset: EleutherAI/bergson-wikitext-2-4656-chunks
+        split: train
+        chunk_length: 0
+
+    hessian_cfg:
+      method: kfac
+      hessian_dtype: fp32
+      ev_correction: true
+
+    score_cfg:
+      batch_size: 1024
+      query_batch_size: 64
+
+    preprocess_cfg:
+      unit_normalize: false
+
+    hessian_pipeline_cfg: &pipeline
+      query:
+        data:
+          dataset: EleutherAI/bergson-wikitext-2-4656-chunks
+          split: validation
+          chunk_length: 0
+        aggregation: none
+      # The paper's damping of 0.011 per document, relative to the mean
+      # eigenvalue of the summed Hessian bergson fits.
+      inversion_cfg:
+        damping_factor: 1.5
+
+- ekfac:
+    <<: *ekfac
+    index_cfg:
+      run_path: runs/wikitext_repro/astra_mlp_scores
+      model: runs/wikitext_repro/train/exported/checkpoint-1746
+      overwrite: true
+      precision: fp32
+      token_batch_size: 1024
+      max_batch_size: 64
+      filter_modules: "lm_head,*attn*"
+      distributed:
+        nproc_per_node: 8
+        nnode: 1
+      data:
+        dataset: EleutherAI/bergson-wikitext-2-4656-chunks
+        split: train
+        chunk_length: 0
+    hessian_pipeline_cfg:
+      <<: *pipeline
+      # Paper App. B: 300 iterations, batch size 16, momentum 0.9, learning
+      # rate decayed by 0.9 every 100 iterations. The learning rate is the
+      # paper's pick from 1e0..1e-5 by the objective over the last 10
+      # iterations; 1e-4 and above diverge.
+      astra:
+        num_steps: 300
+        lr: 1.0e-5
+        momentum: 0.9
+        batch_size: 16
+        lr_decay: 0.9
+        lr_decay_interval: 100
+
+- validate:
+    run_path: runs/wikitext_repro/validate_ekfac_mlp
+    model: gpt2
+    overwrite: true
+    scores: runs/wikitext_repro/ekfac_mlp_scores/scores
+    method: &lds
+      kind: lds
+      subsets: bank
+      paths:
+      - runs/wikitext_repro/retrain_seed1004
+      - runs/wikitext_repro/retrain_seed1005
+      - runs/wikitext_repro/retrain_seed1006
+      - runs/wikitext_repro/retrain_seed1007
+      - runs/wikitext_repro/retrain_seed1008
+    batch_size: 64
+    data: &data
+      dataset: EleutherAI/bergson-wikitext-2-4656-chunks
+      split: train
+      chunk_length: 0
+    query: &query
+      data:
+        dataset: EleutherAI/bergson-wikitext-2-4656-chunks
+        split: validation
+        chunk_length: 0
+- validate:
+    run_path: runs/wikitext_repro/validate_astra_mlp
+    model: gpt2
+    overwrite: true
+    scores: runs/wikitext_repro/astra_mlp_scores/scores
+    method: *lds
+    batch_size: 64
+    data: *data
+    query: *query
