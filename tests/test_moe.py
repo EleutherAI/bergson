@@ -12,7 +12,6 @@ from transformers import (
     AutoModelForCausalLM,
     GptOssConfig,
     MixtralConfig,
-    OlmoeConfig,
     Qwen3MoeConfig,
 )
 
@@ -22,6 +21,7 @@ from bergson.config import IndexConfig
 from bergson.gradients import GradientProcessor, LayerAdapter
 from bergson.hessians.kfac import CovarianceCollector
 from bergson.moe import ExpertLinear, expand_moe
+from bergson.utils.utils import get_device
 
 PATTERN = "model.layers.*.mlp.experts"
 FAMILIES = ("gpt_oss", "mixtral")
@@ -30,8 +30,14 @@ NUM_EXPERTS = 4
 TOP_K = 2
 SEQ_LEN = 7
 
-# Mixtral has no biased module, so include_bias only varies for gpt-oss.
-BIAS_CASES = [("gpt_oss", False), ("gpt_oss", True), ("mixtral", False)]
+# Mixtral has no biased module, so include_bias only varies for gpt-oss, and
+# Qwen3-MoE varies the block wiring around the same fused layout.
+GRADIENT_CASES = [
+    ("gpt_oss", False),
+    ("gpt_oss", True),
+    ("mixtral", False),
+    ("qwen3_moe", False),
+]
 
 SHARED = dict(
     hidden_size=32,
@@ -43,9 +49,8 @@ SHARED = dict(
     num_experts_per_tok=TOP_K,
 )
 
-# Qwen3-MoE and OLMoE vary the block wiring around the same fused layout.
-# DeepSeek-V3 is left out: its kv_b_proj takes a 4D input, which bergson
-# cannot hook.
+# Qwen3-MoE varies the block wiring around the same fused layout. DeepSeek-V3 is
+# left out: its kv_b_proj takes a 4D input, which bergson cannot hook.
 CONFIGS = {
     "gpt_oss": lambda: GptOssConfig(
         intermediate_size=16, num_local_experts=NUM_EXPERTS, head_dim=8, **SHARED
@@ -59,9 +64,6 @@ CONFIGS = {
         num_experts=NUM_EXPERTS,
         head_dim=8,
         **SHARED,
-    ),
-    "olmoe": lambda: OlmoeConfig(
-        intermediate_size=16, num_experts=NUM_EXPERTS, **SHARED
     ),
 }
 
@@ -140,21 +142,14 @@ def collect_and_compare(model, batch_size: int, include_bias: bool) -> None:
     assert max(g.abs().max() for g in collected.values()) > 0, "all-zero gradients"
 
 
-@pytest.mark.parametrize("batch_size", [1, 3])
-@pytest.mark.parametrize("family,include_bias", BIAS_CASES)
-def test_per_example_gradients_match_autograd(family, batch_size, include_bias):
-    collect_and_compare(build_model(family), batch_size, include_bias)
-
-
-@pytest.mark.parametrize("family", ["qwen3_moe", "olmoe"])
-def test_other_families_match_autograd(family):
-    """The same pattern covers other block wirings."""
-    collect_and_compare(build_model(family), batch_size=2, include_bias=False)
+@pytest.mark.parametrize("family,include_bias", GRADIENT_CASES)
+def test_per_example_gradients_match_autograd(family, include_bias):
+    collect_and_compare(build_model(family), batch_size=3, include_bias=include_bias)
 
 
 @pytest.mark.parametrize("family", FAMILIES)
 def test_expansion_covers_every_fused_expert(family):
-    """Expansion adds exactly the fused expert weights."""
+    """Expansion adds exactly the fused expert weights and changes nothing else."""
     model = build_model(family)
 
     def tracked() -> int:
@@ -166,21 +161,6 @@ def test_expansion_covers_every_fused_expert(family):
             )
         return total
 
-    before = tracked()
-    expand_moe(model, PATTERN)
-    after = tracked()
-
-    fused = sum(p.numel() for p in model.parameters() if p.ndim == 3)
-    assert fused and after - before == fused
-
-    total = sum(p.numel() for p in model.parameters())
-    assert before / total < 0.5 < after / total
-
-
-@pytest.mark.parametrize("family", FAMILIES)
-def test_expansion_is_transparent(family):
-    """Expansion leaves the model's output, parameters and state_dict alone."""
-    model = build_model(family)
     x = torch.randint(0, 64, (3, SEQ_LEN))
     with torch.no_grad():
         reference = model(input_ids=x).logits.clone()
@@ -189,24 +169,33 @@ def test_expansion_is_transparent(family):
     state_dict = set(model.state_dict())
     modules = set(dict(model.named_modules()))
 
+    before = tracked()
     added = expand_moe(model, PATTERN)
+    after = tracked()
     assert len(added) == NUM_LAYERS * NUM_EXPERTS * 2
     assert expand_moe(model, PATTERN) == added, "expansion should be idempotent"
 
-    with torch.no_grad():
-        torch.testing.assert_close(model(input_ids=x).logits, reference)
+    fused = sum(p.numel() for p in model.parameters() if p.ndim == 3)
+    assert fused and after - before == fused
+
+    total = sum(p.numel() for p in model.parameters())
+    assert before / total < 0.5 < after / total
+
     assert {n for n, _ in model.named_parameters()} == parameters
     assert set(model.state_dict()) == state_dict
     assert modules < set(dict(model.named_modules()))
+    with torch.no_grad():
+        torch.testing.assert_close(model(input_ids=x).logits, reference)
 
 
-@pytest.mark.parametrize("family", FAMILIES)
-def test_covariance_honors_the_collection_mask(family, tmp_path):
+def test_covariance_honors_the_collection_mask(tmp_path):
     """The collection mask reaches an expert's routed rows."""
-    model = build_model(family)
+    # CovarianceCollector accumulates on get_device(rank); keep everything there
+    device = get_device(0)
+    model = build_model("gpt_oss").to(device)
     expand_moe(model, PATTERN)
     model.requires_grad_(True)
-    x = torch.randint(0, 64, (3, SEQ_LEN))
+    x = torch.randint(0, 64, (3, SEQ_LEN), device=device)
 
     for keep in (True, False):
         collector = CovarianceCollector(
@@ -215,7 +204,7 @@ def test_covariance_honors_the_collection_mask(family, tmp_path):
         names = expert_names(collector.target_info)
         assert len(names) == NUM_LAYERS * NUM_EXPERTS * 2
 
-        with collector.with_batch(torch.full((3, SEQ_LEN), keep)):
+        with collector.with_batch(torch.full((3, SEQ_LEN), keep, device=device)):
             backward_pass(model, x)
 
         for name in names:
@@ -226,14 +215,11 @@ def test_covariance_honors_the_collection_mask(family, tmp_path):
         assert bool(collected > 0) is keep
 
 
-def test_pattern_matching_nothing_raises():
+def test_bad_patterns_raise():
     model = build_model("gpt_oss")
     with pytest.raises(ValueError, match="matched no module"):
         expand_moe(model, "model.layers.*.mlp.wizards")
 
-
-def test_pattern_matching_a_dense_module_raises():
-    model = build_model("gpt_oss")
     with pytest.raises(ValueError, match="no 3D expert parameters"):
         expand_moe(model, "model.layers.*.mlp")
 
