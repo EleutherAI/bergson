@@ -1,5 +1,6 @@
 import tempfile
 from collections import defaultdict
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
@@ -8,8 +9,12 @@ import torch.nn as nn
 from datasets import Dataset
 from transformers import AutoConfig, AutoModelForCausalLM
 
+from bergson.collector.collector import (
+    HookCollectorBase,
+    create_module_projection_matrix,
+)
 from bergson.collector.gradient_collectors import GradientCollector
-from bergson.config import IndexConfig
+from bergson.config import AttentionConfig, IndexConfig
 from bergson.gradients import (
     AdafactorNormalizer,
     AdamNormalizer,
@@ -744,3 +749,172 @@ def test_mixed_bias_model_with_optimizer_normalizers(
         # fc1 carries a bias column, fc2 does not.
         assert shapes["fc1"] == (H, I + 1)
         assert shapes["fc2"] == (O, H)
+
+
+@dataclass(kw_only=True)
+class _GradientRecorder(HookCollectorBase):
+    """Keeps each module's gradients from ``_compute_gradient``."""
+
+    grads: dict = field(default_factory=dict)
+
+    def setup(self):
+        pass
+
+    def teardown(self):
+        pass
+
+    def process_batch(self, indices, **kwargs):
+        pass
+
+    @HookCollectorBase.split_attention_heads
+    def backward_hook(self, module, g):
+        self.grads[module._name] = self._compute_gradient(module, g)
+
+
+class _TwoLayerModel(nn.Module):
+    """A layer with a bias feeding one without."""
+
+    def __init__(self):
+        super().__init__()
+        self.up = nn.Linear(4, 6)
+        self.down = nn.Linear(6, 3, bias=False)
+
+    def forward(self, x):
+        return self.down(torch.tanh(self.up(x)))
+
+
+def _random_normalizers(model: nn.Module, kind: str) -> dict:
+    gen = torch.Generator().manual_seed(1)
+
+    def rand(*shape):
+        return torch.rand(*shape, generator=gen) + 0.5
+
+    normalizers = {}
+    for name, module in model.named_modules():
+        if not isinstance(module, nn.Linear):
+            continue
+        o, i = module.weight.shape
+        bias = rand(o) if module.bias is not None else None
+        if kind == "adam":
+            normalizers[name] = AdamNormalizer(rand(o, i), bias)
+        elif kind == "adafactor":
+            normalizers[name] = AdafactorNormalizer(rand(o), rand(i), bias)
+    return normalizers
+
+
+def _rows_of(normalizer, lo: int, hi: int):
+    """The normalizer for output rows lo:hi, as an attention head sees it."""
+    bias = normalizer.bias_avg_sq
+    bias = bias[lo:hi] if bias is not None else None
+    if isinstance(normalizer, AdamNormalizer):
+        return AdamNormalizer(normalizer.weight_avg_sq[lo:hi], bias)
+    return AdafactorNormalizer(normalizer.row[lo:hi], normalizer.col, bias)
+
+
+AUTOGRAD_CASES = [
+    (normalizer, include_bias, projection_dim, attribute_tokens, split_heads)
+    for normalizer in ["none", "adam", "adafactor"]
+    for include_bias in [False, True]
+    for projection_dim in [None, 2]
+    for attribute_tokens in [False, True]
+    for split_heads in [False, True]
+]
+
+
+@pytest.mark.parametrize(
+    "normalizer,include_bias,projection_dim,attribute_tokens,split_heads",
+    AUTOGRAD_CASES,
+)
+def test_module_gradients_match_autograd(
+    normalizer, include_bias, projection_dim, attribute_tokens, split_heads
+):
+    """Each module's gradients equal autograd's gradients of each token's loss,
+    normalized and projected, for per-token rows and their per-example sums."""
+    torch.manual_seed(0)
+    model = _TwoLayerModel()
+    x = torch.randn(2, 4, 4)
+    # The second sequence is padding after its second position, and each
+    # sequence's last real position has no loss
+    mask = torch.tensor([[1, 1, 1, 0], [1, 0, 0, 0]], dtype=torch.bool)
+
+    normalizers = _random_normalizers(model, normalizer)
+    processor = GradientProcessor(
+        normalizers=normalizers,
+        include_bias=include_bias,
+        projection_dim=projection_dim,
+    )
+    head_size = 3
+    recorder = _GradientRecorder(
+        model=model,
+        processor=processor,
+        attribute_tokens=attribute_tokens,
+        attention_cfgs=(
+            {"up": AttentionConfig(num_heads=2, head_size=head_size, head_dim=2)}
+            if split_heads
+            else {}
+        ),
+    )
+    with recorder.with_batch(mask):
+        (model(x).pow(2).sum(-1) * mask).sum().backward()
+
+    def expected(name, weight, bias, rows=slice(None)):
+        weight, bias = weight[rows], bias[rows] if bias is not None else None
+        normalizer = normalizers.get(name.split(".head_")[0])
+        if normalizer is not None and rows != slice(None):
+            normalizer = _rows_of(normalizer, rows.start, rows.stop)
+        if normalizer is not None:
+            weight = normalizer.normalize_weight(weight.clone())
+            bias = normalizer.normalize_bias(bias) if bias is not None else None
+        grad = torch.cat([weight, bias[:, None]], 1) if bias is not None else weight
+        if projection_dim:
+            # The forward hook projects a split head's input with the whole
+            # module's right matrix, unless a bias or Adam normalization means
+            # it's projected in the backward hook, per head
+            in_forward = bias is None and not isinstance(normalizer, AdamNormalizer)
+            right_name = name.split(".head_")[0] if in_forward else name
+            left, right = (
+                create_module_projection_matrix(
+                    matrix_name,
+                    role,
+                    projection_dim,
+                    n,
+                    grad.dtype,
+                    grad.device,
+                    processor.projection_type,
+                    processor.projection_scale,
+                    processor.projection_seed,
+                )
+                for matrix_name, role, n in [
+                    (name, "left", grad.shape[0]),
+                    (right_name, "right", grad.shape[1]),
+                ]
+            )
+            grad = left @ grad @ right.T
+        return grad.flatten()
+
+    # Autograd's gradients of each collected position's loss on its own
+    rows = defaultdict(list)
+    for n, s in mask.nonzero().tolist():
+        model.zero_grad()
+        model(x)[n, s].pow(2).sum().backward()
+        for name, module in [("up", model.up), ("down", model.down)]:
+            weight = module.weight.grad
+            bias = (
+                module.bias.grad if include_bias and module.bias is not None else None
+            )
+            if name == "up" and split_heads:
+                for h in range(2):
+                    head = slice(h * head_size, (h + 1) * head_size)
+                    rows[f"up.head_{h}"].append(
+                        (n, expected(f"up.head_{h}", weight, bias, head))
+                    )
+            else:
+                rows[name].append((n, expected(name, weight, bias)))
+
+    assert set(recorder.grads) == set(rows)
+    for name, token_rows in rows.items():
+        want = torch.stack([row for _, row in token_rows])
+        if not attribute_tokens:
+            examples = torch.tensor([n for n, _ in token_rows])
+            want = torch.zeros(2, want.shape[1]).index_add_(0, examples, want)
+        torch.testing.assert_close(recorder.grads[name], want, msg=name)
