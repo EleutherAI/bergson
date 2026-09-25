@@ -139,7 +139,7 @@ class Scorer:
         assert scores is not None, "Scorer requires at least one module"
         if self.unit_normalize:
             assert sq_norm is not None
-            scores.div_(sq_norm.sqrt().clamp_min_(1e-12).unsqueeze(1))
+            scores = scores / sq_norm.sqrt().clamp_min_(1e-12).unsqueeze(1)
 
         if self.score_mode == "nearest":
             # Keep the query dimension: ScoreWriter expects [rows, width].

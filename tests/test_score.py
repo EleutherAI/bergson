@@ -320,6 +320,33 @@ def test_memmap_sequence_writer_resume_preserves_existing(tmp_path: Path):
     np.testing.assert_array_equal(scores[:], [[1.0, 4.0], [2.0, 5.0], [3.0, 6.0]])
 
 
+@pytest.mark.parametrize("unit_normalize", [False, True])
+def test_streaming_scorer_matches_batch_scoring(unit_normalize):
+    """Scoring each module as it arrives matches scoring the whole batch."""
+    torch.manual_seed(0)
+    queries = {"a": torch.randn(3, 10), "b": torch.randn(3, 6)}
+    grads = {"a": torch.randn(4, 10), "b": torch.randn(4, 6)}
+
+    def make_scorer():
+        return Scorer(
+            query_grads=queries,
+            modules=list(queries),
+            writer=InMemorySequenceScoreWriter(4, 3),
+            device=torch.device("cpu"),
+            dtype=torch.float32,
+            unit_normalize=unit_normalize,
+        )
+
+    streaming = make_scorer()
+    for name, g in grads.items():
+        streaming.accumulate(name, g)
+    streaming(list(range(4)), {})
+
+    batch = make_scorer()
+    batch(list(range(4)), grads)
+    torch.testing.assert_close(streaming.writer.scores, batch.writer.scores)
+
+
 def test_scorer_split_hessians(tmp_path: Path):
     """Split preconditioning applies H^(-1/2) to both query and index grads,
     then unit normalizes."""
