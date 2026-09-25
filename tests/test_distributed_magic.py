@@ -21,9 +21,11 @@ from bergson.config.validation import LDSConfig
 from bergson.data import load_scores_loss_signed
 from bergson.magic.cli import MagicConfig, run_magic
 
-# Both tests consume the module-scoped noclip_scores fixture, so they must run
-# on the same xdist worker or each worker recomputes the two no-clip runs.
-pytestmark = pytest.mark.xdist_group("distributed_magic")
+# Tests consuming the module-scoped noclip_scores fixture must run on the same
+# xdist worker or each worker recomputes the two no-clip runs. Tests that don't
+# use the fixture stay unmarked so they can run in parallel with the group,
+# which is the suite's wall-clock critical path.
+shares_noclip_runs = pytest.mark.xdist_group("distributed_magic")
 
 # Config default lr (1e-5) gives scores ~1e-6, too small to separate a
 # world-size gradient-sync bug from fp32 noise.
@@ -93,6 +95,7 @@ def noclip_scores(tmp_path_factory) -> dict[str, torch.Tensor]:
 
 
 @requires_multi_gpu
+@shares_noclip_runs
 def test_fsdp_ddp_scores_match(noclip_scores):
     """FSDP and DDP should produce equivalent attribution scores."""
     ddp_scores = noclip_scores["ddp"]
@@ -120,6 +123,7 @@ def test_fsdp_ddp_scores_match(noclip_scores):
 
 
 @requires_multi_gpu
+@shares_noclip_runs
 def test_fsdp_ddp_scores_match_with_grad_clipping(noclip_scores, tmp_path):
     """Gradient clipping is consistent across FSDP shards and DDP replicas.
 
@@ -157,6 +161,7 @@ def test_fsdp_ddp_scores_match_with_grad_clipping(noclip_scores, tmp_path):
 
 
 @requires_multi_gpu
+@shares_noclip_runs
 def test_grad_accum_matches_full_batch(noclip_scores, tmp_path):
     """grad_accum_steps > 1 must not change the trajectory or the metagradient.
 
