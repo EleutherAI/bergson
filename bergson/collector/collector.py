@@ -388,7 +388,6 @@ class HookCollectorBase(ContextDecorator, ABC):
             return False
 
         assert self.processor.projection_dim is not None
-        P = self._materialize_gradient(P)
         projected = project_global(
             self.projection_identifier(name, "single", self.processor.projection_seed),
             P,
@@ -998,7 +997,7 @@ def global_projection_blocks(
 
 def project_global(
     identifier: str,
-    P: Tensor,
+    P: Tensor | OuterProductGradients,
     m: int,
     projection_type: Literal["normal", "rademacher"] = "normal",
     projection_scale: Literal["jl", "row_norm"] = "jl",
@@ -1010,13 +1009,20 @@ def project_global(
     ``sqrt(m)``; ``row_norm`` divides each output column by the norm of the
     corresponding row of ``R`` (``sqrt(n)`` exactly for Rademacher entries).
     """
-    n = P.shape[1]
-    out = P.new_zeros(P.shape[0], m)
-    row_sq = P.new_zeros(m) if projection_scale == "row_norm" else None
+    if isinstance(P, OuterProductGradients):
+        n = P.g.shape[-1] * P.a.shape[-1]
+        out = P.g.new_zeros(P.g.shape[0], m)
+    else:
+        n = P.shape[1]
+        out = P.new_zeros(P.shape[0], m)
+    row_sq = out.new_zeros(m) if projection_scale == "row_norm" else None
     for start, stop, block in global_projection_blocks(
-        identifier, m, n, P.dtype, P.device, projection_type
+        identifier, m, n, out.dtype, out.device, projection_type
     ):
-        out.addmm_(P[:, start:stop], block.T)
+        if isinstance(P, OuterProductGradients):
+            out.add_(P.dot(block, start))
+        else:
+            out.addmm_(P[:, start:stop], block.T)
         if row_sq is not None:
             row_sq.add_(block.pow(2).sum(dim=1))
     if row_sq is not None:

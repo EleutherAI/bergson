@@ -5,6 +5,7 @@ from typing import Literal, Mapping
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import yaml
 from torch import Tensor
 from transformers.pytorch_utils import Conv1D as HFConv1D
@@ -547,21 +548,35 @@ class OuterProductGradients:
         }
         return replace(self, **moved)
 
-    def dot(self, q: Tensor) -> Tensor:
-        """Dot products [rows, Q] of the flattened gradients with each row of
-        ``q`` [Q, O * W].
+    def dot(self, q: Tensor, start: int = 0) -> Tensor:
+        """Dot products [rows, Q] of the flattened gradients' entries
+        ``[start, start + k)`` with each row of ``q`` [Q, k].
 
         Per-token gradients are contracted with ``q`` one vector at a time,
         which builds a [T, Q, min(O, W)] tensor instead of the [T, O, W]
         gradients, unless that is larger.
         """
-        o, w = self.g.shape[-1], self.a.shape[-1]
-        grads, dtype, divisor = self, q.dtype, self.divisor
+        # Pad q to cover whole rows lo:hi of the [O, W] gradients
+        w = self.a.shape[-1]
+        lo, hi = start // w, -(-(start + q.shape[1]) // w)
+        pad = (start - lo * w, hi * w - start - q.shape[1])
+        if any(pad):
+            q = F.pad(q, pad)
+        o = hi - lo
+        q = q.reshape(len(q), o, w)
+        grads = replace(
+            self,
+            g=self.g[..., lo:hi],
+            bias=self.bias[..., lo:hi] if self.bias is not None else None,
+            divisor=self.divisor[lo:hi] if self.divisor is not None else None,
+        )
+
+        dtype, divisor = q.dtype, grads.divisor
         if divisor is not None:
             # Dividing by the divisor can overflow half precision
             grads = grads.to(q.device, divisor.dtype)
             divisor = grads.divisor
-        q = q.to(grads.g.dtype).reshape(len(q), o, w)
+        q = q.to(grads.g.dtype)
 
         if self.per_example or len(q) >= max(o, w):
             return (grads.materialize().flatten(1) @ q.flatten(1).T).to(dtype)
