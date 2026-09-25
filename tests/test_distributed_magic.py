@@ -52,7 +52,7 @@ def magic_cfg(
     data = DataConfig(
         dataset="Salesforce/wikitext",
         subset="wikitext-2-raw-v1",
-        split="train[:512]",
+        split="train[:64]",
         chunk_length=32,
     )
     # Single query doc: query.aggregation="none" runs one backward per query, which
@@ -79,7 +79,7 @@ def magic_cfg(
         model_kwargs=(
             f"attention_dropout={dropout},resid_pdrop={dropout}" if dropout else ""
         ),
-        distributed=DistributedConfig(nproc_per_node=min(torch.cuda.device_count(), 4)),
+        distributed=DistributedConfig(nproc_per_node=min(torch.cuda.device_count(), 2)),
     )
 
 
