@@ -15,6 +15,7 @@ from bergson.collector.collector import create_projection_matrix
 from bergson.config import InversionConfig
 from bergson.data import column_offsets, create_index, load_gradients
 from bergson.distributed import init_dist
+from bergson.gradients import GradientProcessor
 from bergson.hessians.hessian_approximations import partition_modules
 from bergson.hessians.preconditioner import (
     DiagonalFactoredPreconditioner,
@@ -210,8 +211,27 @@ class EkfacApplicator:
                 torch.cuda.empty_cache()
 
         grad_buffer.flush()
+        if self.rank == 0:
+            self._save_projection_settings()
 
         self.logger.info(f"Saved IVHP gradients to {self.cfg.run_path}")
+
+    def _save_projection_settings(self):
+        """Record how the output was projected, so scoring can check it matches
+        the index."""
+        # The factors include a bias column exactly when the query gradients do,
+        # which widens the right projection like the collector's include_bias.
+        query_cfg = Path(self.gradient_path, "processor_config.yaml")
+        include_bias = (
+            query_cfg.exists()
+            and GradientProcessor.load_config(self.gradient_path).include_bias
+        )
+        GradientProcessor(
+            projection_dim=self.cfg.projection_dim or None,
+            projection_type=self.cfg.projection_type,
+            projection_scale=self.cfg.projection_scale,
+            include_bias=include_bias,
+        ).save(Path(self.cfg.run_path))
 
     def _apply_group(
         self,

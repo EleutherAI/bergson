@@ -2,9 +2,26 @@
 projected with, so runs that reuse them can check that they match."""
 
 import torch
+import yaml
 
 from bergson import GradientProcessor
 from bergson.process_grads import mix_autocorrelation_matrices
+
+
+def test_load_config_reads_only_the_config(tmp_path):
+    """Configs from before projection_scale existed load as row_norm, the
+    scaling they were built with."""
+    GradientProcessor(projection_dim=8, projection_seed=5).save(tmp_path)
+    cfg_path = tmp_path / "processor_config.yaml"
+    cfg = yaml.safe_load(cfg_path.read_text())
+    del cfg["projection_scale"]
+    cfg_path.write_text(yaml.safe_dump(cfg))
+    (tmp_path / "normalizers.pth").unlink()
+
+    processor = GradientProcessor.load_config(tmp_path)
+    assert processor.projection_dim == 8
+    assert processor.projection_seed == 5
+    assert processor.projection_scale == "row_norm"
 
 
 def _save_autocorrelation(path, **settings):
