@@ -1,6 +1,15 @@
 # CHANGELOG
 
 
+## v1.2.0 (2026-09-25)
+
+### Features
+
+- Global projection for the factored preconditioners
+  ([#489](https://github.com/EleutherAI/bergson/pull/489),
+  [`8ea162a`](https://github.com/EleutherAI/bergson/commit/8ea162a0b27c957a91f42ce08060e079cce0c301))
+
+
 ## v1.1.0 (2026-09-14)
 
 ### Features
