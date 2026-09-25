@@ -35,6 +35,10 @@ def compute_exact_fim(
     """
     Compute exact FIM from per-position gradients for ToyLM.
 
+    Documents are grouped by sequence length and processed as single stacked
+    tensors; the covariance and FIM sums are order-independent, so this
+    matches the per-document computation up to float associativity.
+
     Args:
         sample: If True, sample labels from model distribution (true FIM).
                 If False, use dataset labels (empirical FIM).
@@ -48,43 +52,56 @@ def compute_exact_fim(
     hidden_size = model.config.hidden_size
     vocab_size = model.config.vocab_size
 
-    position_grads = []
     A_sum = torch.zeros(hidden_size, hidden_size, device=device)
     G_sum = torch.zeros(vocab_size, vocab_size, device=device)
+    F_sum = torch.zeros(
+        vocab_size * hidden_size, vocab_size * hidden_size, device=device
+    )
+    n_positions = 0
+
+    all_ids = dataset["input_ids"]
+    all_labels = dataset["labels"]
+    by_len: dict[int, list[int]] = {}
+    for batch_indices in batches:
+        for idx in batch_indices:
+            by_len.setdefault(len(all_ids[idx]), []).append(idx)
 
     # The cross-entropy gradient wrt logits is softmax(logits) - onehot(target),
     # so all positions of a row can be computed in one closed-form pass.
     with torch.no_grad():
-        for batch_indices in batches:
-            for idx in batch_indices:
-                input_ids = torch.tensor(
-                    dataset[idx]["input_ids"], device=device
-                ).unsqueeze(0)
-                labels = torch.tensor(dataset[idx]["labels"], device=device)
+        for indices in by_len.values():
+            # Slabs bound the (positions, V*H) per-position gradient tensor.
+            for start in range(0, len(indices), 4096):
+                chunk = indices[start : start + 4096]
+                input_ids = torch.tensor([all_ids[i] for i in chunk], device=device)
 
                 # Positions 0..S-2 predict the next token, matching the loss.
-                a = model.model.embed(input_ids)[0, :-1]  # (S-1, H)
-                logits = model.model.linear(a)  # (S-1, V)
+                a = model.model.embed(input_ids)[:, :-1]  # (N, S-1, H)
+                logits = model.model.linear(a)  # (N, S-1, V)
                 probs = torch.softmax(logits, dim=-1)
 
                 if sample:
                     # Sample from model distribution (true FIM)
-                    targets = torch.multinomial(probs, num_samples=1).squeeze(1)
+                    targets = torch.multinomial(
+                        probs.flatten(0, 1), num_samples=1
+                    ).squeeze(1)
                 else:
                     # Use dataset labels (empirical FIM)
-                    targets = labels[1:]
+                    targets = torch.tensor(
+                        [all_labels[i] for i in chunk], device=device
+                    )[:, 1:].flatten()
 
-                g = probs.clone()
+                g = probs.flatten(0, 1).clone()  # (P, V)
                 g[torch.arange(g.shape[0], device=device), targets] -= 1.0
+                a_flat = a.flatten(0, 1)  # (P, H)
 
-                position_grads.append(torch.einsum("sv,sh->svh", g, a).flatten(1))
-                A_sum += a.T @ a
+                A_sum += a_flat.T @ a_flat
                 G_sum += g.T @ g
+                position_grads = torch.einsum("pv,ph->pvh", g, a_flat).flatten(1)
+                F_sum += position_grads.T @ position_grads
+                n_positions += position_grads.shape[0]
 
-    grads_tensor = torch.cat(position_grads)
-    n_positions = grads_tensor.shape[0]
-    F_exact = grads_tensor.T @ grads_tensor / n_positions
-
+    F_exact = F_sum / n_positions
     A = A_sum / n_positions
     A = (A + A.T) / 2
     G = G_sum / n_positions
@@ -119,7 +136,11 @@ def test_kfac_fim_accuracy(seq_lengths, num_batches, max_rel_error, sample, tmp_
     device = torch.device(get_device())
 
     dataset = generate_dataset(config)
-    batches = generate_batches(config)
+    # Covariance sums are invariant to batch partitioning (verified to ~1e-7),
+    # and the collector's cost is per-batch, so pack documents into batches of
+    # 32 instead of one tiny batch per generated group.
+    docs = [idx for batch in generate_batches(config) for idx in batch]
+    batches = [docs[i : i + 32] for i in range(0, len(docs), 32)]
 
     model_config = ToyLMConfig(
         vocab_size=config.vocab_size, hidden_size=config.hidden_size
