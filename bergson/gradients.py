@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 from typing import Literal, Mapping
 
@@ -530,6 +530,23 @@ class OuterProductGradients:
         """Whether each row sums an example's positions."""
         return self.g.ndim == 3
 
+    def to(
+        self, device: torch.device, dtype: torch.dtype, non_blocking: bool = False
+    ) -> "OuterProductGradients":
+        """Move to ``device`` and cast to ``dtype``, except for the divisor, whose
+        smallest entries half precision can't represent."""
+
+        moved = {
+            f.name: t.to(
+                device=device,
+                dtype=None if f.name == "divisor" else dtype,
+                non_blocking=non_blocking,
+            )
+            for f in fields(self)
+            if (t := getattr(self, f.name)) is not None
+        }
+        return replace(self, **moved)
+
     def dot(self, q: Tensor) -> Tensor:
         """Dot products [rows, Q] of the flattened gradients with each row of
         ``q`` [Q, O * W].
@@ -539,40 +556,49 @@ class OuterProductGradients:
         gradients, unless that is larger.
         """
         o, w = self.g.shape[-1], self.a.shape[-1]
-        dtype = q.dtype
-        q = q.to(self.g.dtype).reshape(len(q), o, w)
+        grads, dtype, divisor = self, q.dtype, self.divisor
+        if divisor is not None:
+            # Dividing by the divisor can overflow half precision
+            grads = grads.to(q.device, divisor.dtype)
+            divisor = grads.divisor
+        q = q.to(grads.g.dtype).reshape(len(q), o, w)
 
-        if self.per_example or len(q) >= max(o, w) or self.divisor is not None:
-            return (self.materialize().flatten(1) @ q.flatten(1).T).to(dtype)
+        if self.per_example or len(q) >= max(o, w):
+            return (grads.materialize().flatten(1) @ q.flatten(1).T).to(dtype)
 
-        # ⟨g ⊗ a, q⟩ = gᵀ q a
+        # ⟨(g ⊗ a) ⊘ D, q⟩ = gᵀ (q ⊘ D) a
+        q_weight = q / divisor if divisor is not None else q
         if o <= w:
             # [T, W] @ [W, Q * O] → [T, Q, O]
-            a_q = self.a @ q.reshape(-1, w).T
-            part = torch.einsum("tqo,to->tq", a_q.view(len(self.a), -1, o), self.g)
+            a_q = grads.a @ q_weight.reshape(-1, w).T
+            part = torch.einsum("tqo,to->tq", a_q.view(len(grads.a), -1, o), grads.g)
         else:
             # [T, O] @ [Q, O, W] → [Q, T, W]
-            part = torch.einsum("qtw,tw->tq", self.g @ q, self.a)
-        if self.bias is not None:
-            assert self.bias_col is not None
-            part.add_(self.bias @ (q @ self.bias_col).T)
+            part = torch.einsum("qtw,tw->tq", grads.g @ q_weight, grads.a)
+        if grads.bias is not None:
+            assert grads.bias_col is not None
+            part.add_(grads.bias @ (q @ grads.bias_col).T)
         return part.to(dtype)
 
     def sq_norm(self) -> Tensor:
         """Squared norms [T] of per-token gradients, in float32."""
         assert not self.per_example, "Form per-example gradients to take norms"
-        if self.divisor is not None:
-            return self.materialize().flatten(1).float().pow(2).sum(-1)
+        grads = self.to(self.g.device, torch.float32)
+        g2, a2 = grads.g.pow(2), grads.a.pow(2)
+        if grads.divisor is None:
+            n = g2.sum(-1) * a2.sum(-1)  # ‖g ⊗ a‖ = ‖g‖·‖a‖
+        else:
+            n = ((g2 @ grads.divisor.pow(-2)) * a2).sum(-1)
 
-        g, a = self.g.float(), self.a.float()
-        n = g.pow(2).sum(-1) * a.pow(2).sum(-1)  # ‖g ⊗ a‖ = ‖g‖·‖a‖
-
-        if self.bias is not None:
-            assert self.bias_col is not None
+        if grads.bias is not None:
+            assert grads.bias_col is not None
             # The bias term and its cross term with g ⊗ a
-            bias, bias_col = self.bias.float(), self.bias_col.float()
-            n += bias.pow(2).sum(-1) * bias_col.pow(2).sum()
-            n += 2 * (g * bias).sum(-1) * (a * bias_col).sum(-1)
+            n += grads.bias.pow(2).sum(-1) * grads.bias_col.pow(2).sum()
+            gb, ac = grads.g * grads.bias, grads.a * grads.bias_col
+            if grads.divisor is None:
+                n += 2 * gb.sum(-1) * ac.sum(-1)
+            else:
+                n += 2 * ((gb @ grads.divisor.reciprocal()) * ac).sum(-1)
 
         # The cross term can round the total below zero
         return n.clamp_min_(0)
