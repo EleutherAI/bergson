@@ -148,7 +148,6 @@ class GradientProcessor:
         Load the normalizers and hessians from a file.
         """
         path = Path(path)
-        cfg_path = path / "processor_config.yaml"
         norm_path = path / "normalizers.pth"
 
         # Fall back to legacy "preconditioners*.pth" filenames if the new
@@ -161,26 +160,7 @@ class GradientProcessor:
         if not hess_eigen_path.exists():
             hess_eigen_path = path / "preconditioners_eigen.pth"
 
-        with cfg_path.open("r") as f:
-            cfg = yaml.safe_load(f)
-
-        # Backward compatibility
-        if "projection_type" not in cfg:
-            cfg["projection_type"] = "normal"
-        if "include_bias" not in cfg:
-            cfg["include_bias"] = False
-        if "projection_scale" not in cfg:
-            cfg["projection_scale"] = "row_norm"
-        # Defensive: rename any legacy preconditioner* keys that may appear in
-        # configs saved by older versions of this code.
-        for legacy_key in list(cfg.keys()):
-            if "preconditioner" in legacy_key or "precond" in legacy_key:
-                new_key = (
-                    legacy_key.replace("preconditioners", "hessians")
-                    .replace("preconditioner", "hessian")
-                    .replace("precond", "hess")
-                )
-                cfg[new_key] = cfg.pop(legacy_key)
+        cfg = cls._read_config(path)
 
         # Load normalizers
         norm_state = torch.load(
@@ -212,6 +192,36 @@ class GradientProcessor:
             hessians_eigen=hessians_eigen,
             **cfg,
         )
+
+    @classmethod
+    def load_config(cls, path: Path | str) -> "GradientProcessor":
+        """Load the processor saved at ``path`` without its normalizers or
+        hessians."""
+        return cls(**cls._read_config(Path(path)))
+
+    @staticmethod
+    def _read_config(path: Path) -> dict:
+        with (path / "processor_config.yaml").open("r") as f:
+            cfg = yaml.safe_load(f)
+
+        # Backward compatibility
+        if "projection_type" not in cfg:
+            cfg["projection_type"] = "normal"
+        if "include_bias" not in cfg:
+            cfg["include_bias"] = False
+        if "projection_scale" not in cfg:
+            cfg["projection_scale"] = "row_norm"
+        # Defensive: rename any legacy preconditioner* keys that may appear in
+        # configs saved by older versions of this code.
+        for legacy_key in list(cfg.keys()):
+            if "preconditioner" in legacy_key or "precond" in legacy_key:
+                new_key = (
+                    legacy_key.replace("preconditioners", "hessians")
+                    .replace("preconditioner", "hessian")
+                    .replace("precond", "hess")
+                )
+                cfg[new_key] = cfg.pop(legacy_key)
+        return cfg
 
     def save(self, path: Path):
         """
