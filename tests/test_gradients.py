@@ -663,11 +663,17 @@ class _MixedBiasModel(nn.Module):
 
 
 @pytest.mark.parametrize(
-    "projection_dim,normalizer_kind",
-    [(None, "adam"), (4, "adam"), (None, "adafactor")],
+    "projection_dim,normalizer_kind,dtype",
+    [
+        (None, "adam", torch.float32),
+        (4, "adam", torch.float32),
+        (None, "adafactor", torch.float32),
+        (4, "adam", torch.bfloat16),
+        (4, "adafactor", torch.bfloat16),
+    ],
 )
 def test_mixed_bias_model_with_optimizer_normalizers(
-    normalizer_kind: str, projection_dim: int | None, test_params
+    normalizer_kind: str, projection_dim: int | None, dtype: torch.dtype, test_params
 ):
     """include_bias=True on a model where only some layers have a bias.
 
@@ -676,12 +682,15 @@ def test_mixed_bias_model_with_optimizer_normalizers(
     per-module ``_collect_bias`` (which is what ``shapes()``,
     ``discover_targets()`` and the forward hook use), so a biasless module
     hit ``assert self.bias_avg_sq is not None`` inside ``normalize_bias``.
+
+    With a bf16 model, the fp32 normalizers used to leave the bias gradient in
+    fp32, which failed to project against the bf16 projection matrices.
     """
     torch.manual_seed(0)
     N, S, I, O = test_params["N"], test_params["S"], test_params["I"], test_params["O"]
     H = O * 2
 
-    model = _MixedBiasModel(I, H, O)
+    model = _MixedBiasModel(I, H, O).to(dtype)
     if normalizer_kind == "adam":
         normalizers = {
             "fc1": AdamNormalizer(
@@ -715,7 +724,7 @@ def test_mixed_bias_model_with_optimizer_normalizers(
     )
 
     shapes = collector.shapes()
-    x = torch.randn(N, S, I)
+    x = torch.randn(N, S, I, dtype=dtype)
     with collector:
         model.zero_grad()
         (model(x) ** 2).sum().backward()

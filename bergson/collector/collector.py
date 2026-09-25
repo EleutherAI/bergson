@@ -617,12 +617,13 @@ class HookCollectorBase(ContextDecorator, ABC):
         if isinstance(normalizer, AdamNormalizer):
             # Gate on the per-module flag, as shapes(), discover_targets() and
             # the forward hook do: in a mixed-bias model (e.g. Qwen2) the
-            # biasless modules have no bias_avg_sq.
+            # biasless modules have no bias_avg_sq. The bias gradient takes g's
+            # dtype, which fp32 normalizers would otherwise promote.
             if module._collect_bias:
                 if self.attribute_tokens:
-                    bias_grad = normalizer.normalize_bias(g)  # [N, S, O]
+                    bias_grad = normalizer.normalize_bias(g).type_as(g)  # [N, S, O]
                 else:
-                    bias_grad = normalizer.normalize_bias(g).sum(dim=1)  # [N, O]
+                    bias_grad = normalizer.normalize_bias(g).sum(dim=1).type_as(g)
             else:
                 bias_grad = None
 
@@ -654,9 +655,9 @@ class HookCollectorBase(ContextDecorator, ABC):
         elif isinstance(normalizer, AdafactorNormalizer):
             if module._collect_bias:
                 if self.attribute_tokens:
-                    bias_grad = normalizer.normalize_bias(g)  # [N, S, O]
+                    bias_grad = normalizer.normalize_bias(g).type_as(g)  # [N, S, O]
                 else:
-                    bias_grad = normalizer.normalize_bias(g).sum(dim=1)  # [N, O]
+                    bias_grad = normalizer.normalize_bias(g).sum(dim=1).type_as(g)
             else:
                 bias_grad = None
 
