@@ -107,6 +107,9 @@ class HookCollectorBase(ContextDecorator, ABC):
         """Init, discover target modules, and call setup()."""
         self.rank = dist.get_rank() if dist.is_initialized() else 0
         self.world_size = dist.get_world_size() if dist.is_initialized() else 1
+        # Collectors project new gradients with the processor's settings, which
+        # a loaded index's processor can't reproduce if its version is older.
+        self.processor.check_projection_version()
 
         self._fwd_hooks: list[RemovableHandle] = []
         self._bwd_hooks: list[RemovableHandle] = []

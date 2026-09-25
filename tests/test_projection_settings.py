@@ -6,8 +6,9 @@ import torch
 import yaml
 
 from bergson import GradientProcessor
+from bergson.collector.gradient_collectors import GradientCollector
 from bergson.config import IndexConfig, PreprocessConfig, ScoreConfig
-from bergson.gradients import PROJECTION_SETTINGS
+from bergson.gradients import PROJECTION_SETTINGS, PROJECTION_VERSION
 from bergson.process_grads import mix_autocorrelation_matrices
 from bergson.score.score import score_dataset
 
@@ -18,6 +19,7 @@ CHANGED = {
     "projection_seed": 3,
     "projection_target": "global",
     "include_bias": True,
+    "projection_version": 1,
 }
 
 
@@ -130,3 +132,53 @@ def test_mixing_keeps_every_projection_setting(tmp_path, monkeypatch):
     )
     mixed = GradientProcessor.load(tmp_path / "mixed")
     assert (mixed.projection_seed, mixed.projection_scale) == (1, "row_norm")
+
+
+def _save_version_1(path, projection_dim):
+    """A processor config from before projection_version was recorded."""
+    GradientProcessor(projection_dim=projection_dim).save(path)
+    cfg_path = path / "processor_config.yaml"
+    cfg = yaml.safe_load(cfg_path.read_text())
+    assert cfg["projection_version"] == PROJECTION_VERSION
+    del cfg["projection_version"]
+    cfg_path.write_text(yaml.safe_dump(cfg))
+
+
+def test_config_without_projection_version_loads_as_version_1(tmp_path):
+    _save_version_1(tmp_path, projection_dim=8)
+    assert GradientProcessor.load_config(tmp_path).projection_version == 1
+
+
+def test_scoring_rejects_a_version_1_query(tmp_path):
+    _save_version_1(tmp_path / "query", projection_dim=16)
+    index_cfg = IndexConfig(run_path=str(tmp_path / "scores"), projection_dim=16)
+    with pytest.raises(ValueError, match="projection_version=1, not 2"):
+        score_dataset(
+            index_cfg,
+            ScoreConfig(query_path=str(tmp_path / "query")),
+            PreprocessConfig(),
+        )
+
+
+def test_a_projected_run_rejects_gradients_saved_without_a_config(tmp_path):
+    """Everything bergson saves now has a config, so gradients without one were
+    projected with version 1 matrices."""
+    with pytest.raises(ValueError, match="earlier version of bergson"):
+        GradientProcessor(projection_dim=16).check_saved_projection(
+            tmp_path, "The query"
+        )
+    GradientProcessor(projection_dim=None).check_saved_projection(tmp_path, "The query")
+
+
+def test_collector_rejects_a_version_1_processor(tmp_path, model, dataset):
+    """Collectors project new gradients with the processor's own settings, as
+    Attributor.trace does with the index's processor."""
+    _save_version_1(tmp_path / "index", projection_dim=8)
+    with pytest.raises(ValueError, match="version 1"):
+        GradientCollector(
+            model=model,
+            cfg=IndexConfig(run_path=str(tmp_path / "run")),
+            data=dataset,
+            processor=GradientProcessor.load(tmp_path / "index"),
+            skip_index=True,
+        )
