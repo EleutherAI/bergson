@@ -36,6 +36,7 @@ from bergson.gradients import (
     GradientProcessor,
     LayerAdapter,
 )
+from bergson.moe import ExpertLinear
 from bergson.utils.logger import get_logger
 from bergson.utils.peft import set_peft_enabled
 from bergson.utils.utils import assert_type
@@ -440,8 +441,27 @@ class HookCollectorBase(ContextDecorator, ABC):
         self._current_collection_mask = collection_mask
         return self
 
+    def collection_mask(self, module: nn.Module) -> Tensor | None:
+        """The mask over ``module``'s gradient-carrying positions. Supports the
+        ``_positions`` grid, each row's source sequence position, which an expanded
+        MoE expert must populate in the forward pass."""
+        positions = getattr(module, "_positions", None)
+        if positions is None:
+            return self._current_collection_mask
+
+        real = positions >= 0
+        if self._current_collection_mask is None:
+            return real
+        return real & self._current_collection_mask.gather(1, positions.clamp(min=0))
+
     def __enter__(self):
         """Register forward and backward hooks on all target modules."""
+        if self.attribute_tokens and any(
+            isinstance(self.model.get_submodule(name), ExpertLinear)
+            for name in self.target_info
+        ):
+            raise ValueError("attribute_tokens is incompatible with fused MoE experts.")
+
         for name in self.target_info:
             layer = self.model.get_submodule(name)
 
@@ -483,10 +503,9 @@ class HookCollectorBase(ContextDecorator, ABC):
         """Clean up hooks and allow subclass cleanup."""
         # Clean up temporary attributes
         for layer in self.model.modules():
-            if hasattr(layer, "_inputs"):
-                del layer._inputs
-            if hasattr(layer, "_name"):
-                del layer._name
+            for attr in ("_inputs", "_name", "_positions"):
+                if hasattr(layer, attr):
+                    delattr(layer, attr)
 
         # Remove all registered hooks
         for h in self._fwd_hooks:
