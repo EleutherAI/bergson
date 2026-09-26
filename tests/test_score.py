@@ -65,6 +65,9 @@ def _h_inv(path, device, power):
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_large_gradients_query(tmp_path: Path, dataset):
+    if torch.cuda.get_device_properties(0).total_memory < 20 * 2**30:
+        pytest.skip("Unprojected pythia-1.4b gradients need about 17 GB of GPU memory")
+
     # Create index for uncompressed gradients from a large model.
     config = AutoConfig.from_pretrained(
         "EleutherAI/pythia-1.4b", trust_remote_code=True

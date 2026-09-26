@@ -78,6 +78,10 @@ bergson = "bergson.__main__:main"
 
 
 
+[tool.pytest.ini_options]
+# Tests write gigabytes of checkpoints and gradients; keep only failing tests' files
+tmp_path_retention_policy = "failed"
+
 [tool.pyright]
 include = ["bergson*"]
 reportPrivateImportUsage = false

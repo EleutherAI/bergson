@@ -1,4 +1,3 @@
-import tempfile
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -140,7 +139,7 @@ def trained_model_with_normalizers(simple_model_class, test_params):
     return _create
 
 
-def test_gradient_collector_proj_norm():
+def test_gradient_collector_proj_norm(tmp_path):
     """Test gradient collection with projection and normalization.
 
     Verifies that GradientCollector correctly:
@@ -149,9 +148,6 @@ def test_gradient_collector_proj_norm():
     - Saves and loads GradientProcessor state
     - Produces consistent results across save/load cycles
     """
-    temp_dir = Path(tempfile.mkdtemp())
-    print(temp_dir)
-
     config = AutoConfig.from_pretrained("trl-internal-testing/tiny-GPTNeoXForCausalLM")
     # Explicitly use float32 so the test isn't sensitive to the config's torch_dtype
     model = AutoModelForCausalLM.from_config(config, torch_dtype=torch.float32)
@@ -168,7 +164,7 @@ def test_gradient_collector_proj_norm():
     # Test with 16 x 16 random projection as well as with no projection
     for p in (16, None):
         cfg = IndexConfig(
-            run_path=str(temp_dir / "run"),
+            run_path=str(tmp_path / "run"),
         )
         processor = GradientProcessor(projection_dim=p)
         collector = GradientCollector(
@@ -219,12 +215,12 @@ def test_gradient_collector_proj_norm():
             previous_collected_grads = {}
             for do_load in (False, True):
                 if do_load:
-                    processor = GradientProcessor.load(temp_dir / "processor")
+                    processor = GradientProcessor.load(tmp_path / "processor")
                 else:
                     processor = GradientProcessor(
                         normalizers=normalizers, projection_dim=p
                     )
-                    processor.save(temp_dir / "processor")
+                    processor.save(tmp_path / "processor")
 
                 collector.processor = processor
                 with collector:
@@ -265,7 +261,7 @@ def test_gradient_collector_proj_norm():
 
 @pytest.mark.parametrize("include_bias", [True, False])
 def test_gradient_collector_batched(
-    include_bias: bool, trained_model_with_normalizers, test_params
+    tmp_path, include_bias: bool, trained_model_with_normalizers, test_params
 ):
     """Test per-sample gradient collection with Adam normalization.
 
@@ -277,7 +273,6 @@ def test_gradient_collector_batched(
     Args:
         include_bias: Whether to include bias gradients in collection
     """
-    temp_dir = Path(tempfile.mkdtemp())
     N, S, I = test_params["N"], test_params["S"], test_params["I"]
 
     model, normalizers = trained_model_with_normalizers(include_bias)
@@ -287,7 +282,7 @@ def test_gradient_collector_batched(
 
     # Create config for GradientCollector
     cfg = IndexConfig(
-        run_path=str(temp_dir / "run"),
+        run_path=str(tmp_path / "run"),
     )
 
     processor = GradientProcessor(
@@ -357,7 +352,7 @@ def test_gradient_collector_batched(
         )
 
 
-def test_bias_gradients(test_params, simple_model_class):
+def test_bias_gradients(tmp_path, test_params, simple_model_class):
     """Test per-sample bias gradient computation without normalizers.
 
     Validates that GradientCollector correctly computes bias gradients when
@@ -369,7 +364,6 @@ def test_bias_gradients(test_params, simple_model_class):
     This tests the no-normalizer bias collection path added to support
     bias gradients without Adam/Adafactor second moments.
     """
-    temp_dir = Path(tempfile.mkdtemp())
     torch.manual_seed(42)
     N, S, I, O = test_params["N"], test_params["S"], test_params["I"], test_params["O"]
 
@@ -401,7 +395,7 @@ def test_bias_gradients(test_params, simple_model_class):
 
     # Create config for GradientCollector
     cfg = IndexConfig(
-        run_path=str(temp_dir / "run"),
+        run_path=str(tmp_path / "run"),
     )
 
     processor = GradientProcessor(include_bias=True, projection_dim=None)
@@ -438,7 +432,7 @@ def test_bias_gradients(test_params, simple_model_class):
 
 
 def test_adafactor_normalization_ground_truth(
-    trained_model_with_normalizers, test_params
+    tmp_path, trained_model_with_normalizers, test_params
 ):
     """Adafactor normalization matches manually-applied factored second moments.
 
@@ -448,7 +442,6 @@ def test_adafactor_normalization_ground_truth(
 
     The bias column must be normalized by bias_avg_sq.
     """
-    temp_dir = Path(tempfile.mkdtemp())
     N, S, I = test_params["N"], test_params["S"], test_params["I"]
 
     model, adam_normalizers = trained_model_with_normalizers(True)
@@ -460,7 +453,7 @@ def test_adafactor_normalization_ground_truth(
 
     dummy_data = Dataset.from_dict({"input_ids": [[1] * 10] * N})
     cfg = IndexConfig(
-        run_path=str(temp_dir / "run"),
+        run_path=str(tmp_path / "run"),
     )
 
     processor = GradientProcessor(
@@ -527,13 +520,14 @@ def test_adafactor_normalization_ground_truth(
         )
 
 
-def test_in_features_restored_after_collector(test_params, simple_model_class):
+def test_in_features_restored_after_collector(
+    tmp_path, test_params, simple_model_class
+):
     """Test E: module.in_features is restored after collector context exits.
 
     Verifies that the collector doesn't permanently mutate module metadata
     (like in_features) when appending bias columns during forward hooks.
     """
-    temp_dir = Path(tempfile.mkdtemp())
     N, S, I = test_params["N"], test_params["S"], test_params["I"]
 
     ModelClass = simple_model_class(include_bias=True, num_layers=2)
@@ -541,7 +535,7 @@ def test_in_features_restored_after_collector(test_params, simple_model_class):
 
     dummy_data = Dataset.from_dict({"input_ids": [[1] * 10] * N})
     cfg = IndexConfig(
-        run_path=str(temp_dir / "run"),
+        run_path=str(tmp_path / "run"),
     )
 
     # Record original in_features for all layers
@@ -582,7 +576,7 @@ def test_in_features_restored_after_collector(test_params, simple_model_class):
 
 @pytest.mark.parametrize("normalizer_type", ["none", "adafactor"])
 def test_projected_bias_gradients_match_full_projection(
-    normalizer_type, test_params, simple_model_class
+    tmp_path, normalizer_type, test_params, simple_model_class
 ):
     """Ground truth for the factored projection-with-bias path.
 
@@ -591,7 +585,6 @@ def test_projected_bias_gradients_match_full_projection(
     full [O, I+1] gradient. The result must equal L @ [G | b] @ R.T computed
     explicitly from autograd gradients.
     """
-    temp_dir = Path(tempfile.mkdtemp())
     S, I = test_params["S"], test_params["I"]
     P = 4
 
@@ -608,7 +601,7 @@ def test_projected_bias_gradients_match_full_projection(
                 bias_avg_sq=torch.rand(layer.out_features) + 0.1,
             )
 
-    cfg = IndexConfig(run_path=str(temp_dir / "run"))
+    cfg = IndexConfig(run_path=str(tmp_path / "run"))
     processor = GradientProcessor(
         normalizers=normalizers, projection_dim=P, include_bias=True
     )
@@ -678,7 +671,11 @@ class _MixedBiasModel(nn.Module):
     ],
 )
 def test_mixed_bias_model_with_optimizer_normalizers(
-    normalizer_kind: str, projection_dim: int | None, dtype: torch.dtype, test_params
+    tmp_path,
+    normalizer_kind: str,
+    projection_dim: int | None,
+    dtype: torch.dtype,
+    test_params,
 ):
     """include_bias=True on a model where only some layers have a bias.
 
@@ -715,13 +712,12 @@ def test_mixed_bias_model_with_optimizer_normalizers(
             ),
         }
 
-    temp_dir = Path(tempfile.mkdtemp())
     processor = GradientProcessor(
         normalizers=normalizers, projection_dim=projection_dim, include_bias=True
     )
     collector = GradientCollector(
         model=model,
-        cfg=IndexConfig(run_path=str(temp_dir / "run")),
+        cfg=IndexConfig(run_path=str(tmp_path / "run")),
         data=Dataset.from_dict({"input_ids": [[1] * 10] * N}),
         skip_index=True,
         processor=processor,
