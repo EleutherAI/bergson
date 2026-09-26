@@ -80,10 +80,10 @@ class JointAutocorrelationCollector(AutocorrelationCollector):
     def backward_hook(self, module: nn.Module, g: Float[Tensor, "N S O"]):
         """Keep this module's projected per-example gradient until the batch ends."""
         name: str = module._name  # type: ignore[assignment]
-        P = self._compute_gradient(module, g)
-        if self.accumulate_global_projection(name, P):
+        grads = self._module_gradient(module, g)
+        if self.accumulate_global_projection(name, grads):
             return
-        self.mod_grads[name] = P.float()
+        self.mod_grads[name] = self._materialize_gradient(grads).float()
 
     def process_batch(self, indices: list[int], **kwargs):
         """Concatenate the batch's module gradients and add their Gram."""

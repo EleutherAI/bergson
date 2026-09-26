@@ -35,6 +35,7 @@ from bergson.gradients import (
     AdamNormalizer,
     GradientProcessor,
     LayerAdapter,
+    OuterProductGradients,
 )
 from bergson.moe import ExpertLinear
 from bergson.utils.logger import get_logger
@@ -372,7 +373,9 @@ class HookCollectorBase(ContextDecorator, ABC):
         self.processor._projection_matrices[key] = A
         return A
 
-    def accumulate_global_projection(self, name: str, P: Tensor) -> bool:
+    def accumulate_global_projection(
+        self, name: str, P: Tensor | OuterProductGradients
+    ) -> bool:
         """Project ``P`` with module ``name``'s block of the global projection
         matrix and accumulate it into the single ``"gradients"`` key of
         ``self.mod_grads``.
@@ -561,69 +564,28 @@ class HookCollectorBase(ContextDecorator, ABC):
             a_factor = a_factor.rsqrt()
             a = a * a_factor.type_as(a)  # [N, S, I] * [I] → [N, S, I]
 
-        # Defer a-projection when bias is included — backward needs full a to
-        # compute the outer product before concatenating the bias column.
+        # With a bias, the backward hook projects a together with the bias column
         if p is not None and not module._collect_bias:
             a_projection = self.projection(name, p, i, "right", a.device, a.dtype).T
             a = a @ a_projection  # [N, S, I(+1)] @ [I(+1), p] → [N, S, p]
 
         module._inputs = a
 
-    def double_sided_projection(
-        self, name: str, P: Tensor, g: Tensor, p: int, o: int, i: int
-    ):
-        g_projection = self.projection(name, p, o, "left", g.device, g.dtype)
-        a_projection = self.projection(name, p, i, "right", g.device, g.dtype).T
+    def double_sided_projection(self, name: str, P: Tensor, p: int, o: int, i: int):
+        g_projection = self.projection(name, p, o, "left", P.device, P.dtype)
+        a_projection = self.projection(name, p, i, "right", P.device, P.dtype).T
         return g_projection @ P @ a_projection
 
-    def double_sided_projection_with_bias(
-        self,
-        name: str,
-        g: Tensor,
-        a: Tensor,
-        bias_grad: Tensor,
-        p: int,
-        o: int,
-        i: int,
-    ) -> Tensor:
-        """Double-sided projection of the gradient with the bias column appended,
-        without materializing the full [O, I+1] gradient with an outer product.
+    def _module_gradient(
+        self, module: nn.Module, g: Float[Tensor, "N S O"]
+    ) -> OuterProductGradients | Tensor:
+        """Return the per-sample (or per-token) module gradients as the vectors
+        they are formed from.
 
-        Equivalent to forming ``cat([g ⊗ a, bias_grad], -1)`` and calling
-        ``double_sided_projection`` with ``i + 1``, because
-
-            ``let L = left side projection matrix``
-            ``let R = right side projection matrix``
-            ``L @ cat([gᵀa, b], -1) @ Rᵀ = (g @ Lᵀ)ᵀ @ (a @ Rᵀ[:i]) + (b @ Lᵀ) ⊗ Rᵀ[i]``
-
-        Only valid when nothing elementwise (e.g. Adam normalization) is applied
-        to the outer product.
-        """
-        g_projection = self.projection(name, p, o, "left", g.device, g.dtype)
-        a_projection = self.projection(name, p, i + 1, "right", g.device, g.dtype).T
-
-        g = g @ g_projection.T  # [N, S, p]
-        a = a @ a_projection[:i]  # [N, S, p]
-        bias_grad = bias_grad @ g_projection.T  # [N, p] or [N, S, p]
-
-        if self.attribute_tokens:
-            # [N, S, p, 1] * [N, S, 1, p] → [N, S, p, p]
-            P = g.unsqueeze(-1) * a.unsqueeze(-2)
-        else:
-            P = g.mT @ a  # [N, p, S] @ [N, S, p] → [N, p, p]
-
-        # Outer product of the projected bias gradient with the bias row of the
-        # right projection: [..., p, 1] * [p] → [..., p, p]
-        return P + bias_grad.unsqueeze(-1) * a_projection[i]
-
-    def _compute_gradient(self, module: nn.Module, g: Float[Tensor, "N S O"]) -> Tensor:
-        """Compute the per-sample (or per-token) module gradient from cached activations
-        and the output gradient.
-
-        Handles normalizer preprocessing, bias appending, double-sided random
-        projection, and ``attribute_tokens`` per-position paths.  Does not handle
-        global (all modules) random projection. Returns the flattened, clamped module
-        gradient tensor ``P``.
+        Handles normalizer preprocessing, bias gradients, per-module random
+        projection and ``attribute_tokens``, but not global random projection.
+        Adam normalizes each entry, so with projection its gradients are formed
+        before they are projected, and returned as a [rows, p, p] tensor.
         """
         a = module._inputs  # [N, S, I/q]
         assert isinstance(a, torch.Tensor), "Activation cache missing for module"
@@ -633,142 +595,68 @@ class HookCollectorBase(ContextDecorator, ABC):
         o = getattr(module, LayerAdapter.out_attr(module))
         normalizer = self.normalizer_for(name)
 
-        if isinstance(normalizer, AdamNormalizer):
-            # Gate on the per-module flag, as shapes(), discover_targets() and
-            # the forward hook do: in a mixed-bias model (e.g. Qwen2) the
-            # biasless modules have no bias_avg_sq. The bias gradient takes g's
-            # dtype, which fp32 normalizers would otherwise promote.
-            if module._collect_bias:
-                if self.attribute_tokens:
-                    bias_grad = normalizer.normalize_bias(g).type_as(g)  # [N, S, O]
-                else:
-                    bias_grad = normalizer.normalize_bias(g).sum(dim=1).type_as(g)
-            else:
-                bias_grad = None
+        if self.attribute_tokens:
+            # Drop uncollected positions (padding and each sequence's last
+            # position) before forming any [O, I] gradients
+            mask = self._current_collection_mask
+            g, a = g[mask], a[mask]  # [T, O], [T, I/q]
 
-            if self.attribute_tokens:
-                # Per-position outer product: [N,S,O,1]*[N,S,1,I] → [N,S,O,I]
-                P = g.unsqueeze(-1) * a.unsqueeze(-2)
+        adam = isinstance(normalizer, AdamNormalizer)
 
-                P = normalizer.normalize_weight(P)  # broadcasts [O,I] over [N,S,O,I]
-                if bias_grad is not None:
-                    P = torch.cat([P, bias_grad.unsqueeze(-1)], dim=-1)
-                    i += 1
+        # Gate on the per-module flag, as shapes(), discover_targets() and
+        # the forward hook do: in a mixed-bias model (e.g. Qwen2) the
+        # biasless modules have no bias_avg_sq. The bias gradient takes g's
+        # dtype, which fp32 normalizers would otherwise promote.
+        bias = None
+        if module._collect_bias:
+            bias = g if normalizer is None else normalizer.normalize_bias(g)
+            if not self.attribute_tokens:
+                bias = bias.sum(dim=1)  # [N, O]
+            bias = bias.type_as(g)
 
-                if p is not None:
-                    P = self.double_sided_projection(name, P, g, p, o, i)
-
-                P = P.flatten(2)  # [N, S, grad_dim]
-                P = P[self._current_collection_mask]  # [total_valid, grad_dim]
-            else:
-                P = g.mT @ a  # [N,O,S] @ [N,S,I] → [N,O,I]
-
-                P = normalizer.normalize_weight(P)  # broadcasts [O,I] over [N,O,I]
-                if bias_grad is not None:
-                    P = torch.cat([P, bias_grad.unsqueeze(2)], dim=2)  # [N,O,I+1]
-                    i += 1
-
-                if p is not None:
-                    P = self.double_sided_projection(name, P, g, p, o, i)
-
-        elif isinstance(normalizer, AdafactorNormalizer):
-            if module._collect_bias:
-                if self.attribute_tokens:
-                    bias_grad = normalizer.normalize_bias(g).type_as(g)  # [N, S, O]
-                else:
-                    bias_grad = normalizer.normalize_bias(g).sum(dim=1).type_as(g)
-            else:
-                bias_grad = None
-
+        if isinstance(normalizer, AdafactorNormalizer):
             # Apply row normalization to g (for weights)
             g_factor = normalizer.row.add(1e-30)
             g_factor = g_factor.mean().sqrt() * g_factor.rsqrt()
-            g = g * g_factor.type_as(g)  # [N, S, O] * [O] → [N, S, O]
+            g = g * g_factor.type_as(g)  # [..., O] * [O] → [..., O]
 
-            if self.attribute_tokens:
-                if bias_grad is not None and p is not None:
-                    # a was not projected in forward; project both factors and
-                    # add the projected bias column without forming [N,S,O,I+1]
-                    P = self.double_sided_projection_with_bias(
-                        name, g, a, bias_grad, p, o, i
-                    )
-                elif bias_grad is not None:
-                    # a was not projected in forward
-                    # [N, S, O, 1] * [N, S, 1, I] → [N, S, O, I]
-                    P = g.unsqueeze(-1) * a.unsqueeze(-2)
-                    # [N, S, O, I+1]
-                    P = torch.cat([P, bias_grad.unsqueeze(-1)], dim=-1)
-                else:
-                    # a was already projected in forward; project g individually
-                    if p is not None:
-                        g_projection = self.projection(
-                            name, p, o, "left", g.device, g.dtype
-                        )
-                        g = g @ g_projection.T
-                    # [N, S, O/p, 1] * [N, S, 1, I/q] → [N, S, O/p, I/q]
-                    P = g.unsqueeze(-1) * a.unsqueeze(-2)
-                P = P.flatten(2)  # [N, S, grad_dim]
-                P = P[self._current_collection_mask]  # [total_valid, grad_dim]
-            else:
-                if bias_grad is not None and p is not None:
-                    P = self.double_sided_projection_with_bias(
-                        name, g, a, bias_grad, p, o, i
-                    )
-                elif bias_grad is not None:
-                    P = g.mT @ a  # [N, O, I]
-                    P = torch.cat([P, bias_grad.unsqueeze(2)], dim=2)  # [N, O, I+1]
-                else:
-                    # a was already projected in forward; project g individually
-                    if p is not None:
-                        g_projection = self.projection(
-                            name, p, o, "left", g.device, g.dtype
-                        )
-                        g = g @ g_projection.T  # [N, S, p]
-
-                    P = g.mT @ a  # [N, O/p, S] @ [N, S, I/q] → [N, O/p, I/q]
-        else:
-            # No normalizer
-            if module._collect_bias:
-                if self.attribute_tokens:
-                    bias_grad = g  # [N, S, O]
-                else:
-                    bias_grad = g.sum(dim=1)  # [N, O]
-            else:
-                bias_grad = None
-
-            if p is not None and module._collect_bias:
-                # a was not projected in forward; project both factors and add
-                # the projected bias column without forming [N, (S,) O, I+1]
-                assert bias_grad is not None
-                P = self.double_sided_projection_with_bias(
-                    name, g, a, bias_grad, p, o, i
+        divisor = normalizer.weight_denominator() if adam else None
+        bias_col = None
+        if p is not None and not adam:
+            # The forward hook already projected a, unless it has to be
+            # projected together with the bias column
+            g_projection = self.projection(name, p, o, "left", g.device, g.dtype)
+            g = g @ g_projection.T
+            if bias is not None:
+                a_projection = self.projection(
+                    name, p, i + 1, "right", g.device, g.dtype
                 )
-                if self.attribute_tokens:
-                    P = P.flatten(2)  # [N, S, grad_dim]
-                    P = P[self._current_collection_mask]  # [total_valid, grad_dim]
-            else:
-                # a was already projected in forward if p is set;
-                # project g individually
-                if p is not None:
-                    g_projection = self.projection(
-                        name, p, o, "left", g.device, g.dtype
-                    )
-                    g = g @ g_projection.T  # [N, S, p]
+                a = a @ a_projection[:, :i].T
+                bias = bias @ g_projection.T
+                bias_col = a_projection[:, i]
+        elif bias is not None:
+            a = F.pad(a, (0, 1))
+            bias_col = a.new_zeros(i + 1)
+            bias_col[i] = 1
+            if divisor is not None:
+                divisor = F.pad(divisor, (0, 1), value=1.0)
 
-                if self.attribute_tokens:
-                    # [N, S, O/p, 1] * [N, S, 1, I/q] → [N, S, O/p, I/q]
-                    P = g.unsqueeze(-1) * a.unsqueeze(-2)
-                    if bias_grad is not None:
-                        P = torch.cat([P, bias_grad.unsqueeze(-1)], dim=-1)
-                    P = P.flatten(2)  # [N, S, grad_dim]
-                    P = P[self._current_collection_mask]  # [total_valid, grad_dim]
-                else:
-                    P = g.mT @ a  # [N, O/p, I/p]
-                    if bias_grad is not None:
-                        P = torch.cat([P, bias_grad.unsqueeze(2)], dim=2)  # [N,O,I+1]
+        grads = OuterProductGradients(g, a, bias, bias_col, divisor)
+        if p is not None and adam:
+            P = grads.materialize()
+            return self.double_sided_projection(name, P, p, o, a.shape[-1])
+        return grads
 
-        P = P.flatten(1).clamp_(self.lo, self.hi)
-        return P
+    def _materialize_gradient(self, grads: OuterProductGradients | Tensor) -> Tensor:
+        """Flatten and clamp the gradients, forming them if needed."""
+        if isinstance(grads, OuterProductGradients):
+            grads = grads.materialize()
+        return grads.flatten(1).clamp_(self.lo, self.hi)
+
+    def _compute_gradient(self, module: nn.Module, g: Float[Tensor, "N S O"]) -> Tensor:
+        """Compute the flattened, clamped per-sample (or per-token) module
+        gradients. Does not handle global random projection."""
+        return self._materialize_gradient(self._module_gradient(module, g))
 
     @abstractmethod
     def backward_hook(self, module: nn.Module, g: Float[Tensor, "N S O"]) -> None:
@@ -1109,7 +997,7 @@ def global_projection_blocks(
 
 def project_global(
     identifier: str,
-    P: Tensor,
+    P: Tensor | OuterProductGradients,
     m: int,
     projection_type: Literal["normal", "rademacher"] = "normal",
     projection_scale: Literal["jl", "row_norm"] = "jl",
@@ -1121,13 +1009,20 @@ def project_global(
     ``sqrt(m)``; ``row_norm`` divides each output column by the norm of the
     corresponding row of ``R`` (``sqrt(n)`` exactly for Rademacher entries).
     """
-    n = P.shape[1]
-    out = P.new_zeros(P.shape[0], m)
-    row_sq = P.new_zeros(m) if projection_scale == "row_norm" else None
+    if isinstance(P, OuterProductGradients):
+        n = P.g.shape[-1] * P.a.shape[-1]
+        out = P.g.new_zeros(P.g.shape[0], m)
+    else:
+        n = P.shape[1]
+        out = P.new_zeros(P.shape[0], m)
+    row_sq = out.new_zeros(m) if projection_scale == "row_norm" else None
     for start, stop, block in global_projection_blocks(
-        identifier, m, n, P.dtype, P.device, projection_type
+        identifier, m, n, out.dtype, out.device, projection_type
     ):
-        out.addmm_(P[:, start:stop], block.T)
+        if isinstance(P, OuterProductGradients):
+            out.add_(P.dot(block, start))
+        else:
+            out.addmm_(P[:, start:stop], block.T)
         if row_sq is not None:
             row_sq.add_(block.pow(2).sum(dim=1))
     if row_sq is not None:

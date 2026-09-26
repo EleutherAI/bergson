@@ -883,3 +883,46 @@ def test_score_nearest_token_writer(tmp_path: Path, dataset):
     expected = (batch["mod_a"] @ raw["mod_a"].T).max(dim=-1).values
     got = torch.from_numpy(np.asarray(scorer.writer.scores["score_0"]).copy())
     torch.testing.assert_close(got, expected, atol=1e-4, rtol=1e-4)
+
+
+def test_in_memory_collector_streams_to_scorer(tmp_path: Path, model, dataset):
+    """Scoring during collection, one module at a time, matches scoring the
+    collected gradients."""
+    cfg = IndexConfig(run_path=str(tmp_path / "run"))
+    cfg.partial_run_path.mkdir(parents=True)
+
+    def collect(scorer=None) -> InMemoryCollector:
+        collector = InMemoryCollector(
+            model=model.base_model,
+            data=dataset,
+            cfg=cfg,
+            processor=GradientProcessor(),
+            scorer=scorer,
+        )
+        CollectorComputer(
+            model, dataset, collector=collector, cfg=cfg
+        ).run_with_collector_hooks()
+        return collector
+
+    gradients = collect().gradients
+    torch.manual_seed(0)
+    queries = {m: torch.randn(2, g.shape[1]) for m, g in gradients.items()}
+
+    def make_scorer(writer) -> Scorer:
+        return Scorer(
+            query_grads=queries,
+            modules=list(queries),
+            writer=writer,
+            device=torch.device("cpu"),
+            dtype=torch.float32,
+        )
+
+    writer = InMemorySequenceScoreWriter(len(dataset), 2)
+    scorer = make_scorer(writer)
+    streamed = []
+    accumulate = scorer.accumulate
+    scorer.accumulate = lambda name, g: streamed.append(name) or accumulate(name, g)
+    collect(scorer)
+    assert set(streamed) == set(queries)
+
+    torch.testing.assert_close(writer.scores, make_scorer(writer).score(gradients))

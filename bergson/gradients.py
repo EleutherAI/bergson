@@ -1,10 +1,11 @@
 from abc import ABC, abstractmethod
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 from typing import Literal, Mapping
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import yaml
 from torch import Tensor
 from transformers.pytorch_utils import Conv1D as HFConv1D
@@ -460,9 +461,12 @@ class AdamNormalizer(Normalizer):
         eps: float = 1e-8,
     ) -> Tensor:
         """Normalize the gradients by the square root of the second moments."""
+        return grad.div_(self.weight_denominator(eps))
+
+    def weight_denominator(self, eps: float = 1e-8) -> Tensor:
+        """The [O, I] tensor ``normalize_weight`` divides the gradients by."""
         # Adam-style epsilon is added outside the square root
-        denom = self.weight_avg_sq.sqrt()
-        return grad.div_(denom.add_(eps))
+        return self.weight_avg_sq.sqrt().add_(eps)
 
     def normalize_bias(
         self,
@@ -495,3 +499,135 @@ class AdamNormalizer(Normalizer):
             col=self.weight_avg_sq.mean(dim=0),  # shape [I]
             bias_avg_sq=self.bias_avg_sq,
         )
+
+
+@dataclass
+class OuterProductGradients:
+    """A module's gradients ``(g ⊗ a) ⊘ divisor + bias ⊗ bias_col``, kept as the
+    vectors they are formed from.
+
+    With ``g`` of shape [T, O] there is one gradient per token. With shape
+    [N, S, O] there is one per example, summed over its S positions.
+    """
+
+    g: Tensor
+    """Output gradients, [T, O] or [N, S, O]."""
+
+    a: Tensor
+    """Inputs, [T, W] or [N, S, W], zero in the bias column if there is one."""
+
+    bias: Tensor | None = None
+    """Bias gradients, [T, O] or [N, O]."""
+
+    bias_col: Tensor | None = None
+    """The [W] vector the bias gradients are paired with: the bias column's
+    indicator, or its projection."""
+
+    divisor: Tensor | None = None
+    """[O, W] entry-wise divisor of ``g ⊗ a``, from Adam normalization."""
+
+    @property
+    def per_example(self) -> bool:
+        """Whether each row sums an example's positions."""
+        return self.g.ndim == 3
+
+    def to(
+        self, device: torch.device, dtype: torch.dtype, non_blocking: bool = False
+    ) -> "OuterProductGradients":
+        """Move to ``device`` and cast to ``dtype``, except for the divisor, whose
+        smallest entries half precision can't represent."""
+
+        moved = {
+            f.name: t.to(
+                device=device,
+                dtype=None if f.name == "divisor" else dtype,
+                non_blocking=non_blocking,
+            )
+            for f in fields(self)
+            if (t := getattr(self, f.name)) is not None
+        }
+        return replace(self, **moved)
+
+    def dot(self, q: Tensor, start: int = 0) -> Tensor:
+        """Dot products [rows, Q] of the flattened gradients' entries
+        ``[start, start + k)`` with each row of ``q`` [Q, k].
+
+        Per-token gradients are contracted with ``q`` one vector at a time,
+        which builds a [T, Q, min(O, W)] tensor instead of the [T, O, W]
+        gradients, unless that is larger.
+        """
+        # Pad q to cover whole rows lo:hi of the [O, W] gradients
+        w = self.a.shape[-1]
+        lo, hi = start // w, -(-(start + q.shape[1]) // w)
+        pad = (start - lo * w, hi * w - start - q.shape[1])
+        if any(pad):
+            q = F.pad(q, pad)
+        o = hi - lo
+        q = q.reshape(len(q), o, w)
+        grads = replace(
+            self,
+            g=self.g[..., lo:hi],
+            bias=self.bias[..., lo:hi] if self.bias is not None else None,
+            divisor=self.divisor[lo:hi] if self.divisor is not None else None,
+        )
+
+        dtype, divisor = q.dtype, grads.divisor
+        if divisor is not None:
+            # Dividing by the divisor can overflow half precision
+            grads = grads.to(q.device, divisor.dtype)
+            divisor = grads.divisor
+        q = q.to(grads.g.dtype)
+
+        if self.per_example or len(q) >= max(o, w):
+            return (grads.materialize().flatten(1) @ q.flatten(1).T).to(dtype)
+
+        # ⟨(g ⊗ a) ⊘ D, q⟩ = gᵀ (q ⊘ D) a
+        q_weight = q / divisor if divisor is not None else q
+        if o <= w:
+            # [T, W] @ [W, Q * O] → [T, Q, O]
+            a_q = grads.a @ q_weight.reshape(-1, w).T
+            part = torch.einsum("tqo,to->tq", a_q.view(len(grads.a), -1, o), grads.g)
+        else:
+            # [T, O] @ [Q, O, W] → [Q, T, W]
+            part = torch.einsum("qtw,tw->tq", grads.g @ q_weight, grads.a)
+        if grads.bias is not None:
+            assert grads.bias_col is not None
+            part.add_(grads.bias @ (q @ grads.bias_col).T)
+        return part.to(dtype)
+
+    def sq_norm(self) -> Tensor:
+        """Squared norms [T] of per-token gradients, in float32."""
+        assert not self.per_example, "Form per-example gradients to take norms"
+        grads = self.to(self.g.device, torch.float32)
+        g2, a2 = grads.g.pow(2), grads.a.pow(2)
+        if grads.divisor is None:
+            n = g2.sum(-1) * a2.sum(-1)  # ‖g ⊗ a‖ = ‖g‖·‖a‖
+        else:
+            n = ((g2 @ grads.divisor.pow(-2)) * a2).sum(-1)
+
+        if grads.bias is not None:
+            assert grads.bias_col is not None
+            # The bias term and its cross term with g ⊗ a
+            n += grads.bias.pow(2).sum(-1) * grads.bias_col.pow(2).sum()
+            gb, ac = grads.g * grads.bias, grads.a * grads.bias_col
+            if grads.divisor is None:
+                n += 2 * gb.sum(-1) * ac.sum(-1)
+            else:
+                n += 2 * ((gb @ grads.divisor.reciprocal()) * ac).sum(-1)
+
+        # The cross term can round the total below zero
+        return n.clamp_min_(0)
+
+    def materialize(self) -> Tensor:
+        """Form the gradients, [T, O, W] or [N, O, W]."""
+        if self.g.ndim == 2:
+            P = self.g.unsqueeze(-1) * self.a.unsqueeze(-2)
+        else:
+            P = self.g.mT @ self.a
+
+        if self.divisor is not None:
+            P.div_(self.divisor)
+        if self.bias is not None:
+            assert self.bias_col is not None
+            P.addcmul_(self.bias.unsqueeze(-1), self.bias_col)
+        return P
