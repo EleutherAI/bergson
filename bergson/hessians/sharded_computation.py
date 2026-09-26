@@ -21,6 +21,75 @@ def shard_bounds(dim: int, rank: int, world_size: int) -> tuple[int, int]:
     return start, start + base
 
 
+def assign_module_owners(
+    target_info: dict[str, tuple[torch.device, torch.Size, bool]],
+    world_size: int,
+) -> dict[str, int]:
+    """Give each module's factors to one rank, largest first onto the rank
+    holding the fewest elements so far. Every rank computes the same result."""
+    load = [0] * world_size
+
+    def numel(name: str) -> int:
+        _, (out_dim, in_dim), collect_bias = target_info[name]
+        return (in_dim + collect_bias) ** 2 + out_dim**2
+
+    owners = {}
+    for name in sorted(target_info, key=lambda n: (-numel(n), n)):
+        owner = min(range(world_size), key=load.__getitem__)
+        owners[name] = owner
+        load[owner] += numel(name)
+    return owners
+
+
+def gather_batch_shapes(*sizes: int, device: str | torch.device) -> list[list[int]]:
+    """Every rank's ``sizes`` for the current batch, in rank order."""
+    local = torch.tensor(sizes, device=device, dtype=torch.int64)
+    # Flat, since gloo requires the output to be a concatenation of the inputs.
+    gathered = torch.empty(
+        dist.get_world_size() * len(sizes), device=device, dtype=torch.int64
+    )
+    dist.all_gather_into_tensor(gathered, local)
+    return gathered.view(dist.get_world_size(), len(sizes)).tolist()
+
+
+def gather_to_owner(x: Tensor, rows: int, owner: int) -> Tensor | None:
+    """Stack every rank's ``x`` on ``owner``, each padded with zero rows to
+    ``rows`` so the ranks send the same shape; ``None`` on the other ranks."""
+    padded = x.new_zeros(rows, *x.shape[1:])
+    padded[: x.shape[0]] = x
+    if dist.get_rank() != owner:
+        dist.gather(padded, dst=owner)
+        return None
+
+    stacked = padded.new_empty(dist.get_world_size() * rows, *x.shape[1:])
+    dist.gather(padded, list(stacked.split(rows)), dst=owner)
+    return stacked
+
+
+def owned_to_row_shards(
+    owned: dict[str, Tensor],
+    shapes: dict[str, tuple[int, ...]],
+    owners: dict[str, int],
+    dtype: torch.dtype,
+    device: str | torch.device,
+) -> dict[str, Tensor]:
+    """This rank's row shard of every matrix, on the CPU, from ``owned``, the
+    matrices this rank owns in full. One matrix at a time is sent from its owner."""
+    rank, world_size = dist.get_rank(), dist.get_world_size()
+    shards = {}
+    for name, shape in shapes.items():
+        owner = owners[name]
+        if rank == owner:
+            full = owned[name].contiguous()
+        else:
+            full = torch.empty(shape, device=device, dtype=dtype)
+        dist.broadcast(full, src=owner)
+        start, end = shard_bounds(shape[0], rank, world_size)
+        shards[name] = full[start:end].cpu()
+        del full
+    return shards
+
+
 class ShardedMul:
     """Distributed-aware linear-algebra primitives for applying a factored Hessian:
     eigenbasis rotations and in-place eigenvalue scaling.
