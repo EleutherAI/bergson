@@ -1,6 +1,5 @@
 from collections import defaultdict
 from dataclasses import dataclass, field
-from pathlib import Path
 
 import pytest
 import torch
