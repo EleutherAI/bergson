@@ -80,6 +80,11 @@ class Normalizer(ABC):
         }
 
 
+PROJECTION_VERSION = 2
+"""Version of the random projection matrices. Version 1 matrices came from
+PyTorch's random number generators, whose output depends on the device.
+Bump it whenever the matrices ``random_matrix`` generates change."""
+
 PROJECTION_SETTINGS = (
     "projection_dim",
     "projection_type",
@@ -87,6 +92,7 @@ PROJECTION_SETTINGS = (
     "projection_seed",
     "projection_target",
     "include_bias",
+    "projection_version",
 )
 """Settings that must match between gradients projected separately.
 ``include_bias`` widens the right projection matrix of modules with a bias,
@@ -149,6 +155,9 @@ class GradientProcessor:
 
     projection_seed: int | None = None
     """Seed of the random projection."""
+
+    projection_version: int = PROJECTION_VERSION
+    """Version of the random projection matrices. See ``PROJECTION_VERSION``."""
 
     def __post_init__(self):
         # Configs use 0 for no projection.
@@ -235,6 +244,8 @@ class GradientProcessor:
             cfg["include_bias"] = False
         if "projection_scale" not in cfg:
             cfg["projection_scale"] = "row_norm"
+        if "projection_version" not in cfg:
+            cfg["projection_version"] = 1
         # Defensive: rename any legacy preconditioner* keys that may appear in
         # configs saved by older versions of this code.
         for legacy_key in list(cfg.keys()):
@@ -266,10 +277,29 @@ class GradientProcessor:
                 f"{listed}. Rebuild it with matching settings."
             )
 
+    def check_projection_version(self) -> None:
+        """Raise if this processor projects with matrices this version of bergson
+        can't generate."""
+        if self.projection_dim and self.projection_version != PROJECTION_VERSION:
+            raise ValueError(
+                f"These gradients were projected with version "
+                f"{self.projection_version} random projection matrices, but this "
+                f"version of bergson generates version {PROJECTION_VERSION}. Rebuild "
+                "the index."
+            )
+
     def check_saved_projection(self, path: Path | str, what: str) -> None:
         """``check_projection_matches`` against the processor saved with the
         gradients or hessians at ``path``."""
         if not (Path(path) / "processor_config.yaml").exists():
+            if self.projection_dim:
+                # Everything bergson saves now has a config, so this was saved
+                # with version 1 matrices.
+                raise ValueError(
+                    f"{what} at {path} has no processor_config.yaml, so it was "
+                    "saved by an earlier version of bergson whose random "
+                    "projections can't be reproduced. Rebuild it."
+                )
             logger.warning(
                 f"{what} at {path} has no processor_config.yaml, so its projection "
                 "settings can't be checked."
