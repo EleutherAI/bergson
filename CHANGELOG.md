@@ -1,6 +1,14 @@
 # CHANGELOG
 
 
+## v2.0.2 (2026-09-27)
+
+### Bug Fixes
+
+- Give every rank no GPU when CUDA_VISIBLE_DEVICES is empty
+  ([`0fc6642`](https://github.com/EleutherAI/bergson/commit/0fc664250733c4393c99d5ae3495ec811725f231))
+
+
 ## v2.0.1 (2026-09-27)
 
 ### Performance Improvements
