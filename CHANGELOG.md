@@ -1,6 +1,25 @@
 # CHANGELOG
 
 
+## v2.0.3 (2026-09-27)
+
+### Bug Fixes
+
+- Apply full factored Hessians on each rank in score and build
+  ([`0578135`](https://github.com/EleutherAI/bergson/commit/0578135c7278a5448580f6e9278539122b137eff))
+
+- Only add sampled-label losses where the dataset has labels
+  ([`a13c9d1`](https://github.com/EleutherAI/bergson/commit/a13c9d13e7be0ce41e3c0026cba66752a7743611))
+
+### Documentation
+
+- Describe from_path as applying full factors on every rank
+  ([`c32cdf5`](https://github.com/EleutherAI/bergson/commit/c32cdf5726da03b92b4d945da1737ee6344a47c8))
+
+- Say where sampled labels get a loss
+  ([`9318d0b`](https://github.com/EleutherAI/bergson/commit/9318d0b75510374dc0a56889797d287df7728afc))
+
+
 ## v2.0.2 (2026-09-27)
 
 ### Bug Fixes
