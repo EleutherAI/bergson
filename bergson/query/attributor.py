@@ -70,6 +70,7 @@ class Attributor:
 
         # Load the gradient processor
         self.processor = GradientProcessor.load(index_path, map_location=device)
+        self.processor.check_projection_version()
         if hessian_path is not None and not is_factored_hessian(hessian_path):
             self.processor.check_saved_projection(hessian_path, "The Hessian")
 
