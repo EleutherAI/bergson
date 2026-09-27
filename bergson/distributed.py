@@ -101,8 +101,12 @@ def dist_worker(
     world_size: int,
     master_addr: str,
     master_port: str,
+    matmul_precision: str,
     *worker_args,
 ):
+    # Spawned children start with torch's default, so copy the parent's, which
+    # IndexConfig.use_tf32_matmuls sets.
+    torch.set_float32_matmul_precision(matmul_precision)
     os.environ["LOCAL_RANK"] = str(local_rank)
     os.environ["RANK"] = str(rank)
     os.environ["WORLD_SIZE"] = str(world_size)
@@ -193,6 +197,7 @@ def launch_distributed_run(
                         world_size,
                         master_addr,
                         master_port,
+                        torch.get_float32_matmul_precision(),
                         *const_worker_args,
                     ),
                 )
