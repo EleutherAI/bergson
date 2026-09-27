@@ -946,7 +946,8 @@ class HessianConfig(Serializable):
 
     use_dataset_labels: bool = False
     """Whether to use dataset labels for Hessian (empirical Fisher) approximation.
-    If false, the model predictions will be used."""
+    If false, labels are sampled from the model's predictions at the positions
+    that have a dataset label."""
 
     module_partitions: int = 1
     """Fit the factored methods in this many module groups, one pass per group,
