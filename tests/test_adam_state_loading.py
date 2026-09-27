@@ -1,4 +1,5 @@
 import tempfile
+from pathlib import Path
 
 import pytest
 import torch
@@ -103,7 +104,7 @@ def _create_fake_optimizer_state(model, lr=1e-3):
     return {"state": state, "param_groups": param_groups}
 
 
-def _train_checkpoint(optim_name: str) -> tuple:
+def _train_checkpoint(optim_name: str, output_dir: Path) -> tuple:
     """Train a tiny model for a few steps and return (checkpoint_path, model)."""
     model = AutoModelForSequenceClassification.from_pretrained(
         "distilbert-base-uncased", num_labels=2
@@ -118,9 +119,8 @@ def _train_checkpoint(optim_name: str) -> tuple:
         batched=True,
     )
 
-    tmpdir = tempfile.mkdtemp()
     args = TrainingArguments(
-        output_dir=tmpdir,
+        output_dir=str(output_dir),
         max_steps=3,
         save_steps=3,
         per_device_train_batch_size=4,
@@ -130,10 +130,8 @@ def _train_checkpoint(optim_name: str) -> tuple:
     trainer = Trainer(model=model, args=args, train_dataset=dummy_data)
     trainer.train()
 
-    import os
-
-    ckpt = [d for d in os.listdir(tmpdir) if d.startswith("checkpoint")][0]
-    return os.path.join(tmpdir, ckpt), model
+    ckpt = next(output_dir.glob("checkpoint*"))
+    return str(ckpt), model
 
 
 # ---------------------------------------------------------------------------
@@ -527,9 +525,9 @@ def test_load_from_peft_strip_adapter_target_modules_misses(tmp_path):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-def test_load_adafactor_checkpoint():
+def test_load_adafactor_checkpoint(tmp_path):
     """Load from a real Adafactor training checkpoint and verify values match."""
-    ckpt_path, model = _train_checkpoint("adafactor")
+    ckpt_path, model = _train_checkpoint("adafactor", tmp_path)
     opt_state = torch.load(
         f"{ckpt_path}/optimizer.pt", map_location="cpu", weights_only=False
     )
@@ -568,9 +566,9 @@ def test_load_adafactor_checkpoint():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-def test_load_8bit_adam_checkpoint():
+def test_load_8bit_adam_checkpoint(tmp_path):
     """Load from a real 8-bit Adam (bitsandbytes) training checkpoint."""
-    ckpt_path, model = _train_checkpoint("adamw_bnb_8bit")
+    ckpt_path, model = _train_checkpoint("adamw_bnb_8bit", tmp_path)
     opt_state = torch.load(
         f"{ckpt_path}/optimizer.pt", map_location="cpu", weights_only=False
     )

@@ -54,10 +54,9 @@ def test_gradient_scale_invariance(tmp_path):
     index_dir.mkdir()
 
     def start_bergson_build(index_name: str, dataset_path: str):
-        index_path = index_dir / index_name
         cmd = bergson_cmd(
             "build",
-            str(index_path),
+            str(index_dir / index_name),
             "--model",
             "gpt2",  # Use small model for testing
             "--dataset",
@@ -78,23 +77,28 @@ def test_gradient_scale_invariance(tmp_path):
             text=True,
             env=bergson_env(),
         )
-        return index_path, proc
+        return proc
 
-    # Build the three independent indices concurrently
-    index_a_path, proc_a = start_bergson_build("a", str(data_dir / "data_a"))
-    index_b_path, proc_b = start_bergson_build("b", str(data_dir / "data_b"))
-    index_combined_path, proc_combined = start_bergson_build(
-        "combined", str(data_dir / "data_combined")
-    )
-    for proc in (proc_a, proc_b, proc_combined):
+    def wait(proc: subprocess.Popen):
         _, stderr = proc.communicate()
         assert proc.returncode == 0, f"bergson build failed:\n{stderr}"
 
+    # Build the three independent indices concurrently if they fit on the GPU;
+    # together they peak at about 8 GiB
+    names = ("a", "b", "combined")
+    if torch.cuda.mem_get_info()[0] >= 9 * 2**30:
+        procs = [start_bergson_build(n, str(data_dir / f"data_{n}")) for n in names]
+        for proc in procs:
+            wait(proc)
+    else:
+        for n in names:
+            wait(start_bergson_build(n, str(data_dir / f"data_{n}")))
+
     # Load gradients
-    grads_a = torch.from_numpy(load_gradients(index_a_path).copy()).float()
-    grads_b = torch.from_numpy(load_gradients(index_b_path).copy()).float()
+    grads_a = torch.from_numpy(load_gradients(index_dir / "a").copy()).float()
+    grads_b = torch.from_numpy(load_gradients(index_dir / "b").copy()).float()
     grads_combined = torch.from_numpy(
-        load_gradients(index_combined_path).copy()
+        load_gradients(index_dir / "combined").copy()
     ).float()
 
     # Split combined to match a and b
