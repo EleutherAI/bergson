@@ -1,6 +1,14 @@
 # CHANGELOG
 
 
+## v2.0.1 (2026-09-27)
+
+### Performance Improvements
+
+- Give each module's factors to one rank instead of splitting rows
+  ([`fda07bf`](https://github.com/EleutherAI/bergson/commit/fda07bfc20e4fc65bce3bd37fe0c1a8394115c02))
+
+
 ## v2.0.0 (2026-09-27)
 
 ### Bug Fixes
