@@ -145,10 +145,10 @@ class JointDensePreconditioner:
 class FactoredPreconditioner:
     """Factored (EKFAC) preconditioner applied via the eigenbasis rotation.
 
-    Works single-process (full factors) and distributed (per-rank row-shards);
-    :class:`ShardedMul` handles both. Construct via :meth:`from_path` (single
-    process, concatenated factors) or :meth:`from_shards` (this rank's shard
-    files, under an initialized process group).
+    Works with full factors on each rank or with per-rank row-shards;
+    :class:`ShardedMul` handles both. Construct via :meth:`from_path` (full
+    factors, applied locally on every rank) or :meth:`from_shards` (this rank's
+    shard files, under an initialized process group).
 
     ``inversion_cfg`` and ``apply_fn`` are mutually exclusive: pass a standard
     eigenvalue inversion, or a custom eigenvalue function (approximate unrolling's
@@ -195,8 +195,8 @@ class FactoredPreconditioner:
         ev_correction: bool = False,
         device: str | torch.device = "cpu",
     ) -> "FactoredPreconditioner":
-        """Load the full factors (concatenating any shards). Every rank of a
-        process group applies them on its own."""
+        """Load the full factors (concatenating any shards); each rank applies
+        them locally."""
 
         def load(sub):
             return _load_full(hessian_path, sub, device)
