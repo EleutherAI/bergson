@@ -129,6 +129,10 @@ class InversionConfig(Serializable):
     damping_factor: float = 0.1
     """Damping / truncation strength, relative to the mean eigenvalue."""
 
+    absolute_damping: bool = False
+    """Use ``damping_factor`` itself as the damping, the same for every module,
+    instead of a multiple of each module's mean eigenvalue."""
+
     apply_batch_size: int = 2
     """Query gradients moved on-device and preconditioned at a time in the
     inverse application."""
@@ -963,7 +967,7 @@ class AstraConfig(Serializable):
     ``x^T (H + D) x / 2 - x^T q``, starting from the EK-FAC solution, with each
     step preconditioned by the damped EK-FAC inverse. ``H`` is the Gauss-Newton
     Hessian of the training loss, estimated on a random batch of training
-    documents per step, and ``D`` is the EK-FAC damping ``c·mean(λ)`` of each
+    documents per step, and ``D`` is the EK-FAC damping of each
     module."""
 
     num_steps: int = 0

@@ -40,7 +40,7 @@ class AstraPaths:
 
 
 class GaussNewtonProduct:
-    """Gauss-Newton Hessian-vector products of the summed training loss, over
+    """Gauss-Newton Hessian-vector products of the training loss, over
     the modules and in the ``[O, I]`` gradient layout of the query index."""
 
     def __init__(self, model, data: Dataset, index_cfg: IndexConfig, names: list[str]):
@@ -99,8 +99,8 @@ class GaussNewtonProduct:
         return w.flatten()
 
     def __call__(self, v: dict[str, Tensor], indices: list[int]) -> dict[str, Tensor]:
-        """``H_B v`` on the documents ``indices``, scaled by ``len(data) /
-        len(indices)`` so it estimates the Hessian of the whole training set."""
+        """``H_B v`` on the documents ``indices``, a mean over documents like the
+        fitted Hessians."""
         batch = self.data[indices]
         x, y, _, _ = pad_and_tensor(
             batch["input_ids"],
@@ -121,7 +121,7 @@ class GaussNewtonProduct:
 
         # Cross-entropy's Hessian in the logits, diag(p) - p p^T, per position.
         mask = (y[:, 1:] != -100).to(logits.dtype)
-        weight = mask * len(self.data) / len(indices)
+        weight = mask / len(indices)
         if self.mean_reduction:
             weight = weight / mask.sum(1, keepdim=True).clamp_min(1)
         with torch.no_grad():
@@ -163,7 +163,8 @@ class Astra:
         )
         self.names = list(self.preconditioner.lambdas)
         self.damping = {
-            n: inversion_cfg.damping_factor * lam.mean()
+            n: inversion_cfg.damping_factor
+            * (1.0 if inversion_cfg.absolute_damping else lam.mean())
             for n, lam in self.preconditioner.lambdas.items()
         }
 

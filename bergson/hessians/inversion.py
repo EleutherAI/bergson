@@ -182,6 +182,7 @@ def invert_psd_matrix(
     damping_factor: float = 0.1,
     power: float = -1.0,
     dtype: torch.dtype = torch.float64,
+    absolute_damping: bool = False,
 ) -> Tensor:
     """Dense regularized inverse power of a p.s.d. matrix H via eigendecomposition.
 
@@ -211,8 +212,9 @@ def invert_psd_matrix(
     dense_inversion = (
         "damped_inverse" if inversion == "factored_tikhonov" else inversion
     )
+    mean = eigvals.new_ones(()) if absolute_damping else eigvals.mean()
     scaled = eigenvalue_multiplier(
-        dense_inversion, eigvals, eigvals.mean(), damping_factor, power=power
+        dense_inversion, eigvals, mean, damping_factor, power=power
     )
 
     return (eigvecs * scaled @ eigvecs.mH).to(original_dtype)

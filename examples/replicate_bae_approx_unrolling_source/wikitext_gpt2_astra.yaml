@@ -42,10 +42,10 @@ steps:
           split: validation
           chunk_length: 0
         aggregation: none
-      # The paper's damping of 0.011 per document, relative to the mean
-      # eigenvalue of the summed Hessian bergson fits.
+      # The paper's damping.
       inversion_cfg:
-        damping_factor: 1.5
+        damping_factor: 0.011
+        absolute_damping: true
 
 - ekfac:
     <<: *ekfac

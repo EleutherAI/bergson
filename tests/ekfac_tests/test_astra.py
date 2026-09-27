@@ -51,7 +51,7 @@ def test_gauss_newton_product_matches_explicit_jacobian():
     expected = torch.einsum("tvp,tvw,twq->pq", jac, out_hessian, jac) @ torch.cat(
         list(v.values())
     )
-    expected *= len(data) / len(indices)
+    expected /= len(indices)
 
     actual = product(v, indices)
     torch.testing.assert_close(torch.cat([actual[n] for n in names]), expected)

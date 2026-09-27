@@ -66,6 +66,7 @@ class DensePreconditioner:
                 inversion=inversion_cfg.inversion,
                 damping_factor=inversion_cfg.damping_factor,
                 power=power,
+                absolute_damping=inversion_cfg.absolute_damping,
             )
             for name, H in processor.hessians.items()
         }
@@ -114,6 +115,7 @@ class JointDensePreconditioner:
             inversion=inversion_cfg.inversion,
             damping_factor=inversion_cfg.damping_factor,
             power=power,
+            absolute_damping=inversion_cfg.absolute_damping,
         )
         return cls(h_inv)
 
@@ -297,7 +299,11 @@ class FactoredPreconditioner:
         if self.apply_fn is not None:
             inverse_eigvals = self.apply_fn(lam)
         else:
-            mean = self.shard_computer.global_mean(lam, o * i)
+            mean = (
+                lam.new_ones(())
+                if self.inversion_cfg.absolute_damping
+                else self.shard_computer.global_mean(lam, o * i)
+            )
             inversion = self.inversion_cfg.inversion
             if inversion == "factored_tikhonov":
                 factor_a = self.factor_eig_a[name]
