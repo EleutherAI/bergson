@@ -1,6 +1,22 @@
 # CHANGELOG
 
 
+## v2.0.0 (2026-09-27)
+
+### Bug Fixes
+
+- Generate projection matrices with random_matrix
+  ([`a2d3473`](https://github.com/EleutherAI/bergson/commit/a2d347336fba90fedb130434d21d6b25deb05305))
+
+- Stop a distributed launch as soon as one rank fails
+  ([`88addf1`](https://github.com/EleutherAI/bergson/commit/88addf14041911503b73ba7ea4059cb7b3caae29))
+
+### Breaking Changes
+
+- Every random projection matrix changes, so indexes built with projection_dim set by earlier
+  versions no longer match new queries and must be rebuilt.
+
+
 ## v1.2.0 (2026-09-25)
 
 ### Features
