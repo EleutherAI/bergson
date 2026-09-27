@@ -1054,6 +1054,10 @@ def fwd_bwd_hessian_factory(
                     num_samples=1,
                     replacement=True,
                 ).reshape_as(y[:, 1:])
+                # Only positions with a dataset label get a loss, as with
+                # use_dataset_labels; padding would otherwise reach real
+                # positions through attention.
+                sampled_tokens = sampled_tokens.masked_fill(~masks, -100)
             losses = F.cross_entropy(
                 logits.reshape(-1, logits.size(-1)),
                 sampled_tokens.flatten(),
