@@ -4,6 +4,7 @@ import socket
 from contextlib import nullcontext, redirect_stdout
 from copy import deepcopy
 from datetime import timedelta
+from multiprocessing.connection import wait
 from typing import Any, Callable, Concatenate, Mapping, ParamSpec
 
 import torch
@@ -108,18 +109,19 @@ def dist_worker(
     os.environ["MASTER_ADDR"] = master_addr
     os.environ["MASTER_PORT"] = master_port
 
-    try:
-        with nullcontext() if rank == 0 else redirect_stdout(io.StringIO()):
-            worker(rank, local_rank, world_size, *worker_args)
-    finally:
-        if dist.is_initialized():
-            try:
-                dist.barrier()
-            except Exception as e:
-                print(f"Barrier failed during cleanup: {e}")
-                pass
+    with nullcontext() if rank == 0 else redirect_stdout(io.StringIO()):
+        worker(rank, local_rank, world_size, *worker_args)
 
-            dist.destroy_process_group()
+    # Only after the worker succeeds: if it raised, the other ranks may be
+    # waiting in a collective that a barrier would never match.
+    if dist.is_initialized():
+        try:
+            dist.barrier()
+        except Exception as e:
+            print(f"Barrier failed during cleanup: {e}")
+            pass
+
+        dist.destroy_process_group()
 
 
 def launch_distributed_run(
@@ -198,12 +200,29 @@ def launch_distributed_run(
             else:
                 os.environ["CUDA_VISIBLE_DEVICES"] = saved_cvd
 
-        for p in children:
-            p.join()
-            if p.exitcode != 0:
-                raise RuntimeError(
-                    f"{process_name} child exited with code {p.exitcode}"
-                )
+        # Stop the others as soon as one child fails, since they may be waiting
+        # in a collective the failed child will never join.
+        running = list(children)
+        try:
+            while running:
+                # exitcode, not the sentinel, decides: a process the child forked
+                # can hold the sentinel open after the child has exited.
+                wait([p.sentinel for p in running], timeout=1.0)
+                for p in [p for p in running if p.exitcode is not None]:
+                    running.remove(p)
+                    if p.exitcode != 0:
+                        rank = start_rank + children.index(p)
+                        raise RuntimeError(
+                            f"{process_name} child (rank {rank}) exited with "
+                            f"code {p.exitcode}"
+                        )
+        finally:
+            for p in running:
+                p.terminate()
+            for p in running:
+                p.join(timeout=10)
+                if p.is_alive():
+                    p.kill()
 
 
 Args = ParamSpec("Args")
