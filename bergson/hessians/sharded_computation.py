@@ -29,12 +29,13 @@ class ShardedMul:
     full tensors and a distributed path operating on per-rank row-shards; both
     leave every rank holding the full result. The eigenvalue *math* lives in
     :mod:`bergson.hessians.inversion`.
+
+    Pass ``sharded=False`` when every rank holds the full factors, so each rank
+    takes the single-process path even under an initialized process group.
     """
 
-    def __init__(
-        self,
-    ):
-        self.dist = dist.is_initialized()
+    def __init__(self, sharded: bool = True):
+        self.dist = sharded and dist.is_initialized()
 
         self.rank = dist.get_rank() if self.dist else 0
         self.world_size = dist.get_world_size() if self.dist else 1
