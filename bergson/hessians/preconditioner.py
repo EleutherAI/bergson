@@ -145,10 +145,10 @@ class JointDensePreconditioner:
 class FactoredPreconditioner:
     """Factored (EKFAC) preconditioner applied via the eigenbasis rotation.
 
-    Works single-process (full factors) and distributed (per-rank row-shards);
-    :class:`ShardedMul` handles both. Construct via :meth:`from_path` (single
-    process, concatenated factors) or :meth:`from_shards` (this rank's shard
-    files, under an initialized process group).
+    Works with full factors on each rank or with per-rank row-shards;
+    :class:`ShardedMul` handles both. Construct via :meth:`from_path` (full
+    factors, applied locally on every rank) or :meth:`from_shards` (this rank's
+    shard files, under an initialized process group).
 
     ``inversion_cfg`` and ``apply_fn`` are mutually exclusive: pass a standard
     eigenvalue inversion, or a custom eigenvalue function (approximate unrolling's
@@ -166,6 +166,7 @@ class FactoredPreconditioner:
         power: float = -1.0,
         factor_eig_a: dict[str, Tensor] | None = None,
         factor_eig_g: dict[str, Tensor] | None = None,
+        sharded: bool = True,
     ):
         if inversion_cfg is not None and apply_fn is not None:
             raise ValueError("Pass either inversion_cfg or apply_fn, not both.")
@@ -178,7 +179,7 @@ class FactoredPreconditioner:
         self.inversion_cfg = inversion_cfg or InversionConfig()
         self.apply_fn = apply_fn
         self.power = power
-        self.shard_computer = ShardedMul()
+        self.shard_computer = ShardedMul(sharded=sharded)
         # Per-step debug logs are off by default; consumer code may raise this
         # logger to DEBUG to surface the apply's progress trace.
         self.logger = get_logger("FactoredPreconditioner")
@@ -194,7 +195,8 @@ class FactoredPreconditioner:
         ev_correction: bool = False,
         device: str | torch.device = "cpu",
     ) -> "FactoredPreconditioner":
-        """Single-process: load the full factors (concatenating any shards)."""
+        """Load the full factors (concatenating any shards); each rank applies
+        them locally."""
 
         def load(sub):
             return _load_full(hessian_path, sub, device)
@@ -208,7 +210,13 @@ class FactoredPreconditioner:
             return _load_shard(hessian_path, sub, 0, device)
 
         return cls._from_loaded(
-            load, load_replicated, inversion_cfg, apply_fn, power, ev_correction
+            load,
+            load_replicated,
+            inversion_cfg,
+            apply_fn,
+            power,
+            ev_correction,
+            sharded=False,
         )
 
     @classmethod
@@ -236,7 +244,14 @@ class FactoredPreconditioner:
 
     @classmethod
     def _from_loaded(
-        cls, load, load_replicated, inversion_cfg, apply_fn, power, ev_correction
+        cls,
+        load,
+        load_replicated,
+        inversion_cfg,
+        apply_fn,
+        power,
+        ev_correction,
+        sharded=True,
     ):
         factored_tikhonov = (
             inversion_cfg is not None and inversion_cfg.inversion == "factored_tikhonov"
@@ -266,6 +281,7 @@ class FactoredPreconditioner:
             power=power,
             factor_eig_a=factor_eig_a,
             factor_eig_g=factor_eig_g,
+            sharded=sharded,
         )
 
     def _scale(self, name: str, g: Tensor) -> None:

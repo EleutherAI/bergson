@@ -9,11 +9,14 @@ inversion mode.
 """
 
 import os
+import socket
 from pathlib import Path
 
 import numpy as np
 import pytest
 import torch
+import torch.distributed as dist
+import torch.multiprocessing as mp
 from safetensors.torch import load_file, save_file
 
 from bergson import GradientProcessor
@@ -242,6 +245,49 @@ def test_factored_apply_invariant_to_shard_count(tmp_path, inversion: str):
         assert torch.allclose(
             out1[name], out2[name], atol=1e-5
         ), f"{inversion}: apply on {name} depends on shard count"
+
+
+def _from_path_worker(rank, world_size, port, hessian_path, grads, results):
+    try:
+        dist.init_process_group(
+            "gloo",
+            init_method=f"tcp://localhost:{port}",
+            rank=rank,
+            world_size=world_size,
+        )
+        pre = FactoredPreconditioner.from_path(hessian_path, device="cpu")
+        results[rank] = pre.apply(grads)
+    finally:
+        if dist.is_initialized():
+            dist.destroy_process_group()
+
+
+def test_from_path_applies_full_factors_under_process_group(tmp_path):
+    """``score`` and ``build`` load the full factors with ``from_path`` on every
+    rank, so each rank must apply them on its own rather than as a row shard."""
+    modules = {"a": (4, 6), "b": (5, 3)}
+    _write_factored_hessian(tmp_path, modules, num_shards=2, seed=0)
+
+    rng = torch.Generator().manual_seed(1)
+    grads = {
+        name: torch.randn(3, o * i, generator=rng) for name, (o, i) in modules.items()
+    }
+    expected = FactoredPreconditioner.from_path(tmp_path, device="cpu").apply(grads)
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        port = s.getsockname()[1]
+    results = mp.Manager().dict()
+    mp.spawn(
+        _from_path_worker,
+        args=(2, port, tmp_path, grads, results),
+        nprocs=2,
+        join=True,
+    )
+
+    for rank in range(2):
+        for name in modules:
+            torch.testing.assert_close(results[rank][name], expected[name])
 
 
 def test_apply_hessian_compresses_per_module(tmp_path):
