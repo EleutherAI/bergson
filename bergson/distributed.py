@@ -147,13 +147,17 @@ def launch_distributed_run(
 
         # Pin CUDA_VISIBLE_DEVICES per child so each only sees its assigned
         # GPU. If the parent already had a CUDA_VISIBLE_DEVICES slice, index
-        # into that slice instead of overwriting it.
+        # into that slice instead of overwriting it. An empty value hides every
+        # GPU, so every child gets it too and runs on the CPU.
         parent_cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
-        parent_cvd = (
-            [d.strip() for d in parent_cuda_visible_devices.split(",") if d.strip()]
-            if parent_cuda_visible_devices
-            else [str(j) for j in range(local_world_size)]
-        )
+        if parent_cuda_visible_devices is None:
+            parent_cvd = [str(j) for j in range(local_world_size)]
+        elif not parent_cuda_visible_devices.strip():
+            parent_cvd = [""] * local_world_size
+        else:
+            parent_cvd = [
+                d.strip() for d in parent_cuda_visible_devices.split(",") if d.strip()
+            ]
         assert len(parent_cvd) >= local_world_size, (
             f"CUDA_VISIBLE_DEVICES has {len(parent_cvd)} entries "
             f"({parent_cuda_visible_devices!r}) but nproc_per_node={local_world_size}"
