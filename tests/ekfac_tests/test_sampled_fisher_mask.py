@@ -33,7 +33,7 @@ def test_sampled_labels_only_add_loss_where_dataset_labels_do(
     monkeypatch.setattr(
         torch,
         "multinomial",
-        lambda probs, num_samples, replacement: inputs["x"][:, 1:].reshape(-1, 1),
+        lambda *args, **kwargs: inputs["x"][:, 1:].reshape(-1, 1),
     )
 
     covariances = {}
