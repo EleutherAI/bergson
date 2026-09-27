@@ -157,6 +157,10 @@ class InMemoryCollector(HookCollectorBase):
         if self.accumulate_global_projection(name, P):
             return
 
+        if self.scorer is not None and self.scorer.streaming and self.builder is None:
+            self.scorer.accumulate(name, P.to(dtype=self.save_dtype))
+            return
+
         # GPU for scorer/reduce, CPU for builder
         if self.scorer is not None or self.preprocess_cfg.aggregation != "none":
             self.mod_grads[name] = P.to(dtype=self.save_dtype)
