@@ -11,7 +11,14 @@ from torch import Tensor
 from tqdm import tqdm
 
 from bergson.collector.collector import HookCollectorBase
-from bergson.hessians.sharded_computation import ShardedMul, shard_bounds
+from bergson.hessians.sharded_computation import (
+    ShardedMul,
+    assign_module_owners,
+    gather_batch_shapes,
+    gather_to_owner,
+    owned_to_row_shards,
+    shard_bounds,
+)
 from bergson.utils.logger import get_logger
 from bergson.utils.utils import (
     assert_type,
@@ -76,6 +83,10 @@ class LambdaCollector(HookCollectorBase):
 
     Transforms activations and gradients using precomputed eigenvectors,
     then computes outer products for diagonal correction terms.
+
+    Distributed, each module belongs to the rank that owned its covariances,
+    which loads its full eigenvectors from every rank's shard and receives every
+    rank's positions for it; teardown saves the usual row shards.
     """
 
     path: str
@@ -97,6 +108,16 @@ class LambdaCollector(HookCollectorBase):
 
         eigen_src = self.eigen_path or self.path
 
+        # Initialize accumulators
+        self.eigenvalue_corrections = {}
+        self.transformed_a_cache = {}
+        # Each module's owning rank; None in a single process.
+        self.owners: dict[str, int] | None = None
+
+        if dist.is_initialized():
+            self._setup_owned(eigen_src)
+            return
+
         # Load precomputed eigenvectors
         self.eigen_a = load_file(
             os.path.join(
@@ -115,9 +136,57 @@ class LambdaCollector(HookCollectorBase):
         self.eigen_a = {k: v.to(self.dtype) for k, v in self.eigen_a.items()}
         self.eigen_g = {k: v.to(self.dtype) for k, v in self.eigen_g.items()}
 
-        # Initialize accumulators
-        self.eigenvalue_corrections = {}
-        self.transformed_a_cache = {}
+    def _setup_owned(self, eigen_src: str) -> None:
+        """Load the full eigenvectors of the modules this rank owns, joining the
+        row shards every rank wrote."""
+        self.owners = assign_module_owners(self.target_info, self.world_size)
+        owned = [name for name, owner in self.owners.items() if owner == self.rank]
+
+        def load(subdir: str) -> dict[str, Tensor]:
+            files = [
+                os.path.join(eigen_src, subdir, f"shard_{rank}.safetensors")
+                for rank in range(self.world_size)
+            ]
+            full: dict[str, list[Tensor]] = {name: [] for name in owned}
+            for path in files:
+                with safe_open(path, framework="pt", device="cpu") as f:
+                    for name in owned:
+                        full[name].append(f.get_tensor(name))
+            return {
+                name: torch.cat(rows).to(self.device, self.dtype)
+                for name, rows in full.items()
+            }
+
+        self.eigen_a = load("eigen_activation_sharded")
+        self.eigen_g = load("eigen_gradient_sharded")
+        self.correction_shapes = {
+            name: (out_dim, in_dim + collect_bias)
+            for name, (_, (out_dim, in_dim), collect_bias) in self.target_info.items()
+        }
+        # Every owned module has a correction to send at teardown, even one whose
+        # hooks never ran.
+        self.eigenvalue_corrections = {
+            name: torch.zeros(
+                self.correction_shapes[name], device=self.device, dtype=self.dtype
+            )
+            for name in owned
+        }
+
+    def _gather_rotated(self, x: Tensor, eigenvectors: dict[str, Tensor], name: str):
+        """Every rank's ``x`` [N, S, D] rotated by ``name``'s eigenvectors, as one
+        [N_r, S_r, D] tensor per rank on the owner; ``None`` elsewhere."""
+        # Per module, since fused MoE experts see their own [N, S].
+        assert self.owners is not None
+        shapes = gather_batch_shapes(*x.shape[:2], device=x.device)
+        rows = max(n * s for n, s in shapes)
+        stacked = gather_to_owner(x.flatten(0, 1), rows, self.owners[name])
+        if stacked is None:
+            return None
+        rotated = stacked.to(self.dtype) @ eigenvectors[name]
+        return [
+            rotated[r * rows : r * rows + n * s].view(n, s, -1)
+            for r, (n, s) in enumerate(shapes)
+        ]
 
     def forward_hook(self, module: nn.Module, a: Tensor) -> None:
         """Transform activations using eigenvectors and cache."""
@@ -128,6 +197,10 @@ class LambdaCollector(HookCollectorBase):
         # covariance eigenvectors computed when the bias gradient is collected.
         if module._collect_bias:
             a = torch.cat([a, a.new_ones(*a.shape[:-1], 1)], dim=-1)  # [N, S, I+1]
+
+        if self.owners is not None:
+            self.transformed_a_cache[name] = self._gather_rotated(a, self.eigen_a, name)
+            return
 
         # Transform: a @ eigen_a
         transformed = self.shard_computer._matmul(
@@ -142,6 +215,18 @@ class LambdaCollector(HookCollectorBase):
         name = assert_type(str, module._name)
         # g shape: [N, S, O]
 
+        if self.owners is not None:
+            rotated_g = self._gather_rotated(g, self.eigen_g, name)
+            rotated_a = self.transformed_a_cache.pop(name)
+            if rotated_g is None:
+                return
+            # Square each document's rotated gradient and sum, as below.
+            for a_r, g_r in zip(rotated_a, rotated_g):
+                self.eigenvalue_corrections[name].add_(
+                    (torch.einsum("N S I, N S O -> N O I", a_r, g_r) ** 2).sum(dim=0)
+                )
+            return
+
         # Transform: g @ eigen_g
         transformed_g = self.shard_computer._matmul(
             vector_nsa=g.to(self.dtype), matrix_cb=self.eigen_g[name]
@@ -154,31 +239,16 @@ class LambdaCollector(HookCollectorBase):
         )
 
         # Square and sum over batch
-        transformed_grad_shard = (transformed_grad_shard**2).sum(dim=0).contiguous()
-
-        # All-reduce across ranks
-        if dist.is_initialized():
-            dist.all_reduce(transformed_grad_shard, op=dist.ReduceOp.SUM)
-
-        # Extract our shard
-        start_row, end_row = self.shard_computer.shard_bounds(
-            transformed_grad_shard.shape[0]
-        )
+        transformed_grad = (transformed_grad_shard**2).sum(dim=0)
 
         # Accumulate (with CPU offloading for memory efficiency)
         if name not in self.eigenvalue_corrections:
-            self.eigenvalue_corrections[name] = (
-                transformed_grad_shard[start_row:end_row, :]
-                .contiguous()
-                .to(device="cpu", non_blocking=False)
-            )
+            self.eigenvalue_corrections[name] = transformed_grad.to(device="cpu")
         else:
             self.eigenvalue_corrections[name] = self.eigenvalue_corrections[name].to(
                 device=self.device
             )
-            self.eigenvalue_corrections[name].add_(
-                transformed_grad_shard[start_row:end_row, :].contiguous()
-            )
+            self.eigenvalue_corrections[name].add_(transformed_grad)
             self.eigenvalue_corrections[name] = self.eigenvalue_corrections[name].to(
                 device="cpu", non_blocking=False
             )
@@ -192,12 +262,22 @@ class LambdaCollector(HookCollectorBase):
         output_path = os.path.join(self.path, self.output_subdir)
         os.makedirs(output_path, exist_ok=True)
 
-        save_file(
-            self.eigenvalue_corrections,
-            os.path.join(output_path, f"shard_{self.rank}.safetensors"),
-        )
+        # The eigenvectors are no longer needed; free them before the transfers.
         self.eigen_a.clear()
         self.eigen_g.clear()
+        corrections = self.eigenvalue_corrections
+        if self.owners is not None:
+            corrections = owned_to_row_shards(
+                corrections,
+                self.correction_shapes,
+                self.owners,
+                self.dtype,
+                self.device,
+            )
+        save_file(
+            corrections,
+            os.path.join(output_path, f"shard_{self.rank}.safetensors"),
+        )
         self.transformed_a_cache.clear()
         self.eigenvalue_corrections.clear()
 
