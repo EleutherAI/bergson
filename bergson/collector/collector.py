@@ -1023,7 +1023,6 @@ def fwd_bwd_hessian_factory(
         )
         if hessian_cfg.use_dataset_labels:
             losses = token_losses(index_cfg.loss_fn, logits, y[:, 1:])
-            losses = losses.sum(1) / denoms
         else:
             with torch.no_grad():
                 probs = F.softmax(logits, dim=-1)
@@ -1037,12 +1036,15 @@ def fwd_bwd_hessian_factory(
                 sampled_tokens.flatten(),
                 reduction="none",
             ).reshape_as(y[:, 1:])
-            losses = losses.sum(1) / denoms
+        losses = losses.sum(1)
 
-        losses.sum().backward()
+        # A document's gradient outer product estimates the Hessian of its
+        # summed loss; dividing the gradient by sqrt(denoms) rather than denoms
+        # gives the Hessian of its mean loss, which is 1/denoms times smaller.
+        (losses / denoms**0.5).sum().backward()
         model.zero_grad()
 
-        return losses
+        return losses / denoms
 
     return fwd_bwd_hessian
 
