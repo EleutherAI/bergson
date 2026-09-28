@@ -57,3 +57,7 @@ def test_gauss_newton_product_matches_explicit_jacobian(loss_reduction):
 
     actual = product(v, indices)
     torch.testing.assert_close(torch.cat([actual[n] for n in names]), expected)
+
+    product.micro_batch_size = 1
+    chunked = product(v, indices)
+    torch.testing.assert_close(torch.cat([chunked[n] for n in names]), expected)

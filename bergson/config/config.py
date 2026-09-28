@@ -985,6 +985,9 @@ class AstraConfig(Serializable):
     batch_size: int = 16
     """Training documents per Hessian-vector product."""
 
+    micro_batch_size: int = 16
+    """Documents per forward pass within a batch; lower it to save memory."""
+
     lr_decay: float = 0.9
     """Factor the step size is multiplied by every ``lr_decay_interval`` steps."""
 

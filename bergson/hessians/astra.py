@@ -51,6 +51,7 @@ class GaussNewtonProduct:
         index_cfg: IndexConfig,
         names: list[str],
         loss_reduction: Literal["mean", "sum"] | None = None,
+        micro_batch_size: int = 16,
     ):
         if index_cfg.loss_fn != "ce":
             raise ValueError("ASTRA supports loss_fn='ce' only.")
@@ -59,6 +60,7 @@ class GaussNewtonProduct:
         self.data = data
         self.names = names
         self.mean_reduction = (loss_reduction or index_cfg.loss_reduction) == "mean"
+        self.micro_batch_size = micro_batch_size
         self.device = next(model.parameters()).device
 
         param_names = {id(p): n for n, p in model.named_parameters()}
@@ -109,6 +111,17 @@ class GaussNewtonProduct:
     def __call__(self, v: dict[str, Tensor], indices: list[int]) -> dict[str, Tensor]:
         """``H_B v`` on the documents ``indices``, a mean over documents like the
         fitted Hessians."""
+        out = {name: torch.zeros_like(v[name]) for name in self.names}
+        for start in range(0, len(indices), self.micro_batch_size):
+            chunk = indices[start : start + self.micro_batch_size]
+            for name, h in self._product(v, chunk, len(indices)).items():
+                out[name] += h
+        return out
+
+    def _product(
+        self, v: dict[str, Tensor], indices: list[int], batch_size: int
+    ) -> dict[str, Tensor]:
+        """This chunk's share of the product over a batch of ``batch_size``."""
         batch = self.data[indices]
         x, y, _, _ = pad_and_tensor(
             batch["input_ids"],
@@ -129,7 +142,7 @@ class GaussNewtonProduct:
 
         # Cross-entropy's Hessian in the logits, diag(p) - p p^T, per position.
         mask = (y[:, 1:] != -100).to(logits.dtype)
-        weight = mask / len(indices)
+        weight = mask / batch_size
         if self.mean_reduction:
             weight = weight / mask.sum(1, keepdim=True).clamp_min(1)
         with torch.no_grad():
@@ -180,7 +193,12 @@ class Astra:
         model.eval()
         data, _ = setup_data_pipeline(index_cfg)
         self.hvp = GaussNewtonProduct(
-            model, data, index_cfg, self.names, astra_cfg.loss_reduction
+            model,
+            data,
+            index_cfg,
+            self.names,
+            astra_cfg.loss_reduction,
+            astra_cfg.micro_batch_size,
         )
         self.num_docs = len(data)
 
