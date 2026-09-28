@@ -1,3 +1,4 @@
+import pytest
 import torch
 from datasets import Dataset
 from torch.func import functional_call, jacrev
@@ -7,7 +8,8 @@ from bergson.config import IndexConfig
 from bergson.hessians.astra import GaussNewtonProduct
 
 
-def test_gauss_newton_product_matches_explicit_jacobian():
+@pytest.mark.parametrize("average_over", ["document", "token"])
+def test_gauss_newton_product_matches_explicit_jacobian(average_over):
     """``H v`` equals ``J^T (diag(p) - p p^T) J v`` built from the full Jacobian,
     in the query index's ``[O, I + 1]`` layout of HF Conv1D layers."""
     torch.manual_seed(0)
@@ -25,7 +27,7 @@ def test_gauss_newton_product_matches_explicit_jacobian():
     data = Dataset.from_dict({"input_ids": torch.randint(11, (6, 5)).tolist()})
     names = ["h.0.attn.c_proj", "h.0.mlp.c_fc"]
     product = GaussNewtonProduct(
-        model, data, IndexConfig(run_path="", include_bias=True), names
+        model, data, IndexConfig(run_path="", include_bias=True), names, average_over
     )
     sizes = {"h.0.attn.c_proj": 8 * 9, "h.0.mlp.c_fc": 32 * 9}
     v = {n: torch.randn(s, dtype=torch.float64) for n, s in sizes.items()}
@@ -51,7 +53,7 @@ def test_gauss_newton_product_matches_explicit_jacobian():
     expected = torch.einsum("tvp,tvw,twq->pq", jac, out_hessian, jac) @ torch.cat(
         list(v.values())
     )
-    expected /= len(indices)
+    expected /= jac.shape[0] if average_over == "token" else len(indices)
 
     actual = product(v, indices)
     torch.testing.assert_close(torch.cat([actual[n] for n in names]), expected)

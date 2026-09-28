@@ -6,6 +6,7 @@ import math
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import torch
@@ -43,14 +44,21 @@ class GaussNewtonProduct:
     """Gauss-Newton Hessian-vector products of the training loss, over
     the modules and in the ``[O, I]`` gradient layout of the query index."""
 
-    def __init__(self, model, data: Dataset, index_cfg: IndexConfig, names: list[str]):
+    def __init__(
+        self,
+        model,
+        data: Dataset,
+        index_cfg: IndexConfig,
+        names: list[str],
+        average_over: Literal["document", "token"] = "document",
+    ):
         if index_cfg.loss_fn != "ce":
             raise ValueError("ASTRA supports loss_fn='ce' only.")
 
         self.model = model
         self.data = data
         self.names = names
-        self.mean_reduction = index_cfg.loss_reduction == "mean"
+        self.average_over = average_over
         self.device = next(model.parameters()).device
 
         param_names = {id(p): n for n, p in model.named_parameters()}
@@ -99,8 +107,8 @@ class GaussNewtonProduct:
         return w.flatten()
 
     def __call__(self, v: dict[str, Tensor], indices: list[int]) -> dict[str, Tensor]:
-        """``H_B v`` on the documents ``indices``, a mean over documents like the
-        fitted Hessians."""
+        """``H_B v`` on the documents ``indices``, averaged over documents or
+        tokens."""
         batch = self.data[indices]
         x, y, _, _ = pad_and_tensor(
             batch["input_ids"],
@@ -121,9 +129,7 @@ class GaussNewtonProduct:
 
         # Cross-entropy's Hessian in the logits, diag(p) - p p^T, per position.
         mask = (y[:, 1:] != -100).to(logits.dtype)
-        weight = mask / len(indices)
-        if self.mean_reduction:
-            weight = weight / mask.sum(1, keepdim=True).clamp_min(1)
+        weight = mask / (mask.sum() if self.average_over == "token" else len(indices))
         with torch.no_grad():
             probs = F.softmax(logits, dim=-1)
             hjvp = probs * (jvp - (probs * jvp).sum(-1, keepdim=True))
@@ -171,7 +177,9 @@ class Astra:
         model, _ = setup_model_and_peft(index_cfg, attn_implementation="eager")
         model.eval()
         data, _ = setup_data_pipeline(index_cfg)
-        self.hvp = GaussNewtonProduct(model, data, index_cfg, self.names)
+        self.hvp = GaussNewtonProduct(
+            model, data, index_cfg, self.names, astra_cfg.average_over
+        )
         self.num_docs = len(data)
 
     def _read_row(self, mmap: np.memmap, offsets, row: int) -> dict[str, Tensor]:
