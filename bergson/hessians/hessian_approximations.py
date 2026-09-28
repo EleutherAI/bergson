@@ -354,8 +354,6 @@ def fit_factored_hessians(
             collector.dtype,
         )
         eigenvectors = (eigenvectors_a, eigenvectors_g)
-        collector.A_cov_dict.clear()
-        collector.S_cov_dict.clear()
     else:
         eigenvalues_a = compute_eigendecomposition(
             os.path.join(path, "activation_sharded"),

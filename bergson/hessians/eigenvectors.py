@@ -377,7 +377,9 @@ def eigendecompose_owned(
     writes.
 
     Returns the eigenvectors of the modules this rank owns, in full, and this
-    rank's row shard of every module's eigenvalues, both on the CPU.
+    rank's row shard of every module's eigenvalues, both on the CPU. Empties
+    ``covariances`` as it goes, so each covariance is freed once its
+    eigenvectors exist.
     """
     rank = dist.get_rank() if owners is not None else 0
     device = get_device(rank)
@@ -385,13 +387,13 @@ def eigendecompose_owned(
 
     eigenvectors: dict[str, Tensor] = {}
     eigenvalues: dict[str, Tensor] = {}
-    for key, matrix in tqdm(
-        covariances.items(),
+    for key in tqdm(
+        list(covariances),
         desc=f"Rank {rank}: Computing eigenvectors",
         position=rank,
         leave=False,
     ):
-        values, vectors = _eigh(key, matrix, total_processed)
+        values, vectors = _eigh(key, covariances.pop(key), total_processed)
         eigenvectors[key] = vectors.to(dtype)
         eigenvalues[key] = values.to(dtype)
 
