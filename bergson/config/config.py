@@ -973,11 +973,6 @@ class AstraConfig(Serializable):
     num_steps: int = 0
     """Steps per query; 0 scores the EK-FAC solution unchanged."""
 
-    average_over: Literal["document", "token"] = "document"
-    """Average the Gauss-Newton Hessian over documents, each summing its
-    token losses like the fitted EK-FAC factors, or over tokens, like the
-    token-mean training loss."""
-
     lr: float = 0.01
     """Step size. Too large a step diverges; tune it by the logged objective."""
 
