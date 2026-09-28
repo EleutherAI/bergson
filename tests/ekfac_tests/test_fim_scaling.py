@@ -13,12 +13,14 @@ masking and mis-scales the FIM.
 import pytest
 import torch
 from datasets import Dataset
+from safetensors.torch import load_file
 from transformers import AutoConfig, AutoModelForCausalLM
 
 from bergson.collector.collector import CollectorComputer
-from bergson.config import IndexConfig
+from bergson.config import HessianConfig, IndexConfig
 from bergson.gradients import GradientProcessor
 from bergson.hessians.autocorrelation import AutocorrelationCollector
+from bergson.hessians.hessian_approximations import collect_hessians
 from bergson.hessians.kfac import CovarianceCollector
 from bergson.utils.utils import assert_type, get_device
 
@@ -151,4 +153,37 @@ def test_autocorrelation_normalized_by_row_count(tmp_path, attribute_tokens):
         torch.testing.assert_close(
             processor.hessians[name].to(raw.device),
             raw / expected_rows,
+        )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_mean_reduction_fits_hessian_of_mean_loss(tmp_path):
+    """With ``loss_reduction="mean"`` the fitted gradient covariance is the sum
+    reduction's divided by the document length T, the scale of the mean loss's
+    Hessian, rather than by T^2."""
+    model = make_model()
+    data = Dataset.from_dict({"input_ids": [[1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12]]})
+
+    covariances = {}
+    for reduction in ("sum", "mean"):
+        cfg = IndexConfig(run_path=str(tmp_path / reduction), loss_reduction=reduction)
+        cfg.partial_run_path.mkdir(parents=True, exist_ok=True)
+        collect_hessians(
+            model,
+            data,
+            cfg,
+            hessian_cfg=HessianConfig(method="kfac", use_dataset_labels=True),
+        )
+        covariances[reduction] = {
+            kind: load_file(cfg.partial_run_path / kind / "shard_0.safetensors")
+            for kind in ("activation_sharded", "gradient_sharded")
+        }
+
+    for name, s_sum in covariances["sum"]["gradient_sharded"].items():
+        torch.testing.assert_close(
+            covariances["mean"]["gradient_sharded"][name], s_sum / 5
+        )
+        torch.testing.assert_close(
+            covariances["mean"]["activation_sharded"][name],
+            covariances["sum"]["activation_sharded"][name],
         )
