@@ -31,6 +31,8 @@ class CovarianceCollector(HookCollectorBase):
 
     Distributed, each module's covariances belong to one rank, which receives
     every rank's positions for that module; teardown saves the usual row shards.
+    Teardown leaves the covariances this rank owns, in full, on the CPU in
+    ``A_cov_dict`` and ``S_cov_dict`` for the eigendecomposition.
     """
 
     dtype: torch.dtype
@@ -152,4 +154,5 @@ class CovarianceCollector(HookCollectorBase):
             else:
                 shards = covariances
             save_file(shards, os.path.join(path, f"shard_{self.rank}.safetensors"))
-            covariances.clear()
+            for name in covariances:
+                covariances[name] = covariances[name].cpu()

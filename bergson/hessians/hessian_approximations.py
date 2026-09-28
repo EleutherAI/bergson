@@ -9,6 +9,7 @@ import torch.distributed as dist
 from datasets import Dataset
 from safetensors import safe_open
 from safetensors.torch import save_file
+from torch import Tensor
 from transformers import PreTrainedModel
 
 from bergson.collector.collector import (
@@ -27,6 +28,7 @@ from bergson.hessians.autocorrelation import (
 from bergson.hessians.eigenvectors import (
     LambdaCollector,
     compute_eigendecomposition,
+    eigendecompose_owned,
     save_uncorrected_eigenvalues,
 )
 from bergson.hessians.kfac import CovarianceCollector
@@ -315,7 +317,7 @@ def fit_factored_hessians(
         "path": path,
     }
 
-    collect_hessians(**kwargs)
+    collector = collect_hessians(**kwargs)
     _release_device_memory()
 
     dist.barrier() if dist.is_initialized() else None
@@ -332,14 +334,37 @@ def fit_factored_hessians(
         weights_only=False,
     )
 
-    eigenvalues_a = compute_eigendecomposition(
-        os.path.join(path, "activation_sharded"),
-        total_processed=total_processed,
-    )
-    eigenvalues_g = compute_eigendecomposition(
-        os.path.join(path, "gradient_sharded"),
-        total_processed=total_processed,
-    )
+    eigenvectors = None
+    if isinstance(collector, CovarianceCollector):
+        # Each rank still holds the covariances it owns, so skip the files.
+        eigenvectors_a, eigenvalues_a = eigendecompose_owned(
+            collector.A_cov_dict,
+            collector.A_shapes,
+            collector.owners,
+            total_processed,
+            os.path.join(path, "eigen_activation_sharded"),
+            collector.dtype,
+        )
+        eigenvectors_g, eigenvalues_g = eigendecompose_owned(
+            collector.S_cov_dict,
+            collector.S_shapes,
+            collector.owners,
+            total_processed,
+            os.path.join(path, "eigen_gradient_sharded"),
+            collector.dtype,
+        )
+        eigenvectors = (eigenvectors_a, eigenvectors_g)
+        collector.A_cov_dict.clear()
+        collector.S_cov_dict.clear()
+    else:
+        eigenvalues_a = compute_eigendecomposition(
+            os.path.join(path, "activation_sharded"),
+            total_processed=total_processed,
+        )
+        eigenvalues_g = compute_eigendecomposition(
+            os.path.join(path, "gradient_sharded"),
+            total_processed=total_processed,
+        )
 
     dist.barrier() if dist.is_initialized() else None
 
@@ -354,7 +379,12 @@ def fit_factored_hessians(
     )
 
     if hessian_cfg.ev_correction:
-        collect_hessians(**kwargs, ev_correction=True, num_documents=len(data))
+        collect_hessians(
+            **kwargs,
+            ev_correction=True,
+            num_documents=len(data),
+            eigenvectors=eigenvectors,
+        )
         _release_device_memory()
 
 
@@ -380,11 +410,13 @@ def collect_hessians(
     output_subdir: str = "eigenvalue_correction_sharded",
     path: str | None = None,
     num_documents: int = 1,
-):
+    eigenvectors: tuple[dict[str, Tensor], dict[str, Tensor]] | None = None,
+) -> HookCollectorBase:
     """
     Compute Hessian approximations using the hooks specified in the collector.
     If ev_correction is True, uses LambdaCollector to compute eigenvalue corrections.
-    ``path`` overrides where the collector writes.
+    ``path`` overrides where the collector writes. ``eigenvectors`` are passed to
+    the LambdaCollector. Returns the finished collector.
     """
 
     hessian_dtype = convert_precision_to_torch(hessian_cfg.hessian_dtype)
@@ -405,6 +437,7 @@ def collect_hessians(
             eigen_path=eigen_path,
             output_subdir=output_subdir,
             num_documents=num_documents,
+            eigenvectors=eigenvectors,
         )
         desc += " (eigenvalue correction)"
     else:
@@ -421,3 +454,4 @@ def collect_hessians(
     computer.forward_backward = fwd_bwd_hessian_factory(index_cfg, hessian_cfg)
 
     computer.run_with_collector_hooks(desc=desc)
+    return collector
