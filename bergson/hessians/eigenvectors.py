@@ -456,9 +456,9 @@ def save_uncorrected_eigenvalues(
     outer product by keeping eigenvalues_g in its sharded form and gathering
     eigenvalues_a to all ranks.
 
-    The factors are means over positions, so the outer product is scaled by
-    ``total_processed / num_documents`` to a mean over documents, the scale of
-    the eigenvalue corrections.
+    The factor covariances are averaged over the dataset's tokens, so we scale up
+    by ``total_processed`` to a sum over all tokens, then divide by
+    ``num_documents`` to get the average document value.
     """
     out_dir = os.path.join(str(partial_run_path), "eigenvalue_sharded")
     os.makedirs(out_dir, exist_ok=True)
