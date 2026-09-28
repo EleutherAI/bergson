@@ -1,6 +1,14 @@
 # CHANGELOG
 
 
+## v2.0.4 (2026-09-28)
+
+### Bug Fixes
+
+- Apply --use_tf32_matmuls in spawned workers
+  ([`6d4d66d`](https://github.com/EleutherAI/bergson/commit/6d4d66d826fd5d32dfc9ce3ad9f8c4a02196ff9a))
+
+
 ## v2.0.3 (2026-09-27)
 
 ### Bug Fixes
