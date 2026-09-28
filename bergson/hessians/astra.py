@@ -6,6 +6,7 @@ import math
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import torch
@@ -43,14 +44,21 @@ class GaussNewtonProduct:
     """Gauss-Newton Hessian-vector products of the training loss, over
     the modules and in the ``[O, I]`` gradient layout of the query index."""
 
-    def __init__(self, model, data: Dataset, index_cfg: IndexConfig, names: list[str]):
+    def __init__(
+        self,
+        model,
+        data: Dataset,
+        index_cfg: IndexConfig,
+        names: list[str],
+        loss_reduction: Literal["mean", "sum"] | None = None,
+    ):
         if index_cfg.loss_fn != "ce":
             raise ValueError("ASTRA supports loss_fn='ce' only.")
 
         self.model = model
         self.data = data
         self.names = names
-        self.mean_reduction = index_cfg.loss_reduction == "mean"
+        self.mean_reduction = (loss_reduction or index_cfg.loss_reduction) == "mean"
         self.device = next(model.parameters()).device
 
         param_names = {id(p): n for n, p in model.named_parameters()}
@@ -171,7 +179,9 @@ class Astra:
         model, _ = setup_model_and_peft(index_cfg, attn_implementation="eager")
         model.eval()
         data, _ = setup_data_pipeline(index_cfg)
-        self.hvp = GaussNewtonProduct(model, data, index_cfg, self.names)
+        self.hvp = GaussNewtonProduct(
+            model, data, index_cfg, self.names, astra_cfg.loss_reduction
+        )
         self.num_docs = len(data)
 
     def _read_row(self, mmap: np.memmap, offsets, row: int) -> dict[str, Tensor]:

@@ -67,12 +67,11 @@ steps:
     hessian_pipeline_cfg:
       <<: *pipeline
       # Paper App. B: 300 iterations, batch size 16, momentum 0.9, learning
-      # rate decayed by 0.9 every 100 iterations. The learning rate is the
-      # paper's pick from 1e0..1e-5 by the objective over the last 10
-      # iterations; 1e-4 and above diverge.
+      # rate decayed by 0.9 every 100 iterations.
       astra:
         num_steps: 300
-        lr: 1.0e-5
+        loss_reduction: mean
+        lr: 0.011
         momentum: 0.9
         batch_size: 16
         lr_decay: 0.9

@@ -973,6 +973,10 @@ class AstraConfig(Serializable):
     num_steps: int = 0
     """Steps per query; 0 scores the EK-FAC solution unchanged."""
 
+    loss_reduction: Literal["mean", "sum"] | None = None
+    """Overrides ``index_cfg.loss_reduction`` in the Hessian-vector products.
+    Used to replicate ASTRA; its theoretical interpretation is unclear."""
+
     lr: float = 0.01
     """Step size. Too large a step diverges; tune it by the logged objective."""
 
