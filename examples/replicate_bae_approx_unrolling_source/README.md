@@ -20,6 +20,7 @@ HF format both steps load.
 |--------|----------------------------------------------|
 | EK-FAC IF | 0.468 ± 0.015 |
 | SOURCE | 0.476 ± 0.015 |
+| SOURCE, curvature / 511 | 0.128 ± 0.010 |
 
 Query losses averaged over the five retrain seeds; kronfluence reports 0.44
 for EK-FAC IF on its own five-seed ground truth.
