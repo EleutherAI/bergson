@@ -29,7 +29,7 @@ from bergson.hessians.eigenvectors import (
     compute_eigendecomposition,
     save_uncorrected_eigenvalues,
 )
-from bergson.hessians.kfac import CovarianceCollector
+from bergson.hessians.kfac import CovarianceCollector, find_shared_inputs
 from bergson.hessians.shampoo import ShampooCollector
 from bergson.hessians.tkfac import TraceCovarianceCollector
 from bergson.utils.utils import (
@@ -61,8 +61,15 @@ FACTOR_SUBDIRS = (
 """Factor stores under a Hessian run path, one ``shard_{rank}.safetensors`` each."""
 
 
-def partition_modules(names: list[str], num_partitions: int) -> list[list[str]]:
-    """Split ``names`` into ``num_partitions`` contiguous groups of near-equal size."""
+def partition_modules(
+    names: list[str],
+    num_partitions: int,
+    shared_inputs: dict[str, str] | None = None,
+) -> list[list[str]]:
+    """Split ``names`` into ``num_partitions`` contiguous groups of near-equal size.
+
+    Each name in ``shared_inputs`` then moves to the group of the name it maps to.
+    """
     if num_partitions < 1:
         raise ValueError(f"module_partitions must be >= 1, got {num_partitions}")
     num_partitions = min(num_partitions, len(names))
@@ -72,7 +79,14 @@ def partition_modules(names: list[str], num_partitions: int) -> list[list[str]]:
         end = start + size + (1 if i < extra else 0)
         groups.append(names[start:end])
         start = end
-    return groups
+
+    if not shared_inputs:
+        return groups
+    group_of = {name: i for i, group in enumerate(groups) for name in group}
+    moved = [[] for _ in groups]
+    for name in names:
+        moved[group_of[shared_inputs.get(name, name)]].append(name)
+    return [group for group in moved if group]
 
 
 def merge_partitions(run_path: str | os.PathLike, num_partitions: int, rank: int):
@@ -248,6 +262,21 @@ def hessian_worker(
         )
         return
 
+    target_info = HookCollectorBase.discover_targets(
+        model.base_model,  # type: ignore
+        target_modules,
+        index_cfg.include_bias,
+        index_cfg.filter_modules,
+    )
+    shared_inputs = {}
+    if hessian_cfg.method == "kfac":
+        shared_inputs = find_shared_inputs(model, target_info)
+        if shared_inputs:
+            print(
+                f"{len(shared_inputs)} modules share another module's input, "
+                "and so its activation covariance"
+            )
+
     kwargs = {
         "model": model,
         "data": ds,
@@ -256,6 +285,7 @@ def hessian_worker(
         "attention_cfgs": attention_cfgs,
         "batches": batches,
         "do_eigendecomposition": do_eigendecomposition,
+        "shared_inputs": shared_inputs,
     }
 
     if hessian_cfg.module_partitions == 1:
@@ -266,13 +296,9 @@ def hessian_worker(
         )
         return
 
-    target_info = HookCollectorBase.discover_targets(
-        model.base_model,  # type: ignore
-        target_modules,
-        index_cfg.include_bias,
-        index_cfg.filter_modules,
+    groups = partition_modules(
+        list(target_info), hessian_cfg.module_partitions, shared_inputs
     )
-    groups = partition_modules(list(target_info), hessian_cfg.module_partitions)
     for i, group in enumerate(groups):
         print(f"Fitting module partition {i + 1}/{len(groups)} ({len(group)} modules)")
         fit_factored_hessians(
@@ -296,6 +322,7 @@ def fit_factored_hessians(
     batches: list[list[int]],
     path: str,
     do_eigendecomposition: bool,
+    shared_inputs: dict[str, str] | None = None,
 ):
     """Fit the covariances of ``target_modules``, eigendecompose them and, for
     EK-FAC, collect the eigenvalue corrections, writing everything under ``path``."""
@@ -313,6 +340,7 @@ def fit_factored_hessians(
         "attention_cfgs": attention_cfgs,
         "batches": batches,
         "path": path,
+        "shared_inputs": shared_inputs,
     }
 
     collect_hessians(**kwargs)
@@ -335,6 +363,7 @@ def fit_factored_hessians(
     eigenvalues_a = compute_eigendecomposition(
         os.path.join(path, "activation_sharded"),
         total_processed=total_processed,
+        shared=shared_inputs,
     )
     eigenvalues_g = compute_eigendecomposition(
         os.path.join(path, "gradient_sharded"),
@@ -378,11 +407,13 @@ def collect_hessians(
     eigen_path: str | None = None,
     output_subdir: str = "eigenvalue_correction_sharded",
     path: str | None = None,
+    shared_inputs: dict[str, str] | None = None,
 ):
     """
     Compute Hessian approximations using the hooks specified in the collector.
     If ev_correction is True, uses LambdaCollector to compute eigenvalue corrections.
-    ``path`` overrides where the collector writes.
+    ``path`` overrides where the collector writes. ``shared_inputs`` is passed
+    to the K-FAC collectors; see :func:`find_shared_inputs`.
     """
 
     hessian_dtype = convert_precision_to_torch(hessian_cfg.hessian_dtype)
@@ -402,8 +433,11 @@ def collect_hessians(
             **collector_args,
             eigen_path=eigen_path,
             output_subdir=output_subdir,
+            shared_inputs=shared_inputs or {},
         )
         desc += " (eigenvalue correction)"
+    elif shared_inputs:
+        collector = CovarianceCollector(**collector_args, shared_inputs=shared_inputs)
     else:
         collector = HESSIAN_APPROXIMATIONS[hessian_cfg.method](**collector_args)
 

@@ -24,20 +24,31 @@ def shard_bounds(dim: int, rank: int, world_size: int) -> tuple[int, int]:
 def assign_module_owners(
     target_info: dict[str, tuple[torch.device, torch.Size, bool]],
     world_size: int,
+    shared_inputs: dict[str, str] | None = None,
 ) -> dict[str, int]:
     """Give each module's factors to one rank, largest first onto the rank
-    holding the fewest elements so far. Every rank computes the same result."""
+    holding the fewest elements so far. Every rank computes the same result.
+
+    A module in ``shared_inputs`` goes to the rank of the module whose
+    activation covariance it reuses, and adds only its gradient covariance."""
+    shared_inputs = shared_inputs or {}
     load = [0] * world_size
 
-    def numel(name: str) -> int:
-        _, (out_dim, in_dim), collect_bias = target_info[name]
-        return (in_dim + collect_bias) ** 2 + out_dim**2
+    groups = {name: [name] for name in target_info if name not in shared_inputs}
+    for name, source in shared_inputs.items():
+        groups[source].append(name)
+
+    def numel(group: list[str]) -> int:
+        _, (_, in_dim), collect_bias = target_info[group[0]]
+        return (in_dim + collect_bias) ** 2 + sum(
+            target_info[name][1][0] ** 2 for name in group
+        )
 
     owners = {}
-    for name in sorted(target_info, key=lambda n: (-numel(n), n)):
+    for source in sorted(groups, key=lambda n: (-numel(groups[n]), n)):
         owner = min(range(world_size), key=load.__getitem__)
-        owners[name] = owner
-        load[owner] += numel(name)
+        owners.update({name: owner for name in groups[source]})
+        load[owner] += numel(groups[source])
     return owners
 
 
@@ -72,12 +83,18 @@ def owned_to_row_shards(
     owners: dict[str, int],
     dtype: torch.dtype,
     device: str | torch.device,
+    shared: dict[str, str] | None = None,
 ) -> dict[str, Tensor]:
     """This rank's row shard of every matrix, on the CPU, from ``owned``, the
-    matrices this rank owns in full. One matrix at a time is sent from its owner."""
+    matrices this rank owns in full. One matrix at a time is sent from its owner.
+
+    A name in ``shared`` gets the same shard as the name it maps to, unsent."""
+    shared = shared or {}
     rank, world_size = dist.get_rank(), dist.get_world_size()
     shards = {}
     for name, shape in shapes.items():
+        if name in shared:
+            continue
         owner = owners[name]
         if rank == owner:
             full = owned[name].contiguous()
@@ -87,6 +104,8 @@ def owned_to_row_shards(
         start, end = shard_bounds(shape[0], rank, world_size)
         shards[name] = full[start:end].cpu()
         del full
+    for name, source in shared.items():
+        shards[name] = shards[source]
     return shards
 
 

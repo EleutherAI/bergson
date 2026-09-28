@@ -1,6 +1,6 @@
 import gc
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import torch
 import torch.distributed as dist
@@ -11,6 +11,7 @@ from torch import Tensor
 from tqdm import tqdm
 
 from bergson.collector.collector import HookCollectorBase
+from bergson.hessians.kfac import SharedInputCheck, copy_shared
 from bergson.hessians.sharded_computation import (
     ShardedMul,
     assign_module_owners,
@@ -84,6 +85,9 @@ class LambdaCollector(HookCollectorBase):
     Transforms activations and gradients using precomputed eigenvectors,
     then computes outer products for diagonal correction terms.
 
+    Modules in ``shared_inputs`` reuse the activation eigenvectors and rotated
+    activations of the module they map to.
+
     Distributed, each module belongs to the rank that owned its covariances,
     which loads its full eigenvectors from every rank's shard and receives every
     rank's positions for it; teardown saves the usual row shards.
@@ -101,8 +105,18 @@ class LambdaCollector(HookCollectorBase):
     gradients, and eigenvectors are cast to this before the rotation and
     squared accumulation, and shards are saved in it."""
 
+    shared_inputs: dict[str, str] = field(default_factory=dict)
+    """Maps modules to the earlier module that reads the same input, as found
+    by :func:`~bergson.hessians.kfac.find_shared_inputs`."""
+
     def setup(self) -> None:
         """Load eigenvectors and initialize storage."""
+        self.shared_inputs = {
+            name: source
+            for name, source in self.shared_inputs.items()
+            if name in self.target_info and source in self.target_info
+        }
+        self.check_shared_input = SharedInputCheck(self.shared_inputs)
         self.shard_computer = ShardedMul()
         self.device = get_device(self.rank)
 
@@ -119,12 +133,16 @@ class LambdaCollector(HookCollectorBase):
             return
 
         # Load precomputed eigenvectors
-        self.eigen_a = load_file(
+        with safe_open(
             os.path.join(
                 eigen_src, f"eigen_activation_sharded/shard_{self.rank}.safetensors"
             ),
-            device=self.device,
-        )
+            framework="pt",
+            device=str(self.device),
+        ) as f:
+            self.eigen_a = {
+                k: f.get_tensor(k) for k in f.keys() if k not in self.shared_inputs
+            }
         self.eigen_g = load_file(
             os.path.join(
                 eigen_src, f"eigen_gradient_sharded/shard_{self.rank}.safetensors"
@@ -135,30 +153,42 @@ class LambdaCollector(HookCollectorBase):
         # Cast eigenvectors once so the rotations run in the accumulation dtype.
         self.eigen_a = {k: v.to(self.dtype) for k, v in self.eigen_a.items()}
         self.eigen_g = {k: v.to(self.dtype) for k, v in self.eigen_g.items()}
+        self._share_eigen_a()
+
+    def _share_eigen_a(self):
+        for name, source in self.shared_inputs.items():
+            if source in self.eigen_a:
+                self.eigen_a[name] = self.eigen_a[source]
 
     def _setup_owned(self, eigen_src: str) -> None:
         """Load the full eigenvectors of the modules this rank owns, joining the
         row shards every rank wrote."""
-        self.owners = assign_module_owners(self.target_info, self.world_size)
+        self.owners = assign_module_owners(
+            self.target_info, self.world_size, self.shared_inputs
+        )
         owned = [name for name, owner in self.owners.items() if owner == self.rank]
 
-        def load(subdir: str) -> dict[str, Tensor]:
+        def load(subdir: str, names: list[str]) -> dict[str, Tensor]:
             files = [
                 os.path.join(eigen_src, subdir, f"shard_{rank}.safetensors")
                 for rank in range(self.world_size)
             ]
-            full: dict[str, list[Tensor]] = {name: [] for name in owned}
+            full: dict[str, list[Tensor]] = {name: [] for name in names}
             for path in files:
                 with safe_open(path, framework="pt", device="cpu") as f:
-                    for name in owned:
+                    for name in names:
                         full[name].append(f.get_tensor(name))
             return {
                 name: torch.cat(rows).to(self.device, self.dtype)
                 for name, rows in full.items()
             }
 
-        self.eigen_a = load("eigen_activation_sharded")
-        self.eigen_g = load("eigen_gradient_sharded")
+        self.eigen_a = load(
+            "eigen_activation_sharded",
+            [name for name in owned if name not in self.shared_inputs],
+        )
+        self.eigen_g = load("eigen_gradient_sharded", owned)
+        self._share_eigen_a()
         self.correction_shapes = {
             name: (out_dim, in_dim + collect_bias)
             for name, (_, (out_dim, in_dim), collect_bias) in self.target_info.items()
@@ -192,6 +222,11 @@ class LambdaCollector(HookCollectorBase):
         """Transform activations using eigenvectors and cache."""
         name = assert_type(str, module._name)
         # a shape: [N, S, I]
+
+        if self.check_shared_input(name, a):
+            source = self.shared_inputs[name]
+            self.transformed_a_cache[name] = self.transformed_a_cache[source]
+            return
 
         # Augment with a ones column to match the [I+1, I+1] activation
         # covariance eigenvectors computed when the bias gradient is collected.
@@ -252,6 +287,11 @@ class LambdaCollector(HookCollectorBase):
             self.eigenvalue_corrections[name] = self.eigenvalue_corrections[name].to(
                 device="cpu", non_blocking=False
             )
+
+    def with_batch(self, collection_mask: Tensor | None = None):
+        super().with_batch(collection_mask)
+        self.check_shared_input.clear()
+        return self
 
     def process_batch(self, indices: list[int], **kwargs) -> None:
         """No per-batch processing needed for lambda collection."""
@@ -322,6 +362,7 @@ def _compute_full_matrix(
 def compute_eigendecomposition(
     covariance_path: str,
     total_processed: int | Tensor,
+    shared: dict[str, str] | None = None,
 ) -> dict[str, Tensor]:
     """
     Compute eigendecomposition from covariance matrices (Eq. 18 from paper).
@@ -334,6 +375,8 @@ def compute_eigendecomposition(
     Args:
         covariance_path: Full path to the covariance sharded directory.
         total_processed: Number of samples used to compute covariance.
+        shared: Maps keys whose matrix is the same as another key's to that key,
+            whose eigendecomposition they reuse.
 
     Returns:
         Per-key eigenvalue shards (rows per shard_bounds) on CPU. The
@@ -354,7 +397,8 @@ def compute_eigendecomposition(
     # Discover keys and dimensions from shard metadata
     first_shard_path = os.path.join(covariance_path, "shard_0.safetensors")
     with safe_open(first_shard_path, framework="pt") as f:
-        all_keys = list(f.keys())
+        shared = {k: v for k, v in (shared or {}).items() if k in f.keys()}
+        all_keys = [k for k in f.keys() if k not in shared]
         original_dtype = f.get_tensor(all_keys[0]).dtype
         # Get dimensions for fair distribution (columns not sharded, shape[-1]=d)
         key_dimensions = {key: f.get_tensor(key).shape[-1] for key in all_keys}
@@ -422,6 +466,10 @@ def compute_eigendecomposition(
         device=device,
     )
 
+    for key, source in shared.items():
+        covariance_eigenvectors[key] = covariance_eigenvectors[source]
+        covariance_eigenvalues[key] = covariance_eigenvalues[source]
+
     # Generic output path by adding eigen_prefix to the path
     dirname = os.path.dirname(covariance_path)
     basename = os.path.basename(covariance_path)
@@ -429,7 +477,7 @@ def compute_eigendecomposition(
 
     os.makedirs(output_path, exist_ok=True)
     save_file(
-        covariance_eigenvectors,
+        copy_shared(covariance_eigenvectors, shared),
         os.path.join(output_path, f"shard_{rank}.safetensors"),
     )
 
