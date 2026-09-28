@@ -340,12 +340,16 @@ def _compute_full_matrix(
     return full_matrix
 
 
-def _eigh(key: str, matrix: Tensor, total_processed: Tensor) -> tuple[Tensor, Tensor]:
-    """Eigenvalues and eigenvectors of ``matrix / total_processed`` in fp64, on
-    the CPU."""
+def _eigh(
+    key: str, matrix: Tensor, total_processed: Tensor, dtype: torch.dtype
+) -> tuple[Tensor, Tensor]:
+    """Eigenvalues and eigenvectors of ``matrix / total_processed``, computed in
+    fp64 on ``total_processed``'s device and returned there in ``dtype``."""
     matrix_normalized = matrix.to(total_processed.device, torch.float64)
-    matrix_normalized = matrix_normalized / total_processed
-    matrix_normalized = (matrix_normalized + matrix_normalized.T).div(2)
+    # Free the caller's copy early when it passed the only reference.
+    del matrix
+    matrix_normalized = matrix_normalized + matrix_normalized.T
+    matrix_normalized.div_(2 * total_processed)
 
     if not torch.isfinite(matrix_normalized).all():
         raise ValueError(
@@ -358,7 +362,8 @@ def _eigh(key: str, matrix: Tensor, total_processed: Tensor) -> tuple[Tensor, Te
     except Exception as e:
         raise RuntimeError(f"Eigendecomposition failed for {key}") from e
 
-    return eigenvalues.cpu(), eigenvectors.cpu().contiguous()
+    del matrix_normalized
+    return eigenvalues.to(dtype), eigenvectors.to(dtype).contiguous()
 
 
 def eigendecompose_owned(
@@ -376,10 +381,10 @@ def eigendecompose_owned(
     to ``output_path`` in ``dtype``, the layout :func:`compute_eigendecomposition`
     writes.
 
-    Returns the eigenvectors of the modules this rank owns, in full, and this
-    rank's row shard of every module's eigenvalues, both on the CPU. Empties
-    ``covariances`` as it goes, so each covariance is freed once its
-    eigenvectors exist.
+    Returns the eigenvectors of the modules this rank owns, in full, on this
+    rank's device, and this rank's row shard of every module's eigenvalues on
+    the CPU. Empties ``covariances`` as it goes, so each covariance is freed once
+    its eigenvectors exist.
     """
     rank = dist.get_rank() if owners is not None else 0
     device = get_device(rank)
@@ -393,11 +398,12 @@ def eigendecompose_owned(
         position=rank,
         leave=False,
     ):
-        values, vectors = _eigh(key, covariances.pop(key), total_processed)
-        eigenvectors[key] = vectors.to(dtype)
-        eigenvalues[key] = values.to(dtype)
+        values, vectors = _eigh(key, covariances.pop(key), total_processed, dtype)
+        eigenvectors[key] = vectors
+        eigenvalues[key] = values
 
-    shards, value_shards = eigenvectors, eigenvalues
+    shards = eigenvectors
+    value_shards = {key: values.cpu() for key, values in eigenvalues.items()}
     if owners is not None:
         shards = owned_to_row_shards(eigenvectors, shapes, owners, dtype, device)
         value_shards = owned_to_row_shards(
@@ -475,9 +481,10 @@ def compute_eigendecomposition(
             world_size=world_size,
         )
 
-        eigenvalues, eigenvectors = _eigh(key, matrix, total_processed)
-        covariance_eigenvectors[key] = eigenvectors.to(original_dtype)
-        covariance_eigenvalues[key] = eigenvalues.to(original_dtype)
+        eigenvalues, eigenvectors = _eigh(key, matrix, total_processed, original_dtype)
+        del matrix
+        covariance_eigenvectors[key] = eigenvectors.cpu()
+        covariance_eigenvalues[key] = eigenvalues.cpu()
 
     covariance_eigenvectors = _gather_and_shard_along_dim_0(
         input_dict=covariance_eigenvectors,
