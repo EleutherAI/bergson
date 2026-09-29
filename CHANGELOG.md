@@ -1,6 +1,15 @@
 # CHANGELOG
 
 
+## v2.1.0 (2026-09-29)
+
+### Features
+
+- Average the factored Hessians over documents
+  ([#495](https://github.com/EleutherAI/bergson/pull/495),
+  [`e959b2f`](https://github.com/EleutherAI/bergson/commit/e959b2f7e8cdb918301f48ff23479c75603575c4))
+
+
 ## v2.0.4 (2026-09-28)
 
 ### Bug Fixes
