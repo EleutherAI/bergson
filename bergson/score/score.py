@@ -32,9 +32,9 @@ from bergson.hessians.preconditioner import (
 )
 from bergson.process_grads import normalize_and_aggregate_grads
 from bergson.score.candidates import select_candidates
-from bergson.score.forward_score import (
-    check_forward_mode_supported,
-    forward_token_scores,
+from bergson.score.output_influence import (
+    check_output_influence_supported,
+    output_token_influence,
     query_directions,
 )
 from bergson.score.score_writer import (
@@ -369,7 +369,7 @@ def score_worker(
         del kwargs["scorer"]
 
 
-def forward_score_worker(
+def output_influence_worker(
     rank: int,
     local_rank: int,
     world_size: int,
@@ -433,7 +433,7 @@ def forward_score_worker(
         index_cfg.token_batch_size,
         max_batch_size=index_cfg.max_batch_size,
     )
-    for indices in tqdm(batches, desc="Scoring with forward mode"):
+    for indices in tqdm(batches, desc="Scoring output token influence"):
         batch = ds[indices]
         x, y, _, collection_mask = pad_and_tensor(
             batch["input_ids"],
@@ -441,7 +441,7 @@ def forward_score_worker(
             device=device,
             sync_max_len=False,
         )
-        rates, losses = forward_token_scores(
+        rates, losses = output_token_influence(
             model, x, y, directions, index_cfg, batch.get("advantage")
         )
         per_doc_losses[indices] = losses
@@ -516,7 +516,7 @@ def score_dataset(
         raise ValueError("score_cfg.candidates does not support attribute_tokens.")
 
     if score_cfg.token_influence == "output":
-        check_forward_mode_supported(index_cfg, preprocess_cfg)
+        check_output_influence_supported(index_cfg, preprocess_cfg)
 
     processor = processor_for(index_cfg)
     processor.check_saved_projection(score_cfg.query_path, "The query")
@@ -545,7 +545,7 @@ def score_dataset(
     launch_distributed_run(
         "score",
         (
-            forward_score_worker
+            output_influence_worker
             if score_cfg.token_influence == "output"
             else score_worker
         ),

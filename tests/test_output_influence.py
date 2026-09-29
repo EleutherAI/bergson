@@ -89,11 +89,11 @@ def test_output_influence_matches_gradient_scores(
         tmp_path, "grad", dataset, query_path, token_influence="gradient", **common
     )[:]
     docs = _score(
-        tmp_path, "fwd", dataset, query_path, token_influence="output", **common
+        tmp_path, "output", dataset, query_path, token_influence="output", **common
     )
     tokens = _score(
         tmp_path,
-        "fwd_tokens",
+        "output_tokens",
         dataset,
         query_path,
         token_influence="output",
@@ -112,7 +112,7 @@ def test_output_influence_matches_gradient_scores(
     np.testing.assert_allclose(summed, expected, rtol=1e-4, atol=1e-5)
 
     grad_data = Dataset.load_from_disk(str(tmp_path / "grad" / "data.hf"))
-    for name in ("fwd", "fwd_tokens"):
+    for name in ("output", "output_tokens"):
         data = Dataset.load_from_disk(str(tmp_path / name / "data.hf"))
         assert data.column_names == grad_data.column_names
         np.testing.assert_allclose(
@@ -131,7 +131,7 @@ def test_output_influence_token_rows_are_single_loss_terms(tmp_path: Path):
     query_path = _query(tmp_path, model, dataset, num_queries=1)
     tokens = _score(
         tmp_path,
-        "fwd_tokens",
+        "output_tokens",
         dataset,
         query_path,
         token_influence="output",

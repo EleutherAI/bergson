@@ -9,10 +9,10 @@ from bergson.collector.collector import token_losses
 from bergson.config.config import IndexConfig, PreprocessConfig
 
 
-def check_forward_mode_supported(
+def check_output_influence_supported(
     index_cfg: IndexConfig, preprocess_cfg: PreprocessConfig
 ):
-    """Raise if the run needs something forward-mode scoring can't reproduce."""
+    """Raise if the run needs something output influence scoring can't reproduce."""
     unsupported = {
         "projection_dim != 0": index_cfg.projection_dim != 0,
         "unit_normalize": preprocess_cfg.unit_normalize,
@@ -98,7 +98,7 @@ def query_direction(
     return direction
 
 
-def forward_token_scores(
+def output_token_influence(
     model: PreTrainedModel | PeftModel,
     x: Tensor,
     y: Tensor,
