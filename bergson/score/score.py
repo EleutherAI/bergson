@@ -515,7 +515,7 @@ def score_dataset(
     if score_cfg.candidates.scores and index_cfg.attribute_tokens:
         raise ValueError("score_cfg.candidates does not support attribute_tokens.")
 
-    if score_cfg.forward_mode:
+    if score_cfg.token_influence == "output":
         check_forward_mode_supported(index_cfg, preprocess_cfg)
 
     processor = processor_for(index_cfg)
@@ -544,7 +544,11 @@ def score_dataset(
 
     launch_distributed_run(
         "score",
-        forward_score_worker if score_cfg.forward_mode else score_worker,
+        (
+            forward_score_worker
+            if score_cfg.token_influence == "output"
+            else score_worker
+        ),
         [index_cfg, score_cfg, preprocess_cfg, ds],
         dist_cfg,
     )

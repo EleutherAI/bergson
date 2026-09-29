@@ -1,5 +1,6 @@
 import math
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import pytest
@@ -49,7 +50,14 @@ def _query(tmp_path: Path, model, dataset: str, num_queries: int) -> Path:
     )
 
 
-def _score(tmp_path, name, dataset, query_path, forward_mode: bool, **kwargs):
+def _score(
+    tmp_path,
+    name,
+    dataset,
+    query_path,
+    token_influence: Literal["gradient", "output"],
+    **kwargs,
+):
     cfg = IndexConfig(run_path=str(tmp_path / name), model=MODEL, **kwargs)
     cfg.data.dataset = dataset
     cfg.distributed.nproc_per_node = 1
@@ -57,7 +65,7 @@ def _score(tmp_path, name, dataset, query_path, forward_mode: bool, **kwargs):
     cfg.drop_columns = False
     score_dataset(
         cfg,
-        ScoreConfig(query_path=str(query_path), forward_mode=forward_mode),
+        ScoreConfig(query_path=str(query_path), token_influence=token_influence),
         PreprocessConfig(),
     )
     return load_scores(tmp_path / name)
@@ -67,10 +75,10 @@ def _score(tmp_path, name, dataset, query_path, forward_mode: bool, **kwargs):
     "loss_reduction, filter_modules",
     [("sum", None), ("mean", None), ("sum", "*.mlp.*")],
 )
-def test_forward_mode_matches_gradient_scores(
+def test_output_influence_matches_gradient_scores(
     tmp_path: Path, loss_reduction, filter_modules
 ):
-    """Per-document forward-mode scores equal the gradient dot products, and
+    """Per-document output influence scores equal the gradient dot products, and
     per-token scores sum to them. The saved dataset carries the same losses."""
     model = AutoModelForCausalLM.from_pretrained(MODEL, dtype=torch.float32)
     dataset = _dataset(tmp_path)
@@ -78,15 +86,17 @@ def test_forward_mode_matches_gradient_scores(
 
     common = dict(loss_reduction=loss_reduction, filter_modules=filter_modules)
     expected = _score(
-        tmp_path, "grad", dataset, query_path, forward_mode=False, **common
+        tmp_path, "grad", dataset, query_path, token_influence="gradient", **common
     )[:]
-    docs = _score(tmp_path, "fwd", dataset, query_path, forward_mode=True, **common)
+    docs = _score(
+        tmp_path, "fwd", dataset, query_path, token_influence="output", **common
+    )
     tokens = _score(
         tmp_path,
         "fwd_tokens",
         dataset,
         query_path,
-        forward_mode=True,
+        token_influence="output",
         attribute_tokens=True,
         **common,
     )
@@ -110,7 +120,7 @@ def test_forward_mode_matches_gradient_scores(
         )
 
 
-def test_forward_mode_token_rows_are_single_loss_terms(tmp_path: Path):
+def test_output_influence_token_rows_are_single_loss_terms(tmp_path: Path):
     """Row t is the query's dot product with the gradient of the loss on token
     t + 1 alone, times the document's advantage, and rows without a label are
     zero."""
@@ -124,7 +134,7 @@ def test_forward_mode_token_rows_are_single_loss_terms(tmp_path: Path):
         "fwd_tokens",
         dataset,
         query_path,
-        forward_mode=True,
+        token_influence="output",
         attribute_tokens=True,
     )
 
@@ -158,9 +168,11 @@ def test_forward_mode_token_rows_are_single_loss_terms(tmp_path: Path):
     "setting, match",
     [({"projection_dim": 16}, "projection_dim"), ({"precision": "int8"}, "int8")],
 )
-def test_forward_mode_rejects_unsupported(tmp_path: Path, setting, match):
+def test_output_influence_rejects_unsupported(tmp_path: Path, setting, match):
     cfg = IndexConfig(run_path=str(tmp_path / "scores"), **setting)
     with pytest.raises(ValueError, match=match):
         score_dataset(
-            cfg, ScoreConfig(query_path="unused", forward_mode=True), PreprocessConfig()
+            cfg,
+            ScoreConfig(query_path="unused", token_influence="output"),
+            PreprocessConfig(),
         )

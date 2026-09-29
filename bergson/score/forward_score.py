@@ -25,7 +25,9 @@ def check_forward_mode_supported(
     }
     found = [name for name, bad in unsupported.items() if bad]
     if found:
-        raise ValueError(f"score_cfg.forward_mode doesn't support {', '.join(found)}.")
+        raise ValueError(
+            f"token_influence='output' doesn't support {', '.join(found)}."
+        )
 
 
 def query_directions(
@@ -50,8 +52,8 @@ def query_directions(
         module = model.base_model.get_submodule(name)
         if not isinstance(module, nn.Linear):
             raise ValueError(
-                f"forward_mode only supports nn.Linear modules, but {name} is a "
-                f"{type(module).__name__}."
+                "token_influence='output' only supports nn.Linear modules, but "
+                f"{name} is a {type(module).__name__}."
             )
         out_dim, in_dim = module.weight.shape
         has_bias = target_info[name][2]
@@ -59,8 +61,8 @@ def query_directions(
         if block.shape[0] != out_dim * cols:
             raise ValueError(
                 f"The query for {name} has {block.shape[0]} entries, but the "
-                f"module has {out_dim * cols} parameters. forward_mode needs an "
-                "unprojected query."
+                f"module has {out_dim * cols} parameters. token_influence='output' "
+                "needs an unprojected query."
             )
 
         weight_name = param_names[id(module.weight)]
@@ -68,7 +70,9 @@ def query_directions(
         # Moving a shared weight would move every module that uses it.
         for param in (weight_name, bias_name):
             if param in seen:
-                raise ValueError(f"forward_mode can't score shared parameter {param}.")
+                raise ValueError(
+                    f"token_influence='output' can't score shared parameter {param}."
+                )
             if param is not None:
                 seen.add(param)
         directions.append((block, weight_name, bias_name))
