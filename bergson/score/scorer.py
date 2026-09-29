@@ -97,6 +97,10 @@ class Scorer:
             scores = self.score(mod_grads)
         self.writer(indices, scores, query_offset=self.query_offset)
 
+    def write_scores(self, indices: list[int], scores: Tensor) -> None:
+        """Write a batch's precomputed ``[rows, num_queries]`` dot products."""
+        self.writer(indices, self._reduce(scores, None), query_offset=self.query_offset)
+
     @torch.inference_mode()
     def accumulate(self, name: str, g: Tensor | OuterProductGradients) -> None:
         """Add one module's gradients to the current batch; ``__call__`` finishes it."""
