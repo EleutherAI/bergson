@@ -8,6 +8,10 @@ from bergson.collector.collector import token_losses
 from bergson.config.config import IndexConfig, PreprocessConfig
 from bergson.gradients import LayerAdapter
 
+# A query block, the weight and bias it moves, and whether the weight is
+# stored [in, out].
+Direction = tuple[Tensor, str, str | None, bool]
+
 
 def check_output_influence_supported(
     index_cfg: IndexConfig, preprocess_cfg: PreprocessConfig
@@ -34,7 +38,7 @@ def query_directions(
     model: PreTrainedModel | PeftModel,
     query_grads_t: dict[str, Tensor],
     target_info: dict[str, tuple[torch.device, torch.Size, bool]],
-) -> list[tuple[Tensor, str, str | None, bool]]:
+) -> list[Direction]:
     """Match each scored module's query block to the parameters it moves.
 
     ``query_grads_t`` maps a module name under ``model.base_model`` to its
@@ -92,7 +96,7 @@ def query_directions(
 
 
 def query_direction(
-    directions: list[tuple[Tensor, str, str | None, bool]],
+    directions: list[Direction],
     params: dict[str, Tensor],
     q: int,
 ) -> dict[str, Tensor]:
@@ -114,7 +118,7 @@ def output_token_influence(
     model: PreTrainedModel | PeftModel,
     x: Tensor,
     y: Tensor,
-    directions: list[tuple[Tensor, str, str | None]],
+    directions: list[Direction],
     cfg: IndexConfig,
     advantage: list[float] | None = None,
 ) -> tuple[Tensor, Tensor]:
