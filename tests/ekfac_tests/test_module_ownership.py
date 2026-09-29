@@ -142,6 +142,7 @@ def test_distributed_eigenvalue_corrections_match_one_process(
         ev_correction=True,
         eigen_path=str(merged),
         path=str(tmp_path / "single"),
+        num_documents=len(data),
     )
 
     sub = "eigenvalue_correction_sharded"
