@@ -1,6 +1,14 @@
 # CHANGELOG
 
 
+## v2.2.0 (2026-09-29)
+
+### Features
+
+- Add ASTRA ([#494](https://github.com/EleutherAI/bergson/pull/494),
+  [`dbdc2b3`](https://github.com/EleutherAI/bergson/commit/dbdc2b3ad503437ffc265c06710daaa6b0dfcb0c))
+
+
 ## v2.1.1 (2026-09-29)
 
 ### Bug Fixes
