@@ -4,6 +4,8 @@ GPT-2 fine-tuned on WikiText (`EleutherAI/bergson-wikitext-512-chunks`, 4,608 tr
 |---|---|---|---|---|---|---|---|---|
 | MAGIC (per-query) | 0.100 | [0.090, 0.112] | 0.931 | [0.925, 0.936] | 0.933 | 0.804 | 0.970 | 50/50 |
 | MAGIC (cross-seed) | 0.098 | [0.087, 0.110] | 0.829 | [0.815, 0.840] | 0.836 | 0.658 | 0.932 | 50/50 |
+| EK-FAC + ASTRA | 0.074 | [0.063, 0.087] | 0.643 | [0.624, 0.660] | 0.663 | 0.302 | 0.804 | 50/50 |
+| Eigenvalue-corrected Shampoo + ASTRA | - | - | 0.625 | [0.604, 0.643] | 0.644 | 0.095 | 0.805 | 49/50 |
 | Eigenvalue-corrected Shampoo | 0.071 | [0.060, 0.082] | 0.517 | [0.491, 0.539] | 0.532 | 0.294 | 0.703 | 50/50 |
 | EK-FAC | 0.070 | [0.058, 0.082] | 0.454 | [0.426, 0.479] | 0.453 | 0.095 | 0.664 | 49/50 |
 | KFAC | 0.067 | [0.056, 0.080] | 0.420 | [0.391, 0.446] | 0.412 | 0.041 | 0.646 | 48/50 |
@@ -34,6 +36,8 @@ bergson examples/compare_wikitext/1_magic.yaml       # train, MAGIC scores, the 
 bergson examples/compare_wikitext/2_interval.yaml    # evenly spaced checkpoints for SOURCE and the scored model
 python -c "from bergson.utils.trainer_export import export_checkpoints; export_checkpoints('runs/compare_wikitext/interval', steps=[72])"
 bergson examples/compare_wikitext/ekfac.yaml
+bergson examples/compare_wikitext/ekfac_astra.yaml
+bergson examples/compare_wikitext/shampoo_astra.yaml
 bergson examples/compare_wikitext/kfac.yaml
 bergson examples/compare_wikitext/kfac_p64.yaml
 bergson examples/compare_wikitext/shampoo.yaml

@@ -18,6 +18,12 @@ Indicative performance of data attribution methods in the finetuning regime.
    * - MAGIC (cross-seed)
      - 0.098 [0.087, 0.110]
      - 0.829 [0.815, 0.840]
+   * - EK-FAC + ASTRA
+     - 0.074 [0.063, 0.087]
+     - 0.643 [0.624, 0.660]
+   * - Eigenvalue-corrected Shampoo + ASTRA
+     - -
+     - 0.625 [0.604, 0.643]
    * - Eigenvalue-corrected Shampoo
      - 0.071 [0.060, 0.082]
      - 0.517 [0.491, 0.539]

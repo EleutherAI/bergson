@@ -297,8 +297,12 @@ class FactoredPreconditioner:
         if self.apply_fn is not None:
             inverse_eigvals = self.apply_fn(lam)
         else:
-            mean = self.shard_computer.global_mean(lam, o * i)
             inversion = self.inversion_cfg.inversion
+            mean = (
+                lam.new_ones(())
+                if inversion == "absolute_damped_inverse"
+                else self.shard_computer.global_mean(lam, o * i)
+            )
             if inversion == "factored_tikhonov":
                 factor_a = self.factor_eig_a[name]
                 factor_g = self.factor_eig_g[name]

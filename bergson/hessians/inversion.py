@@ -13,6 +13,8 @@ Writing ``c = damping_factor`` and ``λ`` for an eigenvalue, with ``mean(λ)`` t
 mean over the whole spectrum:
 
 - ``damped_inverse``: ``1 / (λ + c·mean(λ))`` — uniform Tikhonov damping.
+- ``absolute_damped_inverse``: ``1 / (λ + c)`` — the same damping using an
+  absolute value.
 - ``tikhonov_filtered``: ``λ / (λ² + α²)`` with ``α = c·mean(λ)`` (the Tikhonov
   filter factor; formerly named ``cauchy`` for its Lorentzian shape).
 - ``pseudoinverse``: ``1/λ`` where ``λ > c·mean(λ)``, else ``0``.
@@ -28,12 +30,17 @@ import torch
 from torch import Tensor
 
 Inversion = Literal[
-    "damped_inverse", "factored_tikhonov", "pseudoinverse", "tikhonov_filtered"
+    "damped_inverse",
+    "absolute_damped_inverse",
+    "factored_tikhonov",
+    "pseudoinverse",
+    "tikhonov_filtered",
 ]
 """Eigenvalue function used to invert a Hessian / preconditioner matrix."""
 
 INVERSIONS: tuple[Inversion, ...] = (
     "damped_inverse",
+    "absolute_damped_inverse",
     "factored_tikhonov",
     "pseudoinverse",
     "tikhonov_filtered",
@@ -94,6 +101,8 @@ def pseudoinverse_eigfn(
 # needs the per-factor A/G eigenvalues and only exists for the factored path.
 EIGENFNS: dict[str, Callable[[Tensor, Tensor, float], Tensor]] = {
     "damped_inverse": damped_inverse_eigfn,
+    # Same function; the caller passes a mean of one, leaving the damping at c.
+    "absolute_damped_inverse": damped_inverse_eigfn,
     "tikhonov_filtered": tikhonov_filtered_eigfn,
     "pseudoinverse": pseudoinverse_eigfn,
 }
@@ -211,8 +220,13 @@ def invert_psd_matrix(
     dense_inversion = (
         "damped_inverse" if inversion == "factored_tikhonov" else inversion
     )
+    mean = (
+        eigvals.new_ones(())
+        if inversion == "absolute_damped_inverse"
+        else eigvals.mean()
+    )
     scaled = eigenvalue_multiplier(
-        dense_inversion, eigvals, eigvals.mean(), damping_factor, power=power
+        dense_inversion, eigvals, mean, damping_factor, power=power
     )
 
     return (eigvecs * scaled @ eigvecs.mH).to(original_dtype)

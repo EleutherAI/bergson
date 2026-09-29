@@ -125,6 +125,8 @@ class InversionConfig(Serializable):
 
     - "damped_inverse" (default): ``1 / (λ + c·mean(λ))`` — uniform Tikhonov
       damping.
+    - "absolute_damped_inverse": ``1 / (λ + c)`` — the same damping using an
+      absolute value.
     - "factored_tikhonov": damped inverse with the damping split across the
       activation (A) and gradient (G) Kronecker factors via the Martens &
       Grosse trace ratio ``π = sqrt(mean(λ_A) / mean(λ_G))``. Factored EKFAC
@@ -136,7 +138,7 @@ class InversionConfig(Serializable):
       Tikhonov filter factor / ridge solution ``(H² + α²I)⁻¹H``."""
 
     damping_factor: float = 0.1
-    """Damping / truncation strength, relative to the mean eigenvalue."""
+    """Damping / truncation strength. See ``inversion``."""
 
     apply_batch_size: int = 2
     """Query gradients moved on-device and preconditioned at a time in the
@@ -964,6 +966,46 @@ class HessianConfig(Serializable):
 
 
 @dataclass
+class AstraConfig(Serializable):
+    """Refine a Kronecker-factored approximate Hessian's
+    inverse-Hessian-vector products with ASTRA
+    (https://arxiv.org/abs/2507.14740).
+
+    Each query's ``x = (H + D)^-1 q`` is refined by momentum SGD on
+    ``x^T (H + D) x / 2 - x^T q``, starting from the factored solution, with
+    each step preconditioned by the damped Kronecker-factored inverse. ``H`` is
+    the Gauss-Newton Hessian of the training loss, estimated on a random batch
+    of training documents per step, and ``D`` is the damping of each
+    module."""
+
+    num_steps: int = 0
+    """Steps per query; 0 scores the factored solution unchanged."""
+
+    loss_reduction: Literal["mean", "sum"] | None = None
+    """Overrides ``index_cfg.loss_reduction`` in the Hessian-vector products.
+    Used to replicate ASTRA; its theoretical interpretation is unclear."""
+
+    lr: float = 0.01
+    """Step size. Too large a step diverges; tune it by the logged objective."""
+
+    momentum: float = 0.9
+
+    batch_size: int = 16
+    """Training documents per Hessian-vector product."""
+
+    micro_batch_size: int = 16
+    """Documents per forward pass within a batch; lower it to save memory."""
+
+    lr_decay: float = 0.9
+    """Factor the step size is multiplied by every ``lr_decay_interval`` steps."""
+
+    lr_decay_interval: int = 100
+
+    seed: int = 0
+    """Seeds the training batches, which are drawn separately for each query."""
+
+
+@dataclass
 class HessianPipelineConfig:
     """Config for the Hessian-preconditioned influence pipeline."""
 
@@ -973,6 +1015,9 @@ class HessianPipelineConfig:
 
     inversion_cfg: InversionConfig = field(default_factory=InversionConfig)
     """How to invert the fitted EKFAC Hessian when applying it to the query."""
+
+    astra: AstraConfig = field(default_factory=AstraConfig)
+    """Refine the inverse-Hessian-vector products iteratively before scoring."""
 
     resume: bool = False
     """Skip pipeline steps whose output directory already exists."""
