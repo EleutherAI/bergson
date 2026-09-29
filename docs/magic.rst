@@ -47,36 +47,37 @@ After a run completes, ``run_cfg.run_path`` contains:
 
 * ``scores/`` — a score directory, the same self-describing format the
   scoring pipeline writes. ``info.json`` records ``attribute_tokens`` and
-  ``num_scores``, so consumers never infer the layout from the shape.
-  Read it with :func:`bergson.data.load_scores_loss_signed`, which
-  returns ``(scores, multi_query)``:
+  ``num_scores``. Read it with
+  :func:`~bergson.data.load_scores_loss_signed`, which returns
+  ``(scores, multi_query)``:
 
-  * Per-example: ``(num_train_docs, 1)``, indexed directly by ``doc_id``.
-  * Per-token: ``(num_chunks, seq_len)``, indexed by ``(chunk_idx,
-    token_idx)`` in the *post-shuffle* order used during training.
+  * Per-document: ``(num_train_docs, 1)``, indexed directly by ``doc_id``.
+  * Per-token: ``(num_examples, seq_len)``, indexed by ``(example_idx,
+    token_idx)``, with every epoch's pass over an example summed into its
+    row. An example is a chunk of the training dataset when
+    ``chunk_length > 0`` or otherwise a row/document, and ``example_idx`` is
+    its position in the training set after chunking, before each epoch is
+    shuffled.
   * Per-query (``query.aggregation: none``) adds a trailing query axis, so
-    per-token per-query scores are ``(num_chunks, seq_len,
+    per-token per-query scores are ``(num_examples, seq_len,
     num_query_docs)``.
 
-  Pad rows appended to make the dataset divisible by ``batch_size`` are
-  trimmed before saving. Per-token scores are stored ragged — a row holds
-  ``length - 1`` values, the positions ``weighted_causal_lm_ce`` can reach
-  — and are unpacked back into the dense grid on load.
+  Per-token scores are stored ragged — a row holds ``length - 1`` values —
+  and are unpacked back into a dense grid on load.
 
 * ``score_vs_step.png`` — if matplotlib is installed (``pip install
   'bergson[plot]'``) the median ``log10|score|`` of each optimizer step
-  against training step is emitted, so an unstable run is visible at a
-  glance.
+  against training step is emitted, for assessing run stability.
 
 * ``per_query/q{i}.pt`` — per-query runs only. The score tensor for query
   document ``i``, written as soon as that query's backward finishes so an
   interrupted run resumes without redoing completed queries. The trailing
   query axis in ``scores/`` is these tensors stacked.
 
-* ``scores/doc_ids.npy`` — written for every per-token run, shape
-  ``(num_chunks, seq_len)`` matching the loaded scores. Each
-  entry is the original (pre-shuffle) document id for that token position,
-  so the scores can be aggregated over chunks:
+* ``scores/doc_ids.npy`` — written for per-token runs, shape
+  ``(num_examples, seq_len)``. Each entry is the document id at that token
+  position, so the scores can be summed over examples and token positions
+  into per-document scores:
 
   .. code-block:: python
 
@@ -84,23 +85,22 @@ After a run completes, ``run_cfg.run_path`` contains:
 
      scores, _ = load_scores_loss_signed("runs/magic/scores")
      doc_ids = torch.from_numpy(np.load("runs/magic/scores/doc_ids.npy"))
-     num_docs = int(doc_ids.max()) + 1
+     num_train_docs = int(doc_ids.max()) + 1
 
      # Trailing axis is the query axis on per-query runs, absent otherwise;
      # reshaping to it keeps both cases on one path.
      flat = scores.reshape(doc_ids.numel(), -1)
-     per_doc = torch.zeros(num_docs, flat.shape[1], dtype=flat.dtype)
+     per_doc = torch.zeros(num_train_docs, flat.shape[1], dtype=flat.dtype)
      per_doc.scatter_add_(0, doc_ids.flatten()[:, None].expand_as(flat), flat)
 
-  ``per_doc`` comes back as ``(num_docs, num_query_docs)``, or
-  ``(num_docs, 1)`` for a single-query run.
+  ``per_doc`` comes back as ``(num_train_docs, num_query_docs)``, or
+  ``(num_train_docs, 1)`` for a single-query run.
 
-  When ``data.chunk_length > 0`` the ``doc_ids`` column comes from
-  ``tokenize_and_chunk`` and chunks may pack multiple docs or split one
-  across chunks. When ``chunk_length`` is 0, each row is one document
-  and ``doc_ids`` is broadcast from the row's pre-shuffle index; tokens
-  past the row's actual length carry zero MAGIC score and contribute
-  nothing to the scatter-add.
+  With ``data.chunk_length == 0`` each example is one document and scores
+  for document ``i`` can be accessed like ``scores[i]``. With
+  ``data.chunk_length > 0`` a chunk may hold several documents, and a
+  document may span chunks. In this case, use ``doc_ids`` to aggregate the
+  scores for a document over chunks.
 
 Models and optimizer state
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -152,11 +152,11 @@ Core components
    bwd_state = trainer.backward("checkpoints/", stream, bwd_state, state)
    scores = bwd_state.weight_grads  # attribution scores
 
-**DataStream**: Wraps a dataset with differentiable per-example (or per-token) weights that receive gradients during the backward pass.
+**DataStream**: Wraps a dataset with differentiable per-document (or per-token) weights that receive gradients during the backward pass.
 
 .. code-block:: python
 
-   # Per-example attribution
+   # Per-document attribution
    stream = DataStream(dataset, batch_size=4, device="cuda")
 
    # Per-token attribution
@@ -171,10 +171,10 @@ Core components
 
    # Your MAGIC worker call here
 
-Per-token vs per-example attribution
+Per-token vs per-document attribution
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-By default, ``DataStream`` creates a 1D weight tensor ``[n_examples]`` for per-example attribution. By passing a 2D tensor ``[n_examples, max_length]`` as the ``weight_shape`` parameter, each token receives its own attribution score. The ``weighted_causal_lm_ce`` loss function supports both shapes.
+By default, ``DataStream`` creates a 1D weight tensor ``[num_train_docs]`` for per-document attribution, indexed by ``doc_id``. By passing a 2D tensor ``[num_examples, max_length]`` as the ``weight_shape`` parameter, each token receives its own attribution score. The ``weighted_causal_lm_ce`` loss function supports both shapes.
 
 To use per-token attribution, set ``model.loss_function = weighted_causal_lm_ce`` so the model uses the weighted loss during training.
 

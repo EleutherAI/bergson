@@ -1138,8 +1138,8 @@ def test_worker_writes_doc_ids_for_fresh_per_token_run(tmp_path):
     doc_ids_path = score_dir / "doc_ids.npy"
     assert score_dir.is_dir(), "worker() did not write a score directory"
     assert doc_ids_path.is_file(), (
-        "worker() wrote scores but no doc_ids.npy; per-token scores are "
-        "indexed by shuffled chunk, so they are unaggregatable without it"
+        "worker() wrote scores but no doc_ids.npy, which aggregates packed "
+        "chunks into documents"
     )
 
     scores, _ = load_scores_loss_signed(str(score_dir))
@@ -1188,3 +1188,44 @@ def test_save_magic_scores_round_trips_the_grid(tmp_path, num_scores):
 
     doc_ids = np.load(tmp_path / "scores" / "doc_ids.npy")
     assert doc_ids.shape == (rows, seq_len)
+
+
+def test_per_token_scores_fold_shuffled_epochs_onto_examples(tmp_path):
+    """Per-token scores of a shuffled two-epoch stream come back with one row
+    per example in dataset order, like per-document scores do."""
+    from bergson.config.config import DataConfig, QuerySetConfig
+    from bergson.magic.cli import attach_example_ids, shuffled_epochs, worker
+    from bergson.magic.config import MagicConfig
+
+    num_docs, seq_len = 4, 8
+    train_ds = shuffled_epochs(
+        attach_example_ids(_tiny_magic_dataset(num_docs, seq_len)), seed=0, num_epochs=2
+    )
+    assert train_ds["example_ids"] != list(range(num_docs)) * 2
+    query_ds = _tiny_magic_dataset(2, seq_len)
+
+    run_cfg = MagicConfig(
+        run_path=str(tmp_path),
+        model="EleutherAI/pythia-14m",
+        data=DataConfig(dataset="unused", chunk_length=seq_len),
+        query=QuerySetConfig(
+            dataset="unused",
+            chunk_length=seq_len,
+            aggregation="mean",
+        ),
+        batch_size=2,
+        attribute_tokens=True,
+        skip_validation=True,
+    )
+    worker(0, 0, 1, train_ds, query_ds, num_docs, 2, run_cfg)
+
+    import numpy as np
+
+    from bergson.data import load_scores_loss_signed
+
+    scores, _ = load_scores_loss_signed(str(tmp_path / "scores"))
+    doc_ids = np.load(tmp_path / "scores" / "doc_ids.npy")
+    assert scores.shape == (num_docs, seq_len), f"got {tuple(scores.shape)}"
+    assert doc_ids.shape == (num_docs, seq_len)
+    assert doc_ids[:, 0].tolist() == list(range(num_docs))
+    assert (scores != 0).any(dim=1).all()

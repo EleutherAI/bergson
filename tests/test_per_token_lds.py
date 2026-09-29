@@ -93,3 +93,39 @@ def test_load_token_dir_keeps_query_dim_when_multiscore(tmp_path):
     torch.testing.assert_close(scores[0, 0], torch.tensor([1.0, 2.0]))
     torch.testing.assert_close(scores[1, 0], torch.tensor([5.0, 6.0]))
     torch.testing.assert_close(scores[1, 1], torch.tensor([0.0, 0.0]))
+
+
+def test_datastream_indexes_per_token_weights_by_example():
+    """A shuffled multi-epoch stream serves each row the per-token weights of
+    its example, found through ``example_ids``, so a flat re-weight of
+    ``[examples, seq_len]`` reaches the scored rows."""
+    seq_len = 4
+    data = Dataset.from_dict(
+        {
+            "input_ids": [[5, 6, 7, 8], [1, 2, 3, 4], [1, 2, 3, 4], [5, 6, 7, 8]],
+            "example_ids": [1, 0, 0, 1],
+        }
+    )
+    stream = DataStream(data, batch_size=2, weight_shape=(2, seq_len))
+    stream.requires_grad = False
+
+    stream.weights.view(-1)[0 * seq_len + 2] = 0.0
+
+    expected = torch.ones(2, seq_len)
+    expected[1, 2] = 0.0  # batch 0: rows of examples 1, 0
+    torch.testing.assert_close(stream[0]["example_weight"].cpu(), expected)
+    expected = torch.ones(2, seq_len)
+    expected[0, 2] = 0.0  # batch 1: rows of examples 0, 1
+    torch.testing.assert_close(stream[1]["example_weight"].cpu(), expected)
+
+
+def test_pad_rows_get_a_synthetic_example_id():
+    """Pad rows copy the last example, so they are routed to one synthetic
+    example id past the real ones and its weight row is zeroed."""
+    from bergson.magic.data_stream import pad_dataset_to_batch_size
+
+    data = Dataset.from_dict({"input_ids": [[1, 2]] * 3, "example_ids": [2, 0, 1]})
+    padded, _, padding = pad_dataset_to_batch_size(data, 4, 3, "Train", 0)
+
+    assert (padding.num_rows, padding.num_examples) == (1, 1)
+    assert list(padded["example_ids"]) == [2, 0, 1, 3]
