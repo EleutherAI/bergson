@@ -1,6 +1,25 @@
 # CHANGELOG
 
 
+## v2.2.1 (2026-09-29)
+
+### Bug Fixes
+
+- Free kept covariances when skipping the eigendecomposition
+  ([`ad8ab97`](https://github.com/EleutherAI/bergson/commit/ad8ab97455cde41426ff5586325d137583305579))
+
+### Performance Improvements
+
+- Eigendecompose each module's covariances on its owner
+  ([`639710e`](https://github.com/EleutherAI/bergson/commit/639710e3dc75545bf0aa89513f119255b3eff3af))
+
+- Free each covariance once its eigenvectors exist
+  ([`7eb8450`](https://github.com/EleutherAI/bergson/commit/7eb845036be41f50fdf52ffd4f718879ef2d605a))
+
+- Keep owned factors on the GPU from the covariance pass to the correction pass
+  ([`d639934`](https://github.com/EleutherAI/bergson/commit/d639934429b4ae009b39410b99eb8285c2586ea9))
+
+
 ## v2.2.0 (2026-09-29)
 
 ### Features
