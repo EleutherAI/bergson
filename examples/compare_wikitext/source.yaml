@@ -47,10 +47,13 @@ steps:
           aggregation: none
 
   - approxunrolling:
+      # In YAML the << notation copies the section tagged with "source" here
       <<: *source
       index_cfg:
+        # In YAML the << notation copies the section tagged with "index" here
         <<: *index
         run_path: runs/compare_wikitext/source_adam
       approx_unrolling_cfg:
+        # In YAML the << notation copies the section tagged with "unroll" here
         <<: *unroll
         use_adam_preconditioner: true

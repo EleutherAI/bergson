@@ -40,15 +40,19 @@ steps:
           batch_size: 1024
 
   - trackstar:
+      # In YAML the << notation copies the section tagged with "trackstar" here
       <<: *trackstar
       index_cfg:
+        # In YAML the << notation copies the section tagged with "index" here
         <<: *index
         projection_dim: 32
         run_path: runs/compare_wikitext/trackstar_adam_p32
 
   - trackstar:
+      # In YAML the << notation copies the section tagged with "trackstar" here
       <<: *trackstar
       index_cfg:
+        # In YAML the << notation copies the section tagged with "index" here
         <<: *index
         projection_dim: 64
         run_path: runs/compare_wikitext/trackstar_adam_p64
