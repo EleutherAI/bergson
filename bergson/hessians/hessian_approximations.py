@@ -383,8 +383,7 @@ def collect_hessians(
 ):
     """
     Compute Hessian approximations using the hooks specified in the collector.
-    If ev_correction is True, uses LambdaCollector to compute eigenvalue corrections,
-    divided by ``num_documents``.
+    If ev_correction is True, uses LambdaCollector to compute eigenvalue corrections.
     ``path`` overrides where the collector writes.
     """
 
