@@ -55,6 +55,15 @@ The candidates are the union over the earlier run's query columns of each column
 
 See ``examples/pipelines/trackstar_then_shampoo.yaml``.
 
+Scoring in forward mode
+-----------------------
+
+``score_cfg.forward_mode`` on ``score`` or ``ekfac`` scores each training loss term by how fast it changes as the weights move along the query, instead of collecting a gradient per example. A query's dot product with the gradient of a loss is exactly that rate of change, and one forward-mode pass gives it for every loss term in a batch at once. Each query column costs one pass.
+
+With ``attribute_tokens`` this changes what a row means. A per-token gradient row ``t`` is position ``t``'s effect on the loss of every later token, since later tokens attend to it. A forward-mode row ``t`` is the score of the loss on token ``t + 1`` alone, which is the term that loss masking removes. Rows without a label are zero. Both kinds of row sum to the per-example score.
+
+It needs an unprojected query (``projection_dim: 0``) and dot-product scoring, and doesn't support ``loss_fn: kl``, ``optimizer_state``, ``split_attention_modules``, quantized models, FSDP, or fused MoE experts. The fused attention kernels don't implement forward-mode derivatives, so the model is loaded with eager attention. The run saves ``data.hf`` with each example's loss, as the gradient path does, but not ``total_processed.pt``, which only Hessian fitting reads.
+
 Compressing the gradients
 -------------------------
 

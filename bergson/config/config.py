@@ -874,6 +874,14 @@ class ScoreConfig(Serializable):
     capability (e.g. in influence functions). False for unrolled
     differentiation."""
 
+    forward_mode: bool = False
+    """Score each loss term by how fast it changes as the weights move along the
+    query instead of collecting per-example gradients. Costs one forward-mode
+    pass per query column, so aggregate the query when you can. With
+    ``attribute_tokens``, row ``t`` then scores the loss on token ``t + 1``
+    alone, not position ``t``'s effect on every later loss. Needs an
+    unprojected query and dot-product scoring."""
+
     candidates: CandidateConfig = field(default_factory=CandidateConfig)
     """Score only the rows an earlier run ranked highest. The store then has one
     row per candidate; ``candidates.npy`` beside it holds their training rows."""

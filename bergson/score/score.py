@@ -6,15 +6,18 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.distributed as dist
-from datasets import Dataset
+from datasets import Dataset, Value
+from tqdm.auto import tqdm
 
 from bergson.collection import collect_gradients
+from bergson.collector.gradient_collectors import GradientCollector
 from bergson.config.config import IndexConfig, PreprocessConfig, ScoreConfig
 from bergson.config.config_io import load_subconfig
 from bergson.data import (
     allocate_batches,
     column_offsets,
     load_gradients,
+    pad_and_tensor,
 )
 from bergson.distributed import (
     DIST_TIMEOUT,
@@ -29,6 +32,11 @@ from bergson.hessians.preconditioner import (
 )
 from bergson.process_grads import normalize_and_aggregate_grads
 from bergson.score.candidates import select_candidates
+from bergson.score.forward_score import (
+    check_forward_mode_supported,
+    forward_token_scores,
+    query_directions,
+)
 from bergson.score.score_writer import (
     MemmapSequenceScoreWriter,
     MemmapTokenScoreWriter,
@@ -361,6 +369,106 @@ def score_worker(
         del kwargs["scorer"]
 
 
+def forward_score_worker(
+    rank: int,
+    local_rank: int,
+    world_size: int,
+    index_cfg: IndexConfig,
+    score_cfg: ScoreConfig,
+    preprocess_cfg: PreprocessConfig,
+    ds: Dataset,
+):
+    """Score every loss term in ``ds`` by its rate of change along the query."""
+    if torch.cuda.is_available():
+        torch.cuda.set_device(get_device_index(local_rank))
+
+    if world_size > 1:
+        addr = os.environ.get("MASTER_ADDR", "localhost")
+        port = os.environ.get("MASTER_PORT", "29500")
+
+        dist.init_process_group(
+            dist_backend(),
+            init_method=f"tcp://{addr}:{port}",
+            device_id=dist_device_id(local_rank),
+            rank=rank,
+            timeout=DIST_TIMEOUT,
+            world_size=world_size,
+        )
+
+    # The fused attention kernels don't implement forward-mode derivatives.
+    model, target_modules = setup_model_and_peft(index_cfg, attn_implementation="eager")
+    # Dropout would give each query column its own random model.
+    model.eval()
+    # Saves the processor config beside the scores, as score_worker does.
+    create_processor(model, index_cfg, target_modules)
+    device = torch.device(get_device(local_rank))
+
+    scorer = create_scorer(
+        index_cfg.partial_run_path,
+        ds,
+        score_cfg,
+        preprocess_cfg,
+        device=device,
+        dtype=(
+            convert_precision_to_torch(score_cfg.precision)
+            if score_cfg.precision != "auto"
+            else get_gradient_dtype(model)
+        ),
+        attribute_tokens=index_cfg.attribute_tokens,
+    )
+    directions = query_directions(
+        model,
+        scorer.query_grads_t,
+        GradientCollector.discover_targets(
+            model.base_model,
+            target_modules,
+            index_cfg.include_bias,
+            index_cfg.filter_modules,
+        ),
+    )
+
+    per_doc_losses = torch.zeros(len(ds), device=device, dtype=torch.float32)
+    batches = allocate_batches(
+        ds["length"][:],
+        index_cfg.token_batch_size,
+        max_batch_size=index_cfg.max_batch_size,
+    )
+    for indices in tqdm(batches, desc="Scoring with forward mode"):
+        batch = ds[indices]
+        x, y, _, collection_mask = pad_and_tensor(
+            batch["input_ids"],
+            labels=batch.get("labels"),
+            device=device,
+            sync_max_len=False,
+        )
+        rates, losses = forward_token_scores(
+            model, x, y, directions, index_cfg, batch.get("advantage")
+        )
+        per_doc_losses[indices] = losses
+        if index_cfg.attribute_tokens:
+            # Row t of the token store is the loss on token t + 1.
+            rates = torch.cat([rates, rates.new_zeros(rates[:, :1].shape)], dim=1)
+            rates = rates[collection_mask]
+        else:
+            rates = rates.sum(dim=1)
+        scorer.write_scores(indices, rates)
+
+    scorer.writer.flush()
+
+    # The dataset beside the scores, as GradientCollector.teardown saves it.
+    if dist.is_initialized():
+        dist.reduce(per_doc_losses, dst=0)
+    if rank == 0:
+        data = ds.remove_columns(["input_ids"]) if index_cfg.drop_columns else ds
+        data = data.add_column(
+            "loss",
+            per_doc_losses.cpu().numpy(),
+            feature=Value("float32"),
+            new_fingerprint="loss",
+        )
+        data.save_to_disk(str(index_cfg.partial_run_path / "data.hf"))
+
+
 def score_dataset(
     index_cfg: IndexConfig,
     score_cfg: ScoreConfig,
@@ -407,6 +515,9 @@ def score_dataset(
     if score_cfg.candidates.scores and index_cfg.attribute_tokens:
         raise ValueError("score_cfg.candidates does not support attribute_tokens.")
 
+    if score_cfg.forward_mode:
+        check_forward_mode_supported(index_cfg, preprocess_cfg)
+
     processor = processor_for(index_cfg)
     processor.check_saved_projection(score_cfg.query_path, "The query")
     if preprocess_cfg.hessian_path and not is_factored_hessian(
@@ -433,7 +544,7 @@ def score_dataset(
 
     launch_distributed_run(
         "score",
-        score_worker,
+        forward_score_worker if score_cfg.forward_mode else score_worker,
         [index_cfg, score_cfg, preprocess_cfg, ds],
         dist_cfg,
     )
