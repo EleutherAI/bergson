@@ -15,9 +15,8 @@ steps:
         chunk_length: 0
 
       query:
-        data:
-          dataset: queries/power_seeking.jsonl
-          format_template: examples/powerseeking_contrastive_query/formats/question_answer.yaml
+        dataset: queries/power_seeking.jsonl
+        format_template: examples/powerseeking_contrastive_query/formats/question_answer.yaml
         contrast:
           dataset: queries/power_seeking_control.jsonl
           format_template: examples/powerseeking_contrastive_query/formats/question_answer.yaml

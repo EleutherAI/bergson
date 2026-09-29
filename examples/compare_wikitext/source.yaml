@@ -40,10 +40,9 @@ steps:
           - runs/compare_wikitext/interval/checkpoints/step_72.ckpt
         segments: 3
         query:
-          data:
-            dataset: EleutherAI/bergson-wikitext-512-chunks
-            split: "test[0:50]"
-            chunk_length: 0
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "test[0:50]"
+          chunk_length: 0
           # One score column per query, for per-query LDS.
           aggregation: none
 

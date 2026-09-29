@@ -250,7 +250,7 @@ def compute_per_query_magic_scores(
             one,
             world_size,
             device=device,
-            input_key=run_cfg.query.data.prompt_column,
+            input_key=run_cfg.query.prompt_column,
             weight_shape=(n_one,),
         )
         if one_pad:
@@ -581,7 +581,7 @@ def worker(
         query_dataset,
         run_cfg.batch_size,
         device=get_device(rank),
-        input_key=run_cfg.query.data.prompt_column,
+        input_key=run_cfg.query.prompt_column,
         weight_shape=(num_query_docs,),
     )
     if query_pad_count:
@@ -779,7 +779,7 @@ def run_magic(
     train_ds = shuffled_epochs(train_ds, run_cfg.seed, max(1, run_cfg.num_epochs))
 
     if isinstance(run_cfg, ValidationConfig):
-        query_ds, query_n = setup_data_pipeline(run_cfg, run_cfg.query.data)
+        query_ds, query_n = setup_data_pipeline(run_cfg, run_cfg.query)
     else:
         query_ds, query_n = None, 0
 

@@ -3,6 +3,9 @@
 import subprocess
 
 import pytest
+from simple_parsing import ArgumentParser, ConflictResolution
+
+from bergson.__main__ import Main
 
 from .cli_command import bergson_cmd, bergson_env
 
@@ -50,3 +53,14 @@ def test_cli_help(cmd, help_results):
     """Each subcommand should produce --help output without crashing."""
     result = help_results[cmd]
     assert result.returncode == 0, f"bergson {cmd} --help failed:\n{result.stderr}"
+
+
+def test_train_and_query_dataset_flags_stay_apart():
+    """``--data.dataset`` feeds the training set, ``--query.dataset`` the query."""
+    parser = ArgumentParser(conflict_resolution=ConflictResolution.EXPLICIT)
+    parser.add_arguments(Main, dest="prog")
+    args = parser.parse_args(
+        ["magic", "runs/x", "--data.dataset", "train-ds", "--query.dataset", "query-ds"]
+    )
+    cfg = args.prog.command
+    assert (cfg.data.dataset, cfg.query.dataset) == ("train-ds", "query-ds")

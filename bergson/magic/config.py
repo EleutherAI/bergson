@@ -34,9 +34,9 @@ class MagicConfig(ValidationConfig):
                 "use query.aggregation 'mean' or 'sum', not 'none'."
             )
         # Per-query MAGIC needs one document per row.
-        if self.query.aggregation == "none" and self.query.data.chunk_length > 0:
+        if self.query.aggregation == "none" and self.query.chunk_length > 0:
             raise ValueError(
-                "query.data.chunk_length must be 0 for per-query MAGIC "
-                "(query.aggregation='none'); use query.data.truncation for "
+                "query.chunk_length must be 0 for per-query MAGIC "
+                "(query.aggregation='none'); use query.truncation for "
                 "long documents."
             )

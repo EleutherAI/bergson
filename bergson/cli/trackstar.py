@@ -88,7 +88,7 @@ def trackstar(index_cfg: IndexConfig, trackstar_cfg: TrackstarConfig):
         if not _step_complete(query_hess_path, resume):
             query_hess_cfg = deepcopy(index_cfg)
             query_hess_cfg.run_path = query_hess_path
-            query_hess_cfg.data = deepcopy(trackstar_cfg.query.data)
+            query_hess_cfg.data = trackstar_cfg.query.to_data()
             _limit_split_for_hess(query_hess_cfg, trackstar_cfg.stats_sample_size)
             _validate(query_hess_cfg)
             save_run_config(
