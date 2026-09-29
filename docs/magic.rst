@@ -65,8 +65,8 @@ After a run completes, ``run_cfg.run_path`` contains:
 
 * ``score_vs_step.png`` — if matplotlib is installed (``pip install
   'bergson[plot]'``) the median ``log10|score|`` of each optimizer step
-  against training step is emitted, so a run whose
-  score scale swings over training is visible at a glance.
+  against training step is emitted, so an unstable run is visible at a 
+  glance.
 
 * ``per_query/q{i}.pt`` — per-query runs only. The score tensor for query
   document ``i``, written as soon as that query's backward finishes so an
