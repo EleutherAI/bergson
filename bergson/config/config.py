@@ -958,18 +958,19 @@ class HessianConfig(Serializable):
 
 @dataclass
 class AstraConfig(Serializable):
-    """Refine the EK-FAC inverse-Hessian-vector products with ASTRA
+    """Refine a Kronecker-factored approximate Hessian's
+    inverse-Hessian-vector products with ASTRA
     (https://arxiv.org/abs/2507.14740).
 
     Each query's ``x = (H + D)^-1 q`` is refined by momentum SGD on
-    ``x^T (H + D) x / 2 - x^T q``, starting from the EK-FAC solution, with each
-    step preconditioned by the damped EK-FAC inverse. ``H`` is the Gauss-Newton
-    Hessian of the training loss, estimated on a random batch of training
-    documents per step, and ``D`` is the EK-FAC damping of each
+    ``x^T (H + D) x / 2 - x^T q``, starting from the factored solution, with
+    each step preconditioned by the damped Kronecker-factored inverse. ``H`` is
+    the Gauss-Newton Hessian of the training loss, estimated on a random batch
+    of training documents per step, and ``D`` is the damping of each
     module."""
 
     num_steps: int = 0
-    """Steps per query; 0 scores the EK-FAC solution unchanged."""
+    """Steps per query; 0 scores the factored solution unchanged."""
 
     loss_reduction: Literal["mean", "sum"] | None = None
     """Overrides ``index_cfg.loss_reduction`` in the Hessian-vector products.

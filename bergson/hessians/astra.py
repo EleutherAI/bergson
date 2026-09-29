@@ -1,5 +1,6 @@
-"""ASTRA (Wang et al. 2025, https://arxiv.org/abs/2507.14740): refine the
-EK-FAC inverse-Hessian-vector products with EK-FAC-preconditioned SGD."""
+"""ASTRA (Wang et al. 2025, https://arxiv.org/abs/2507.14740): refine a
+Kronecker-factored approximate Hessian's inverse-Hessian-vector products with
+SGD preconditioned by that same inverse."""
 
 import json
 import math
@@ -31,10 +32,10 @@ class AstraPaths:
     """Query gradients ``q``."""
 
     init_path: str
-    """EK-FAC solutions ``(P + D)^-1 q`` to start from."""
+    """Solutions ``(P + D)^-1 q`` to start from."""
 
     hessian_path: str
-    """EK-FAC factors of the preconditioner ``P``."""
+    """Kronecker factors of the preconditioner ``P``."""
 
     run_path: str
     """Where the refined solutions are written, in ``init_path``'s layout."""

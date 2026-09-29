@@ -186,7 +186,7 @@ def _run_astra(
     init_path: str,
     out_path: str,
 ):
-    """Refine the EK-FAC solutions in ``init_path`` and write them to ``out_path``."""
+    """Refine the solutions in ``init_path`` and write them to ``out_path``."""
     if index_cfg.distributed.nnode > 1:
         raise ValueError("ASTRA runs on a single node.")
     if index_cfg.projection_dim > 0:
