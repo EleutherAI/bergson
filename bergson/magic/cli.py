@@ -54,6 +54,7 @@ from ..validate import build_contrast_stream, validate_scores
 from .config import MagicConfig
 from .data_stream import DataStream, mask_padded_rows, pad_dataset_to_batch_size
 from .grad_accum import accumulate_grads
+from .score_plot import plot_score_trajectory
 from .trainer import BackwardState, TrainerState, prepare_trainer, write_lr_history
 
 
@@ -644,6 +645,11 @@ def worker(
             score_path = save_magic_scores(
                 run_cfg.run_path, scores, train_dataset, pad_count, bool(per_token)
             )
+            plot_score_trajectory(
+                scores.float().numpy(),
+                run_cfg.batch_size,
+                Path(run_cfg.run_path) / "score_vs_step.png",
+            )
     elif not score_path:
         # Sanity check
         if not isinstance(run_cfg, MagicConfig):
@@ -697,6 +703,11 @@ def worker(
 
             score_path = save_magic_scores(
                 run_cfg.run_path, scores, train_dataset, pad_count, bool(per_token)
+            )
+            plot_score_trajectory(
+                scores.float().numpy(),
+                run_cfg.batch_size,
+                Path(run_cfg.run_path) / "score_vs_step.png",
             )
     else:
         scores, multi_query = load_scores_loss_signed(score_path)
