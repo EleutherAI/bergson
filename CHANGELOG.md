@@ -1,6 +1,15 @@
 # CHANGELOG
 
 
+## v2.1.1 (2026-09-29)
+
+### Bug Fixes
+
+- Use the EK-FAC inverse in the Adam SOURCE variant
+  ([#511](https://github.com/EleutherAI/bergson/pull/511),
+  [`08e50ef`](https://github.com/EleutherAI/bergson/commit/08e50effa843f8350332371cd4eef57823778e94))
+
+
 ## v2.1.0 (2026-09-29)
 
 ### Features
