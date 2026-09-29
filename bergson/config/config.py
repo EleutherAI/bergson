@@ -116,8 +116,8 @@ class InversionConfig(Serializable):
 
     - "damped_inverse" (default): ``1 / (λ + c·mean(λ))`` — uniform Tikhonov
       damping.
-    - "absolute_damped_inverse": ``1 / (λ + c)`` — the same damping taken as an
-      absolute value rather than relative to the spectrum, as ASTRA applies it.
+    - "absolute_damped_inverse": ``1 / (λ + c)`` — the same damping using an
+      absolute value.
     - "factored_tikhonov": damped inverse with the damping split across the
       activation (A) and gradient (G) Kronecker factors via the Martens &
       Grosse trace ratio ``π = sqrt(mean(λ_A) / mean(λ_G))``. Factored EKFAC

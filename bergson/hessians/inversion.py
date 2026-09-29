@@ -13,8 +13,8 @@ Writing ``c = damping_factor`` and ``λ`` for an eigenvalue, with ``mean(λ)`` t
 mean over the whole spectrum:
 
 - ``damped_inverse``: ``1 / (λ + c·mean(λ))`` — uniform Tikhonov damping.
-- ``absolute_damped_inverse``: ``1 / (λ + c)`` — the same damping taken as an
-  absolute value rather than relative to the spectrum, as ASTRA applies it.
+- ``absolute_damped_inverse``: ``1 / (λ + c)`` — the same damping using an
+  absolute value.
 - ``tikhonov_filtered``: ``λ / (λ² + α²)`` with ``α = c·mean(λ)`` (the Tikhonov
   filter factor; formerly named ``cauchy`` for its Lorentzian shape).
 - ``pseudoinverse``: ``1/λ`` where ``λ > c·mean(λ)``, else ``0``.
