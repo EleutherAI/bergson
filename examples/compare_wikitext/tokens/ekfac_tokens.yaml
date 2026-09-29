@@ -1,0 +1,29 @@
+# Per-token EK-FAC: the preconditioned queries of ekfac.yaml, scored token by token.
+# Row t of a chunk scores the loss on token t + 1 (forward-mode scoring).
+# Run with `bergson examples/compare_wikitext/tokens/ekfac_tokens.yaml`
+
+run_path: runs/compare_wikitext/tokens/ekfac_tokens
+steps:
+  - score:
+      index_cfg:
+        run_path: runs/compare_wikitext/tokens/ekfac_tokens
+        model: runs/compare_wikitext/interval/exported/checkpoint-72
+        overwrite: false
+        token_batch_size: 1024
+        max_batch_size: 64
+        filter_modules: "lm_head"
+        attribute_tokens: true
+        distributed:
+          nproc_per_node: 8
+          nnode: 1
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "train"
+          chunk_length: 0
+      score_cfg:
+        query_path: runs/compare_wikitext/ekfac/kfac_query
+        forward_mode: true
+        batch_size: 1024
+        query_batch_size: 64
+      preprocess_cfg:
+        unit_normalize: false

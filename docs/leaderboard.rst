@@ -90,6 +90,25 @@ Indicative performance of data attribution methods in the finetuning regime.
 
 Results for GPT-2 finetuned on 4 epochs of the WikiText corpus. Held-out loss dropped from 3.545 to 3.111 over training. Every row scores the same model and query set; per-query statistics, run configs and reproduction steps are in `examples/compare_wikitext <https://github.com/EleutherAI/bergson/tree/main/examples/compare_wikitext>`_.
 
+Per-token
+---------
+
+Per-token scores attribute each training token's loss term. The proponent QLD masks the query's top 1% of training tokens by each method's per-token scores (23,484 loss terms per query, spread over about 4,000 of the 4,608 chunks) and retrains; the control retrains without a random 1% of tokens, three retrains per query, which changes query loss by 0.0006 on average. Removing the top 1% of whole chunks by document-level EK-FAC changes it by 0.070. A per-token LDS needs a token-level retrain bank and is left for later.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 50 50
+
+   * - Method
+     - Proponent QLD [95% CI]
+   * - MAGIC
+     - 1.375 [1.348, 1.403]
+   * - EK-FAC + ASTRA
+     - 1.082 [1.047, 1.116]
+   * - EK-FAC
+     - 0.863 [0.833, 0.894]
+
+Configs and per-query statistics are in `examples/compare_wikitext/tokens <https://github.com/EleutherAI/bergson/tree/main/examples/compare_wikitext/tokens>`_.
 
 Notes
 -----
