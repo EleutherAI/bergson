@@ -35,6 +35,7 @@ steps:
         query_path: runs/compare_wikitext/gradient_cosine/query
         batch_size: 1024
       index_cfg:
+        # In YAML the << notation copies the section tagged with "index" here
         <<: *index
         run_path: runs/compare_wikitext/gradient_cosine/scores
         data:
@@ -70,6 +71,7 @@ steps:
         query_path: runs/compare_wikitext/gradient_cosine_projected/query
         batch_size: 1024
       index_cfg:
+        # In YAML the << notation copies the section tagged with "index_projected" here
         <<: *index_projected
         run_path: runs/compare_wikitext/gradient_cosine_projected/scores
         data:

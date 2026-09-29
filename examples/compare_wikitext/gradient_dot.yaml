@@ -32,6 +32,7 @@ steps:
         query_path: runs/compare_wikitext/gradient_dot/query
         batch_size: 1024
       index_cfg:
+        # In YAML the << notation copies the section tagged with "index" here
         <<: *index
         run_path: runs/compare_wikitext/gradient_dot/scores
         data:

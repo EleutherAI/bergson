@@ -46,11 +46,13 @@ steps:
       retrained_dir: runs/compare_wikitext/random
 
   - validate:
+      # In YAML the << notation copies the section tagged with "validate" here
       <<: *validate
       run_path: runs/compare_wikitext/filter_trackstar_p32
       scores: runs/compare_wikitext/trackstar_p32/scores
 
   - validate:
+      # In YAML the << notation copies the section tagged with "validate" here
       <<: *validate
       run_path: runs/compare_wikitext/filter_trackstar_p64
       scores: runs/compare_wikitext/trackstar_p64/scores
