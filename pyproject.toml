@@ -44,6 +44,7 @@ dev = [
     "pytest",
     "pytest-xdist",
     "pyright==1.1.378", # pinned to match CI (build.yml)
+    "matplotlib", # optional at runtime, for the score-vs-step plot
     "trl",
     # Generate documentation
     "furo",

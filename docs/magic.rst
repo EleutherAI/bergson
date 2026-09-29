@@ -63,6 +63,10 @@ After a run completes, ``run_cfg.run_path`` contains:
   ``length - 1`` values, the positions ``weighted_causal_lm_ce`` can reach
   — and are unpacked back into the dense grid on load.
 
+* ``score_vs_step.png`` — the median ``log10|score|`` of each optimizer step
+  against training step, written when matplotlib is installed, so a run whose
+  score scale swings over training is visible at a glance.
+
 * ``per_query/q{i}.pt`` — per-query runs only. The score tensor for query
   document ``i``, written as soon as that query's backward finishes so an
   interrupted run resumes without redoing completed queries. The trailing
