@@ -31,3 +31,5 @@ Accelerate tests with `pytest -n 8 --dist loadgroup` or similar.
 ### Environment Setup
 
 You can pull secrets from .env.
+
+Install with `uv pip install -e ".[dev]"` and run with `uv run --no-sync`. `uv sync` and plain `uv run` install a torch build that may not match local drivers.

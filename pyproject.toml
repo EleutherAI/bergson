@@ -93,6 +93,9 @@ reportPrivateImportUsage = false
 [tool.setuptools.packages.find]
 include = ["bergson*"]
 
+[tool.uv.pip]
+torch-backend = "auto"
+
 [tool.black]
 target-version = ["py310", "py311", "py312"]
 
