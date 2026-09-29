@@ -178,7 +178,7 @@ def build_query(
     # Imported here: cli.commands imports this module.
     from bergson.cli.commands import Build, save_run_config
 
-    index_cfg.data = deepcopy(query_set_cfg.data)
+    index_cfg.data = query_set_cfg.to_data()
     preprocess_cfg = deepcopy(preprocess_cfg)
     preprocess_cfg.aggregation = query_set_cfg.aggregation
     if query_set_cfg.aggregation != "none" and index_cfg.attribute_tokens:

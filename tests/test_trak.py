@@ -144,9 +144,7 @@ def _index_cfg(
 
 
 def _query_cfg(data_dir: Path) -> QuerySetConfig:
-    return QuerySetConfig(
-        data=DataConfig(dataset=str(data_dir / "query"), split="train")
-    )
+    return QuerySetConfig(dataset=str(data_dir / "query"), split="train")
 
 
 def test_trak_weights_rows_by_one_minus_p(trak_run):

@@ -30,7 +30,7 @@ Usage
 Contrastive queries
 -------------------
 
-When ``--query.contrast.dataset`` is set the aggregated query loss minus the
+When ``--contrast.dataset`` is set the aggregated query loss minus the
 aggregated control loss is attributed. Requires an aggregated query. See
 ``examples/powerseeking_contrastive_query`` for an example.
 

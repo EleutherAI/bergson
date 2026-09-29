@@ -24,11 +24,10 @@ steps:
       trackstar_cfg:
         stats_sample_size: 10000
         query:
-          data:
-            dataset: cais/wmdp
-            split: test
-            subset: wmdp-bio
-            prompt_column: question
+          dataset: cais/wmdp
+          split: test
+          subset: wmdp-bio
+          prompt_column: question
           aggregation: mean
         preprocess_cfg:
           unit_normalize: true

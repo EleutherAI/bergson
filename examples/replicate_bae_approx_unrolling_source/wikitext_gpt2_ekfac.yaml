@@ -35,10 +35,9 @@ steps:
 
       hessian_pipeline_cfg:
         query:
-          data:
-            dataset: EleutherAI/bergson-wikitext-2-4656-chunks
-            split: validation
-            chunk_length: 0
+          dataset: EleutherAI/bergson-wikitext-2-4656-chunks
+          split: validation
+          chunk_length: 0
           aggregation: none
         # Effectively undamped, matching the reference implementation.
         inversion_cfg:

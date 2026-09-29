@@ -67,7 +67,7 @@ def magic_cfg(
         model="trl-internal-testing/tiny-Phi3ForCausalLM",
         fsdp=fsdp,
         data=data,
-        query=QuerySetConfig(data=query, aggregation="none"),
+        query=QuerySetConfig.from_data(query, aggregation="none"),
         lr_schedule=LRScheduleConfig(lr=lr) if lr is not None else _LR_SCHEDULE,
         batch_size=8,
         num_epochs=1,

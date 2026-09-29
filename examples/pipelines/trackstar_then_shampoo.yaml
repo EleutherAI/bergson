@@ -25,6 +25,7 @@ steps:
           dataset: NeelNanda/pile-10k
           split: train[:8]
           truncation: true
+          aggregation: mean
         preprocess_cfg:
           unit_normalize: true
           aggregation: mean
@@ -52,4 +53,4 @@ steps:
           dataset: NeelNanda/pile-10k
           split: train[:8]
           truncation: true
-        query_aggregation: mean
+          aggregation: mean

@@ -90,7 +90,7 @@ def test_per_query_mean_reproduces_aggregate():
         fwd_state = trainer.train(fwd_state, stream, inplace=True, save_dir=ckpts)
 
         run_cfg = MagicConfig(run_path=run_path)
-        run_cfg.query.data.prompt_column = "input_ids"
+        run_cfg.query.prompt_column = "input_ids"
 
         # Snapshot final state so the aggregate reference starts where per-query does.
         agg = _aggregate_magic_score(trainer, model, fwd_state, stream, ckpts, query_ds)
@@ -136,7 +136,7 @@ def test_per_query_scores_saved_incrementally():
         run_cfg = MagicConfig(
             run_path=run_path, query=QuerySetConfig(aggregation="none")
         )
-        run_cfg.query.data.prompt_column = "input_ids"
+        run_cfg.query.prompt_column = "input_ids"
         stream.requires_grad = True
         compute_per_query_magic_scores(
             trainer,
@@ -178,7 +178,7 @@ def test_per_query_scores_only_real_queries_when_padded():
         run_cfg = MagicConfig(
             run_path=run_path, query=QuerySetConfig(aggregation="none")
         )
-        run_cfg.query.data.prompt_column = "input_ids"
+        run_cfg.query.prompt_column = "input_ids"
         stream.requires_grad = True
         per_query = compute_per_query_magic_scores(
             trainer,
@@ -225,7 +225,7 @@ def _per_query_run(tmp_path, attribute_tokens: bool, num_docs=5, seq_len=8, n_qu
         run_path=str(run_path),
         model="EleutherAI/pythia-14m",
         data=DataConfig(dataset="unused", chunk_length=seq_len),
-        query=QuerySetConfig(data=DataConfig(dataset="unused"), aggregation="none"),
+        query=QuerySetConfig(dataset="unused", aggregation="none"),
         batch_size=4,
         attribute_tokens=attribute_tokens,
         skip_validation=True,
@@ -264,18 +264,17 @@ def test_per_query_per_token_aggregates_to_per_doc(tmp_path):
 
 def test_chunked_query_set_rejected_for_per_query():
     """Rejected at config time, before a run trains for hours."""
-    from bergson.config.config import DataConfig
 
-    with pytest.raises(ValueError, match="query.data.chunk_length must be 0"):
+    with pytest.raises(ValueError, match="query.chunk_length must be 0"):
         MagicConfig(
             run_path="x",
-            query=QuerySetConfig(data=DataConfig(chunk_length=32), aggregation="none"),
+            query=QuerySetConfig(chunk_length=32, aggregation="none"),
         )
 
     # Chunked query sets are fine for the aggregate-query backward.
     MagicConfig(
         run_path="x",
-        query=QuerySetConfig(data=DataConfig(chunk_length=32), aggregation="mean"),
+        query=QuerySetConfig(chunk_length=32, aggregation="mean"),
     )
 
 
@@ -334,7 +333,7 @@ def _per_query_resume_setup(tmp_path, num_docs=6, n_query=2):
             backward_save_every=1,
             resume=resume,
         )
-        run_cfg.query.data.prompt_column = "input_ids"
+        run_cfg.query.prompt_column = "input_ids"
         fwd_state.detach_()
         fwd_state.copy_(final_state)
         stream.requires_grad = True

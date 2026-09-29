@@ -62,7 +62,8 @@ def test_build_query_contrast_is_difference_of_means(tmp_path):
     build_query(
         _index_cfg(tmp_path / "qc", query),
         QuerySetConfig(
-            data=DataConfig(dataset=query, split="train"),
+            dataset=query,
+            split="train",
             aggregation="mean",
             contrast=DataConfig(dataset=control, split="train"),
         ),
@@ -89,7 +90,8 @@ def test_build_query_contrast_normalizes_the_difference(tmp_path):
     build_query(
         _index_cfg(tmp_path / "qc", query),
         QuerySetConfig(
-            data=DataConfig(dataset=query, split="train"),
+            dataset=query,
+            split="train",
             aggregation="mean",
             contrast=DataConfig(dataset=control, split="train"),
         ),
@@ -107,7 +109,7 @@ def test_build_query_contrast_normalizes_the_difference(tmp_path):
 def test_build_query_contrast_needs_aggregation(tmp_path):
     cfg = _index_cfg(tmp_path / "x", "unused")
     query = QuerySetConfig(
-        data=DataConfig(dataset="unused"),
+        dataset="unused",
         aggregation="none",
         contrast=DataConfig(dataset="unused"),
     )
@@ -121,7 +123,7 @@ def test_magic_contrast_needs_an_aggregated_query(tmp_path):
             run_path=str(tmp_path),
             model=MODEL,
             query=QuerySetConfig(
-                data=DataConfig(dataset="unused"),
+                dataset="unused",
                 aggregation="none",
                 contrast=DataConfig(dataset="unused"),
             ),
@@ -139,9 +141,7 @@ def _magic_scores(
         run_path=str(tmp_path / name),
         model=MODEL,
         data=DataConfig(dataset="unused"),
-        query=QuerySetConfig(
-            data=DataConfig(dataset="unused"), aggregation="mean", contrast=contrast
-        ),
+        query=QuerySetConfig(dataset="unused", aggregation="mean", contrast=contrast),
         batch_size=2,
         num_epochs=1,
         skip_validation=True,

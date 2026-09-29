@@ -52,11 +52,9 @@ def test_hessian_pipeline_resume_reruns_interrupted_steps(tmp_path):
             PreprocessConfig(),
             HessianPipelineConfig(
                 query=QuerySetConfig(
-                    data=DataConfig(
-                        dataset="NeelNanda/pile-10k",
-                        split="train[8:10]",
-                        truncation=True,
-                    ),
+                    dataset="NeelNanda/pile-10k",
+                    split="train[8:10]",
+                    truncation=True,
                     aggregation="none",
                 ),
                 resume=True,

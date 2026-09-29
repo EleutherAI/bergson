@@ -1,7 +1,7 @@
 import math
 import os
 from abc import ABC
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Literal, Union
 
@@ -83,17 +83,17 @@ class DataConfig(Serializable):
 
 
 @dataclass
-class QuerySetConfig(Serializable):
+class QuerySetConfig(DataConfig):
     """What to attribute to: the query dataset and how its gradients combine.
 
     Every attribution pipeline reads its query from here. ``path`` names a
     query index built earlier (by ``bergson build`` or another pipeline's
     query step); the gradient pipelines then score against it instead of
-    building one from ``data``.
-    """
+    building one from these dataset fields.
 
-    data: DataConfig = field(default_factory=DataConfig)
-    """Query dataset specification."""
+    The dataset fields are inherited so they stay one level under ``query``,
+    which is what gives the CLI ``--query.dataset`` beside ``--data.dataset``.
+    """
 
     aggregation: Literal["mean", "sum", "none"] = "none"
     """How the query gradients are combined: one score column per query
@@ -105,7 +105,19 @@ class QuerySetConfig(Serializable):
     or sum."""
 
     path: str = ""
-    """Existing query index to use instead of building one from ``data``."""
+    """Existing query index to use instead of building one from the dataset
+    fields."""
+
+    @classmethod
+    def from_data(cls, data: DataConfig, **kwargs) -> "QuerySetConfig":
+        """Build a query spec from an existing dataset spec."""
+        return cls(
+            **{f.name: getattr(data, f.name) for f in fields(DataConfig)}, **kwargs
+        )
+
+    def to_data(self) -> DataConfig:
+        """The dataset spec alone, without the query-specific fields."""
+        return DataConfig(**{f.name: getattr(self, f.name) for f in fields(DataConfig)})
 
 
 @dataclass
@@ -498,7 +510,7 @@ class ValidationConfig(TrainingConfig, ABC):
     """Average the query gradient over the last ``k`` saved trajectory checkpoints."""
 
     query: QuerySetConfig = field(
-        default_factory=lambda: QuerySetConfig(data=DataConfig(split="train")),
+        default_factory=lambda: QuerySetConfig(split="train"),
     )
     """Query/eval dataset for the attribution target and how its gradients
     are combined before the MAGIC backward; ``none`` performs one backward

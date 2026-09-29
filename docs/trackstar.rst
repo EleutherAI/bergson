@@ -23,7 +23,7 @@ Key Options
 
 - ``--data.dataset``: the value (training) dataset.
 - ``--query.dataset``: the query dataset.
-- ``--query.contrast.dataset``: a control dataset whose aggregated gradient is
+- ``--contrast.dataset``: a control dataset whose aggregated gradient is
   subtracted from the query's, so scores measure the difference between the query
   loss and the control loss.
 - ``--target_downweight_components``: number of gradient components to downweight when

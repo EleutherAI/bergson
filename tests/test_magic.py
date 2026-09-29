@@ -1130,7 +1130,8 @@ def test_worker_writes_doc_ids_for_fresh_per_token_run(tmp_path):
         model="EleutherAI/pythia-14m",
         data=DataConfig(dataset="unused", chunk_length=seq_len),
         query=QuerySetConfig(
-            data=DataConfig(dataset="unused", chunk_length=seq_len),
+            dataset="unused",
+            chunk_length=seq_len,
             aggregation="mean",
         ),
         batch_size=2,

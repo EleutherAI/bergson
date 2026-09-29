@@ -208,32 +208,46 @@ def migrate_validation_config(obj: dict) -> dict:
 
 # TODO Lucia Quirke delete 12/2026
 def migrate_query_config(obj: Mapping, legacy_key: str | None, default: str) -> dict:
-    """Resolve the pre-``QuerySetConfig`` query fields once: a bare dataset spec
-    under ``query`` and its aggregation under ``legacy_key`` (or ``default``
-    when absent) become one ``query`` mapping with ``data`` and
-    ``aggregation``. A ``query`` that already has ``QuerySetConfig`` keys is
-    returned unchanged."""
+    """Resolve the superseded query layouts once: an aggregation carried in its
+    own top-level field, and a dataset spec nested under ``query.data``. Both
+    end up as one flat ``query`` mapping.
+
+    A flat ``query`` that sets no ``aggregation`` reads the same whether it
+    predates the field, where the default was per-pipeline, or postdates it,
+    where the default is ``none``. Rather than pick one and change what a
+    stored config means, ask for the field.
+    """
     obj = dict(obj)
-    query = obj.get("query")
-    query_is_new = isinstance(query, Mapping) and (
-        not query or set(query) <= {"data", "aggregation", "contrast", "path"}
-    )
+    raw = obj.get("query")
+    given = isinstance(raw, Mapping)
+    query = dict(raw) if isinstance(raw, Mapping) else {}
+    nested = "data" in query
     legacy = legacy_key is not None and legacy_key in obj
-    if not legacy and (query is None or query_is_new):
-        return obj
-    if legacy and query_is_new and query:
+
+    if legacy and nested:
         raise ValueError(
             f"Cannot mix a query config with the legacy {legacy_key!r} field"
         )
-    warnings.warn(
-        "A dataset spec under 'query' and a separate aggregation field are "
-        "deprecated; nest them as query.data and query.aggregation",
-        FutureWarning,
-        stacklevel=3,
-    )
-    aggregation = obj.pop(legacy_key, default) if legacy_key else default
-    obj["query"] = {
-        "data": dict(query) if isinstance(query, Mapping) else {},
-        "aggregation": aggregation,
-    }
+    if nested:
+        warnings.warn(
+            "A query dataset nested under 'query.data' is deprecated; its "
+            "fields sit directly under 'query'",
+            FutureWarning,
+            stacklevel=3,
+        )
+        data = query.pop("data") or {}
+        obj["query"] = {**dict(data), **query}
+    elif legacy:
+        warnings.warn(
+            f"A separate {legacy_key!r} field is deprecated; set query.aggregation",
+            FutureWarning,
+            stacklevel=3,
+        )
+        obj["query"] = {**query, "aggregation": obj.pop(legacy_key)}
+    elif given and "aggregation" not in query and default != "none":
+        raise ValueError(
+            f"Set query.aggregation: this pipeline aggregated with {default!r} "
+            "before the query fields were unified and with 'none' after, so a "
+            "config that leaves it out is ambiguous"
+        )
     return obj

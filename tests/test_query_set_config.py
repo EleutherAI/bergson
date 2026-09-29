@@ -4,6 +4,7 @@ TODO Lucia Quirke delete 12/2026: the migration tests go with the shim.
 """
 
 import warnings
+from contextlib import nullcontext
 
 import pytest
 
@@ -33,19 +34,33 @@ def test_old_fields_become_one_query_config():
     old = {"query": dict(QUERY), "query_aggregation": "none"}
     with pytest.warns(FutureWarning):
         new = migrate_query_config(old, legacy_key="query_aggregation", default="mean")
-    assert new == {"query": {"data": QUERY, "aggregation": "none"}}
+    assert new == {"query": {**QUERY, "aggregation": "none"}}
 
 
-def test_missing_aggregation_takes_the_pipelines_old_default():
+def test_a_nested_query_dataset_is_hoisted():
+    old = {"query": {"data": QUERY, "aggregation": "sum"}}
     with pytest.warns(FutureWarning):
-        new = migrate_query_config(
-            {"query": dict(QUERY)}, legacy_key="query_method", default="none"
+        new = migrate_query_config(old, legacy_key="query_method", default="none")
+    assert new == {"query": {**QUERY, "aggregation": "sum"}}
+
+
+def test_a_missing_aggregation_is_an_error_where_the_default_changed():
+    with pytest.raises(ValueError, match="query.aggregation"):
+        migrate_query_config(
+            {"query": dict(QUERY)}, legacy_key="query_aggregation", default="mean"
         )
-    assert new["query"]["aggregation"] == "none"
+
+    # A pipeline that always defaulted to "none" has nothing to resolve.
+    obj = {"query": dict(QUERY)}
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert (
+            migrate_query_config(obj, legacy_key="query_method", default="none") == obj
+        )
 
 
 def test_new_style_query_passes_through_unchanged():
-    obj = {"query": {"data": QUERY, "aggregation": "sum", "path": ""}, "other": 1}
+    obj = {"query": {**QUERY, "aggregation": "sum", "path": ""}, "other": 1}
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         assert (
@@ -112,25 +127,25 @@ def test_every_pipeline_reads_old_and_new_yaml(cls, payload, legacy_key, old_def
     old = {"query": dict(QUERY)}
     if legacy_key:
         old[legacy_key] = "sum"
-    with pytest.warns(FutureWarning):
+    # A flat query under a pipeline that defaulted to "none" is already current.
+    migrates = legacy_key is not None or old_default != "none"
+    with pytest.warns(FutureWarning) if migrates else nullcontext():
         cmd = cls.from_dict(with_query(old), drop_extra_fields=False)
     q = _query(cmd)
-    assert q.data.dataset == QUERY["dataset"] and q.data.split == QUERY["split"]
+    assert q.dataset == QUERY["dataset"] and q.split == QUERY["split"]
     assert q.aggregation == ("sum" if legacy_key else old_default)
 
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         cmd = cls.from_dict(
-            with_query(
-                {"query": {"data": QUERY, "aggregation": "sum", "path": "runs/q"}}
-            ),
+            with_query({"query": {**QUERY, "aggregation": "sum", "path": "runs/q"}}),
             drop_extra_fields=False,
         )
     q = _query(cmd)
-    assert (q.data.split, q.aggregation, q.path) == (QUERY["split"], "sum", "runs/q")
+    assert (q.split, q.aggregation, q.path) == (QUERY["split"], "sum", "runs/q")
 
 
-def test_trackstar_old_yaml_takes_aggregation_from_preprocess():
+def test_trackstar_yaml_cannot_lean_on_the_preprocess_aggregation():
     obj = {
         "index_cfg": INDEX,
         "trackstar_cfg": {
@@ -138,9 +153,8 @@ def test_trackstar_old_yaml_takes_aggregation_from_preprocess():
             "preprocess_cfg": {"aggregation": "mean"},
         },
     }
-    with pytest.warns(FutureWarning):
-        cmd = Trackstar.from_dict(obj, drop_extra_fields=False)
-    assert cmd.trackstar_cfg.query.aggregation == "mean"
+    with pytest.raises(ValueError, match="query.aggregation"):
+        Trackstar.from_dict(obj, drop_extra_fields=False)
 
 
 def test_build_query_returns_an_existing_index_without_building(tmp_path):
