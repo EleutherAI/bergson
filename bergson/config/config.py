@@ -90,9 +90,6 @@ class QuerySetConfig(DataConfig):
     query index built earlier (by ``bergson build`` or another pipeline's
     query step); the gradient pipelines then score against it instead of
     building one from these dataset fields.
-
-    The dataset fields are inherited so they stay one level under ``query``,
-    which is what gives the CLI ``--query.dataset`` beside ``--data.dataset``.
     """
 
     aggregation: Literal["mean", "sum", "none"] = "none"

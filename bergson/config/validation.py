@@ -206,16 +206,20 @@ def migrate_validation_config(obj: dict) -> dict:
     return obj
 
 
+# Keys `query` only ever held once it became a QuerySetConfig.
+QUERY_SET_KEYS = frozenset({"data", "aggregation", "contrast", "path"})
+
+
 # TODO Lucia Quirke delete 12/2026
 def migrate_query_config(obj: Mapping, legacy_key: str | None, default: str) -> dict:
     """Resolve the superseded query layouts once: an aggregation carried in its
     own top-level field, and a dataset spec nested under ``query.data``. Both
     end up as one flat ``query`` mapping.
 
-    A flat ``query`` that sets no ``aggregation`` reads the same whether it
-    predates the field, where the default was per-pipeline, or postdates it,
-    where the default is ``none``. Rather than pick one and change what a
-    stored config means, ask for the field.
+    A ``query`` holding nothing but dataset fields could come from either
+    layout, and they disagree on the aggregation default, so it is an error
+    rather than a silent change of meaning. Any of ``data``, ``aggregation``,
+    ``contrast`` or ``path`` dates the config and settles it.
     """
     obj = dict(obj)
     raw = obj.get("query")
@@ -244,7 +248,7 @@ def migrate_query_config(obj: Mapping, legacy_key: str | None, default: str) -> 
             stacklevel=3,
         )
         obj["query"] = {**query, "aggregation": obj.pop(legacy_key)}
-    elif given and "aggregation" not in query and default != "none":
+    elif given and not (query.keys() & QUERY_SET_KEYS) and default != "none":
         raise ValueError(
             f"Set query.aggregation: this pipeline aggregated with {default!r} "
             "before the query fields were unified and with 'none' after, so a "
