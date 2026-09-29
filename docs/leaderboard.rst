@@ -22,7 +22,7 @@ Indicative performance of data attribution methods in the finetuning regime.
      - 0.074 [0.063, 0.087]
      - 0.643 [0.624, 0.660]
    * - Eigenvalue-corrected Shampoo + ASTRA
-     - -
+     - 0.072 [0.061, 0.085]
      - 0.625 [0.604, 0.643]
    * - Eigenvalue-corrected Shampoo
      - 0.071 [0.060, 0.082]
