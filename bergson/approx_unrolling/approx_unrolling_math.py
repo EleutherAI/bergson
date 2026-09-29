@@ -272,6 +272,8 @@ def walk_query_phase2(
             fn_kind="f_segment",
             distributed=distributed,
             preconditioner_path=preconditioner_paths[l] if preconditioner_paths else "",
+            # The EK-FAC inverse of the Adam variant (Bae et al. App. D).
+            inversion_cfg=inversion_cfg if preconditioner_paths else None,
         )
         query_grad_segment_paths.append(dst)
 

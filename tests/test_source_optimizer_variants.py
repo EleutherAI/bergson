@@ -8,13 +8,14 @@ import pytest
 import torch
 from safetensors.torch import save_file
 
+from bergson.approx_unrolling import approx_unrolling_math
 from bergson.approx_unrolling.approx_unrolling_math import (
     compute_lr_times_steps_per_segment,
     f_backward,
     f_one_minus_exp,
     f_segment,
 )
-from bergson.config import ApproxUnrollingConfig
+from bergson.config import ApproxUnrollingConfig, DistributedConfig
 from bergson.config.config import InversionConfig
 from bergson.data import create_index, load_module_gradients
 from bergson.hessians.apply_hessian import EkfacApplicator, EkfacConfig
@@ -371,3 +372,24 @@ def test_optimizer_pt_snapshot_fields(tmp_path):
         assert entry["param_name"] == names[idx]
         nu_idx = sorted(params).index(names[idx])
         torch.testing.assert_close(entry["exp_avg_sq"], adam_state.nu[nu_idx])
+
+
+@pytest.mark.parametrize("adam", [False, True])
+def test_phase2_passes_the_ekfac_inverse_only_for_adam(tmp_path, monkeypatch, adam):
+    """The Adam variant's F_segment chains the EK-FAC inverse (Bae et al.
+    App. D); the SGD one applies its eigenvalue function alone."""
+    calls = []
+    monkeypatch.setattr(
+        approx_unrolling_math, "apply_eigfn_to_query", lambda **kw: calls.append(kw)
+    )
+    inversion_cfg = InversionConfig(damping_factor=1e-8)
+    approx_unrolling_math.walk_query_phase2(
+        run_path=tmp_path,
+        method="kfac",
+        lr_times_steps_per_segment=[1.0, 2.0],
+        query_grad_paths=[tmp_path / "q0", tmp_path / "q1"],
+        distributed=DistributedConfig(nproc_per_node=1),
+        preconditioner_paths=["p0", "p1"] if adam else None,
+        inversion_cfg=inversion_cfg,
+    )
+    assert [c["inversion_cfg"] for c in calls] == [inversion_cfg if adam else None] * 2
