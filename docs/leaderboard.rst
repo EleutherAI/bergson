@@ -21,6 +21,9 @@ Indicative performance of data attribution methods in the finetuning regime.
    * - EK-FAC + ASTRA
      - -
      - 0.643 [0.624, 0.660]
+   * - Eigenvalue-corrected Shampoo + ASTRA
+     - -
+     - 0.625 [0.604, 0.643]
    * - Eigenvalue-corrected Shampoo
      - 0.071 [0.060, 0.082]
      - 0.517 [0.491, 0.539]

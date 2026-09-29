@@ -5,9 +5,12 @@ GPT-2 fine-tuned on WikiText (`EleutherAI/bergson-wikitext-512-chunks`, 4,608 tr
 | MAGIC (per-query) | 0.100 | [0.090, 0.112] | 0.931 | [0.925, 0.936] | 0.933 | 0.804 | 0.970 | 50/50 |
 | MAGIC (cross-seed) | 0.098 | [0.087, 0.110] | 0.829 | [0.815, 0.840] | 0.836 | 0.658 | 0.932 | 50/50 |
 | EK-FAC + ASTRA | - | - | 0.643 | [0.624, 0.660] | 0.663 | 0.302 | 0.804 | 50/50 |
+| Eigenvalue-corrected Shampoo + ASTRA | - | - | 0.625 | [0.604, 0.643] | 0.644 | 0.095 | 0.805 | 49/50 |
 | Eigenvalue-corrected Shampoo | 0.071 | [0.060, 0.082] | 0.517 | [0.491, 0.539] | 0.532 | 0.294 | 0.703 | 50/50 |
+| Eigenvalue-corrected Shampoo + ASTRA (paper hyperparameters) | - | - | 0.479 | [0.452, 0.503] | 0.492 | 0.211 | 0.651 | 50/50 |
 | EK-FAC | 0.070 | [0.058, 0.082] | 0.454 | [0.426, 0.479] | 0.453 | 0.095 | 0.664 | 49/50 |
 | KFAC | 0.067 | [0.056, 0.080] | 0.420 | [0.391, 0.446] | 0.412 | 0.041 | 0.646 | 48/50 |
+| EK-FAC + ASTRA (paper hyperparameters) | - | - | 0.384 | [0.355, 0.410] | 0.382 | 0.038 | 0.589 | 47/50 |
 | BM25 | 0.062 | [0.048, 0.076] | 0.220 | [0.185, 0.252] | 0.253 | -0.168 | 0.486 | 28/50 |
 | [Qwen3-Embedding-8B](https://huggingface.co/spaces/mteb/leaderboard) semantic search | 0.049 | [0.038, 0.061] | 0.132 | [0.093, 0.169] | 0.132 | -0.119 | 0.483 | 17/50 |
 | Jina v5 semantic search | 0.046 | [0.035, 0.059] | 0.124 | [0.087, 0.160] | 0.115 | -0.108 | 0.483 | 11/50 |
@@ -36,6 +39,9 @@ bergson examples/compare_wikitext/2_interval.yaml    # evenly spaced checkpoints
 python -c "from bergson.utils.trainer_export import export_checkpoints; export_checkpoints('runs/compare_wikitext/interval', steps=[72])"
 bergson examples/compare_wikitext/ekfac.yaml
 bergson examples/compare_wikitext/ekfac_astra.yaml
+bergson examples/compare_wikitext/ekfac_astra_paper.yaml
+bergson examples/compare_wikitext/shampoo_astra.yaml
+bergson examples/compare_wikitext/shampoo_astra_paper.yaml
 bergson examples/compare_wikitext/kfac.yaml
 bergson examples/compare_wikitext/kfac_p64.yaml
 bergson examples/compare_wikitext/shampoo.yaml
