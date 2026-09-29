@@ -85,8 +85,9 @@ class LambdaCollector(HookCollectorBase):
     then computes outer products for diagonal correction terms.
 
     Distributed, each module belongs to the rank that owned its covariances,
-    which loads its full eigenvectors from every rank's shard and receives every
-    rank's positions for it; teardown saves the usual row shards.
+    which takes its full eigenvectors from ``eigenvectors`` or joins them from
+    every rank's shard, and receives every rank's positions for it; teardown
+    saves the usual row shards.
     """
 
     path: str
@@ -104,6 +105,11 @@ class LambdaCollector(HookCollectorBase):
     num_documents: int = 1
     """Divides the summed corrections into a mean over documents."""
 
+    eigenvectors: tuple[dict[str, Tensor], dict[str, Tensor]] | None = None
+    """The activation and gradient eigenvectors of the modules this rank owns,
+    in full, as returned by :func:`eigendecompose_owned`. Read from the shard
+    files when not given."""
+
     def setup(self) -> None:
         """Load eigenvectors and initialize storage."""
         self.shard_computer = ShardedMul()
@@ -119,6 +125,13 @@ class LambdaCollector(HookCollectorBase):
 
         if dist.is_initialized():
             self._setup_owned(eigen_src)
+            return
+
+        if self.eigenvectors is not None:
+            self.eigen_a, self.eigen_g = (
+                {k: v.to(self.device, self.dtype) for k, v in vectors.items()}
+                for vectors in self.eigenvectors
+            )
             return
 
         # Load precomputed eigenvectors
@@ -141,7 +154,7 @@ class LambdaCollector(HookCollectorBase):
 
     def _setup_owned(self, eigen_src: str) -> None:
         """Load the full eigenvectors of the modules this rank owns, joining the
-        row shards every rank wrote."""
+        row shards every rank wrote unless they were passed in."""
         self.owners = assign_module_owners(self.target_info, self.world_size)
         owned = [name for name, owner in self.owners.items() if owner == self.rank]
 
@@ -160,8 +173,14 @@ class LambdaCollector(HookCollectorBase):
                 for name, rows in full.items()
             }
 
-        self.eigen_a = load("eigen_activation_sharded")
-        self.eigen_g = load("eigen_gradient_sharded")
+        if self.eigenvectors is not None:
+            self.eigen_a, self.eigen_g = (
+                {name: vectors[name].to(self.device, self.dtype) for name in owned}
+                for vectors in self.eigenvectors
+            )
+        else:
+            self.eigen_a = load("eigen_activation_sharded")
+            self.eigen_g = load("eigen_gradient_sharded")
         self.correction_shapes = {
             name: (out_dim, in_dim + collect_bias)
             for name, (_, (out_dim, in_dim), collect_bias) in self.target_info.items()
@@ -322,6 +341,86 @@ def _compute_full_matrix(
     return full_matrix
 
 
+def _eigh(
+    key: str, matrix: Tensor, total_processed: Tensor, dtype: torch.dtype
+) -> tuple[Tensor, Tensor]:
+    """Eigenvalues and eigenvectors of ``matrix / total_processed``, computed in
+    fp64 on ``total_processed``'s device and returned there in ``dtype``."""
+    matrix_normalized = matrix.to(total_processed.device, torch.float64)
+    # Free the caller's copy early when it passed the only reference.
+    del matrix
+    matrix_normalized = matrix_normalized + matrix_normalized.T
+    matrix_normalized.div_(2 * total_processed)
+
+    if not torch.isfinite(matrix_normalized).all():
+        raise ValueError(
+            f"Covariance matrix for {key} contains NaNs or Infs. "
+            "Consider using fp32."
+        )
+
+    try:
+        eigenvalues, eigenvectors = torch.linalg.eigh(matrix_normalized)
+    except Exception as e:
+        raise RuntimeError(f"Eigendecomposition failed for {key}") from e
+
+    del matrix_normalized
+    return eigenvalues.to(dtype), eigenvectors.to(dtype).contiguous()
+
+
+def eigendecompose_owned(
+    covariances: dict[str, Tensor],
+    shapes: dict[str, tuple[int, ...]],
+    owners: dict[str, int] | None,
+    total_processed: int | Tensor,
+    output_path: str,
+    dtype: torch.dtype,
+) -> tuple[dict[str, Tensor], dict[str, Tensor]]:
+    """Eigendecompose the covariances this rank owns, in full, from memory.
+
+    ``owners`` maps every module in ``shapes`` to its rank, or is ``None`` in a
+    single process. Saves this rank's row shard of every module's eigenvectors
+    to ``output_path`` in ``dtype``, the layout :func:`compute_eigendecomposition`
+    writes.
+
+    Returns the eigenvectors of the modules this rank owns, in full, on this
+    rank's device, and this rank's row shard of every module's eigenvalues on
+    the CPU. Empties ``covariances`` as it goes, so each covariance is freed once
+    its eigenvectors exist.
+    """
+    rank = dist.get_rank() if owners is not None else 0
+    device = get_device(rank)
+    total_processed = torch.as_tensor(total_processed, device=device)
+
+    eigenvectors: dict[str, Tensor] = {}
+    eigenvalues: dict[str, Tensor] = {}
+    for key in tqdm(
+        list(covariances),
+        desc=f"Rank {rank}: Computing eigenvectors",
+        position=rank,
+        leave=False,
+    ):
+        values, vectors = _eigh(key, covariances.pop(key), total_processed, dtype)
+        eigenvectors[key] = vectors
+        eigenvalues[key] = values
+
+    shards = eigenvectors
+    value_shards = {key: values.cpu() for key, values in eigenvalues.items()}
+    if owners is not None:
+        shards = owned_to_row_shards(eigenvectors, shapes, owners, dtype, device)
+        value_shards = owned_to_row_shards(
+            eigenvalues,
+            {key: shape[:1] for key, shape in shapes.items()},
+            owners,
+            dtype,
+            device,
+        )
+
+    os.makedirs(output_path, exist_ok=True)
+    save_file(shards, os.path.join(output_path, f"shard_{rank}.safetensors"))
+    get_logger().info(f"Saved eigenvectors to {output_path}")
+    return eigenvectors, value_shards
+
+
 def compute_eigendecomposition(
     covariance_path: str,
     total_processed: int | Tensor,
@@ -383,30 +482,10 @@ def compute_eigendecomposition(
             world_size=world_size,
         )
 
-        # original_dtype = matrix.dtype
-        matrix_normalized = matrix.to(torch.float64) / total_processed
-        matrix_normalized = (matrix_normalized + matrix_normalized.T).div(2)
-
-        if not torch.isfinite(matrix_normalized).all():
-            raise ValueError(
-                f"Covariance matrix for {key} contains NaNs or Infs. "
-                "Consider using fp32."
-            )
-
-        try:
-            eigenvalues, eigenvectors = torch.linalg.eigh(matrix_normalized)
-        except Exception as e:
-            raise RuntimeError(f"Eigendecomposition failed for {key}") from e
-
-        # TODO: Maybe possible to avoid CPU transfer here?
-        eigenvectors = eigenvectors.to(original_dtype).to(device="cpu").contiguous()
-        covariance_eigenvectors[key] = eigenvectors
-        covariance_eigenvalues[key] = (
-            eigenvalues.to(original_dtype).to(device="cpu").contiguous()
-        )
-        covariance_eigenvalues[key] = (
-            eigenvalues.to(original_dtype).to(device="cpu").contiguous()
-        )
+        eigenvalues, eigenvectors = _eigh(key, matrix, total_processed, original_dtype)
+        del matrix
+        covariance_eigenvectors[key] = eigenvectors.cpu()
+        covariance_eigenvalues[key] = eigenvalues.cpu()
 
     covariance_eigenvectors = _gather_and_shard_along_dim_0(
         input_dict=covariance_eigenvectors,

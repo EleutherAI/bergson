@@ -24,6 +24,11 @@ from bergson.hessians.hessian_approximations import (
 from bergson.hessians.kfac import CovarianceCollector
 from bergson.hessians.sharded_computation import assign_module_owners, shard_bounds
 from bergson.utils.worker_utils import setup_data_pipeline, setup_model_and_peft
+from tests.ekfac_tests.test_utils import (
+    rank_batches,
+    run_batches,
+    small_network,
+)
 
 needs_two_gpus = pytest.mark.skipif(
     torch.cuda.device_count() < 2, reason="Needs two GPUs"
@@ -156,25 +161,6 @@ def test_distributed_eigenvalue_corrections_match_one_process(
 # Three ranks split odd widths unevenly (rank 0 takes the remainder), and each rank
 # sees batches of its own shapes with several documents each.
 CPU_RANKS = 3
-WIDTHS = (5, 7, 4, 3)
-
-
-def small_network() -> nn.Sequential:
-    torch.manual_seed(0)
-    layers = []
-    for in_dim, out_dim in zip(WIDTHS, WIDTHS[1:]):
-        layers += [nn.Linear(in_dim, out_dim), nn.Tanh()]
-    return nn.Sequential(*layers[:-1])
-
-
-def rank_batches(rank: int) -> list[tuple[torch.Tensor, torch.Tensor]]:
-    generator = torch.Generator().manual_seed(100 + rank)
-    batches = []
-    for b in range(3):
-        n, s = 1 + (rank + b) % 3, 2 + (2 * rank + b) % 4
-        x = torch.randn(n, s, WIDTHS[0], generator=generator)
-        batches.append((x, torch.rand(n, s, generator=generator) > 0.3))
-    return batches
 
 
 def write_eigenvectors(root: Path, world_size: int):
@@ -233,12 +219,7 @@ def fit_small(rank: int, world_size: int, port: int, root: str):
                 model=network, path=out, dtype=torch.float64, processor=processor
             )
         )
-        for x, mask in batches:
-            # with_batch returns the collector, whose context registers the hooks.
-            with collector.with_batch(mask):
-                (network(x) ** 2 * mask[..., None]).sum().backward()
-            network.zero_grad()
-        collector.teardown()
+        run_batches(collector, batches)
 
     if world_size > 1:
         dist.destroy_process_group()

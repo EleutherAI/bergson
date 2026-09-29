@@ -74,19 +74,31 @@ def owned_to_row_shards(
     device: str | torch.device,
 ) -> dict[str, Tensor]:
     """This rank's row shard of every matrix, on the CPU, from ``owned``, the
-    matrices this rank owns in full. One matrix at a time is sent from its owner."""
+    matrices this rank owns in full. One matrix at a time is sent from its owner,
+    which sends each rank only its rows."""
     rank, world_size = dist.get_rank(), dist.get_world_size()
     shards = {}
     for name, shape in shapes.items():
         owner = owners[name]
+        # Rank 0's shard is the largest; the others are padded to its size so
+        # every rank receives the same shape.
+        _, rows = shard_bounds(shape[0], 0, world_size)
+        received = torch.empty((rows, *shape[1:]), device=device, dtype=dtype)
+        blocks = None
         if rank == owner:
-            full = owned[name].contiguous()
-        else:
-            full = torch.empty(shape, device=device, dtype=dtype)
-        dist.broadcast(full, src=owner)
+            full = owned[name].to(device, dtype).contiguous()
+            blocks = []
+            for r in range(world_size):
+                block = full[slice(*shard_bounds(shape[0], r, world_size))]
+                if len(block) < rows:
+                    block = torch.cat(
+                        [block, block.new_zeros(rows - len(block), *shape[1:])]
+                    )
+                blocks.append(block)
+        dist.scatter(received, blocks, src=owner)
         start, end = shard_bounds(shape[0], rank, world_size)
-        shards[name] = full[start:end].cpu()
-        del full
+        shards[name] = received[: end - start].cpu()
+        del received, blocks
     return shards
 
 

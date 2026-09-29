@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import torch
+import torch.nn as nn
 from safetensors.torch import load_file
 from torch import Tensor
 
@@ -76,3 +77,36 @@ def load_covariances(
     total_processed = torch.load(results_path / "total_processed.pt").item()
 
     return A_cov, G_cov, total_processed
+
+
+# Widths of a small network whose layers split unevenly across ranks.
+WIDTHS = (5, 7, 4, 3)
+
+
+def small_network() -> nn.Sequential:
+    torch.manual_seed(0)
+    layers = []
+    for in_dim, out_dim in zip(WIDTHS, WIDTHS[1:]):
+        layers += [nn.Linear(in_dim, out_dim), nn.Tanh()]
+    return nn.Sequential(*layers[:-1])
+
+
+def rank_batches(rank: int) -> list[tuple[torch.Tensor, torch.Tensor]]:
+    generator = torch.Generator().manual_seed(100 + rank)
+    batches = []
+    for b in range(3):
+        n, s = 1 + (rank + b) % 3, 2 + (2 * rank + b) % 4
+        x = torch.randn(n, s, WIDTHS[0], generator=generator)
+        batches.append((x, torch.rand(n, s, generator=generator) > 0.3))
+    return batches
+
+
+def run_batches(collector, batches: list[tuple[Tensor, Tensor]]) -> None:
+    """Run ``batches`` through ``collector.model`` with its hooks, then tear down."""
+    network = collector.model
+    for x, mask in batches:
+        # with_batch returns the collector, whose context registers the hooks.
+        with collector.with_batch(mask):
+            (network(x) ** 2 * mask[..., None]).sum().backward()
+        network.zero_grad()
+    collector.teardown()
