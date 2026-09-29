@@ -35,7 +35,7 @@ def test_damped_inverse_zero_damping_is_true_inverse():
 def test_absolute_damping_adds_damping_factor():
     H = _psd(6)
     expected = torch.linalg.inv(H + 0.3 * torch.eye(6, dtype=H.dtype))
-    actual = invert_psd_matrix(H, damping_factor=0.3, absolute_damping=True)
+    actual = invert_psd_matrix(H, "absolute_damped_inverse", damping_factor=0.3)
     torch.testing.assert_close(actual, expected)
 
 

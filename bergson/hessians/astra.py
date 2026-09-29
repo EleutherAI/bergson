@@ -168,8 +168,11 @@ class Astra:
         ev_correction: bool,
         device: str,
     ):
-        if inversion_cfg.inversion != "damped_inverse":
-            raise ValueError("ASTRA needs inversion='damped_inverse'.")
+        if inversion_cfg.inversion not in ("damped_inverse", "absolute_damped_inverse"):
+            raise ValueError(
+                "ASTRA needs inversion='damped_inverse' or "
+                "'absolute_damped_inverse'."
+            )
 
         self.paths = paths
         self.cfg = astra_cfg
@@ -185,7 +188,11 @@ class Astra:
         self.names = list(self.preconditioner.lambdas)
         self.damping = {
             n: inversion_cfg.damping_factor
-            * (1.0 if inversion_cfg.absolute_damping else lam.mean())
+            * (
+                1.0
+                if inversion_cfg.inversion == "absolute_damped_inverse"
+                else lam.mean()
+            )
             for n, lam in self.preconditioner.lambdas.items()
         }
 

@@ -97,7 +97,6 @@ def _inverse_gram_scale(gram_path: str, inversion_cfg: InversionConfig) -> float
         inversion=inversion_cfg.inversion,
         damping_factor=inversion_cfg.damping_factor,
         power=-1.0,
-        absolute_damping=inversion_cfg.absolute_damping,
     )
     return float(h_inv.abs().mean())
 

@@ -45,7 +45,7 @@ steps:
       # The paper's damping.
       inversion_cfg:
         damping_factor: 0.011
-        absolute_damping: true
+        inversion: absolute_damped_inverse
 
 - ekfac:
     <<: *ekfac
