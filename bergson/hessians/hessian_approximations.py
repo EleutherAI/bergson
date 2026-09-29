@@ -318,6 +318,10 @@ def fit_factored_hessians(
     }
 
     collector = collect_hessians(**kwargs)
+    if not do_eigendecomposition and isinstance(collector, CovarianceCollector):
+        # Only the eigendecomposition reads the covariances kept in memory.
+        collector.A_cov_dict.clear()
+        collector.S_cov_dict.clear()
     _release_device_memory()
 
     dist.barrier() if dist.is_initialized() else None

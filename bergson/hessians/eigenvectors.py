@@ -85,8 +85,9 @@ class LambdaCollector(HookCollectorBase):
     then computes outer products for diagonal correction terms.
 
     Distributed, each module belongs to the rank that owned its covariances,
-    which loads its full eigenvectors from every rank's shard and receives every
-    rank's positions for it; teardown saves the usual row shards.
+    which takes its full eigenvectors from ``eigenvectors`` or joins them from
+    every rank's shard, and receives every rank's positions for it; teardown
+    saves the usual row shards.
     """
 
     path: str

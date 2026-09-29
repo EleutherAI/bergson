@@ -18,18 +18,9 @@ from bergson.hessians.eigenvectors import (
     eigendecompose_owned,
 )
 from bergson.hessians.kfac import CovarianceCollector
-from tests.ekfac_tests.test_module_ownership import rank_batches, small_network
+from tests.ekfac_tests.test_utils import rank_batches, run_batches, small_network
 
 TOTAL_PROCESSED = 7
-
-
-def run_batches(collector, batches):
-    network = collector.model
-    for x, mask in batches:
-        with collector.with_batch(mask):
-            (network(x) ** 2 * mask[..., None]).sum().backward()
-        network.zero_grad()
-    collector.teardown()
 
 
 def fit(rank: int, world_size: int, port: int, root: str):
