@@ -72,6 +72,9 @@ example = [
 faiss = [
     "faiss-gpu-cu12",
 ]
+plot = [
+    "matplotlib", # the score-vs-step plot a MAGIC run writes
+]
 
 [project.scripts]
 bergson = "bergson.__main__:main"
