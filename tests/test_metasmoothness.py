@@ -10,6 +10,7 @@ from datasets import Dataset
 from simple_parsing import ArgumentParser, ConflictResolution
 
 from bergson.__main__ import Main
+from bergson.magic.data_stream import Padding
 
 
 def build_parser() -> ArgumentParser:
@@ -78,7 +79,7 @@ def test_worker_does_not_reexpand_epochs(monkeypatch):
     monkeypatch.setattr(
         ms,
         "pad_dataset_to_batch_size",
-        lambda ds, bs, n, label, gr: (ds, len(ds), 0, 0),
+        lambda ds, bs, n, label, gr: (ds, len(ds), Padding()),
     )
 
     seen = {}
@@ -115,7 +116,7 @@ def test_worker_forwards_grad_accum_and_clipping(monkeypatch):
     monkeypatch.setattr(
         ms,
         "pad_dataset_to_batch_size",
-        lambda d, bs, n, label, gr: (d, len(d), 0, 0),
+        lambda d, bs, n, label, gr: (d, len(d), Padding()),
     )
 
     class _Stream:

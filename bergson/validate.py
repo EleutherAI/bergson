@@ -39,7 +39,12 @@ from .config.validation import (
     WeightStepConfig,
 )
 from .data import load_scores_loss_signed, pad_and_tensor
-from .magic.data_stream import DataStream, mask_padded_rows, pad_dataset_to_batch_size
+from .magic.data_stream import (
+    DataStream,
+    Padding,
+    mask_padded_rows,
+    pad_dataset_to_batch_size,
+)
 from .magic.grad_accum import loss_denom, split_batch
 from .magic.trainer import TrainerState, prepare_trainer
 from .utils.csv_writer import CSVWriter
@@ -192,7 +197,7 @@ def build_contrast_stream(
     if run_cfg.query.contrast is None:
         return None
     ds, n = setup_data_pipeline(run_cfg, run_cfg.query.contrast)
-    ds, n, pad, weight_pad = pad_dataset_to_batch_size(
+    ds, n, padding = pad_dataset_to_batch_size(
         ds, run_cfg.batch_size, n, "Contrast", rank
     )
     stream = DataStream(
@@ -202,8 +207,7 @@ def build_contrast_stream(
         input_key=run_cfg.query.contrast.prompt_column,
         weight_shape=(n,),
     )
-    if pad:
-        stream.weights.data[-weight_pad:] = 0.0
+    padding.silence(stream.weights.data)
     return stream
 
 
@@ -459,8 +463,7 @@ def tail_filter_retrain(
     baseline_per_doc: torch.Tensor,
     num_query_docs: int,
     num_queries: int,
-    pad_count: int,
-    weight_pad_count: int,
+    padding: Padding,
 ):
     """Retrain with one tail of the score ranking filtered out.
 
@@ -517,11 +520,7 @@ def tail_filter_retrain(
         fwd_state.detach_()
 
         stream.weights.fill_(1.0)
-        if pad_count:
-            if stream.weights.ndim == 1:
-                stream.weights.data[-weight_pad_count:] = 0.0
-            else:
-                stream.weights.data[-pad_count:] = 0.0
+        padding.silence(stream.weights.data)
         stream.weights.view(-1)[removed] = run_cfg.subset_weight
 
         for x in stream:
@@ -686,9 +685,8 @@ def validate_scores(
     model: torch.nn.Module,
     baseline: float,
     num_query_docs: int,
-    query_weight_pad_count: int,
-    pad_count: int,
-    weight_pad_count: int,
+    query_padding: Padding,
+    padding: Padding,
 ):
     """Validate attribution scores via leave-subset-out retraining.
 
@@ -701,7 +699,7 @@ def validate_scores(
     diffs = []
     score_sums = []
 
-    num_real_query_docs = num_query_docs - query_weight_pad_count
+    num_real_query_docs = num_query_docs - query_padding.docs
     baseline_per_doc = torch.zeros(num_real_query_docs)
     if multi_query:
         if scores.shape[-1] != num_real_query_docs:
@@ -740,8 +738,7 @@ def validate_scores(
             baseline_per_doc=baseline_per_doc,
             num_query_docs=num_query_docs,
             num_queries=num_queries,
-            pad_count=pad_count,
-            weight_pad_count=weight_pad_count,
+            padding=padding,
         )
         return
 
@@ -767,11 +764,7 @@ def validate_scores(
             fwd_state.detach_()
 
             stream.weights.fill_(1.0)
-            if pad_count:
-                if stream.weights.ndim == 1:
-                    stream.weights.data[-weight_pad_count:] = 0.0
-                else:
-                    stream.weights.data[-pad_count:] = 0.0
+            padding.silence(stream.weights.data)
             flat_w = stream.weights.view(-1)
             flat_w[: len(step_scores)] -= lr * step_scores.to(flat_w)
 
@@ -899,11 +892,7 @@ def validate_scores(
         fwd_state.detach_()
 
         stream.weights.fill_(1.0)
-        if pad_count:
-            if stream.weights.ndim == 1:
-                stream.weights.data[-weight_pad_count:] = 0.0
-            else:
-                stream.weights.data[-pad_count:] = 0.0
+        padding.silence(stream.weights.data)
         stream.weights.view(-1)[subset] = run_cfg.subset_weight
 
         for x in stream:
@@ -1067,7 +1056,7 @@ def evaluate_retrained(
     # Build the query stream on a single device (no distributed training here).
     device = get_device(0)
     query_ds, query_n = setup_data_pipeline(run_cfg, run_cfg.query)
-    query_ds, query_n, q_pad, q_weight_pad = pad_dataset_to_batch_size(
+    query_ds, query_n, query_padding = pad_dataset_to_batch_size(
         query_ds, run_cfg.batch_size, query_n, "Query", 0
     )
     if len(query_ds) < run_cfg.batch_size:
@@ -1083,14 +1072,13 @@ def evaluate_retrained(
         input_key=run_cfg.query.prompt_column,
         weight_shape=(query_n,),
     )
-    if q_pad:
-        query_stream.weights.data[-q_weight_pad:] = 0.0
+    query_padding.silence(query_stream.weights.data)
     contrast_stream = build_contrast_stream(run_cfg, device, 0)
 
     hf_disable_pbar()
     hf_set_verbosity_error()
 
-    num_real_query_docs = query_n - q_weight_pad
+    num_real_query_docs = query_n - query_padding.docs
     if multi_query and scores.shape[1] != num_real_query_docs:
         raise ValueError(
             f"scores has {scores.shape[1]} query columns but the query "

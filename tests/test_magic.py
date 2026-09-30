@@ -10,6 +10,7 @@ from transformers import AutoConfig, AutoModelForCausalLM
 
 from bergson.distributed import grad_tree
 from bergson.magic import BackwardState, DataStream, Trainer
+from bergson.magic.data_stream import Padding
 from bergson.magic.grad_accum import accumulate_grads
 from bergson.utils.math import weighted_causal_lm_ce
 
@@ -52,7 +53,7 @@ def _train_and_query_loss(
 
     num_docs = max(max(row) for row in ds["doc_ids"]) + 1
 
-    padded_ds, num_docs_pad, pad_count, weight_pad_count = pad_dataset_to_batch_size(
+    padded_ds, num_docs_pad, padding = pad_dataset_to_batch_size(
         ds, batch_size, num_docs, "Test", 0
     )
 
@@ -76,11 +77,7 @@ def _train_and_query_loss(
         padded_ds, batch_size=batch_size, device=device, weight_shape=weight_shape
     )
 
-    if pad_count:
-        if stream.weights.ndim == 1:
-            stream.weights.data[-weight_pad_count:] = 0.0
-        else:
-            stream.weights.data[-pad_count:] = 0.0
+    padding.silence(stream.weights.data)
 
     if zero_subset is not None:
         stream.weights.data.view(-1)[zero_subset] = 0.0
@@ -96,8 +93,8 @@ def _train_and_query_loss(
 
     if attribute_tokens:
         trimmed = torch.tensor(padded_ds["doc_ids"])
-        if pad_count:
-            trimmed = trimmed[:-pad_count]
+        if padding:
+            trimmed = trimmed[: -padding.rows]
         return loss, trimmed
     return loss, None
 
@@ -115,7 +112,7 @@ def test_magic_validation_loop_doc_token_dropout_equiv(model_name):
     (a) shuffle reorders rows so the saved tensor differs from the input ds;
     (b) ``len(ds) % batch_size != 0`` forces ``pad_dataset_to_batch_size`` to
     append a synthetic-doc pad row that worker() then strips with
-    ``doc_ids[:-pad_count]`` before saving; (c) one document spans rows so
+    ``doc_ids[:-padding.rows]`` before saving; (c) one document spans rows so
     the lookup is non-trivial. If shuffle/pad-trim alignment or row-major
     flatten order ever drifts, this test breaks before any real run does.
     """
@@ -221,7 +218,7 @@ def _run_magic_cli(
 
     num_docs = max(max(row) for row in ds["doc_ids"]) + 1
 
-    padded_ds, num_docs_pad, pad_count, weight_pad_count = pad_dataset_to_batch_size(
+    padded_ds, num_docs_pad, padding = pad_dataset_to_batch_size(
         ds, batch_size, num_docs, "Test", 0
     )
 
@@ -245,11 +242,7 @@ def _run_magic_cli(
         padded_ds, batch_size=batch_size, device=device, weight_shape=weight_shape
     )
 
-    if pad_count:
-        if stream.weights.ndim == 1:
-            stream.weights.data[-weight_pad_count:] = 0.0
-        else:
-            stream.weights.data[-pad_count:] = 0.0
+    padding.silence(stream.weights.data)
 
     with tempfile.TemporaryDirectory() as ckpt_dir:
         fwd_state = trainer.train(fwd_state, stream, inplace=True, save_dir=ckpt_dir)
@@ -276,13 +269,9 @@ def _run_magic_cli(
     scores = bwd_state.weight_grads.detach().cpu()
     doc_ids = torch.tensor(padded_ds["doc_ids"]) if scores.ndim == 2 else None
 
-    if pad_count:
-        if scores.ndim == 1:
-            scores = scores[:-weight_pad_count]
-        else:
-            scores = scores[:-pad_count]
-            assert doc_ids is not None
-            doc_ids = doc_ids[:-pad_count]
+    scores = padding.trim(scores)
+    if padding and doc_ids is not None:
+        doc_ids = doc_ids[: -padding.rows]
 
     return scores, doc_ids
 
@@ -1190,7 +1179,7 @@ def test_save_magic_scores_round_trips_the_grid(tmp_path, num_scores):
     grid = torch.arange(int(np.prod(shape)), dtype=torch.float32).reshape(shape)
     grid[:, seq_len - 1] = 0.0  # the column weighted_causal_lm_ce never reaches
 
-    save_magic_scores(str(tmp_path), grid, data, pad_count=0, per_token=True)
+    save_magic_scores(str(tmp_path), grid, data, Padding(), per_token=True)
     loaded, multi_query = load_scores_loss_signed(str(tmp_path / "scores"))
 
     assert multi_query == (num_scores > 1)

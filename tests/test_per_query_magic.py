@@ -23,7 +23,11 @@ from bergson.distributed import grad_tree
 from bergson.magic import BackwardState, DataStream, Trainer
 from bergson.magic.cli import compute_per_query_magic_scores, compute_query_gradients
 from bergson.magic.config import MagicConfig
-from bergson.magic.data_stream import mask_padded_rows, pad_dataset_to_batch_size
+from bergson.magic.data_stream import (
+    Padding,
+    mask_padded_rows,
+    pad_dataset_to_batch_size,
+)
 from bergson.utils.math import weighted_causal_lm_ce
 from bergson.validate import mean_query_loss, per_doc_query_losses
 
@@ -107,8 +111,7 @@ def test_per_query_mean_reproduces_aggregate():
             run_cfg=run_cfg,
             world_size=1,
             global_rank=0,
-            pad_count=0,
-            weight_pad_count=0,
+            padding=Padding(),
         )
 
     # Shape: rows = train docs, cols = queries (validate_scores layout).
@@ -149,8 +152,7 @@ def test_per_query_scores_saved_incrementally():
             run_cfg=run_cfg,
             world_size=1,
             global_rank=0,
-            pad_count=0,
-            weight_pad_count=0,
+            padding=Padding(),
         )
         assert os.path.exists(f"{run_path}/per_query/q0.pt")
         assert os.path.exists(f"{run_path}/per_query/q1.pt")
@@ -166,11 +168,11 @@ def test_per_query_scores_only_real_queries_when_padded():
     query_ds = _equal_length_docs(3, start=100)
 
     # run_magic pads the query set to a batch_size multiple with weight-0 rows.
-    padded_ds, num_query_docs, pad_count, weight_pad_count = pad_dataset_to_batch_size(
+    padded_ds, num_query_docs, query_padding = pad_dataset_to_batch_size(
         query_ds, 4, len(query_ds), "Query", 0
     )
-    assert len(padded_ds) == 4 and pad_count == 1
-    assert num_query_docs - weight_pad_count == len(query_ds)
+    assert len(padded_ds) == 4 and query_padding.rows == 1
+    assert num_query_docs - query_padding.docs == len(query_ds)
 
     with tempfile.TemporaryDirectory() as run_path:
         ckpts = f"{run_path}/checkpoints"
@@ -187,12 +189,11 @@ def test_per_query_scores_only_real_queries_when_padded():
             fwd_state,
             model,
             padded_ds,
-            num_query_docs - weight_pad_count,
+            num_query_docs - query_padding.docs,
             run_cfg=run_cfg,
             world_size=1,
             global_rank=0,
-            pad_count=0,
-            weight_pad_count=0,
+            padding=Padding(),
         )
         assert per_query.shape == (3, len(query_ds))
         import os
@@ -203,7 +204,7 @@ def test_per_query_scores_only_real_queries_when_padded():
 def _per_query_run(tmp_path, attribute_tokens: bool, num_docs=5, seq_len=8, n_query=2):
     """Run worker() in per-query mode; return (scores, doc_ids).
 
-    num_docs=5 at batch_size 4 pads by 3 rows, where weight_pad_count is 1 but
+    num_docs=5 at batch_size 4 pads by 3 rows, where padding.docs is 1 but
     pad_count is 3 — the gap a rank-blind trim falls into.
     """
     from bergson.config.config import DataConfig
@@ -289,11 +290,11 @@ def test_query_eval_ignores_padding_and_grad_accum():
     ids = [list(range(10, 10 + n)) for n in (4, 7, 5, 8)]  # Unequal lengths
     query_ds = Dataset.from_dict({"input_ids": ids, "labels": ids})
     plain = DataStream(query_ds, batch_size=4, device="cpu")
-    padded_ds, n_docs, _, weight_pad = pad_dataset_to_batch_size(
+    padded_ds, n_docs, padding = pad_dataset_to_batch_size(
         query_ds, 16, 4, "Query", 0
     )
     padded = DataStream(padded_ds, 16, device="cpu", weight_shape=(n_docs,))
-    padded.weights.data[-weight_pad:] = 0.0
+    padding.silence(padded.weights.data)
 
     batch, live = mask_padded_rows(padded[0])
     assert live and batch["input_ids"].shape[0] == 16
@@ -348,8 +349,7 @@ def _per_query_resume_setup(tmp_path, num_docs=6, n_query=2):
             run_cfg=run_cfg,
             world_size=1,
             global_rank=0,
-            pad_count=0,
-            weight_pad_count=0,
+            padding=Padding(),
         )
 
     return trainer, ckpts, run
