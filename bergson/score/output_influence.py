@@ -8,8 +8,6 @@ from bergson.collector.collector import token_losses
 from bergson.config.config import IndexConfig, PreprocessConfig
 from bergson.gradients import LayerAdapter
 
-# A query block, the weight and bias it moves, and whether the weight is
-# stored [in, out].
 Direction = tuple[Tensor, str, str | None, bool]
 
 
