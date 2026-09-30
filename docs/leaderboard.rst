@@ -86,3 +86,46 @@ Indicative performance of data attribution methods in the finetuning regime.
      - 0.110 [0.070, 0.149]
 
 Results for GPT-2 finetuned on 4 epochs of the WikiText corpus. Held-out loss dropped from 3.545 to 3.111 over training. Every row scores the same model and query set; per-query statistics, run configs and reproduction steps are in `examples/compare_wikitext <https://github.com/EleutherAI/bergson/tree/main/examples/compare_wikitext>`_.
+
+
+Notes on each method
+--------------------
+
+MAGIC
+   TODO
+
+ASTRA
+   TODO
+
+EK-FAC
+   TODO
+
+KFAC
+   TODO
+
+Eigenvalue-corrected Shampoo
+   TODO
+
+SOURCE
+   The finetuning benchmark is too few steps for SOURCE to perform well. See
+   `examples/replicate_bae_approx_unrolling_source
+   <https://github.com/EleutherAI/bergson/tree/main/examples/replicate_bae_approx_unrolling_source>`_
+   for a setting where SOURCE outperforms EK-FAC.
+
+TrackStar
+   TODO
+
+TRAK
+   TODO
+
+Gradient similarity
+   TODO
+
+Semantic search
+   TODO
+
+BM25
+   TODO
+
+Activation similarity
+   TODO
