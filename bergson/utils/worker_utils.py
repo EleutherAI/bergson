@@ -491,6 +491,8 @@ def setup_data_pipeline(
     keep = {"length", "input_ids", "labels"}
     if value_column:
         keep.add("advantage")
+    if data_cfg.span_column:
+        keep.add(data_cfg.span_column)
     remove_columns -= keep
     remove_columns &= set(ds.column_names)
     if remove_columns:
