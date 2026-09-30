@@ -103,13 +103,13 @@ ASTRA
    ASTRA improves any existing Kronecker-factored Hessian approximation during each query's application stage, so it adds a constant amount of compute to each query on top of a basic influence function like EK-FAC.
 
 EK-FAC
-   This is a classic influence function in the form $g_t H^{-1} g_q$ using the EK-FAC Hessian approximation.
+   This is a classic influence function in the form $g_t H^{-1} g_q$ using the EK-FAC Hessian approximation. The H can be swapped out for other matrices including KFAC, Shampoo, and MAC. 
 
 KFAC
-   This is a classic influence function in the form $g_t H^{-1} g_q$ using the KFAC Hessian approximation. Enable gradient compression with ``projection_dim`` to produce a highly efficient variant based on a reusable gradient store, suitable for the retrieval stage of a data attribution pipeline, at the cost of some LDS/QLD.
+   KFAC supports gradient compression with ``projection_dim``. This produces a highly efficient variant based on a reusable gradient store, suitable for the retrieval stage of a data attribution pipeline, at the cost of some LDS/QLD.
 
 Eigenvalue-corrected Shampoo
-   This is a custom influence function in the form $g_t H^{-1} g_q$ using the Shampoo preconditioner. Its mathematical relationship with the true Hessian is somewhere between "null" and "extremely tenuous". It uses an eigenvalue-correction similar to EK-FAC's, and to the procedure in SOAP optimization.
+   This is a custom influence function in the form $g_t H^{-1} g_q$ using the Shampoo preconditioner as the H. Its mathematical relationship with the true Hessian is somewhere between "null" and "extremely tenuous", but it performs well anyway. It uses an eigenvalue-correction similar to EK-FAC's, and to the variant used in SOAP optimization.
 
 SOURCE
    SOURCE uses a weighted combination of Hessian approximations fit on different segments of the training trajectory, so it may perform relatively better in longer or multi-phase training runs.
