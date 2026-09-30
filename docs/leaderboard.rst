@@ -103,7 +103,7 @@ ASTRA
    ASTRA improves any existing Kronecker-factored Hessian approximation during each query's application stage, so it adds a constant amount of compute to each query on top of a basic influence function like EK-FAC.
 
 EK-FAC
-   This is a classic influence function in the form $g_t H^{-1} g_q$ using the EK-FAC Hessian approximation. The H can be swapped out for other matrices including KFAC, Shampoo, and MAC. 
+   This is a classic influence function in the form $g_t H^{-1} g_q$ using the EK-FAC Hessian approximation. The H can be swapped out for other matrices including KFAC, Shampoo, and MAC.
 
 KFAC
    KFAC supports gradient compression with ``projection_dim``. This produces a highly efficient variant based on a reusable gradient store, suitable for the retrieval stage of a data attribution pipeline, at the cost of some LDS/QLD.
