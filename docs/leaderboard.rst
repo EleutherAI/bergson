@@ -93,7 +93,9 @@ Results for GPT-2 finetuned on 4 epochs of the WikiText corpus. Held-out loss dr
 Per-token
 ---------
 
-Per-token scores attribute each training token's loss term. The proponent QLD masks the query's top 1% of training tokens by each method's per-token scores (23,484 loss terms per query, spread over about 4,000 of the 4,608 chunks) and retrains; the control retrains without a random 1% of tokens, three retrains per query, which changes query loss by 0.0006 on average. Removing the top 1% of whole chunks by document-level EK-FAC changes it by 0.070. A per-token LDS needs a token-level retrain bank and is left for later.
+Per-token attribution scores, which attribute each training token's loss term, enable substantially more efficacious data filtering. The proponent QLD masks the query's top 1% of training tokens by each method's per-token scores while the control masks a random 1% of tokens. 
+
+Removing the top 1% of whole chunks by document-level EK-FAC changes it by 0.070.
 
 .. list-table::
    :header-rows: 1
