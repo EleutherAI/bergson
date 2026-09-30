@@ -97,7 +97,7 @@ Notes
 There are many method selection considerations not captured by LDS or QLD. Here is some additional information.
 
 MAGIC
-   This method backpropagates through the training process once per query and doesn't support query batching. It works well in FP32 or TF32 but may significantly degrade when used to attribute BF16 training runs, or training runs with .
+   This method backpropagates through the training process once per query and doesn't support query batching. It works well in FP32 or TF32 but may significantly degrade when used to attribute BF16 training runs, or training runs with low batch sizes.
 
 ASTRA
    This improves modifies an existing Hessian approximation during each query's application stage, so it adds a constant amount of compute to each query on top of a basic influence function like EK-FAC.
