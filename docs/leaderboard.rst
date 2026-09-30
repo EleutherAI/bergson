@@ -112,16 +112,13 @@ Eigenvalue-corrected Shampoo
    This is a custom influence function in the form $g_t H^{-1} g_q$ using the Shampoo preconditioner. Its mathematical relationship with the true Hessian is somewhere between "null" and "extremely tenuous". It uses an eigenvalue-correction similar to EK-FAC's, and to the procedure in SOAP optimization.
 
 SOURCE
-   SOURCE uses a weighted combination of Hessian approximations fit on different segments of the training trajectory, where the weighting comes from the sum of learning rates in that segment. The finetuning benchmark seems to be too few steps at too low a learning rate for this weighting strategy to perform well. See
-   `examples/replicate_bae_approx_unrolling_source
-   <https://github.com/EleutherAI/bergson/tree/main/examples/replicate_bae_approx_unrolling_source>`_
-   for a setting where SOURCE outperforms EK-FAC.
+   SOURCE uses a weighted combination of Hessian approximations fit on different segments of the training trajectory, so it may perform relatively better in longer or multi-phase training runs.
 
 TrackStar
    TrackStar is a highly efficient method that can more readily scale to pretraining via a reusable compressed gradient store. Presumably it's designed to be used as the first stage of a data search pipeline that eventually uses a more powerful influence function to re-rank the top-k items.
 
 TRAK
-   TRAK doesn't seem to work very well in our setting. This matches `existing results <https://arxiv.org/pdf/2405.12186>`_ in the literature.
+   TRAK's performance matches `existing results <https://arxiv.org/pdf/2405.12186>`_ in the literature.
 
 Gradient similarity
    A weak baseline that considers only the direct effect of the parameter update on the query.
@@ -133,4 +130,4 @@ BM25
    A strong baseline that uses a model optimized to retrieve documents with words matching those in the query document.
 
 Activation similarity
-   A novel baseline that uses the model of interest's activations rather than gradients. To some extent any representation space can be used to compute data similarities, so to the extent model gradients are especially good data for making counterfactual predictions we expect that they will outperform model activations. This is what we see in practice.
+   A novel baseline that uses the model of interest's activations rather than gradients. To some extent any representation space can be used to compute data similarities, so to the extent model gradients are especially good data for making counterfactual predictions we expect that they will outperform model activations.
