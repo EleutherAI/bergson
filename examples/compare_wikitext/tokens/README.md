@@ -8,7 +8,7 @@ Per-token attribution on the WikiText leaderboard model (the `1_magic.yaml` run 
 
 Paired over queries, MAGIC exceeds EK-FAC + ASTRA by 0.293 [0.269, 0.317] and EK-FAC + ASTRA exceeds EK-FAC by 0.219 [0.203, 0.234], each on 50 of 50 queries (95% CI from the per-query differences). The 95% CIs in the table are a 10k bootstrap over queries.
 
-`ekfac_tokens.yaml` and `ekfac_astra_tokens.yaml` score the published EK-FAC and ASTRA query directions (`../ekfac.yaml`, `../ekfac_astra.yaml`) token by token in forward mode; `magic_tokens.yaml` resumes the leaderboard trajectory with `attribute_tokens: true`, so its scores are the per-token MAGIC gradient with the four epochs summed onto each chunk. The `filter_*_tokens.yaml` configs are `validate` runs with `method.kind: filter` over the per-token score stores; `exclude_zero_scores` skips the final position of each chunk, which carries no loss.
+`ekfac_tokens.yaml` and `ekfac_astra_tokens.yaml` score the published EK-FAC and ASTRA query directions (`../ekfac.yaml`, `../ekfac_astra.yaml`) token by token with `token_influence: output`; `magic_tokens.yaml` resumes the leaderboard trajectory with `attribute_tokens: true`, so its scores are the per-token MAGIC gradient with the four epochs summed onto each chunk. The `filter_*_tokens.yaml` configs are `validate` runs with `method.kind: filter` over the per-token score stores; `exclude_zero_scores` skips the final position of each chunk, which carries no loss.
 
 Reproduce (after `../1_magic.yaml`, `../2_interval.yaml`, the checkpoint export, `../ekfac.yaml` and `../ekfac_astra.yaml`):
 
