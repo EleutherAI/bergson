@@ -100,7 +100,7 @@ MAGIC
    This method backpropagates through the training process once per query and doesn't support query batching. It works well in FP32 or TF32 but may significantly degrade when used to attribute BF16 training runs, or training runs with low batch sizes.
 
 ASTRA
-   This improves modifies an existing Hessian approximation during each query's application stage, so it adds a constant amount of compute to each query on top of a basic influence function like EK-FAC.
+   ASTRA improves any existing Kronecker-factored Hessian approximation during each query's application stage, so it adds a constant amount of compute to each query on top of a basic influence function like EK-FAC.
 
 EK-FAC
    This is a classic influence function in the form $g_t H^{-1} g_q$ using the EK-FAC Hessian approximation.
@@ -109,7 +109,7 @@ KFAC
    This is a classic influence function in the form $g_t H^{-1} g_q$ using the KFAC Hessian approximation. Enable gradient compression with ``projection_dim`` to produce a highly efficient variant based on a reusable gradient store, suitable for the retrieval stage of a data attribution pipeline, at the cost of some LDS/QLD.
 
 Eigenvalue-corrected Shampoo
-   This is a custom influence function in the form $g_t H^{-1} g_q$. The Hessian approximation H is Kronecker factored. Its mathematical relationship with the true Hessian is somewhere between "null" and "extremely tenuous". The eigenvalue-correction is similar to EK-FAC, and to the procedure in SOAP optimization.
+   This is a custom influence function in the form $g_t H^{-1} g_q$ using the Shampoo preconditioner. Its mathematical relationship with the true Hessian is somewhere between "null" and "extremely tenuous". It uses an eigenvalue-correction similar to EK-FAC's, and to the procedure in SOAP optimization.
 
 SOURCE
    SOURCE uses a weighted combination of Hessian approximations fit on different segments of the training trajectory, where the weighting comes from the sum of learning rates in that segment. The finetuning benchmark seems to be too few steps at too low a learning rate for this weighting strategy to perform well. See
