@@ -1,0 +1,207 @@
+# Per-token TRAK: each ensemble member's log-odds forward-mode pass along its direction
+# from direction_store.py (the member's Gram-whitened query mapped back through its global
+# projection), combined by combine_tokens.py trak as bergson averages members.
+# Run with `bergson examples/compare_wikitext/tokens/trak_tokens.yaml`
+
+run_path: runs/compare_wikitext/tokens/trak_tokens
+steps:
+  - score:
+      index_cfg:
+        run_path: runs/compare_wikitext/tokens/trak_checkpoint_0
+        model: runs/compare_wikitext/trak_ens/s0/retrained/subset_0
+        tokenizer: gpt2
+        loss_fn: log_odds
+        overwrite: false
+        token_batch_size: 1024
+        max_batch_size: 64
+        filter_modules: "lm_head"
+        attribute_tokens: true
+        distributed:
+          nproc_per_node: 8
+          nnode: 1
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "train"
+          chunk_length: 0
+      score_cfg:
+        query_path: runs/compare_wikitext/tokens/trak_direction_0
+        token_influence: output
+        batch_size: 1024
+        query_batch_size: 64
+      preprocess_cfg:
+        unit_normalize: false
+  - score:
+      index_cfg:
+        run_path: runs/compare_wikitext/tokens/trak_checkpoint_1
+        model: runs/compare_wikitext/trak_ens/s0/retrained/subset_1
+        tokenizer: gpt2
+        loss_fn: log_odds
+        overwrite: false
+        token_batch_size: 1024
+        max_batch_size: 64
+        filter_modules: "lm_head"
+        attribute_tokens: true
+        distributed:
+          nproc_per_node: 8
+          nnode: 1
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "train"
+          chunk_length: 0
+      score_cfg:
+        query_path: runs/compare_wikitext/tokens/trak_direction_1
+        token_influence: output
+        batch_size: 1024
+        query_batch_size: 64
+      preprocess_cfg:
+        unit_normalize: false
+  - score:
+      index_cfg:
+        run_path: runs/compare_wikitext/tokens/trak_checkpoint_2
+        model: runs/compare_wikitext/trak_ens/s1/retrained/subset_0
+        tokenizer: gpt2
+        loss_fn: log_odds
+        overwrite: false
+        token_batch_size: 1024
+        max_batch_size: 64
+        filter_modules: "lm_head"
+        attribute_tokens: true
+        distributed:
+          nproc_per_node: 8
+          nnode: 1
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "train"
+          chunk_length: 0
+      score_cfg:
+        query_path: runs/compare_wikitext/tokens/trak_direction_2
+        token_influence: output
+        batch_size: 1024
+        query_batch_size: 64
+      preprocess_cfg:
+        unit_normalize: false
+  - score:
+      index_cfg:
+        run_path: runs/compare_wikitext/tokens/trak_checkpoint_3
+        model: runs/compare_wikitext/trak_ens/s1/retrained/subset_1
+        tokenizer: gpt2
+        loss_fn: log_odds
+        overwrite: false
+        token_batch_size: 1024
+        max_batch_size: 64
+        filter_modules: "lm_head"
+        attribute_tokens: true
+        distributed:
+          nproc_per_node: 8
+          nnode: 1
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "train"
+          chunk_length: 0
+      score_cfg:
+        query_path: runs/compare_wikitext/tokens/trak_direction_3
+        token_influence: output
+        batch_size: 1024
+        query_batch_size: 64
+      preprocess_cfg:
+        unit_normalize: false
+  - score:
+      index_cfg:
+        run_path: runs/compare_wikitext/tokens/trak_checkpoint_4
+        model: runs/compare_wikitext/trak_ens/s2/retrained/subset_0
+        tokenizer: gpt2
+        loss_fn: log_odds
+        overwrite: false
+        token_batch_size: 1024
+        max_batch_size: 64
+        filter_modules: "lm_head"
+        attribute_tokens: true
+        distributed:
+          nproc_per_node: 8
+          nnode: 1
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "train"
+          chunk_length: 0
+      score_cfg:
+        query_path: runs/compare_wikitext/tokens/trak_direction_4
+        token_influence: output
+        batch_size: 1024
+        query_batch_size: 64
+      preprocess_cfg:
+        unit_normalize: false
+  - score:
+      index_cfg:
+        run_path: runs/compare_wikitext/tokens/trak_checkpoint_5
+        model: runs/compare_wikitext/trak_ens/s2/retrained/subset_1
+        tokenizer: gpt2
+        loss_fn: log_odds
+        overwrite: false
+        token_batch_size: 1024
+        max_batch_size: 64
+        filter_modules: "lm_head"
+        attribute_tokens: true
+        distributed:
+          nproc_per_node: 8
+          nnode: 1
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "train"
+          chunk_length: 0
+      score_cfg:
+        query_path: runs/compare_wikitext/tokens/trak_direction_5
+        token_influence: output
+        batch_size: 1024
+        query_batch_size: 64
+      preprocess_cfg:
+        unit_normalize: false
+  - score:
+      index_cfg:
+        run_path: runs/compare_wikitext/tokens/trak_checkpoint_6
+        model: runs/compare_wikitext/trak_ens/s3/retrained/subset_0
+        tokenizer: gpt2
+        loss_fn: log_odds
+        overwrite: false
+        token_batch_size: 1024
+        max_batch_size: 64
+        filter_modules: "lm_head"
+        attribute_tokens: true
+        distributed:
+          nproc_per_node: 8
+          nnode: 1
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "train"
+          chunk_length: 0
+      score_cfg:
+        query_path: runs/compare_wikitext/tokens/trak_direction_6
+        token_influence: output
+        batch_size: 1024
+        query_batch_size: 64
+      preprocess_cfg:
+        unit_normalize: false
+  - score:
+      index_cfg:
+        run_path: runs/compare_wikitext/tokens/trak_checkpoint_7
+        model: runs/compare_wikitext/trak_ens/s3/retrained/subset_1
+        tokenizer: gpt2
+        loss_fn: log_odds
+        overwrite: false
+        token_batch_size: 1024
+        max_batch_size: 64
+        filter_modules: "lm_head"
+        attribute_tokens: true
+        distributed:
+          nproc_per_node: 8
+          nnode: 1
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "train"
+          chunk_length: 0
+      score_cfg:
+        query_path: runs/compare_wikitext/tokens/trak_direction_7
+        token_influence: output
+        batch_size: 1024
+        query_batch_size: 64
+      preprocess_cfg:
+        unit_normalize: false

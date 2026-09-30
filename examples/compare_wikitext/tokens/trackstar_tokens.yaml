@@ -1,0 +1,31 @@
+# Per-token TrackStar (projection 64, no optimizer correction): forward-mode pass along the
+# direction direction_store.py maps back through the projection and the preconditioner of
+# ../trackstar.yaml's trackstar_p64 run; combine_tokens.py rescale restores each chunk's
+# inverse norm.
+# Run with `bergson examples/compare_wikitext/tokens/trackstar_tokens.yaml`
+
+run_path: runs/compare_wikitext/tokens/trackstar_tokens
+steps:
+  - score:
+      index_cfg:
+        run_path: runs/compare_wikitext/tokens/trackstar_pass
+        model: runs/compare_wikitext/interval/exported/checkpoint-72
+        overwrite: false
+        token_batch_size: 1024
+        max_batch_size: 64
+        filter_modules: "lm_head"
+        attribute_tokens: true
+        distributed:
+          nproc_per_node: 8
+          nnode: 1
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "train"
+          chunk_length: 0
+      score_cfg:
+        query_path: runs/compare_wikitext/tokens/trackstar_direction
+        token_influence: output
+        batch_size: 1024
+        query_batch_size: 64
+      preprocess_cfg:
+        unit_normalize: false

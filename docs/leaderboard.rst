@@ -93,7 +93,7 @@ Results for GPT-2 finetuned on 4 epochs of the WikiText corpus. Held-out loss dr
 Per-token
 ---------
 
-Per-token attribution scores, which attribute each training token's loss term, enable substantially more efficacious data filtering. The proponent QLD masks the query's top 1% of training tokens by each method's per-token scores while the control masks a random 1% of tokens.
+Per-token attribution scores, which attribute each training token's loss term, enable substantially more efficacious data filtering. The proponent QLD masks the query's top 1% of training tokens by each method's per-token scores while the control masks a random 1% of tokens. Each method's per-token scores are the forward-mode equivalent of its document scores: a chunk's rows split its score over the loss terms of its tokens.
 
 .. list-table::
    :header-rows: 1
@@ -105,8 +105,24 @@ Per-token attribution scores, which attribute each training token's loss term, e
      - 1.375 [1.348, 1.403]
    * - EK-FAC + ASTRA
      - 1.082 [1.047, 1.116]
+   * - SOURCE (Adam, EK-FAC)
+     - 0.908 [0.877, 0.942]
    * - EK-FAC
      - 0.863 [0.833, 0.894]
+   * - KFAC
+     - 0.786 [0.758, 0.815]
+   * - BM25
+     - 0.677 [0.650, 0.704]
+   * - TrackStar (no optimizer correction, projection 64)
+     - 0.489 [0.465, 0.515]
+   * - Gradient cosine similarity
+     - 0.217 [0.206, 0.229]
+   * - TRAK (8-model ensemble)
+     - 0.119 [0.112, 0.125]
+   * - Activation similarity
+     - 0.028 [0.018, 0.039]
+   * - Qwen3-Embedding-8B semantic search
+     - 0.008 [0.006, 0.010]
 
 Configs and per-query statistics are in `examples/compare_wikitext/tokens <https://github.com/EleutherAI/bergson/tree/main/examples/compare_wikitext/tokens>`_.
 

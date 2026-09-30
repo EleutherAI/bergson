@@ -47,4 +47,4 @@ steps:
         controls:
           kind: retrain
           count: 3
-      scores: runs/compare_wikitext/tokens/ekfac_tokens/scores
+      scores: runs/compare_wikitext/tokens/ekfac_tokens
