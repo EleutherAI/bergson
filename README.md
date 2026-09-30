@@ -31,13 +31,13 @@ Indicative performance of data attribution methods in the finetuning regime - se
 |:---|:---:|:---:|
 | MAGIC | 0.100 [0.090, 0.112] | 0.931 [0.925, 0.936] |
 | EK-FAC + ASTRA | 0.074 [0.063, 0.087] | 0.643 [0.624, 0.660] |
+| SOURCE (Adam) | 0.071 [0.060, 0.084] | 0.473 [0.446, 0.498] |
 | EK-FAC | 0.070 [0.058, 0.082] | 0.454 [0.426, 0.479] |
 | KFAC | 0.067 [0.056, 0.080] | 0.420 [0.391, 0.446] |
 | BM25 | 0.062 [0.048, 0.076] | 0.220 [0.185, 0.252] |
 | [Qwen3-Embedding-8B](https://huggingface.co/spaces/mteb/leaderboard) semantic search | 0.049 [0.038, 0.061] | 0.132 [0.093, 0.169] |
 | TrackStar (no optimizer correction, projection 64) | 0.045 [0.036, 0.055] | 0.270 [0.240, 0.295] |
 | TRAK (8-model ensemble) | 0.032 [0.024, 0.040] | 0.138 [0.111, 0.165] |
-| SOURCE (Adam) | 0.024 [0.018, 0.030] | 0.154 [0.126, 0.181] |
 | Gradient cosine similarity | 0.021 [0.016, 0.027] | 0.156 [0.131, 0.181] |
 | Activation similarity | 0.000 [-0.000, 0.001] | 0.110 [0.070, 0.149] |
 

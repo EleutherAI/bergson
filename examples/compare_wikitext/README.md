@@ -7,6 +7,7 @@ GPT-2 fine-tuned on WikiText (`EleutherAI/bergson-wikitext-512-chunks`, 4,608 tr
 | EK-FAC + ASTRA | 0.074 | [0.063, 0.087] | 0.643 | [0.624, 0.660] | 0.663 | 0.302 | 0.804 | 50/50 |
 | Eigenvalue-corrected Shampoo + ASTRA | 0.072 | [0.061, 0.085] | 0.625 | [0.604, 0.643] | 0.644 | 0.095 | 0.805 | 49/50 |
 | Eigenvalue-corrected Shampoo | 0.071 | [0.060, 0.082] | 0.517 | [0.491, 0.539] | 0.532 | 0.294 | 0.703 | 50/50 |
+| SOURCE (Adam) | 0.071 | [0.060, 0.084] | 0.473 | [0.446, 0.498] | 0.466 | 0.120 | 0.676 | 49/50 |
 | EK-FAC | 0.070 | [0.058, 0.082] | 0.454 | [0.426, 0.479] | 0.453 | 0.095 | 0.664 | 49/50 |
 | KFAC | 0.067 | [0.056, 0.080] | 0.420 | [0.391, 0.446] | 0.412 | 0.041 | 0.646 | 48/50 |
 | BM25 | 0.062 | [0.048, 0.076] | 0.220 | [0.185, 0.252] | 0.253 | -0.168 | 0.486 | 28/50 |
@@ -17,7 +18,6 @@ GPT-2 fine-tuned on WikiText (`EleutherAI/bergson-wikitext-512-chunks`, 4,608 tr
 | TrackStar (no optimizer correction, projection 32) | 0.035 | [0.027, 0.044] | 0.211 | [0.183, 0.238] | 0.222 | 0.005 | 0.386 | 28/50 |
 | TrackStar (Adam, projection 32) | 0.032 | [0.025, 0.041] | 0.173 | [0.144, 0.201] | 0.179 | -0.094 | 0.467 | 20/50 |
 | TRAK (8-model ensemble) | 0.032 | [0.024, 0.040] | 0.138 | [0.111, 0.165] | 0.141 | -0.131 | 0.430 | 13/50 |
-| SOURCE (Adam) | 0.024 | [0.018, 0.030] | 0.154 | [0.126, 0.181] | 0.147 | -0.144 | 0.412 | 15/50 |
 | KFAC (projection 64) | 0.023 | [0.016, 0.032] | 0.103 | [0.076, 0.128] | 0.107 | -0.137 | 0.309 | 9/50 |
 | SOURCE | 0.022 | [0.017, 0.027] | 0.165 | [0.138, 0.191] | 0.171 | -0.120 | 0.419 | 16/50 |
 | TrackStar (no optimizer correction, projection 16) | 0.022 | [0.016, 0.028] | 0.143 | [0.113, 0.173] | 0.152 | -0.142 | 0.350 | 17/50 |
@@ -25,6 +25,7 @@ GPT-2 fine-tuned on WikiText (`EleutherAI/bergson-wikitext-512-chunks`, 4,608 tr
 | TrackStar (Adam, projection 16) | 0.020 | [0.014, 0.026] | 0.103 | [0.072, 0.133] | 0.100 | -0.158 | 0.448 | 9/50 |
 | Gradient dot product | 0.019 | [0.015, 0.024] | 0.156 | [0.130, 0.180] | 0.151 | -0.138 | 0.390 | 16/50 |
 | Projected gradient cosine similarity | 0.016 | [0.012, 0.020] | 0.132 | [0.103, 0.159] | 0.133 | -0.214 | 0.360 | 13/50 |
+| Activation similarity + MAC | TODO | TODO | 0.157 | [0.120, 0.192] | 0.152 | -0.110 | 0.476 | 19/50 |
 | Activation similarity | 0.000 | [-0.000, 0.001] | 0.110 | [0.070, 0.149] | 0.106 | -0.137 | 0.361 | 11/50 |
 
 MAGIC (cross-seed) applies the seed-42 MAGIC scores to retrains with seed 43 (different data order and dropout): its LDS uses the same 100 subsets retrained at seed 43 and its QLD retrains the proponent filters at seed 43. KFAC is `kfac.yaml`: the Kronecker factors and damping of `ekfac.yaml` without the eigenvalue correction (`ev_correction: false`), so the two rows isolate what the correction adds. KFAC (projection 64) is `kfac_p64.yaml`: the same factors and damping with the gradients random-projected per module to 64 dimensions as in the TrackStar rows. TrackStar is swept over projection dims 16/32/64 (per-module random projection of the gradients), plain and Adam-normalized. TRAK follows Park et al. (2023): eight GPT-2 models trained on independent random 50% subsets of the training set (`trak_ensemble/train_s*.yaml`, seeds 101-104), scored by `trak.yaml` with one global random projection (dim 4096, a different seed per member) of the negative log-odds gradients whitened by the undamped Gram over the training set, each member's scores scale-normalized by the mean absolute entry of its inverse Gram, averaged, and weighted by the members' mean 1 - p. Gradient cosine similarity is `gradient_cosine.yaml`: bergson `build` of the query gradients and `score` of the training chunks, unprojected and unit-normalized with no Hessian, so each score is the cosine between a training chunk's gradient and a query's over the attributed modules. Projected gradient cosine similarity (the projected steps of the same yaml) is the same with the gradients random-projected per module first, i.e. TrackStar without preconditioning. Gradient dot product is `gradient_dot.yaml`: the gradient cosine pipeline without unit normalization, so each score is the raw inner product of a training chunk's gradient and a query's. The four gradient-free baselines come from `examples/gradient_free_baselines` run with `--bank runs/compare_wikitext/random --query_split "test[0:50]"`: BM25 lexical overlap (`bm25_baseline.py`), semantic search with `jinaai/jina-embeddings-v5-text-small` (`semantic_baseline.py`) and with `Qwen/Qwen3-Embedding-8B` (`qwen3_baseline.py`), and cosine similarity between the mean-pooled input activations of the attributed linear modules, per-module L2-normalized and concatenated (`activation_baseline.py`).
