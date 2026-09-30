@@ -106,3 +106,27 @@ Per-token scores attribute each training token's loss term. The proponent QLD ma
      - 0.863 [0.833, 0.894]
 
 Configs and per-query statistics are in `examples/compare_wikitext/tokens <https://github.com/EleutherAI/bergson/tree/main/examples/compare_wikitext/tokens>`_.
+
+Per-chunk
+---------
+
+Per-chunk scores sum each method's per-token scores over chunks of a training chunk: 64-token windows, or natural pieces cut after sentence ends and line breaks and merged to at least 32 tokens (median 46). The proponent QLD masks the query's top 1% of training tokens by chunk score, about 369 whole windows or 413 whole pieces; the control retrains without a random 1% of tokens.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 30 30
+
+   * - Method
+     - Natural pieces [95% CI]
+     - 64-token windows [95% CI]
+   * - MAGIC
+     - 0.239 [0.226, 0.253]
+     - 0.226 [0.214, 0.240]
+   * - EK-FAC + ASTRA
+     - 0.153 [0.140, 0.168]
+     - 0.147 [0.133, 0.161]
+   * - EK-FAC
+     - 0.135 [0.121, 0.149]
+     - 0.129 [0.116, 0.143]
+
+Configs and per-query statistics are in `examples/compare_wikitext/chunks <https://github.com/EleutherAI/bergson/tree/main/examples/compare_wikitext/chunks>`_.
