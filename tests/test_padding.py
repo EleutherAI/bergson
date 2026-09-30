@@ -6,26 +6,26 @@ from datasets import Dataset
 from bergson.magic.data_stream import Padding, pad_dataset_to_batch_size
 
 
-def test_pad_rows_get_a_document_of_their_own():
+def test_pad_rows_get_a_separate_document():
     """Repeating the last row copies its doc_ids, so the pad rows are re-routed."""
     ds = Dataset.from_dict(
         {"input_ids": [[1, 1]] * 3, "doc_ids": [[0, 0], [1, 1], [1, 2]]}
     )
     padded, num_docs, padding = pad_dataset_to_batch_size(ds, 4, 3, "Test", 0)
 
-    assert (padding.rows, padding.docs, num_docs) == (1, 1, 4)
+    assert (padding.num_rows, padding.num_docs, num_docs) == (1, 1, 4)
     assert list(padded["doc_ids"]) == [[0, 0], [1, 1], [1, 2], [3, 3]]
 
     weights = torch.ones(num_docs)
-    padding.silence(weights)
+    padding.zero_weights(weights)
     assert weights.tolist() == [1.0, 1.0, 1.0, 0.0]
 
 
 def test_rows_are_documents_without_doc_ids():
-    """Every row is its own document, and an exact multiple pads nothing."""
+    """Each row is a document, and an exact multiple pads nothing."""
     ds = Dataset.from_dict({"input_ids": [[1], [2], [3]]})
     padded, num_docs, padding = pad_dataset_to_batch_size(ds, 2, 3, "Test", 0)
-    assert (padding.rows, padding.docs, num_docs) == (1, 1, 4)
+    assert (padding.num_rows, padding.num_docs, num_docs) == (1, 1, 4)
     assert padded["input_ids"][-1] == [3]
 
     padded, num_docs, padding = pad_dataset_to_batch_size(ds, 3, 3, "Test", 0)
@@ -33,11 +33,11 @@ def test_rows_are_documents_without_doc_ids():
 
 
 def test_silence_and_trim_follow_the_layout():
-    """Per-document weights own one entry; per-token weights own one row each."""
-    padding = Padding(rows=3, docs=1)
+    """A per-document weight vector loses one entry; a per-token one, one row."""
+    padding = Padding(num_rows=3, num_docs=1)
     per_doc, per_token = torch.ones(5), torch.ones(5, 2)
-    padding.silence(per_doc)
-    padding.silence(per_token)
+    padding.zero_weights(per_doc)
+    padding.zero_weights(per_token)
 
     assert per_doc.tolist() == [1.0, 1.0, 1.0, 1.0, 0.0]
     assert per_token[:2].all() and not per_token[2:].any()

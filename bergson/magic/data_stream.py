@@ -23,29 +23,31 @@ def mask_padded_rows(batch: dict) -> tuple[dict, int]:
 
 @dataclass(frozen=True)
 class Padding:
-    """The rows appended to fill the last batch, and how to neutralise them.
+    """The rows appended to fill the last batch, and how to ensure they don't
+    affect influence scores.
 
-    ``docs`` is what they own in a per-document weight vector: one synthetic
-    document when the dataset carries ``doc_ids``, else one per row.
+    ``num_docs`` is how many entries of a per-document weight vector the pad
+    rows account for: one synthetic document when the dataset carries
+    ``doc_ids``, else one per row.
     """
 
-    rows: int = 0
-    docs: int = 0
+    num_rows: int = 0
+    num_docs: int = 0
 
     def __bool__(self) -> bool:
-        return bool(self.rows)
+        return bool(self.num_rows)
 
-    def _trailing(self, t: Tensor) -> int:
-        return self.docs if t.ndim == 1 else self.rows
+    def _trailing_pad_len(self, t: Tensor) -> int:
+        return self.num_docs if t.ndim == 1 else self.num_rows
 
-    def silence(self, weights: Tensor) -> None:
+    def zero_weights(self, weights: Tensor) -> None:
         """Zero the pad rows' weights in place."""
-        if n := self._trailing(weights):
+        if n := self._trailing_pad_len(weights):
             weights.data[-n:] = 0.0
 
     def trim(self, scores: Tensor) -> Tensor:
         """Return ``scores`` without the entries the pad rows produced."""
-        n = self._trailing(scores)
+        n = self._trailing_pad_len(scores)
         return scores[:-n] if n else scores
 
 
@@ -58,9 +60,9 @@ def pad_dataset_to_batch_size(
 ) -> tuple[Dataset, int, Padding]:
     """Pad dataset to be divisible by batch_size by repeating the last example.
 
-    Repeating a row copies its ``doc_ids``, so the pad rows would otherwise
-    claim the last document and inflate it; they are routed to a document of
-    their own instead, which one weight entry silences.
+    Repeating a row copies its ``doc_ids``, which would add the pad rows'
+    scores to the last document; they are given a separate document id
+    instead, so one zeroed weight entry covers all of them.
     """
     remainder = len(dataset) % batch_size
     if not remainder:
@@ -68,19 +70,20 @@ def pad_dataset_to_batch_size(
 
     pad_count = batch_size - remainder
     total = len(dataset)
-    pad_rows = dataset.select([total - 1] * pad_count)
+    last = dataset[total - 1]
 
     if "doc_ids" in dataset.column_names:
-        synthetic_doc_id = num_docs
-        pad_rows = pad_rows.map(
-            lambda row: {"doc_ids": [synthetic_doc_id] * len(row["doc_ids"])}
-        ).cast(dataset.features)
+        last = {**last, "doc_ids": [num_docs] * len(last["doc_ids"])}
         num_docs += 1
-        padding = Padding(rows=pad_count, docs=1)
+        padding = Padding(num_rows=pad_count, num_docs=1)
     else:
         num_docs = total + pad_count
-        padding = Padding(rows=pad_count, docs=pad_count)
+        padding = Padding(num_rows=pad_count, num_docs=pad_count)
 
+    # Built in memory: the pad rows are a handful of copies of the last row.
+    pad_rows = Dataset.from_dict(
+        {k: [v] * pad_count for k, v in last.items()}, features=dataset.features
+    )
     dataset = concatenate_datasets([dataset, pad_rows])
     if global_rank == 0:
         print(

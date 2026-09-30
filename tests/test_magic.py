@@ -77,7 +77,7 @@ def _train_and_query_loss(
         padded_ds, batch_size=batch_size, device=device, weight_shape=weight_shape
     )
 
-    padding.silence(stream.weights.data)
+    padding.zero_weights(stream.weights.data)
 
     if zero_subset is not None:
         stream.weights.data.view(-1)[zero_subset] = 0.0
@@ -94,7 +94,7 @@ def _train_and_query_loss(
     if attribute_tokens:
         trimmed = torch.tensor(padded_ds["doc_ids"])
         if padding:
-            trimmed = trimmed[: -padding.rows]
+            trimmed = trimmed[: -padding.num_rows]
         return loss, trimmed
     return loss, None
 
@@ -112,7 +112,7 @@ def test_magic_validation_loop_doc_token_dropout_equiv(model_name):
     (a) shuffle reorders rows so the saved tensor differs from the input ds;
     (b) ``len(ds) % batch_size != 0`` forces ``pad_dataset_to_batch_size`` to
     append a synthetic-doc pad row that worker() then strips with
-    ``doc_ids[:-padding.rows]`` before saving; (c) one document spans rows so
+    ``doc_ids[:-padding.num_rows]`` before saving; (c) one document spans rows so
     the lookup is non-trivial. If shuffle/pad-trim alignment or row-major
     flatten order ever drifts, this test breaks before any real run does.
     """
@@ -242,7 +242,7 @@ def _run_magic_cli(
         padded_ds, batch_size=batch_size, device=device, weight_shape=weight_shape
     )
 
-    padding.silence(stream.weights.data)
+    padding.zero_weights(stream.weights.data)
 
     with tempfile.TemporaryDirectory() as ckpt_dir:
         fwd_state = trainer.train(fwd_state, stream, inplace=True, save_dir=ckpt_dir)
@@ -271,7 +271,7 @@ def _run_magic_cli(
 
     scores = padding.trim(scores)
     if padding and doc_ids is not None:
-        doc_ids = doc_ids[: -padding.rows]
+        doc_ids = doc_ids[: -padding.num_rows]
 
     return scores, doc_ids
 

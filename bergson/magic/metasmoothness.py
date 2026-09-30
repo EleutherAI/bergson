@@ -92,12 +92,12 @@ def metasmoothness_worker(
     # Same v on every rank; pad slots are never perturbed.
     gen = torch.Generator().manual_seed(run_cfg.direction_seed)
     v = torch.randn(num_train_docs, generator=gen)
-    padding.silence(v)
+    padding.zero_weights(v)
 
     thetas: list[torch.Tensor] = []
     for k in range(3):
         weights = 1.0 + run_cfg.fd_step * k * v
-        padding.silence(weights)
+        padding.zero_weights(weights)
         stream.weights.data.copy_(weights.to(stream.weights.device))
 
         torch.manual_seed(run_cfg.seed)

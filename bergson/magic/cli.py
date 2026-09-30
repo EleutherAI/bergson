@@ -257,7 +257,7 @@ def compute_per_query_magic_scores(
             input_key=run_cfg.query.prompt_column,
             weight_shape=(n_one,),
         )
-        one_padding.silence(qstream.weights.data)
+        one_padding.zero_weights(qstream.weights.data)
         assert_ckpts_exist()
         qgrads, _ = compute_query_gradients(
             fwd_state, model, qstream, "mean", run_cfg.fsdp, run_cfg.grad_accum_steps
@@ -377,8 +377,8 @@ def save_magic_scores(
     num_token_grads = compute_num_token_grads(train_dataset)
     doc_ids = np.asarray(train_dataset["doc_ids"], dtype=np.int64)
     if padding:
-        num_token_grads = num_token_grads[: -padding.rows]
-        doc_ids = doc_ids[: -padding.rows]
+        num_token_grads = num_token_grads[: -padding.num_rows]
+        doc_ids = doc_ids[: -padding.num_rows]
 
     offsets = np.zeros(len(num_token_grads) + 1, dtype=np.int64)
     np.cumsum(num_token_grads, out=offsets[1:])
@@ -471,7 +471,7 @@ def worker(
         input_key=run_cfg.data.prompt_column,
         weight_shape=w_shape,
     )
-    padding.silence(stream.weights.data)
+    padding.zero_weights(stream.weights.data)
 
     log_fn = None
     if run_cfg.wandb_project and global_rank == 0:
@@ -578,7 +578,7 @@ def worker(
         weight_shape=(num_query_docs,),
     )
     # query_stream.weights is always 1D (weight_shape=(num_query_docs,))
-    query_padding.silence(query_stream.weights.data)
+    query_padding.zero_weights(query_stream.weights.data)
 
     query_grads, baseline = compute_query_gradients(
         fwd_state,

@@ -281,7 +281,7 @@ def _padded_query_eval(device):
     docs = _make_dataset().select(range(3))
     padded, n_docs, padding = pad_dataset_to_batch_size(docs, 4, 3, "Q", 0)
     stream = DataStream(padded, 4, device=device, weight_shape=(n_docs,))
-    padding.silence(stream.weights.data)
+    padding.zero_weights(stream.weights.data)
     grads, loss = compute_query_gradients(fwd_state, model, stream)
     with fwd_state.activate(model):
         per_doc = per_doc_query_losses(model, stream, n_docs)[:3]

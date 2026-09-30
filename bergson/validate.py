@@ -207,7 +207,7 @@ def build_contrast_stream(
         input_key=run_cfg.query.contrast.prompt_column,
         weight_shape=(n,),
     )
-    padding.silence(stream.weights.data)
+    padding.zero_weights(stream.weights.data)
     return stream
 
 
@@ -520,7 +520,7 @@ def tail_filter_retrain(
         fwd_state.detach_()
 
         stream.weights.fill_(1.0)
-        padding.silence(stream.weights.data)
+        padding.zero_weights(stream.weights.data)
         stream.weights.view(-1)[removed] = run_cfg.subset_weight
 
         for x in stream:
@@ -699,7 +699,7 @@ def validate_scores(
     diffs = []
     score_sums = []
 
-    num_real_query_docs = num_query_docs - query_padding.docs
+    num_real_query_docs = num_query_docs - query_padding.num_docs
     baseline_per_doc = torch.zeros(num_real_query_docs)
     if multi_query:
         if scores.shape[-1] != num_real_query_docs:
@@ -764,7 +764,7 @@ def validate_scores(
             fwd_state.detach_()
 
             stream.weights.fill_(1.0)
-            padding.silence(stream.weights.data)
+            padding.zero_weights(stream.weights.data)
             flat_w = stream.weights.view(-1)
             flat_w[: len(step_scores)] -= lr * step_scores.to(flat_w)
 
@@ -892,7 +892,7 @@ def validate_scores(
         fwd_state.detach_()
 
         stream.weights.fill_(1.0)
-        padding.silence(stream.weights.data)
+        padding.zero_weights(stream.weights.data)
         stream.weights.view(-1)[subset] = run_cfg.subset_weight
 
         for x in stream:
@@ -1072,13 +1072,13 @@ def evaluate_retrained(
         input_key=run_cfg.query.prompt_column,
         weight_shape=(query_n,),
     )
-    query_padding.silence(query_stream.weights.data)
+    query_padding.zero_weights(query_stream.weights.data)
     contrast_stream = build_contrast_stream(run_cfg, device, 0)
 
     hf_disable_pbar()
     hf_set_verbosity_error()
 
-    num_real_query_docs = query_n - query_padding.docs
+    num_real_query_docs = query_n - query_padding.num_docs
     if multi_query and scores.shape[1] != num_real_query_docs:
         raise ValueError(
             f"scores has {scores.shape[1]} query columns but the query "

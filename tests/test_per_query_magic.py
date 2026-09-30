@@ -171,8 +171,8 @@ def test_per_query_scores_only_real_queries_when_padded():
     padded_ds, num_query_docs, query_padding = pad_dataset_to_batch_size(
         query_ds, 4, len(query_ds), "Query", 0
     )
-    assert len(padded_ds) == 4 and query_padding.rows == 1
-    assert num_query_docs - query_padding.docs == len(query_ds)
+    assert len(padded_ds) == 4 and query_padding.num_rows == 1
+    assert num_query_docs - query_padding.num_docs == len(query_ds)
 
     with tempfile.TemporaryDirectory() as run_path:
         ckpts = f"{run_path}/checkpoints"
@@ -189,7 +189,7 @@ def test_per_query_scores_only_real_queries_when_padded():
             fwd_state,
             model,
             padded_ds,
-            num_query_docs - query_padding.docs,
+            num_query_docs - query_padding.num_docs,
             run_cfg=run_cfg,
             world_size=1,
             global_rank=0,
@@ -204,7 +204,7 @@ def test_per_query_scores_only_real_queries_when_padded():
 def _per_query_run(tmp_path, attribute_tokens: bool, num_docs=5, seq_len=8, n_query=2):
     """Run worker() in per-query mode; return (scores, doc_ids).
 
-    num_docs=5 at batch_size 4 pads by 3 rows, where padding.docs is 1 but
+    num_docs=5 at batch_size 4 pads by 3 rows, where padding.num_docs is 1 but
     pad_count is 3 — the gap a rank-blind trim falls into.
     """
     from bergson.config.config import DataConfig
@@ -292,7 +292,7 @@ def test_query_eval_ignores_padding_and_grad_accum():
     plain = DataStream(query_ds, batch_size=4, device="cpu")
     padded_ds, n_docs, padding = pad_dataset_to_batch_size(query_ds, 16, 4, "Query", 0)
     padded = DataStream(padded_ds, 16, device="cpu", weight_shape=(n_docs,))
-    padding.silence(padded.weights.data)
+    padding.zero_weights(padded.weights.data)
 
     batch, live = mask_padded_rows(padded[0])
     assert live and batch["input_ids"].shape[0] == 16
