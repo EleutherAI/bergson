@@ -28,7 +28,7 @@ Indicative performance of data attribution methods in the finetuning regime.
      - 0.071 [0.060, 0.082]
      - 0.517 [0.491, 0.539]
    * - SOURCE (Adam)
-     - TODO
+     - 0.071 [0.060, 0.084]
      - 0.473 [0.446, 0.498]
    * - EK-FAC
      - 0.070 [0.058, 0.082]
