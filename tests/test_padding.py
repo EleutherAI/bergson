@@ -32,14 +32,19 @@ def test_rows_are_documents_without_doc_ids():
     assert padded is ds and num_docs == 3 and not padding
 
 
-def test_silence_and_trim_follow_the_layout():
-    """A per-document weight vector loses one entry; a per-token one, one row."""
-    padding = Padding(num_rows=3, num_docs=1)
+def test_zero_weights_and_trim_follow_the_layout():
+    """A per-document vector loses one entry; a per-token grid, one example row."""
+    padding = Padding(num_rows=3, num_docs=1, num_examples=1)
     per_doc, per_token = torch.ones(5), torch.ones(5, 2)
     padding.zero_weights(per_doc)
     padding.zero_weights(per_token)
 
     assert per_doc.tolist() == [1.0, 1.0, 1.0, 1.0, 0.0]
-    assert per_token[:2].all() and not per_token[2:].any()
+    assert per_token[:4].all() and not per_token[4:].any()
     assert padding.trim(torch.arange(5)).tolist() == [0, 1, 2, 3]
-    assert padding.trim(torch.ones(5, 2)).shape == (2, 2)
+    assert padding.trim(torch.ones(5, 2)).shape == (4, 2)
+
+    # Without id columns each pad row is a document and an example of its own.
+    plain = Padding(num_rows=3, num_docs=3, num_examples=3)
+    assert plain.trim(torch.arange(5)).tolist() == [0, 1]
+    assert plain.trim(torch.ones(5, 2)).shape == (2, 2)

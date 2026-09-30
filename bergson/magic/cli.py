@@ -376,7 +376,17 @@ def save_magic_scores(
 
     num_token_grads = compute_num_token_grads(train_dataset)
     doc_ids = np.asarray(train_dataset["doc_ids"], dtype=np.int64)
-    if padding:
+    if "example_ids" in train_dataset.column_names:
+        # The grid has one row per example; the stream's rows (shuffled
+        # epochs, then padding past the grid) fold onto it.
+        example_ids = np.asarray(train_dataset["example_ids"], dtype=np.int64)
+        keep = example_ids < len(scores)
+        per_example_ntg = np.zeros(len(scores), dtype=np.int64)
+        per_example_ntg[example_ids[keep]] = num_token_grads[keep]
+        per_example_doc_ids = np.zeros((len(scores), doc_ids.shape[1]), np.int64)
+        per_example_doc_ids[example_ids[keep]] = doc_ids[keep]
+        num_token_grads, doc_ids = per_example_ntg, per_example_doc_ids
+    elif padding:
         num_token_grads = num_token_grads[: -padding.num_rows]
         doc_ids = doc_ids[: -padding.num_rows]
 
@@ -394,6 +404,14 @@ def save_magic_scores(
     np.save(path / "doc_ids.npy", doc_ids)
     print(f"Saved attribution scores to {path}")
     return str(path)
+
+
+def attach_example_ids(dataset: Dataset) -> Dataset:
+    """Number the rows so per-token weights and scores keep one row per
+    example across the shuffled epochs. No-op if ``example_ids`` is present."""
+    if "example_ids" in dataset.column_names:
+        return dataset
+    return dataset.add_column("example_ids", list(range(len(dataset))))
 
 
 def shuffled_epochs(dataset: Dataset, seed: int, num_epochs: int) -> Dataset:
@@ -445,22 +463,26 @@ def worker(
     # Ensure total effective batch size is divisible by world size
     assert run_cfg.batch_size % world_size == 0
 
+    # Plain magic runs enter with score_path="" (scores are computed below).
+    per_token = (isinstance(run_cfg, MagicConfig) and run_cfg.attribute_tokens) or (
+        score_path and scores_are_per_token(score_path)
+    )
+    if per_token:
+        train_dataset = attach_example_ids(train_dataset)
+
     # Pad train dataset to be divisible by batch_size (weight=0 for padding)
     train_dataset, num_train_docs, padding = pad_dataset_to_batch_size(
         train_dataset, run_cfg.batch_size, num_train_docs, "Train", global_rank
     )
 
-    # Plain magic runs enter with score_path="" (scores are computed below).
-    per_token = (isinstance(run_cfg, MagicConfig) and run_cfg.attribute_tokens) or (
-        score_path and scores_are_per_token(score_path)
-    )
     if per_token:
         seq_len = run_cfg.data.chunk_length
         if seq_len <= 0:
             seq_len = max(train_dataset["length"])
             print(f"Using max sequence length {seq_len} for per-token attribution")
 
-        w_shape = (len(train_dataset), seq_len)
+        # One weight row per example; the pad rows share one synthetic row.
+        w_shape = (max(train_dataset["example_ids"]) + 1, seq_len)
     else:
         w_shape = (num_train_docs,)
 
@@ -760,6 +782,7 @@ def run_magic(
 
     train_ds, train_n = setup_data_pipeline(run_cfg)
     train_ds = attach_doc_ids_if_missing(train_ds)
+    train_ds = attach_example_ids(train_ds)
 
     train_ds = shuffled_epochs(train_ds, run_cfg.seed, max(1, run_cfg.num_epochs))
 

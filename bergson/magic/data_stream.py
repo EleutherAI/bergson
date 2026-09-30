@@ -23,22 +23,27 @@ def mask_padded_rows(batch: dict) -> tuple[dict, int]:
 
 @dataclass(frozen=True)
 class Padding:
-    """The rows appended to fill the last batch, and how to ensure they don't
-    affect influence scores.
+    """How much of the padded dataset is padding, and how to keep padding from
+    affecting influence scores.
 
-    ``num_docs`` is how many entries of a per-document weight vector the pad
-    rows account for: one synthetic document when the dataset carries
-    ``doc_ids``, else one per row.
+    A run weights either documents, as a vector with one entry per document,
+    or tokens, as a grid with one row per example. ``num_docs`` counts the
+    vector entries that are pure padding and ``num_examples`` the grid rows.
+    Each is one if the pad rows share a synthetic id, ``doc_ids`` for the
+    first and ``example_ids`` for the second, and ``num_rows`` if they do not;
+    the two are decided separately. Pass the weights to :meth:`zero_weights`
+    and the scores to :meth:`trim`, which use whichever count matches.
     """
 
     num_rows: int = 0
     num_docs: int = 0
+    num_examples: int = 0
 
     def __bool__(self) -> bool:
         return bool(self.num_rows)
 
     def _trailing_pad_len(self, t: Tensor) -> int:
-        return self.num_docs if t.ndim == 1 else self.num_rows
+        return self.num_docs if t.ndim == 1 else self.num_examples
 
     def zero_weights(self, weights: Tensor) -> None:
         """Zero the pad rows' weights in place."""
@@ -62,7 +67,8 @@ def pad_dataset_to_batch_size(
 
     Repeating a row copies its ``doc_ids``, which would add the pad rows'
     scores to the last document; they are given a separate document id
-    instead, so one zeroed weight entry covers all of them.
+    instead, so one zeroed weight entry covers all of them. An ``example_ids``
+    column, which per-token weights index by, is re-pointed the same way.
     """
     remainder = len(dataset) % batch_size
     if not remainder:
@@ -72,13 +78,19 @@ def pad_dataset_to_batch_size(
     total = len(dataset)
     last = dataset[total - 1]
 
+    if "example_ids" in dataset.column_names:
+        last = {**last, "example_ids": max(dataset["example_ids"]) + 1}
+        num_examples = 1
+    else:
+        num_examples = pad_count
+
     if "doc_ids" in dataset.column_names:
         last = {**last, "doc_ids": [num_docs] * len(last["doc_ids"])}
         num_docs += 1
-        padding = Padding(num_rows=pad_count, num_docs=1)
+        padding = Padding(pad_count, num_docs=1, num_examples=num_examples)
     else:
         num_docs = total + pad_count
-        padding = Padding(num_rows=pad_count, num_docs=pad_count)
+        padding = Padding(pad_count, num_docs=pad_count, num_examples=num_examples)
 
     # Built in memory: the pad rows are a handful of copies of the last row.
     pad_rows = Dataset.from_dict(
@@ -148,8 +160,15 @@ class DataStream:
         # If the weights are 1D, we assume they correspond to documents and look for
         # "doc_ids" in the batch to index them. If they're 2D, they correspond to tokens
         if self.weights.ndim == 2:
-            # Truncate to the max sequence length in the batch to avoid indexing errors
-            indices = (indices, slice(None, x.shape[1]))
+            # One weight row per example: a shuffled multi-epoch stream reaches
+            # its rows through "example_ids". Truncate to the max sequence
+            # length in the batch to avoid indexing errors.
+            rows = (
+                torch.tensor(batch["example_ids"], device=self.device)
+                if "example_ids" in batch
+                else indices
+            )
+            indices = (rows, slice(None, x.shape[1]))
         elif "doc_ids" in batch:
             indices = torch.tensor(batch["doc_ids"], device=self.device)
             # doc_ids may be longer than the per-batch padded seq_len (unpacked
