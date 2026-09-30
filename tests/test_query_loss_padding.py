@@ -12,9 +12,9 @@ def test_mean_query_loss_skips_all_padding_micro_batches():
     mean: the padded stream gives the single document's loss."""
     model = _make_model().eval()
     docs = _make_dataset().select(range(1))
-    padded, n, _, weight_pad = pad_dataset_to_batch_size(docs, 4, 1, "Q", 0)
+    padded, n, padding = pad_dataset_to_batch_size(docs, 4, 1, "Q", 0)
     stream = DataStream(padded, 4, device="cpu", weight_shape=(n,))
-    stream.weights.data[-weight_pad:] = 0.0
+    padding.zero_weights(stream.weights.data)
     with torch.no_grad():
         padded_loss = mean_query_loss(model, stream, grad_accum_steps=4)
         ref = mean_query_loss(

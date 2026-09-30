@@ -279,9 +279,9 @@ def _padded_query_eval(device):
     _, fwd_state = Trainer.initialize(model, torchopt.adamw(1e-4))
     model.eval()
     docs = _make_dataset().select(range(3))
-    padded, n_docs, _, weight_pad = pad_dataset_to_batch_size(docs, 4, 3, "Q", 0)
+    padded, n_docs, padding = pad_dataset_to_batch_size(docs, 4, 3, "Q", 0)
     stream = DataStream(padded, 4, device=device, weight_shape=(n_docs,))
-    stream.weights.data[-weight_pad:] = 0.0
+    padding.zero_weights(stream.weights.data)
     grads, loss = compute_query_gradients(fwd_state, model, stream)
     with fwd_state.activate(model):
         per_doc = per_doc_query_losses(model, stream, n_docs)[:3]

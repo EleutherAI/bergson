@@ -52,7 +52,12 @@ from ..utils.utils import (
 from ..utils.worker_utils import setup_data_pipeline
 from ..validate import build_contrast_stream, validate_scores
 from .config import MagicConfig
-from .data_stream import DataStream, mask_padded_rows, pad_dataset_to_batch_size
+from .data_stream import (
+    DataStream,
+    Padding,
+    mask_padded_rows,
+    pad_dataset_to_batch_size,
+)
 from .grad_accum import accumulate_grads
 from .score_plot import plot_score_trajectory
 from .trainer import BackwardState, TrainerState, prepare_trainer, write_lr_history
@@ -171,8 +176,7 @@ def compute_per_query_magic_scores(
     run_cfg: "MagicConfig",
     world_size: int,
     global_rank: int,
-    pad_count: int,
-    weight_pad_count: int,
+    padding: Padding,
 ) -> torch.Tensor:
     """Per-query MAGIC scores: one backward per query, sharing the forward.
 
@@ -243,7 +247,7 @@ def compute_per_query_magic_scores(
         one = query_dataset.select([qi])
         if "doc_ids" in one.column_names:
             one = one.remove_columns("doc_ids")
-        one, n_one, one_pad, one_wpad = pad_dataset_to_batch_size(
+        one, n_one, one_padding = pad_dataset_to_batch_size(
             one, world_size, 1, f"Query {qi}", global_rank
         )
         qstream = DataStream(
@@ -253,8 +257,7 @@ def compute_per_query_magic_scores(
             input_key=run_cfg.query.prompt_column,
             weight_shape=(n_one,),
         )
-        if one_pad:
-            qstream.weights.data[-one_wpad:] = 0.0
+        one_padding.zero_weights(qstream.weights.data)
         assert_ckpts_exist()
         qgrads, _ = compute_query_gradients(
             fwd_state, model, qstream, "mean", run_cfg.fsdp, run_cfg.grad_accum_steps
@@ -288,9 +291,7 @@ def compute_per_query_magic_scores(
         if world_size > 1:
             dist.all_reduce(bwd_state.weight_grads, op=dist.ReduceOp.SUM)
 
-        s = bwd_state.weight_grads.detach().cpu()
-        if pad_count:
-            s = s[:-weight_pad_count] if s.ndim == 1 else s[:-pad_count]
+        s = padding.trim(bwd_state.weight_grads.detach().cpu())
         if main:
             # Atomic write
             torch.save(s, qpath + ".tmp")
@@ -357,7 +358,7 @@ def save_magic_scores(
     run_path: str,
     scores: torch.Tensor,
     train_dataset: Dataset,
-    pad_count: int,
+    padding: Padding,
     per_token: bool,
 ) -> str:
     """Write MAGIC scores as a score directory under ``<run_path>/scores``.
@@ -375,9 +376,9 @@ def save_magic_scores(
 
     num_token_grads = compute_num_token_grads(train_dataset)
     doc_ids = np.asarray(train_dataset["doc_ids"], dtype=np.int64)
-    if pad_count:
-        num_token_grads = num_token_grads[:-pad_count]
-        doc_ids = doc_ids[:-pad_count]
+    if padding:
+        num_token_grads = num_token_grads[: -padding.num_rows]
+        doc_ids = doc_ids[: -padding.num_rows]
 
     offsets = np.zeros(len(num_token_grads) + 1, dtype=np.int64)
     np.cumsum(num_token_grads, out=offsets[1:])
@@ -445,10 +446,8 @@ def worker(
     assert run_cfg.batch_size % world_size == 0
 
     # Pad train dataset to be divisible by batch_size (weight=0 for padding)
-    train_dataset, num_train_docs, pad_count, weight_pad_count = (
-        pad_dataset_to_batch_size(
-            train_dataset, run_cfg.batch_size, num_train_docs, "Train", global_rank
-        )
+    train_dataset, num_train_docs, padding = pad_dataset_to_batch_size(
+        train_dataset, run_cfg.batch_size, num_train_docs, "Train", global_rank
     )
 
     # Plain magic runs enter with score_path="" (scores are computed below).
@@ -472,11 +471,7 @@ def worker(
         input_key=run_cfg.data.prompt_column,
         weight_shape=w_shape,
     )
-    if pad_count:
-        if stream.weights.ndim == 1:
-            stream.weights.data[-weight_pad_count:] = 0.0
-        else:
-            stream.weights.data[-pad_count:] = 0.0
+    padding.zero_weights(stream.weights.data)
 
     log_fn = None
     if run_cfg.wandb_project and global_rank == 0:
@@ -564,10 +559,8 @@ def worker(
 
     # Pad query dataset to be divisible by batch_size (weight=0 for padding)
     num_real_query_docs = num_query_docs
-    query_dataset, num_query_docs, query_pad_count, query_weight_pad_count = (
-        pad_dataset_to_batch_size(
-            query_dataset, run_cfg.batch_size, num_query_docs, "Query", global_rank
-        )
+    query_dataset, num_query_docs, query_padding = pad_dataset_to_batch_size(
+        query_dataset, run_cfg.batch_size, num_query_docs, "Query", global_rank
     )
     if len(query_dataset) < run_cfg.batch_size:
         raise ValueError(
@@ -584,9 +577,8 @@ def worker(
         input_key=run_cfg.query.prompt_column,
         weight_shape=(num_query_docs,),
     )
-    if query_pad_count:
-        # query_stream.weights is always 1D (weight_shape=(num_query_docs,))
-        query_stream.weights.data[-query_weight_pad_count:] = 0.0
+    # query_stream.weights is always 1D (weight_shape=(num_query_docs,))
+    query_padding.zero_weights(query_stream.weights.data)
 
     query_grads, baseline = compute_query_gradients(
         fwd_state,
@@ -635,15 +627,14 @@ def worker(
             run_cfg,
             world_size,
             global_rank,
-            pad_count,
-            weight_pad_count,
+            padding,
         )
         multi_query = True
         if global_rank == 0:
             print(f"Baseline loss: {baseline}")
             print(f"Score summary: {describe(scores.flatten())}")
             score_path = save_magic_scores(
-                run_cfg.run_path, scores, train_dataset, pad_count, bool(per_token)
+                run_cfg.run_path, scores, train_dataset, padding, bool(per_token)
             )
             plot_score_trajectory(
                 scores.float().numpy(),
@@ -688,12 +679,7 @@ def worker(
         if world_size > 1:
             dist.all_reduce(bwd_state.weight_grads, op=dist.ReduceOp.SUM)
 
-        scores = bwd_state.weight_grads.cpu()
-        if pad_count:
-            if scores.ndim == 1:
-                scores = scores[:-weight_pad_count]
-            else:
-                scores = scores[:-pad_count]
+        scores = padding.trim(bwd_state.weight_grads.cpu())
 
         if global_rank == 0:
             print(f"Baseline loss: {baseline}")
@@ -702,7 +688,7 @@ def worker(
             print(f"Score summary: {summ}")
 
             score_path = save_magic_scores(
-                run_cfg.run_path, scores, train_dataset, pad_count, bool(per_token)
+                run_cfg.run_path, scores, train_dataset, padding, bool(per_token)
             )
             plot_score_trajectory(
                 scores.float().numpy(),
@@ -731,9 +717,8 @@ def worker(
         model=model,
         baseline=baseline,
         num_query_docs=num_query_docs,
-        query_weight_pad_count=query_weight_pad_count,
-        pad_count=pad_count,
-        weight_pad_count=weight_pad_count,
+        query_padding=query_padding,
+        padding=padding,
     )
 
 
