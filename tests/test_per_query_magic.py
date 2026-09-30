@@ -290,9 +290,7 @@ def test_query_eval_ignores_padding_and_grad_accum():
     ids = [list(range(10, 10 + n)) for n in (4, 7, 5, 8)]  # Unequal lengths
     query_ds = Dataset.from_dict({"input_ids": ids, "labels": ids})
     plain = DataStream(query_ds, batch_size=4, device="cpu")
-    padded_ds, n_docs, padding = pad_dataset_to_batch_size(
-        query_ds, 16, 4, "Query", 0
-    )
+    padded_ds, n_docs, padding = pad_dataset_to_batch_size(query_ds, 16, 4, "Query", 0)
     padded = DataStream(padded_ds, 16, device="cpu", weight_shape=(n_docs,))
     padding.silence(padded.weights.data)
 
