@@ -17,6 +17,8 @@ from bergson.score.score import score_dataset
 from .test_score import _write_query_index
 
 MODEL = "trl-internal-testing/tiny-Phi3ForCausalLM"
+# GPT-2 keeps its weights [in, out] in HF Conv1D modules.
+CONV1D_MODEL = "hf-internal-testing/tiny-random-gpt2"
 
 
 def _dataset(tmp_path: Path) -> str:
@@ -56,9 +58,10 @@ def _score(
     dataset,
     query_path,
     token_influence: Literal["gradient", "output"],
+    model=MODEL,
     **kwargs,
 ):
-    cfg = IndexConfig(run_path=str(tmp_path / name), model=MODEL, **kwargs)
+    cfg = IndexConfig(run_path=str(tmp_path / name), model=model, **kwargs)
     cfg.data.dataset = dataset
     cfg.distributed.nproc_per_node = 1
     # Keep the advantage column.
@@ -72,19 +75,29 @@ def _score(
 
 
 @pytest.mark.parametrize(
-    "loss_reduction, filter_modules",
-    [("sum", None), ("mean", None), ("sum", "*.mlp.*")],
+    "loss_reduction, filter_modules, model_name",
+    [
+        ("sum", None, MODEL),
+        ("mean", None, MODEL),
+        ("sum", "*.mlp.*", MODEL),
+        ("sum", None, CONV1D_MODEL),
+    ],
 )
 def test_output_influence_matches_gradient_scores(
-    tmp_path: Path, loss_reduction, filter_modules
+    tmp_path: Path, loss_reduction, filter_modules, model_name
 ):
     """Per-document output influence scores equal the gradient dot products, and
     per-token scores sum to them. The saved dataset carries the same losses."""
-    model = AutoModelForCausalLM.from_pretrained(MODEL, dtype=torch.float32)
+    model = AutoModelForCausalLM.from_pretrained(model_name, dtype=torch.float32)
     dataset = _dataset(tmp_path)
     query_path = _query(tmp_path, model, dataset, num_queries=2)
 
-    common = dict(loss_reduction=loss_reduction, filter_modules=filter_modules)
+    common = dict(
+        loss_reduction=loss_reduction, filter_modules=filter_modules, model=model_name
+    )
+    if model_name == CONV1D_MODEL:
+        # The tiny GPT-2's context is 512 tokens.
+        common["token_batch_size"] = 512
     expected = _score(
         tmp_path, "grad", dataset, query_path, token_influence="gradient", **common
     )[:]

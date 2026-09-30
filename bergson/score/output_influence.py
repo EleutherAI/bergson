@@ -1,5 +1,4 @@
 import torch
-import torch.nn as nn
 from peft import PeftModel
 from torch import Tensor
 from torch.func import functional_call, jvp
@@ -7,6 +6,7 @@ from transformers import PreTrainedModel
 
 from bergson.collector.collector import token_losses
 from bergson.config.config import IndexConfig, PreprocessConfig
+from bergson.gradients import LayerAdapter
 
 
 def check_output_influence_supported(
@@ -34,14 +34,15 @@ def query_directions(
     model: PreTrainedModel | PeftModel,
     query_grads_t: dict[str, Tensor],
     target_info: dict[str, tuple[torch.device, torch.Size, bool]],
-) -> list[tuple[Tensor, str, str | None]]:
+) -> list[tuple[Tensor, str, str | None, bool]]:
     """Match each scored module's query block to the parameters it moves.
 
     ``query_grads_t`` maps a module name under ``model.base_model`` to its
     ``[grad_dim, num_queries]`` query block, laid out ``[out, in]`` with the
     bias as a trailing column when the module's bias is collected. Only
     modules in both the query and ``target_info`` are scored, as with gradients.
-    Returns ``(block, weight name, bias name)`` per module.
+    Returns ``(block, weight name, bias name, transposed)`` per module, where
+    ``transposed`` marks layers that store their weight ``[in, out]``.
     """
     param_names = {id(p): name for name, p in model.named_parameters()}
     directions = []
@@ -50,12 +51,19 @@ def query_directions(
         if name not in target_info:
             continue
         module = model.base_model.get_submodule(name)
-        if not isinstance(module, nn.Linear):
+        if not isinstance(module, LayerAdapter.supported_modules):
             raise ValueError(
-                "token_influence='output' only supports nn.Linear modules, but "
-                f"{name} is a {type(module).__name__}."
+                f"token_influence='output' can't score {name}: "
+                f"{type(module).__name__} is not a supported layer type."
             )
-        out_dim, in_dim = module.weight.shape
+        out_dim = getattr(module, LayerAdapter.out_attr(module))
+        in_dim = getattr(module, LayerAdapter.in_attr(module))
+        if module.weight.numel() != out_dim * in_dim:
+            raise ValueError(
+                f"token_influence='output' can't score {name}: its weight has "
+                f"{module.weight.numel()} entries but the gradient block covers "
+                f"{out_dim * in_dim}, so no direction maps onto the weight."
+            )
         has_bias = target_info[name][2]
         cols = in_dim + int(has_bias)
         if block.shape[0] != out_dim * cols:
@@ -75,26 +83,30 @@ def query_directions(
                 )
             if param is not None:
                 seen.add(param)
-        directions.append((block, weight_name, bias_name))
-
+        directions.append(
+            (block, weight_name, bias_name, LayerAdapter.weight_transposed(module))
+        )
     if not directions:
         raise ValueError("The query has no modules in common with the scored ones.")
     return directions
 
 
 def query_direction(
-    directions: list[tuple[Tensor, str, str | None]],
+    directions: list[tuple[Tensor, str, str | None, bool]],
     params: dict[str, Tensor],
     q: int,
 ) -> dict[str, Tensor]:
     """Reshape query column ``q`` into a direction for each parameter it moves."""
     direction = {}
-    for block, weight_name, bias_name in directions:
+    for block, weight_name, bias_name, transposed in directions:
         weight = params[weight_name]
-        v = block[:, q].reshape(weight.shape[0], -1).to(weight.dtype)
-        direction[weight_name] = v[:, : weight.shape[1]]
+        out_dim = weight.shape[1] if transposed else weight.shape[0]
+        in_dim = weight.numel() // out_dim
+        v = block[:, q].reshape(out_dim, -1).to(weight.dtype)
+        w = v[:, :in_dim]
+        direction[weight_name] = (w.T if transposed else w).reshape(weight.shape)
         if bias_name is not None:
-            direction[bias_name] = v[:, weight.shape[1]]
+            direction[bias_name] = v[:, in_dim]
     return direction
 
 
@@ -102,7 +114,7 @@ def output_token_influence(
     model: PreTrainedModel | PeftModel,
     x: Tensor,
     y: Tensor,
-    directions: list[tuple[Tensor, str, str | None]],
+    directions: list[tuple[Tensor, str, str | None, bool]],
     cfg: IndexConfig,
     advantage: list[float] | None = None,
 ) -> tuple[Tensor, Tensor]:
