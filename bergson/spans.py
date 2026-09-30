@@ -1,6 +1,6 @@
 """Span-level attribution: one gradient row per run of token positions.
 
-A span is a contiguous run of an example's token positions. ``span_starts``
+A span is a contiguous run of an example's token positions. ``data.span_column``
 holds the first token position of each span, so the spans partition the
 example: they must be strictly increasing and start at 0.
 
@@ -54,53 +54,27 @@ def span_row_bounds(starts: NDArray, num_rows: int, shift: int = 0) -> NDArray:
 
 
 def span_gather(
-    starts: list[NDArray],
-    num_rows: NDArray,
-    seq_len: int,
-    device: torch.device | str = "cpu",
-    shift: int = 0,
-) -> tuple[Tensor, Tensor]:
-    """``(index, valid)``, both ``[num_spans, longest_span]``, gathering each
-    span's rows out of a ``[batch, seq_len, ...]`` batch flattened over its
-    first two dimensions. ``valid`` is False where a span is padded out to the
-    longest one, so a batch of uneven spans gathers more rows than it has
-    positions -- by the ratio of the longest span to the mean one.
-    """
-    bounds = []
-    for i, (row, n) in enumerate(zip(starts, num_rows)):
-        check_span_starts(row, int(n) + 1, i)
-        bounds.append(span_row_bounds(row, int(n), shift) + i * seq_len)
-    empty = np.zeros(0, dtype=np.int64)
-    lo = np.concatenate([b[:, 0] for b in bounds]) if bounds else empty
-    sizes = (
-        np.concatenate([np.diff(b, axis=1).ravel() for b in bounds])
-        if bounds
-        else empty
-    )
-
-    width = max(int(sizes.max()), 1) if len(sizes) else 1
-    positions = np.arange(width, dtype=np.int64)
-    valid = positions < sizes[:, None]
-    index = np.where(valid, lo[:, None] + positions, 0)
-    return (
-        torch.from_numpy(index).to(device),
-        torch.from_numpy(valid).to(device),
-    )
-
-
-def batch_span_gather(
     batch: dict,
     span_column: str,
     seq_len: int,
     device: torch.device | str = "cpu",
     shift: int = 0,
 ) -> tuple[Tensor, Tensor]:
-    """:func:`span_gather` for a collated batch padded to ``seq_len``."""
-    lengths = np.array([len(ids) for ids in batch["input_ids"]], dtype=np.int64)
-    return span_gather(
-        [np.asarray(row, dtype=np.int64) for row in batch[span_column]],
-        np.maximum(lengths - 1, 0),
-        seq_len,
-        device,
-        shift,
-    )
+    """``(index, valid)``, both ``[num_spans, longest_span]``, gathering each
+    span's rows out of a batch padded to ``seq_len`` and flattened over its
+    first two dimensions. ``valid`` is False where a span is padded out to the
+    longest one, so a batch of uneven spans gathers more rows than it has
+    positions -- by the ratio of the longest span to the mean one.
+    """
+    bounds = [
+        span_row_bounds(np.asarray(row, dtype=np.int64), max(len(ids) - 1, 0), shift)
+        + i * seq_len
+        for i, (row, ids) in enumerate(zip(batch[span_column], batch["input_ids"]))
+    ]
+    lo = np.concatenate([b[:, 0] for b in bounds])
+    sizes = np.concatenate([np.diff(b, axis=1).ravel() for b in bounds])
+
+    positions = np.arange(max(int(sizes.max()), 1) if len(sizes) else 1)
+    valid = positions < sizes[:, None]
+    index = np.where(valid, lo[:, None] + positions, 0)
+    return torch.from_numpy(index).to(device), torch.from_numpy(valid).to(device)

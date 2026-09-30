@@ -42,7 +42,7 @@ from bergson.score.score_writer import (
     MemmapTokenScoreWriter,
 )
 from bergson.score.scorer import Scorer
-from bergson.spans import TOKEN_INFLUENCE_SHIFT, batch_span_gather
+from bergson.spans import TOKEN_INFLUENCE_SHIFT, span_gather
 from bergson.utils.utils import (
     convert_precision_to_torch,
     dist_backend,
@@ -464,7 +464,7 @@ def output_influence_worker(
         if index_cfg.attribute_tokens:
             rates = rates[collection_mask]
         elif span_column is not None:
-            index, valid = batch_span_gather(
+            index, valid = span_gather(
                 batch,
                 span_column,
                 rates.shape[1],

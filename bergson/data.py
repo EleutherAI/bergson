@@ -63,8 +63,11 @@ def compute_num_token_grads(data: Dataset) -> np.ndarray:
     return np.maximum(lengths - 1, 0)
 
 
-def span_starts(data: Dataset, span_column: str) -> list[NDArray]:
-    """Each example's span start positions, as sorted int64 arrays.
+def span_rows(
+    data: Dataset, span_column: str, shift: int = 0
+) -> tuple[np.ndarray, np.ndarray]:
+    """Each example's span count, and every span's ``[lo, hi)`` range of
+    per-token rows with the examples concatenated in dataset order.
 
     Examples with no gradient row get no spans, matching
     :func:`compute_num_token_grads`, so the store has no holes for the short
@@ -76,37 +79,17 @@ def span_starts(data: Dataset, span_column: str) -> list[NDArray]:
             f"{data.column_names}."
         )
     num_rows = compute_num_token_grads(data)
-    lengths = num_rows + 1
-    starts = []
+    bounds = []
     for i, raw in enumerate(data[span_column]):
         if num_rows[i] == 0:
-            starts.append(np.zeros(0, dtype=np.int64))
+            bounds.append(np.zeros((0, 2), dtype=np.int64))
             continue
-        row = np.asarray(raw, dtype=np.int64)
-        check_span_starts(row, int(lengths[i]), i)
-        starts.append(row)
-    return starts
+        starts = np.asarray(raw, dtype=np.int64)
+        check_span_starts(starts, int(num_rows[i]) + 1, i)
+        bounds.append(span_row_bounds(starts, int(num_rows[i]), shift))
 
-
-def compute_num_span_grads(data: Dataset, span_column: str) -> np.ndarray:
-    """Number of span gradient rows stored per example."""
-    return np.array([len(s) for s in span_starts(data, span_column)], dtype=np.int64)
-
-
-def compute_span_row_bounds(
-    data: Dataset, span_column: str, shift: int = 0
-) -> np.ndarray:
-    """``[total_spans, 2]`` per-token row ranges of every span, examples
-    concatenated in dataset order, to match a span store's rows."""
-    num_rows = compute_num_token_grads(data)
-    bounds = [
-        span_row_bounds(s, int(n), shift)
-        for s, n in zip(span_starts(data, span_column), num_rows)
-    ]
-    kept = [b for b in bounds if len(b)]
-    if not kept:
-        return np.zeros((0, 2), dtype=np.int64)
-    return np.concatenate(kept)
+    counts = np.array([len(b) for b in bounds], dtype=np.int64)
+    return counts, np.concatenate(bounds) if len(bounds) else np.zeros((0, 2), np.int64)
 
 
 def create_token_index(
@@ -693,12 +676,10 @@ class Scores:
         assert self.offsets is not None, "to_grid() requires a ragged store"
         num_docs = len(self)
         rows_per_doc = np.diff(self.offsets).astype(np.int64)
-        if self.spans is not None:
-            # A document's rows run to the end of its last span.
-            for doc in range(num_docs):
-                doc_spans = self.spans[self.offsets[doc] : self.offsets[doc + 1]]
-                rows_per_doc[doc] = doc_spans[:, 1].max() if len(doc_spans) else 0
-        seq_len = int(rows_per_doc.max()) + 1
+        if self.spans is None:
+            seq_len = int(rows_per_doc.max()) + 1
+        else:
+            seq_len = int(self.spans[:, 1].max()) + 1 if len(self.spans) else 1
 
         grid = np.zeros((num_docs, seq_len, self.num_scores), dtype=np.float32)
         for doc in range(num_docs):
