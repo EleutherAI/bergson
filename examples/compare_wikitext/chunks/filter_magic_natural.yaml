@@ -1,0 +1,51 @@
+# Per-chunk proponent filter for MAGIC: each training row carries the summed per-token score of its natural piece (sentence or paragraph, at least 32 tokens),
+# so the top 1% of rows masks whole chunks; three random 1% token removals are retrained per query as the control.
+# Scores from `chunk_scores.py runs/compare_wikitext/tokens/magic_tokens/scores runs/compare_wikitext/chunks/magic_natural natural`.
+# Run with `bergson examples/compare_wikitext/chunks/filter_magic_natural.yaml`
+
+run_path: runs/compare_wikitext/chunks/filter_magic_natural
+steps:
+  - validate:
+      run_path: runs/compare_wikitext/chunks/filter_magic_natural
+      model: gpt2
+      resume: true
+      seed: 42
+      exclude_zero_scores: true
+
+      data:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "train"
+        chunk_length: 0
+
+      query:
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "test[0:50]"
+          chunk_length: 0
+        aggregation: none
+
+      distributed:
+        nproc_per_node: 8
+        nnode: 1
+
+      batch_size: 256
+      grad_accum_steps: 2
+      num_epochs: 4
+      lr_schedule:
+        lr_scheduler_type: polynomial
+        lr: 0.0004
+        lr_start: 1e-6
+        lr_end: 0.00004
+        warmup_steps: 0.25
+      adam_beta1: 0.9
+      adam_beta2: 0.999
+      eps_root: 1.0e-17
+
+      method:
+        kind: filter
+        direction: proponents
+        fraction: 0.01
+        controls:
+          kind: retrain
+          count: 3
+      scores: runs/compare_wikitext/chunks/magic_natural
