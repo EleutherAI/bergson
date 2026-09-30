@@ -27,6 +27,9 @@ Indicative performance of data attribution methods in the finetuning regime.
    * - Eigenvalue-corrected Shampoo
      - 0.071 [0.060, 0.082]
      - 0.517 [0.491, 0.539]
+   * - SOURCE (Adam)
+     - TODO
+     - 0.473 [0.446, 0.498]
    * - EK-FAC
      - 0.070 [0.058, 0.082]
      - 0.454 [0.426, 0.479]
@@ -57,9 +60,6 @@ Indicative performance of data attribution methods in the finetuning regime.
    * - TRAK (8-model ensemble)
      - 0.032 [0.024, 0.040]
      - 0.138 [0.111, 0.165]
-   * - SOURCE (Adam)
-     - 0.024 [0.018, 0.030]
-     - 0.154 [0.126, 0.181]
    * - KFAC (projection 64)
      - 0.023 [0.016, 0.032]
      - 0.103 [0.076, 0.128]
