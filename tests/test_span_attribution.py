@@ -16,12 +16,7 @@ from bergson import (
 from bergson.collector.gradient_collectors import GradientCollector
 from bergson.config import IndexConfig, PreprocessConfig, ScoreConfig
 from bergson.config.config import DataConfig
-from bergson.data import (
-    compute_num_span_grads,
-    compute_span_row_bounds,
-    load_scores,
-    span_starts,
-)
+from bergson.data import load_scores, span_rows
 from bergson.score.score import score_dataset
 from bergson.score.score_writer import MemmapTokenScoreWriter
 from bergson.score.scorer import Scorer
@@ -53,7 +48,9 @@ def span_dataset():
 
 
 def test_span_row_bounds_follow_the_token_influence():
-    """A span owns position rows directly, but loss rows shifted one earlier."""
+    """A span owns position rows directly, but loss rows shifted one earlier.
+    A span whose tokens carry no loss row keeps an empty range rather than
+    dropping out and changing the store's shape."""
     starts = np.array([0, 3, 7])
     np.testing.assert_array_equal(
         span_row_bounds(starts, 9, shift=0), [[0, 3], [3, 7], [7, 9]]
@@ -61,31 +58,24 @@ def test_span_row_bounds_follow_the_token_influence():
     np.testing.assert_array_equal(
         span_row_bounds(starts, 9, shift=1), [[0, 2], [2, 6], [6, 9]]
     )
-
-
-def test_span_row_bounds_keeps_spans_without_rows():
-    """Token 0 carries no loss, so its span keeps an empty row range rather
-    than dropping out and changing the store's shape."""
     np.testing.assert_array_equal(
         span_row_bounds(np.array([0, 1, 5]), 9, shift=1), [[0, 0], [0, 4], [4, 9]]
     )
 
 
-def test_span_starts_must_partition_the_document(span_dataset):
-    """Starts that leave leading tokens unattributed are rejected."""
-    ds = span_dataset.remove_columns("span_starts").add_column(
-        "span_starts", [[2, 5], [0, 4]], new_fingerprint="gap"
-    )
-    with pytest.raises(ValueError, match="belong to no span"):
-        span_starts(ds, "span_starts")
-
-
-def test_short_documents_get_no_spans():
-    """A document with no gradient row gets no span row, as with tokens."""
+def test_span_rows_validates_and_skips_short_documents():
+    """Starts that leave leading tokens unattributed are rejected, and a
+    document with no gradient row gets no span row, as with tokens."""
     ds = Dataset.from_dict(
         {"input_ids": [[1] * 6, [1]], "length": [6, 1], "span_starts": [[0, 3], [0]]}
     )
-    np.testing.assert_array_equal(compute_num_span_grads(ds, "span_starts"), [2, 0])
+    np.testing.assert_array_equal(span_rows(ds, "span_starts")[0], [2, 0])
+
+    gapped = ds.remove_columns("span_starts").add_column(
+        "span_starts", [[2, 5], [0]], new_fingerprint="gap"
+    )
+    with pytest.raises(ValueError, match="belong to no span"):
+        span_rows(gapped, "span_starts")
 
 
 def test_attribute_tokens_and_span_column_conflict():
@@ -240,7 +230,7 @@ def test_span_scores_sum_their_token_scores(tmp_path: Path, model, span_dataset)
     assert spans.is_written()
     assert spans.spans is not None
     np.testing.assert_array_equal(
-        spans.spans, compute_span_row_bounds(span_dataset, "span_starts")
+        spans.spans, span_rows(span_dataset, "span_starts")[1]
     )
 
     for doc in range(len(span_dataset)):

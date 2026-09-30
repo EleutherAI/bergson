@@ -28,11 +28,7 @@ from transformers import PreTrainedModel
 
 from bergson.collector.projection_matrix import random_matrix
 from bergson.config import AttentionConfig, HessianConfig, IndexConfig
-from bergson.data import (
-    compute_num_span_grads,
-    compute_num_token_grads,
-    pad_and_tensor,
-)
+from bergson.data import compute_num_token_grads, pad_and_tensor, span_rows
 from bergson.gradients import (
     AdafactorNormalizer,
     AdamNormalizer,
@@ -41,7 +37,7 @@ from bergson.gradients import (
     OuterProductGradients,
 )
 from bergson.moe import ExpertLinear
-from bergson.spans import batch_span_gather
+from bergson.spans import span_gather
 from bergson.utils.logger import get_logger
 from bergson.utils.peft import set_peft_enabled
 from bergson.utils.utils import assert_type
@@ -442,7 +438,7 @@ class HookCollectorBase(ContextDecorator, ABC):
             return int(compute_num_token_grads(data).sum())
         if self.attribute_spans:
             column = assert_type(str, self.span_column)
-            return int(compute_num_span_grads(data, column).sum())
+            return int(span_rows(data, column)[0].sum())
         return len(data)
 
     def with_batch(
@@ -852,7 +848,7 @@ class CollectorComputer:
 
                 spans = None
                 if self.collector.attribute_spans:
-                    spans = batch_span_gather(
+                    spans = span_gather(
                         batch,
                         assert_type(str, self.collector.span_column),
                         x.shape[1],
