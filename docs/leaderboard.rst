@@ -95,8 +95,6 @@ Per-token
 
 Per-token attribution scores, which attribute each training token's loss term, enable substantially more efficacious data filtering. The proponent QLD masks the query's top 1% of training tokens by each method's per-token scores while the control masks a random 1% of tokens.
 
-Removing the top 1% of whole chunks by document-level EK-FAC changes it by 0.070.
-
 .. list-table::
    :header-rows: 1
    :widths: 50 50
