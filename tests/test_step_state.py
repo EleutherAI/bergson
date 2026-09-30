@@ -45,6 +45,24 @@ def test_resume_skips_only_completed_steps(tmp_path):
     assert (out / "out.bin").exists()
 
 
+def test_resumable_keeps_a_partial_for_the_step_to_resume_from(tmp_path):
+    out = tmp_path / "step"
+    _write(partial_path(out), "half.bin")
+
+    # resumable=True -> the step resumes from its own partial output instead
+    # of restarting from scratch.
+    assert prepare_step(out, resume=True, resumable=True) is True
+    assert (partial_path(out) / "half.bin").exists()
+
+    # Without resumable, or without resume, the stale partial is still cleared.
+    assert prepare_step(out, resume=True, resumable=False) is True
+    assert not partial_path(out).exists()
+
+    _write(partial_path(out), "half.bin")
+    assert prepare_step(out, resume=False, resumable=True) is True
+    assert not partial_path(out).exists()
+
+
 def test_overwrite_reruns_but_keeps_output_until_promote(tmp_path):
     out = tmp_path / "step"
     _write(partial_path(out), "old.bin")
