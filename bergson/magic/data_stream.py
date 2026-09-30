@@ -25,9 +25,8 @@ def mask_padded_rows(batch: dict) -> tuple[dict, int]:
 class Padding:
     """The rows appended to fill the last batch, and how to neutralise them.
 
-    ``rows`` counts the appended rows. ``docs`` counts the trailing entries of a
-    per-document weight vector those rows own: one synthetic document when the
-    dataset carries ``doc_ids``, otherwise one document per row.
+    ``docs`` is what they own in a per-document weight vector: one synthetic
+    document when the dataset carries ``doc_ids``, else one per row.
     """
 
     rows: int = 0
@@ -37,13 +36,11 @@ class Padding:
         return bool(self.rows)
 
     def _trailing(self, t: Tensor) -> int:
-        """Entries the pad rows own: per-document when 1D, per-row when 2D."""
         return self.docs if t.ndim == 1 else self.rows
 
     def silence(self, weights: Tensor) -> None:
-        """Zero the pad rows' weights in place, leaving every real row alone."""
-        n = self._trailing(weights)
-        if n:
+        """Zero the pad rows' weights in place."""
+        if n := self._trailing(weights):
             weights.data[-n:] = 0.0
 
     def trim(self, scores: Tensor) -> Tensor:
@@ -61,13 +58,8 @@ def pad_dataset_to_batch_size(
 ) -> tuple[Dataset, int, Padding]:
     """Pad dataset to be divisible by batch_size by repeating the last example.
 
-    Returns ``(padded_dataset, num_docs, padding)``; silence the pad rows with
-    ``padding.silence(weights)`` and drop their scores with
-    ``padding.trim(scores)``, which handle the per-document and per-token
-    layouts alike.
-
     Repeating a row copies its ``doc_ids``, so the pad rows would otherwise
-    claim the last document and inflate it. They are routed to a document of
+    claim the last document and inflate it; they are routed to a document of
     their own instead, which one weight entry silences.
     """
     remainder = len(dataset) % batch_size

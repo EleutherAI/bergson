@@ -15,8 +15,8 @@ steps:
         nnode: 1
       data:
         dataset: NeelNanda/pile-10k
-        split: "train[:250]"
-        chunk_length: 128
+        split: "train[:6]"
+        chunk_length: 512
       query:
         dataset: NeelNanda/pile-10k
         split: "train[:8]"
