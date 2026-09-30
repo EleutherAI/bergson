@@ -42,6 +42,7 @@ from bergson.score.score_writer import (
     MemmapTokenScoreWriter,
 )
 from bergson.score.scorer import Scorer
+from bergson.spans import TOKEN_INFLUENCE_SHIFT, batch_span_gather
 from bergson.utils.utils import (
     convert_precision_to_torch,
     dist_backend,
@@ -149,6 +150,7 @@ def create_scorer(
     dtype: torch.dtype,
     *,
     attribute_tokens: bool = False,
+    span_column: str | None = None,
     query_range: tuple[int, int] | None = None,
     num_queries_total: int | None = None,
 ) -> Scorer:
@@ -238,7 +240,16 @@ def create_scorer(
         num_scores = 1
     else:
         num_scores = num_queries_total if num_queries_total is not None else num_queries
-    if attribute_tokens:
+    if span_column is not None:
+        writer = MemmapTokenScoreWriter.from_spans(
+            path,
+            data,
+            num_scores,
+            span_column,
+            TOKEN_INFLUENCE_SHIFT[score_cfg.token_influence],
+            dtype=dtype,
+        )
+    elif attribute_tokens:
         writer = MemmapTokenScoreWriter.from_dataset(
             path,
             data,
@@ -360,6 +371,7 @@ def score_worker(
             device=score_device,
             dtype=score_dtype,
             attribute_tokens=index_cfg.attribute_tokens,
+            span_column=index_cfg.data.span_column,
             query_range=query_range,
             num_queries_total=num_queries,
         )
@@ -395,6 +407,7 @@ def output_influence_worker(
             world_size=world_size,
         )
 
+    span_column = index_cfg.data.span_column
     # The fused attention kernels don't implement forward-mode derivatives.
     model, target_modules = setup_model_and_peft(index_cfg, attn_implementation="eager")
     # Dropout would give each query column its own random model.
@@ -415,6 +428,7 @@ def output_influence_worker(
             else get_gradient_dtype(model)
         ),
         attribute_tokens=index_cfg.attribute_tokens,
+        span_column=span_column,
     )
     directions = query_directions(
         model,
@@ -445,10 +459,19 @@ def output_influence_worker(
             model, x, y, directions, index_cfg, batch.get("advantage")
         )
         per_doc_losses[indices] = losses
+        # Row t of a ragged store is the loss on token t + 1.
+        rates = torch.cat([rates, rates.new_zeros(rates[:, :1].shape)], dim=1)
         if index_cfg.attribute_tokens:
-            # Row t of the token store is the loss on token t + 1.
-            rates = torch.cat([rates, rates.new_zeros(rates[:, :1].shape)], dim=1)
             rates = rates[collection_mask]
+        elif span_column is not None:
+            index, valid = batch_span_gather(
+                batch,
+                span_column,
+                rates.shape[1],
+                rates.device,
+                TOKEN_INFLUENCE_SHIFT["output"],
+            )
+            rates = rates.flatten(0, 1)[index].mul_(valid.unsqueeze(-1)).sum(dim=1)
         else:
             rates = rates.sum(dim=1)
         scorer.write_scores(indices, rates)
@@ -512,8 +535,13 @@ def score_dataset(
             f"(autocorrelation) hessian."
         )
 
-    if score_cfg.candidates.scores and index_cfg.attribute_tokens:
-        raise ValueError("score_cfg.candidates does not support attribute_tokens.")
+    if score_cfg.candidates.scores and (
+        index_cfg.attribute_tokens or index_cfg.data.span_column
+    ):
+        raise ValueError(
+            "score_cfg.candidates does not support attribute_tokens or "
+            "data.span_column."
+        )
 
     if score_cfg.token_influence == "output":
         check_output_influence_supported(index_cfg, preprocess_cfg)

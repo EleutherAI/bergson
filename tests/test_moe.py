@@ -236,6 +236,6 @@ def test_attribute_tokens_is_rejected():
     expand_moe(model, PATTERN)
     collector = make_collector(model, attribute_tokens=True)
 
-    with pytest.raises(ValueError, match="attribute_tokens is incompatible"):
+    with pytest.raises(ValueError, match="incompatible with fused MoE experts"):
         with collector:
             pass
