@@ -459,19 +459,18 @@ def loss_term_rows(dataset: Dataset, num_rows: int, seq_len: int = 0) -> torch.T
     positions ``example * seq_len + t``, indexed by ``example_ids``, where
     position ``t`` weights the loss on token ``t + 1``.
     """
-    has_labels = "labels" in dataset.column_names
+    labels = dataset["labels" if "labels" in dataset.column_names else "input_ids"]
+    keys = dataset["example_ids" if seq_len else "doc_ids"]
     valid = torch.zeros(num_rows * max(seq_len, 1), dtype=torch.bool)
-    for row in dataset:
-        tokens = row["labels"] if has_labels else row["input_ids"]
+    for tokens, key in zip(labels, keys):
         # Position t carries a loss when token t + 1 is supervised.
         live = np.flatnonzero(np.asarray(tokens[1:]) != -100)
         if seq_len:
-            example = row["example_ids"]
-            if example < num_rows:
+            if key < num_rows:
                 live = live[live < seq_len]
-                valid[example * seq_len + torch.from_numpy(live)] = True
+                valid[key * seq_len + torch.from_numpy(live)] = True
             continue
-        doc_ids = np.asarray(row["doc_ids"])
+        doc_ids = np.asarray(key)
         docs = doc_ids[live] if doc_ids.ndim else np.full(len(live), doc_ids)
         docs = docs[docs < num_rows]
         valid[torch.from_numpy(docs)] = True
