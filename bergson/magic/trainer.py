@@ -1071,7 +1071,7 @@ def prepare_trainer(cfg: TrainingConfig, rank: int, schedule: Callable):
     )
 
     if shard:
-        # simple_fsdp only shards parameters so move the buffers 
+        # simple_fsdp only shards parameters so move the buffers
         # on-device manually.
         for module in model.modules():
             for name, buf in list(module._buffers.items()):
