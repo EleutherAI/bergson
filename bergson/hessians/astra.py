@@ -222,18 +222,41 @@ class Astra:
                 for n in self.names
             }
 
+    def _batch(self, gen: torch.Generator) -> list[int]:
+        return torch.randperm(self.num_docs, generator=gen)[
+            : self.cfg.batch_size
+        ].tolist()
+
+    def _scale_start(self, q: dict[str, Tensor], x: dict[str, Tensor], row: int):
+        """Scale the starting point to the multiple of itself with the lowest
+        objective.
+
+        How far off the factored solution is depends on how well the factors
+        cover the right-hand side, which differs by orders of magnitude between
+        an inverse applied to a gradient and one applied to the query a SOURCE
+        segment solves for.
+        """
+        gen = torch.Generator().manual_seed(self.cfg.seed * 7_919 + row)
+        hx = self.hvp(x, self._batch(gen))
+        num = torch.stack([x[n] @ q[n] for n in self.names]).sum()
+        den = torch.stack(
+            [x[n] @ (hx[n] + self.damping[n] * x[n]) for n in self.names]
+        ).sum()
+        scale = (num / den).clamp(min=0.0)
+        self.logger.info(f"query {row} start scaled by {scale.item():.6g}")
+        for n in self.names:
+            x[n].mul_(scale)
+
     def refine(self, q: dict[str, Tensor], x: dict[str, Tensor], row: int):
         """Momentum SGD from ``x`` on ``x^T (H + D) x / 2 - x^T q``."""
+        self._scale_start(q, x, row)
         gen = torch.Generator().manual_seed(self.cfg.seed * 1_000_003 + row)
         buf = {n: torch.zeros_like(x[n]) for n in self.names}
         lr = self.cfg.lr
         for step in range(self.cfg.num_steps):
             if step > 0 and step % self.cfg.lr_decay_interval == 0:
                 lr *= self.cfg.lr_decay
-            indices = torch.randperm(self.num_docs, generator=gen)[
-                : self.cfg.batch_size
-            ].tolist()
-            hx = self.hvp(x, indices)
+            hx = self.hvp(x, self._batch(gen))
             residual = {
                 n: (hx[n] + self.damping[n] * x[n] - q[n])[None] for n in self.names
             }
