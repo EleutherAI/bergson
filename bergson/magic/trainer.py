@@ -1062,13 +1062,8 @@ class Trainer:
 
 def prepare_trainer(cfg: TrainingConfig, rank: int, schedule: Callable):
     """Prepare the model, optimizer, and trainer for training."""
-    # simple_fsdp moves each parameter to the mesh device as it shards it, so a
-    # sharded run never needs the whole model on one GPU.
     shard = cfg.fsdp and dist.is_initialized()
 
-    # Sharding scatters from one source rank, so every rank still loads the
-    # weights into host memory first: a node needs nproc_per_node full replicas
-    # to get through this call.
     model, target_modules = setup_model_and_peft(
         cfg,
         attn_implementation="eager",
@@ -1076,8 +1071,8 @@ def prepare_trainer(cfg: TrainingConfig, rank: int, schedule: Callable):
     )
 
     if shard:
-        # simple_fsdp only shards parameters, so move the buffers over here or
-        # they stay in host memory and the first forward fails.
+        # simple_fsdp only shards parameters so move the buffers 
+        # on-device manually.
         for module in model.modules():
             for name, buf in list(module._buffers.items()):
                 if buf is not None:
