@@ -36,6 +36,7 @@ from bergson.score.output_influence import (
     check_output_influence_supported,
     output_token_influence,
     query_directions,
+    unproject_query,
 )
 from bergson.score.score_writer import (
     MemmapSequenceScoreWriter,
@@ -400,7 +401,7 @@ def output_influence_worker(
     # Dropout would give each query column its own random model.
     model.eval()
     # Saves the processor config beside the scores, as score_worker does.
-    create_processor(model, index_cfg, target_modules)
+    processor = create_processor(model, index_cfg, target_modules)
     device = torch.device(get_device(local_rank))
 
     scorer = create_scorer(
@@ -416,16 +417,16 @@ def output_influence_worker(
         ),
         attribute_tokens=index_cfg.attribute_tokens,
     )
-    directions = query_directions(
-        model,
-        scorer.query_grads_t,
-        GradientCollector.discover_targets(
-            model.base_model,
-            target_modules,
-            index_cfg.include_bias,
-            index_cfg.filter_modules,
-        ),
+    target_info = GradientCollector.discover_targets(
+        model.base_model,
+        target_modules,
+        index_cfg.include_bias,
+        index_cfg.filter_modules,
     )
+    query_grads_t = scorer.query_grads_t
+    if processor.projection_dim:
+        query_grads_t = unproject_query(model, query_grads_t, target_info, processor)
+    directions = query_directions(model, query_grads_t, target_info)
 
     per_doc_losses = torch.zeros(len(ds), device=device, dtype=torch.float32)
     batches = allocate_batches(

@@ -1,12 +1,19 @@
+import math
+
 import torch
 from peft import PeftModel
 from torch import Tensor
 from torch.func import functional_call, jvp
 from transformers import PreTrainedModel
 
-from bergson.collector.collector import token_losses
+from bergson.collector.collector import (
+    HookCollectorBase,
+    create_module_projection_matrix,
+    global_projection_blocks,
+    token_losses,
+)
 from bergson.config.config import IndexConfig, PreprocessConfig
-from bergson.gradients import LayerAdapter
+from bergson.gradients import GradientProcessor, LayerAdapter
 
 
 def check_output_influence_supported(
@@ -14,7 +21,7 @@ def check_output_influence_supported(
 ):
     """Raise if the run needs something output influence scoring can't reproduce."""
     unsupported = {
-        "projection_dim != 0": index_cfg.projection_dim != 0,
+        "reshape_to_square": index_cfg.reshape_to_square,
         "unit_normalize": preprocess_cfg.unit_normalize,
         "loss_fn='kl'": index_cfg.loss_fn == "kl",
         "optimizer_state": bool(index_cfg.optimizer_state),
@@ -69,8 +76,7 @@ def query_directions(
         if block.shape[0] != out_dim * cols:
             raise ValueError(
                 f"The query for {name} has {block.shape[0]} entries, but the "
-                f"module has {out_dim * cols} parameters. token_influence='output' "
-                "needs an unprojected query."
+                f"module has {out_dim * cols} parameters."
             )
 
         weight_name = param_names[id(module.weight)]
@@ -89,6 +95,75 @@ def query_directions(
     if not directions:
         raise ValueError("The query has no modules in common with the scored ones.")
     return directions
+
+
+def unproject_query(
+    model: PreTrainedModel | PeftModel,
+    query_grads_t: dict[str, Tensor],
+    target_info: dict[str, tuple[torch.device, torch.Size, bool]],
+    processor: GradientProcessor,
+) -> dict[str, Tensor]:
+    """Map projected query blocks to each scored module's ``[out, in]`` layout.
+
+    A module's gradient ``G`` projects to ``L G R^T``, or to ``R vec(G)`` under
+    the global target, so its dot product with a projected query ``Y`` is its dot
+    product with ``L^T Y R``, or with ``R^T Y`` at the same scale.
+    """
+    p = processor.projection_dim
+    assert p is not None
+    dims = {}
+    for name, (_, _, has_bias) in target_info.items():
+        module = model.base_model.get_submodule(name)
+        out_dim = getattr(module, LayerAdapter.out_attr(module))
+        dims[name] = (out_dim, getattr(module, LayerAdapter.in_attr(module)) + has_bias)
+
+    full = {}
+    if processor.projection_target == "global":
+        y = query_grads_t["gradients"]  # [p, num_queries]
+        for name, (out_dim, cols) in dims.items():
+            args = (
+                HookCollectorBase.projection_identifier(
+                    name, "single", processor.projection_seed
+                ),
+                p,
+                out_dim * cols,
+                y.dtype,
+                y.device,
+                processor.projection_type,
+            )
+            if processor.projection_scale == "row_norm":
+                row_sq = y.new_zeros(p)
+                for _, _, block in global_projection_blocks(*args):
+                    row_sq.add_(block.pow(2).sum(dim=1))
+                scaled = y / row_sq.sqrt()[:, None]
+            else:
+                scaled = y / math.sqrt(p)
+            full[name] = y.new_empty(out_dim * cols, y.shape[1])
+            for start, stop, block in global_projection_blocks(*args):
+                full[name][start:stop] = block.T @ scaled
+        return full
+
+    for name, block in query_grads_t.items():
+        if name not in dims:
+            continue
+        out_dim, cols = dims[name]
+        left, right = (
+            create_module_projection_matrix(
+                name,
+                role,
+                p,
+                size,
+                block.dtype,
+                block.device,
+                processor.projection_type,
+                processor.projection_scale,
+                processor.projection_seed,
+            )
+            for role, size in (("left", out_dim), ("right", cols))
+        )
+        y = block.T.reshape(-1, p, p)
+        full[name] = torch.einsum("po,npq,qi->oin", left, y, right).flatten(0, 1)
+    return full
 
 
 def query_direction(

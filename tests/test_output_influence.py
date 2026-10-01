@@ -13,6 +13,7 @@ from bergson.collector.gradient_collectors import GradientCollector
 from bergson.config import IndexConfig, PreprocessConfig, ScoreConfig
 from bergson.data import load_scores
 from bergson.score.score import score_dataset
+from bergson.utils.worker_utils import processor_for
 
 from .test_score import _write_query_index
 
@@ -36,20 +37,28 @@ def _dataset(tmp_path: Path) -> str:
     return path
 
 
-def _query(tmp_path: Path, model, dataset: str, num_queries: int) -> Path:
+def _query(
+    tmp_path: Path, model, dataset: str, num_queries: int, **index_kwargs
+) -> Path:
+    """Random query gradients in the layout ``index_kwargs`` collects."""
+    cfg = IndexConfig(run_path=str(tmp_path), **index_kwargs)
+    processor = processor_for(cfg)
     shapes = GradientCollector(
         model.base_model,
         data=Dataset.load_from_disk(dataset),
-        cfg=IndexConfig(run_path=str(tmp_path)),
+        cfg=cfg,
+        processor=processor,
     ).shapes()
     rng = torch.Generator().manual_seed(0)
     grads = {
         name: torch.randn(num_queries, math.prod(shape), generator=rng)
         for name, shape in shapes.items()
     }
-    return _write_query_index(
+    path = _write_query_index(
         tmp_path / "query", grads, PreprocessConfig(), num_queries
     )
+    processor.save(path)
+    return path
 
 
 def _score(
@@ -133,6 +142,60 @@ def test_output_influence_matches_gradient_scores(
         )
 
 
+@pytest.mark.parametrize(
+    "projection, model_name",
+    [
+        ({"projection_target": "per_module"}, MODEL),
+        ({"projection_target": "per_module", "include_bias": True}, CONV1D_MODEL),
+        ({"projection_target": "global"}, MODEL),
+        (
+            {
+                "projection_target": "global",
+                "projection_scale": "row_norm",
+                "include_bias": True,
+            },
+            CONV1D_MODEL,
+        ),
+    ],
+)
+def test_output_influence_projected_query(tmp_path: Path, projection, model_name):
+    """With a projected query, per-document output influence scores equal the
+    projected gradient dot products, and per-token scores sum to them."""
+    model = AutoModelForCausalLM.from_pretrained(model_name, dtype=torch.float32)
+    dataset = _dataset(tmp_path)
+    projection = {"projection_dim": 4, "projection_seed": 3, **projection}
+    query_path = _query(tmp_path, model, dataset, num_queries=2, **projection)
+
+    common = dict(model=model_name, **projection)
+    if model_name == CONV1D_MODEL:
+        common["token_batch_size"] = 512
+    expected = _score(
+        tmp_path, "grad", dataset, query_path, token_influence="gradient", **common
+    )[:]
+    docs = _score(
+        tmp_path, "output", dataset, query_path, token_influence="output", **common
+    )
+    tokens = _score(
+        tmp_path,
+        "output_tokens",
+        dataset,
+        query_path,
+        token_influence="output",
+        attribute_tokens=True,
+        **common,
+    )
+
+    np.testing.assert_allclose(docs[:], expected, rtol=1e-4, atol=1e-5)
+    assert tokens.offsets is not None
+    summed = np.stack(
+        [
+            tokens[tokens.offsets[d] : tokens.offsets[d + 1]].sum(0)
+            for d in range(len(tokens))
+        ]
+    )
+    np.testing.assert_allclose(summed, expected, rtol=1e-4, atol=1e-5)
+
+
 def test_output_influence_token_rows_are_single_loss_terms(tmp_path: Path):
     """Row t is the query's dot product with the gradient of the loss on token
     t + 1 alone, times the document's advantage, and rows without a label are
@@ -179,7 +242,10 @@ def test_output_influence_token_rows_are_single_loss_terms(tmp_path: Path):
 
 @pytest.mark.parametrize(
     "setting, match",
-    [({"projection_dim": 16}, "projection_dim"), ({"precision": "int8"}, "int8")],
+    [
+        ({"reshape_to_square": True}, "reshape_to_square"),
+        ({"precision": "int8"}, "int8"),
+    ],
 )
 def test_output_influence_rejects_unsupported(tmp_path: Path, setting, match):
     cfg = IndexConfig(run_path=str(tmp_path / "scores"), **setting)
