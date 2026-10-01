@@ -79,7 +79,7 @@ There are many example YAMLs in the `examples` directory, including various pape
 bergson examples/magic/gpt2_wikitext_tiny.yaml
 ```
 
-You can use the same fields used to specify experiments in the YAMLs to run experiments from the Bergson CLI. For example, to construct and query an on-disk index of randomly projected gradients from the CLI:
+You can use the same fields used to specify experiments in the YAMLs to run experiments directly in the Bergson CLI. For example, to construct and query an on-disk index of randomly projected gradients from the CLI:
 
 ```bash
 bergson build runs/index --model EleutherAI/pythia-14m --dataset NeelNanda/pile-10k --truncation --token_batch_size 4096 --projection_dim 16
