@@ -187,6 +187,11 @@ class Astra:
             device=self.device,
         )
         self.names = list(self.preconditioner.lambdas)
+
+        model, _ = setup_model_and_peft(index_cfg, attn_implementation="eager")
+        model.eval()
+        data, _ = setup_data_pipeline(index_cfg)
+        self.num_docs = len(data)
         self.damping = {
             n: inversion_cfg.damping_factor
             * (
@@ -196,10 +201,6 @@ class Astra:
             )
             for n, lam in self.preconditioner.lambdas.items()
         }
-
-        model, _ = setup_model_and_peft(index_cfg, attn_implementation="eager")
-        model.eval()
-        data, _ = setup_data_pipeline(index_cfg)
         self.hvp = GaussNewtonProduct(
             model,
             data,
@@ -208,7 +209,6 @@ class Astra:
             astra_cfg.loss_reduction,
             astra_cfg.micro_batch_size,
         )
-        self.num_docs = len(data)
 
     def _read_row(self, mmap: np.memmap, offsets, row: int) -> dict[str, Tensor]:
         with warnings.catch_warnings():
@@ -294,4 +294,11 @@ def astra_worker(
     num_queries = load_gradients(paths.init_path).shape[0]
     per_rank = math.ceil(num_queries / world_size)
     rows = range(rank * per_rank, min((rank + 1) * per_rank, num_queries))
-    Astra(paths, index_cfg, inversion_cfg, astra_cfg, ev_correction, device).run(rows)
+    Astra(
+        paths,
+        index_cfg,
+        inversion_cfg,
+        astra_cfg,
+        ev_correction,
+        device,
+    ).run(rows)

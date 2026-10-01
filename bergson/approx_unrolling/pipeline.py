@@ -107,6 +107,17 @@ def approx_unrolling_pipeline(
     assert hessian_cfg.ev_correction, "Approximate unrolling pipeline currently only "
     "supports EV correction on."
 
+    if approx_unrolling_cfg.astra.num_steps > 0:
+        if not approx_unrolling_cfg.use_adam_preconditioner:
+            raise ValueError(
+                "ASTRA refines the Adam variant's EK-FAC inverse; the SGD "
+                "variant applies no inverse. Set use_adam_preconditioner."
+            )
+        if index_cfg.distributed.nnode > 1:
+            raise ValueError("ASTRA runs on a single node.")
+        if index_cfg.projection_dim > 0:
+            raise ValueError("ASTRA needs projection_dim=0.")
+
     if approx_unrolling_cfg.use_adam_preconditioner:
         for ckpt in approx_unrolling_cfg.checkpoints:
             state_path = Path(ckpt) / OPTIMIZER_STATE_FILE
@@ -253,6 +264,21 @@ def approx_unrolling_pipeline(
         f"Phase 2 -- per-segment F_segment on query_grad_l to build "
         f"query_grad_segment_0..query_grad_segment_(L-1)..."
     )
+    segment_checkpoints = [
+        [
+            str(c)
+            for c in approx_unrolling_cfg.checkpoints[
+                l * (n_ckpts // n_segments) : (l + 1) * (n_ckpts // n_segments)
+            ]
+        ]
+        for l in range(n_segments)
+    ]
+    astra = (
+        (index_cfg, approx_unrolling_cfg.astra, segment_checkpoints)
+        if approx_unrolling_cfg.astra.num_steps > 0
+        else None
+    )
+
     query_grad_segment_paths = walk_query_phase2(
         run_path=index_cfg.run_path,
         method=hessian_cfg.method,
@@ -261,6 +287,7 @@ def approx_unrolling_pipeline(
         distributed=index_cfg.distributed,
         preconditioner_paths=[str(p) for p in preconditioner_paths] or None,
         inversion_cfg=approx_unrolling_cfg.inversion_cfg,
+        astra=astra,
     )
 
     # ── Step 8: Phase 3 -- per-segment scoring + sum
@@ -270,15 +297,7 @@ def approx_unrolling_pipeline(
     out_path = score_per_segment_and_aggregate(
         index_cfg=index_cfg,
         query_grad_segment_paths=query_grad_segment_paths,
-        segment_checkpoints=[
-            [
-                str(c)
-                for c in approx_unrolling_cfg.checkpoints[
-                    l * (n_ckpts // n_segments) : (l + 1) * (n_ckpts // n_segments)
-                ]
-            ]
-            for l in range(n_segments)
-        ],
+        segment_checkpoints=segment_checkpoints,
         query_batch_size=approx_unrolling_cfg.query_batch_size,
     )
     logger.info(f"[approximate unrolling pipeline] DONE. Final scores at {out_path}")

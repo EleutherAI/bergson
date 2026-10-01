@@ -901,6 +901,46 @@ class ScoreConfig(Serializable):
 
 
 @dataclass
+class AstraConfig(Serializable):
+    """Refine a Kronecker-factored approximate Hessian's
+    inverse-Hessian-vector products with ASTRA
+    (https://arxiv.org/abs/2507.14740).
+
+    Each query's ``x = (H + D)^-1 q`` is refined by momentum SGD on
+    ``x^T (H + D) x / 2 - x^T q``, starting from the factored solution, with
+    each step preconditioned by the damped Kronecker-factored inverse. ``H`` is
+    the Gauss-Newton Hessian of the training loss, estimated on a random batch
+    of training documents per step, and ``D`` is the damping of each
+    module."""
+
+    num_steps: int = 0
+    """Steps per query; 0 scores the factored solution unchanged."""
+
+    loss_reduction: Literal["mean", "sum"] | None = None
+    """Overrides ``index_cfg.loss_reduction`` in the Hessian-vector products.
+    Used to replicate ASTRA; its theoretical interpretation is unclear."""
+
+    lr: float = 0.01
+    """Step size. Too large a step diverges; tune it by the logged objective."""
+
+    momentum: float = 0.9
+
+    batch_size: int = 16
+    """Training documents per Hessian-vector product."""
+
+    micro_batch_size: int = 16
+    """Documents per forward pass within a batch; lower it to save memory."""
+
+    lr_decay: float = 0.9
+    """Factor the step size is multiplied by every ``lr_decay_interval`` steps."""
+
+    lr_decay_interval: int = 100
+
+    seed: int = 0
+    """Seeds the training batches, which are drawn separately for each query."""
+
+
+@dataclass
 class ApproxUnrollingConfig(Serializable):
     """Config for approximate unrolling of the influence function."""
 
@@ -940,6 +980,10 @@ class ApproxUnrollingConfig(Serializable):
     """Inversion for the Adam SOURCE variant's EK-FAC inverse - the SGD
     variant has no inversion."""
 
+    astra: AstraConfig = field(default_factory=AstraConfig)
+    """Refine each segment's EK-FAC inverse with ASTRA. Adam SOURCE only,
+    since the SGD variant applies no inverse to refine."""
+
     query: QuerySetConfig = field(default_factory=QuerySetConfig)
     """Query dataset and aggregation; gradients are computed at the final
     checkpoint. ``none`` produces one score column per query."""
@@ -973,46 +1017,6 @@ class HessianConfig(Serializable):
     module_partitions: int = 1
     """Fit the factored methods in this many module groups, one pass per group,
     merging the shard files afterwards; raise it when the factors do not fit."""
-
-
-@dataclass
-class AstraConfig(Serializable):
-    """Refine a Kronecker-factored approximate Hessian's
-    inverse-Hessian-vector products with ASTRA
-    (https://arxiv.org/abs/2507.14740).
-
-    Each query's ``x = (H + D)^-1 q`` is refined by momentum SGD on
-    ``x^T (H + D) x / 2 - x^T q``, starting from the factored solution, with
-    each step preconditioned by the damped Kronecker-factored inverse. ``H`` is
-    the Gauss-Newton Hessian of the training loss, estimated on a random batch
-    of training documents per step, and ``D`` is the damping of each
-    module."""
-
-    num_steps: int = 0
-    """Steps per query; 0 scores the factored solution unchanged."""
-
-    loss_reduction: Literal["mean", "sum"] | None = None
-    """Overrides ``index_cfg.loss_reduction`` in the Hessian-vector products.
-    Used to replicate ASTRA; its theoretical interpretation is unclear."""
-
-    lr: float = 0.01
-    """Step size. Too large a step diverges; tune it by the logged objective."""
-
-    momentum: float = 0.9
-
-    batch_size: int = 16
-    """Training documents per Hessian-vector product."""
-
-    micro_batch_size: int = 16
-    """Documents per forward pass within a batch; lower it to save memory."""
-
-    lr_decay: float = 0.9
-    """Factor the step size is multiplied by every ``lr_decay_interval`` steps."""
-
-    lr_decay_interval: int = 100
-
-    seed: int = 0
-    """Seeds the training batches, which are drawn separately for each query."""
 
 
 @dataclass

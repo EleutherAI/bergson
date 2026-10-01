@@ -12,6 +12,7 @@ from torch import Tensor
 from bergson.cli.commands import Score
 from bergson.config.config import (
     ApproxUnrollingConfig,
+    AstraConfig,
     DistributedConfig,
     IndexConfig,
     InversionConfig,
@@ -19,11 +20,13 @@ from bergson.config.config import (
     ScoreConfig,
 )
 from bergson.config.config_io import load_subconfig, save_run_config
-from bergson.data import load_scores
+from bergson.data import create_index, load_gradients, load_scores
 from bergson.distributed import init_dist, launch_distributed_run
 from bergson.hessians.apply_hessian import EkfacApplicator, EkfacConfig
+from bergson.hessians.astra import AstraPaths, astra_worker
 from bergson.score.score import score_dataset
 from bergson.score.score_writer import save_sequence_scores, save_token_scores
+from bergson.utils.step_state import partial_path
 
 from ..magic.trainer import LR_HISTORY_FILENAME
 from .train_cfg_io import lr_history_path
@@ -240,6 +243,50 @@ def walk_query_phase1(
     return query_grad_paths
 
 
+def refine_segment_with_astra(
+    segment_dir: Path,
+    rhs_grad_path: Path,
+    init_grad_path: Path,
+    dst_grad_path: Path,
+    index_cfg: IndexConfig,
+    inversion_cfg: InversionConfig,
+    astra_cfg: AstraConfig,
+    checkpoint: str,
+) -> None:
+    """Refine one segment's ``(H + D)^-1 q`` with ASTRA at that segment's model.
+
+    ``rhs_grad_path`` holds the numerator-applied query the segment solves for,
+    and ``init_grad_path`` the factored solution ASTRA starts from.
+    """
+    init = load_gradients(str(init_grad_path))
+    with open(f"{init_grad_path}/info.json") as f:
+        grad_sizes = json.load(f)["grad_sizes"]
+    part = partial_path(str(dst_grad_path))
+    create_index(part, init.shape[0], grad_sizes, init.dtype)
+    shutil.copy(f"{init_grad_path}/processor_config.yaml", part)
+
+    segment_cfg = deepcopy(index_cfg)
+    segment_cfg.model = checkpoint
+    launch_distributed_run(
+        "astra",
+        astra_worker,
+        [
+            AstraPaths(
+                query_path=str(rhs_grad_path),
+                init_path=str(init_grad_path),
+                hessian_path=str(segment_dir),
+                run_path=str(part),
+            ),
+            segment_cfg,
+            inversion_cfg,
+            astra_cfg,
+            True,  # the segment factors carry the eigenvalue correction
+        ],
+        index_cfg.distributed,
+    )
+    shutil.move(part, str(dst_grad_path))
+
+
 def walk_query_phase2(
     run_path: str | Path,
     method: str,
@@ -248,6 +295,7 @@ def walk_query_phase2(
     distributed: DistributedConfig,
     preconditioner_paths: list[str] | None = None,
     inversion_cfg: InversionConfig | None = None,
+    astra: tuple[IndexConfig, AstraConfig, list[list[str]]] | None = None,
 ) -> list[Path]:
     """Phase 2: build query_grad_segment_0, ..., query_grad_segment_{L-1} via F_segment.
 
@@ -264,17 +312,43 @@ def walk_query_phase2(
     for l in range(num_segments):
         segment_dir = base / f"segment_{l}" / method
         dst = base / f"segment_{l}" / "query_grad_segment"
+        precond = preconditioner_paths[l] if preconditioner_paths else ""
         apply_eigfn_to_query(
             src_grad_path=query_grad_paths[l],
-            dst_grad_path=dst,
+            dst_grad_path=dst if astra is None else dst.with_name("query_grad_init"),
             segment_dir=segment_dir,
             lr_times_steps=lr_times_steps_per_segment[l],
             fn_kind="f_segment",
             distributed=distributed,
-            preconditioner_path=preconditioner_paths[l] if preconditioner_paths else "",
+            preconditioner_path=precond,
             # The EK-FAC inverse of the Adam variant (Bae et al. App. D).
             inversion_cfg=inversion_cfg if preconditioner_paths else None,
         )
+        if astra is not None:
+            # ASTRA solves (H + D) x = q for the numerator-applied query, so
+            # that vector is built separately as the right-hand side.
+            index_cfg, astra_cfg, segment_checkpoints = astra
+            rhs = dst.with_name("query_grad_numerator")
+            apply_eigfn_to_query(
+                src_grad_path=query_grad_paths[l],
+                dst_grad_path=rhs,
+                segment_dir=segment_dir,
+                lr_times_steps=lr_times_steps_per_segment[l],
+                fn_kind="f_segment",
+                distributed=distributed,
+                preconditioner_path=precond,
+                inversion_cfg=None,
+            )
+            refine_segment_with_astra(
+                segment_dir=segment_dir,
+                rhs_grad_path=rhs,
+                init_grad_path=dst.with_name("query_grad_init"),
+                dst_grad_path=dst,
+                index_cfg=index_cfg,
+                inversion_cfg=inversion_cfg or InversionConfig(),
+                astra_cfg=astra_cfg,
+                checkpoint=segment_checkpoints[l][-1],
+            )
         query_grad_segment_paths.append(dst)
 
     return query_grad_segment_paths
