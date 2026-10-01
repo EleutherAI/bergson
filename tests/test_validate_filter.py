@@ -3,11 +3,15 @@ import json
 
 import pytest
 import torch
+from datasets import Dataset
 
+from bergson.magic.config import MagicConfig
 from bergson.validate import (
     _report_filter_baseline,
     _select_filter_slice,
     load_and_validate_subsets_match,
+    loss_term_rows,
+    valid_row_indices,
 )
 
 # Scores follow the load_scores_loss_signed convention: negative reduces query
@@ -196,3 +200,61 @@ def test_a_bank_gives_the_same_random_filters_as_retraining_them(tmp_path):
     here = random_changes("here")
     from_bank = random_changes("from_bank", retrained_dir=str(bank))
     assert [round(float(x), 5) for x in from_bank] == [round(float(x), 5) for x in here]
+
+
+def _rows(**columns) -> Dataset:
+    return Dataset.from_dict(columns)
+
+
+def test_loss_term_rows_marks_documents_with_a_loss():
+    """A document counts when some position weights a supervised next token;
+    zero scores play no part."""
+    data = _rows(
+        input_ids=[[5, 6, 7], [8], [9, 10, 11], [12, 13]],
+        labels=[[5, 6, 7], [8], [-100, -100, -100], [12, 13]],
+        # Row 3 packs doc 3 (position 0) and doc 4 (position 1, which
+        # predicts nothing).
+        doc_ids=[[0, 0, 0], [1], [2, 2, 2], [3, 4]],
+    )
+    assert loss_term_rows(data, num_rows=5).tolist() == [
+        True,
+        False,
+        False,
+        True,
+        False,
+    ]
+
+
+def test_loss_term_rows_marks_supervised_token_positions():
+    """Position t is valid when token t + 1 is supervised; padding columns,
+    masked labels and examples past the grid are not."""
+    data = _rows(
+        input_ids=[[5, 6, 7, 8], [9, 10], [11, 12, 13]],
+        labels=[[-100, -100, 7, 8], [9, 10], [11, 12, 13]],
+        example_ids=[0, 1, 2],
+    )
+    valid = loss_term_rows(data, num_rows=2, seq_len=4).reshape(2, 4)
+    assert valid.tolist() == [
+        [False, True, True, False],
+        [True, False, False, False],
+    ]
+
+
+def test_valid_row_indices_keep_zero_scored_rows():
+    """Rows that score zero for every query stay in the pool when they weight
+    a loss term."""
+    data = _rows(
+        input_ids=[[1, 2], [3, 4], [5]],
+        doc_ids=[[0, 0], [1, 1], [2]],
+    )
+    scores = torch.tensor([[0.0], [-1.0], [0.0]])
+    on = MagicConfig(run_path="unused", exclude_invalid_rows=True)
+    assert valid_row_indices(on, data, scores, per_token=False).tolist() == [0, 1]
+    off = MagicConfig(run_path="unused")
+    assert valid_row_indices(off, data, scores, per_token=False).tolist() == [0, 1, 2]
+
+
+def test_exclude_zero_scores_is_renamed():
+    with pytest.warns(FutureWarning, match="exclude_invalid_rows"):
+        cfg = MagicConfig.from_dict({"run_path": "unused", "exclude_zero_scores": True})
+    assert cfg.exclude_invalid_rows

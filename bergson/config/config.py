@@ -1,5 +1,6 @@
 import math
 import os
+import warnings
 from abc import ABC
 from dataclasses import dataclass, fields
 from pathlib import Path
@@ -519,10 +520,10 @@ class ValidationConfig(TrainingConfig, ABC):
     """Training weight assigned to each subset's documents during the retrain
     (the rest stay at 1.0). ``0.0`` (default) is standard leave-k-out removal."""
 
-    exclude_zero_scores: bool = False
-    """When True, drop doc_ids with score == 0 from the validation
-    permutation. These scores may be produced by items with fewer than
-    2 tokens."""
+    exclude_invalid_rows: bool = False
+    """When True, leave rows that weight no loss term out of the validation
+    pool: documents with fewer than 2 tokens or no supervised labels, and
+    per-token positions whose next token is unsupervised or padding."""
 
     method: Union[LDSConfig, FilterConfig, WeightStepConfig] = tagged_subgroups(
         {"lds": LDSConfig, "filter": FilterConfig, "weight_step": WeightStepConfig},
@@ -535,6 +536,13 @@ class ValidationConfig(TrainingConfig, ABC):
     def from_dict(cls, obj, drop_extra_fields=None):
         # TODO Lucia Quirke delete 12/2026
         obj = migrate_query_config(obj, legacy_key="query_method", default="none")
+        if "exclude_zero_scores" in obj:
+            warnings.warn(
+                "exclude_zero_scores is renamed exclude_invalid_rows",
+                FutureWarning,
+                stacklevel=2,
+            )
+            obj["exclude_invalid_rows"] = obj.pop("exclude_zero_scores")
         return super().from_dict(
             migrate_validation_config(obj), drop_extra_fields=drop_extra_fields
         )

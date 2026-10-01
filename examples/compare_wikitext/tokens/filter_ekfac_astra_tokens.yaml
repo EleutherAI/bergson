@@ -9,7 +9,7 @@ steps:
       model: gpt2
       resume: true
       seed: 42
-      exclude_zero_scores: true
+      exclude_invalid_rows: true
 
       data:
         dataset: EleutherAI/bergson-wikitext-512-chunks

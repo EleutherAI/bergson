@@ -19,6 +19,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
+from datasets import Dataset
 from peft import PeftModel
 from scipy.stats import pearsonr, spearmanr
 from tqdm import tqdm
@@ -283,9 +284,12 @@ def load_and_validate_subsets_match(
         for field, ours in [
             ("model", run_cfg.model),
             ("subset_weight", run_cfg.subset_weight),
-            ("exclude_zero_scores", run_cfg.exclude_zero_scores),
+            ("exclude_invalid_rows", run_cfg.exclude_invalid_rows),
         ]:
             theirs = get_config_field(d, field)
+            if theirs is None and field == "exclude_invalid_rows":
+                # TODO Lucia Quirke delete 12/2026
+                theirs = get_config_field(d, "exclude_zero_scores")
             if theirs is not None and theirs != ours:
                 raise ValueError(
                     f"{d} was written with {field}={theirs!r} but this run uses "
@@ -448,9 +452,47 @@ def _select_filter_slice(
     return valid_indices[chosen]
 
 
+def loss_term_rows(dataset: Dataset, num_rows: int, seq_len: int = 0) -> torch.Tensor:
+    """Which score rows weight at least one loss term in ``dataset``.
+
+    Rows are documents, indexed by ``doc_ids``, or with ``seq_len`` per-token
+    positions ``example * seq_len + t``, indexed by ``example_ids``, where
+    position ``t`` weights the loss on token ``t + 1``.
+    """
+    has_labels = "labels" in dataset.column_names
+    valid = torch.zeros(num_rows * max(seq_len, 1), dtype=torch.bool)
+    for row in dataset:
+        tokens = row["labels"] if has_labels else row["input_ids"]
+        # Position t carries a loss when token t + 1 is supervised.
+        live = np.flatnonzero(np.asarray(tokens[1:]) != -100)
+        if seq_len:
+            example = row["example_ids"]
+            if example < num_rows:
+                live = live[live < seq_len]
+                valid[example * seq_len + torch.from_numpy(live)] = True
+            continue
+        doc_ids = np.asarray(row["doc_ids"])
+        docs = doc_ids[live] if doc_ids.ndim else np.full(len(live), doc_ids)
+        docs = docs[docs < num_rows]
+        valid[torch.from_numpy(docs)] = True
+    return valid
+
+
+def valid_row_indices(
+    run_cfg: ValidationConfig, dataset: Dataset, scores: torch.Tensor, per_token: bool
+) -> torch.Tensor:
+    """The score rows the validation pool draws from."""
+    num_rows = len(scores)
+    seq_len = scores.shape[1] if per_token else 0
+    if not run_cfg.exclude_invalid_rows:
+        return torch.arange(num_rows * max(seq_len, 1))
+    return torch.nonzero(loss_term_rows(dataset, num_rows, seq_len))[:, 0]
+
+
 def tail_filter_retrain(
     run_cfg: ValidationConfig,
     flat_scores: torch.Tensor,
+    valid_indices: torch.Tensor,
     multi_query: bool,
     *,
     global_rank: int,
@@ -476,11 +518,6 @@ def tail_filter_retrain(
     method = run_cfg.method
     assert isinstance(method, FilterConfig)
     controls = method.controls
-    if run_cfg.exclude_zero_scores:
-        valid_indices = torch.nonzero((flat_scores != 0).any(dim=1), as_tuple=True)[0]
-    else:
-        valid_indices = torch.arange(flat_scores.shape[0])
-
     pool = len(valid_indices)
     num_filtered = max(1, round(method.fraction * pool))
 
@@ -722,11 +759,14 @@ def validate_scores(
     # doc * seq_len + token positions for per-token scores.
     num_queries = scores.shape[-1] if multi_query else 1
     flat_scores = scores.reshape(-1, num_queries)
+    per_token = scores.ndim == (3 if multi_query else 2)
+    valid_indices = valid_row_indices(run_cfg, stream.dataset, scores, per_token)
 
     if isinstance(run_cfg.method, FilterConfig):
         tail_filter_retrain(
             run_cfg,
             flat_scores,
+            valid_indices,
             multi_query,
             global_rank=global_rank,
             rank=rank,
@@ -813,11 +853,6 @@ def validate_scores(
         if global_rank == 0:
             print(f"Saved weight-step validation to {csv_path}")
         return
-
-    if run_cfg.exclude_zero_scores:
-        valid_indices = torch.nonzero((flat_scores != 0).any(dim=1), as_tuple=True)[0]
-    else:
-        valid_indices = torch.arange(flat_scores.shape[0])
 
     method = run_cfg.method
     assert isinstance(method, LDSConfig)
@@ -1040,9 +1075,9 @@ def evaluate_retrained(
     # Load per-query attribution scores (mirrors run_magic's score loading).
     scores, multi_query = load_scores_loss_signed(score_path)
     if not multi_query:
-        assert (
-            scores.ndim == 1 or scores.shape[1] == 1
-        ), "evaluate_retrained expects per-doc (1D) scores"
+        assert scores.ndim == 1 or scores.shape[1] == 1, (
+            "evaluate_retrained expects per-doc (1D) scores"
+        )
         scores = scores.flatten()
 
     max_idx = max((int(s.max()) for s in subsets if len(s)), default=-1)
