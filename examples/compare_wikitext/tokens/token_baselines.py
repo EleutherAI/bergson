@@ -56,8 +56,9 @@ def spread(rows, spans, lo, hi, value):
 
 
 def activation_rows(queries, shard):
-    from examples.gradient_free_baselines import activation_baseline as ab
     from transformers import AutoModelForCausalLM
+
+    from examples.gradient_free_baselines import activation_baseline as ab
 
     tok = AutoTokenizer.from_pretrained("gpt2")
     tok.pad_token = tok.eos_token

@@ -21,6 +21,9 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from datasets import load_dataset
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
 from bergson.collector.collector import (
     HookCollectorBase,
     create_module_projection_matrix,
@@ -34,8 +37,6 @@ from bergson.gradients import GradientProcessor, LayerAdapter
 from bergson.hessians.preconditioner import load_preconditioner
 from bergson.process_grads import normalize_and_aggregate_grads
 from bergson.score.score import get_query_grads
-from datasets import load_dataset
-from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
 def scored_query(scores: Path, device: torch.device) -> dict[str, torch.Tensor]:

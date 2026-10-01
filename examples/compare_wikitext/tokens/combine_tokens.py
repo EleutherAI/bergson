@@ -20,6 +20,7 @@ from pathlib import Path
 
 import numpy as np
 import yaml
+
 from bergson.data import load_scores
 from bergson.score.score_writer import save_token_scores
 
