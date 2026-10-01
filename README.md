@@ -31,6 +31,7 @@ Indicative performance of data attribution methods in the finetuning regime - se
 |:---|:---:|:---:|
 | MAGIC | 0.100 [0.090, 0.112] | 0.931 [0.925, 0.936] |
 | EK-FAC + ASTRA | 0.074 [0.063, 0.087] | 0.643 [0.624, 0.660] |
+| Eigenvalue-corrected Shampoo | 0.071 [0.060, 0.082] | 0.517 [0.491, 0.539] |
 | SOURCE (Adam, EK-FAC) | 0.071 [0.060, 0.084] | 0.473 [0.446, 0.498] |
 | EK-FAC | 0.070 [0.058, 0.082] | 0.454 [0.426, 0.479] |
 | BM25 | 0.062 [0.048, 0.076] | 0.220 [0.185, 0.252] |
