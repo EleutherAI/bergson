@@ -1,0 +1,151 @@
+# Per-token SOURCE (Adam): each checkpoint's forward-mode pass along its segment's query
+# (the query_grad_segment of ../source.yaml's source_adam run), combined as SOURCE combines
+# them by combine_tokens.py source. Needs the six interval checkpoints exported.
+# Run with `bergson examples/compare_wikitext/tokens/source_adam_tokens.yaml`
+
+run_path: runs/compare_wikitext/tokens/source_adam_tokens
+steps:
+  - score:
+      index_cfg:
+        run_path: runs/compare_wikitext/tokens/source_s0c0
+        model: runs/compare_wikitext/interval/exported/checkpoint-12
+        tokenizer: gpt2
+        overwrite: false
+        token_batch_size: 1024
+        max_batch_size: 64
+        filter_modules: "lm_head"
+        attribute_tokens: true
+        distributed:
+          nproc_per_node: 8
+          nnode: 1
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "train"
+          chunk_length: 0
+      score_cfg:
+        query_path: runs/compare_wikitext/source_adam/segment_0/query_grad_segment
+        token_influence: output
+        batch_size: 1024
+        query_batch_size: 64
+      preprocess_cfg:
+        unit_normalize: false
+  - score:
+      index_cfg:
+        run_path: runs/compare_wikitext/tokens/source_s0c1
+        model: runs/compare_wikitext/interval/exported/checkpoint-24
+        tokenizer: gpt2
+        overwrite: false
+        token_batch_size: 1024
+        max_batch_size: 64
+        filter_modules: "lm_head"
+        attribute_tokens: true
+        distributed:
+          nproc_per_node: 8
+          nnode: 1
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "train"
+          chunk_length: 0
+      score_cfg:
+        query_path: runs/compare_wikitext/source_adam/segment_0/query_grad_segment
+        token_influence: output
+        batch_size: 1024
+        query_batch_size: 64
+      preprocess_cfg:
+        unit_normalize: false
+  - score:
+      index_cfg:
+        run_path: runs/compare_wikitext/tokens/source_s1c0
+        model: runs/compare_wikitext/interval/exported/checkpoint-36
+        tokenizer: gpt2
+        overwrite: false
+        token_batch_size: 1024
+        max_batch_size: 64
+        filter_modules: "lm_head"
+        attribute_tokens: true
+        distributed:
+          nproc_per_node: 8
+          nnode: 1
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "train"
+          chunk_length: 0
+      score_cfg:
+        query_path: runs/compare_wikitext/source_adam/segment_1/query_grad_segment
+        token_influence: output
+        batch_size: 1024
+        query_batch_size: 64
+      preprocess_cfg:
+        unit_normalize: false
+  - score:
+      index_cfg:
+        run_path: runs/compare_wikitext/tokens/source_s1c1
+        model: runs/compare_wikitext/interval/exported/checkpoint-48
+        tokenizer: gpt2
+        overwrite: false
+        token_batch_size: 1024
+        max_batch_size: 64
+        filter_modules: "lm_head"
+        attribute_tokens: true
+        distributed:
+          nproc_per_node: 8
+          nnode: 1
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "train"
+          chunk_length: 0
+      score_cfg:
+        query_path: runs/compare_wikitext/source_adam/segment_1/query_grad_segment
+        token_influence: output
+        batch_size: 1024
+        query_batch_size: 64
+      preprocess_cfg:
+        unit_normalize: false
+  - score:
+      index_cfg:
+        run_path: runs/compare_wikitext/tokens/source_s2c0
+        model: runs/compare_wikitext/interval/exported/checkpoint-60
+        tokenizer: gpt2
+        overwrite: false
+        token_batch_size: 1024
+        max_batch_size: 64
+        filter_modules: "lm_head"
+        attribute_tokens: true
+        distributed:
+          nproc_per_node: 8
+          nnode: 1
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "train"
+          chunk_length: 0
+      score_cfg:
+        query_path: runs/compare_wikitext/source_adam/segment_2/query_grad_segment
+        token_influence: output
+        batch_size: 1024
+        query_batch_size: 64
+      preprocess_cfg:
+        unit_normalize: false
+  - score:
+      index_cfg:
+        run_path: runs/compare_wikitext/tokens/source_s2c1
+        model: runs/compare_wikitext/interval/exported/checkpoint-72
+        tokenizer: gpt2
+        overwrite: false
+        token_batch_size: 1024
+        max_batch_size: 64
+        filter_modules: "lm_head"
+        attribute_tokens: true
+        distributed:
+          nproc_per_node: 8
+          nnode: 1
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "train"
+          chunk_length: 0
+      score_cfg:
+        query_path: runs/compare_wikitext/source_adam/segment_2/query_grad_segment
+        token_influence: output
+        batch_size: 1024
+        query_batch_size: 64
+      preprocess_cfg:
+        unit_normalize: false

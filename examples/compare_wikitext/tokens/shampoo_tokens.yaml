@@ -1,0 +1,34 @@
+# Per-token eigenvalue-corrected Shampoo: the query gradients of kfac.yaml, preconditioned with the
+# Shampoo factors of ../shampoo.yaml and scored token by token.
+# Row t of a chunk scores the loss on token t + 1 (token_influence: output).
+# Run with `bergson examples/compare_wikitext/tokens/shampoo_tokens.yaml`
+
+run_path: runs/compare_wikitext/tokens/shampoo_tokens
+steps:
+  - score:
+      index_cfg:
+        run_path: runs/compare_wikitext/tokens/shampoo_tokens
+        model: runs/compare_wikitext/interval/exported/checkpoint-72
+        overwrite: false
+        token_batch_size: 1024
+        max_batch_size: 64
+        filter_modules: "lm_head"
+        attribute_tokens: true
+        distributed:
+          nproc_per_node: 8
+          nnode: 1
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "train"
+          chunk_length: 0
+      score_cfg:
+        query_path: runs/compare_wikitext/kfac/query
+        token_influence: output
+        batch_size: 1024
+        query_batch_size: 64
+      preprocess_cfg:
+        unit_normalize: false
+        hessian_path: runs/compare_wikitext/shampoo/hessian/shampoo
+        ev_correction: true
+        inversion_cfg:
+          damping_factor: 0.1

@@ -105,8 +105,26 @@ Per-token attribution scores, which attribute each training token's loss term, e
      - 1.375 [1.348, 1.403]
    * - EK-FAC + ASTRA
      - 1.082 [1.047, 1.116]
+   * - Eigenvalue-corrected Shampoo
+     - 0.922 [0.887, 0.957]
+   * - SOURCE (Adam, EK-FAC)
+     - 0.908 [0.877, 0.942]
    * - EK-FAC
      - 0.863 [0.833, 0.894]
+   * - KFAC
+     - 0.786 [0.758, 0.815]
+   * - BM25
+     - 0.677 [0.650, 0.704]
+   * - TrackStar (no optimizer correction, projection 64)
+     - 0.489 [0.465, 0.515]
+   * - Gradient cosine similarity
+     - 0.217 [0.206, 0.229]
+   * - TRAK (8-model ensemble)
+     - 0.119 [0.112, 0.125]
+   * - Activation similarity
+     - 0.028 [0.018, 0.039]
+   * - Qwen3-Embedding-8B semantic search
+     - 0.008 [0.006, 0.010]
 
 Configs and per-query statistics are in `examples/compare_wikitext/tokens <https://github.com/EleutherAI/bergson/tree/main/examples/compare_wikitext/tokens>`_.
 
