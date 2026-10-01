@@ -87,7 +87,7 @@ class HookCollectorBase(ContextDecorator, ABC):
     """
 
     attribute_tokens: bool = False
-    """When True, compute per-position gradients instead of per-example."""
+    """When True, compute per-position gradients instead of per-sequence."""
 
     lo: float = float("-inf")
     """Lower clamp bound for gradients. May be narrowed in subclass ``setup()``."""

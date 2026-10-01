@@ -121,7 +121,7 @@ class Scorer:
         """Add module ``name``'s GEMM against the queries to the running sums,
         accumulating in fp32 so a bf16 scoring dtype keeps small contributions."""
         g = g.to(self.device, self.dtype, non_blocking=True)
-        if isinstance(g, OuterProductGradients) and g.per_example:
+        if isinstance(g, OuterProductGradients) and g.per_sequence:
             g = _materialized(g)
 
         if isinstance(g, OuterProductGradients):

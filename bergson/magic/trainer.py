@@ -1013,7 +1013,7 @@ class Trainer:
 
                 # grad_outputs is the gradient of the loss wrt the next
                 # TrainerState. We're doing a VJP to get the gradient wrt the
-                # current TrainerState, AND the example weights for this batch.
+                # current TrainerState, AND the sequence weights for this batch.
                 inps = flat_i + [data.weights]
                 result = list(
                     torch.autograd.grad(

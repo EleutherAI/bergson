@@ -824,7 +824,7 @@ def test_module_gradients_match_autograd(
     normalizer, include_bias, projection_dim, attribute_tokens, split_heads
 ):
     """Each module's gradients equal autograd's gradients of each token's loss,
-    normalized and projected, for per-token rows and their per-example sums."""
+    normalized and projected, for per-token rows and their per-sequence sums."""
     torch.manual_seed(0)
     model = _TwoLayerModel()
     x = torch.randn(2, 4, 4)
@@ -910,6 +910,6 @@ def test_module_gradients_match_autograd(
     for name, token_rows in rows.items():
         want = torch.stack([row for _, row in token_rows])
         if not attribute_tokens:
-            examples = torch.tensor([n for n, _ in token_rows])
-            want = torch.zeros(2, want.shape[1]).index_add_(0, examples, want)
+            sequences = torch.tensor([n for n, _ in token_rows])
+            want = torch.zeros(2, want.shape[1]).index_add_(0, sequences, want)
         torch.testing.assert_close(recorder.grads[name], want, msg=name)

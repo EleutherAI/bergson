@@ -50,7 +50,7 @@ class Builder:
     preprocess_cfg : PreprocessConfig
         Preconditioning, normalization, and aggregation settings.
     attribute_tokens : bool
-        Per-token gradients instead of per-example.
+        Per-token gradients instead of per-sequence.
     path : Path | None
         When given, write to a memory-mapped file on disk.
         When ``None``, store in a plain numpy array.
@@ -177,11 +177,11 @@ class Builder:
         grads: torch.Tensor,
     ) -> None:
         assert self.num_token_grads is not None and self.offsets is not None
-        per_example_lengths = self.num_token_grads[indices]
+        per_sequence_lengths = self.num_token_grads[indices]
         g_np = tensor_to_numpy(grads.cpu())
 
         row = 0
-        for idx, sl in zip(indices, per_example_lengths):
+        for idx, sl in zip(indices, per_sequence_lengths):
             buf_start = int(self.offsets[idx])
             buf_end = int(self.offsets[idx + 1])
             self.grad_buffer[buf_start:buf_end] = g_np[row : row + sl]

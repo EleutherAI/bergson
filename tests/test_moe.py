@@ -110,7 +110,7 @@ def autograd_gradient(model, name: str, include_bias: bool) -> torch.Tensor:
 
 
 def collect_and_compare(model, batch_size: int, include_bias: bool) -> None:
-    """Check each collected per-example gradient against a per-example backward."""
+    """Check each collected per-sequence gradient against a per-sequence backward."""
     expand_moe(model, PATTERN)
     model.requires_grad_(True)
     x = torch.randint(0, 64, (batch_size, SEQ_LEN))
@@ -129,21 +129,21 @@ def collect_and_compare(model, batch_size: int, include_bias: bool) -> None:
     # received no tokens.
     assert set(collected) == set(collector.shapes())
 
-    for example in range(batch_size):
-        backward_pass(model, x[example : example + 1])
+    for sequence in range(batch_size):
+        backward_pass(model, x[sequence : sequence + 1])
         for name in names:
             torch.testing.assert_close(
-                collected[name][example].float(),
+                collected[name][sequence].float(),
                 autograd_gradient(model, name, include_bias).float(),
                 atol=1e-5,
                 rtol=1e-4,
-                msg=f"{name}, example {example}",
+                msg=f"{name}, sequence {sequence}",
             )
     assert max(g.abs().max() for g in collected.values()) > 0, "all-zero gradients"
 
 
 @pytest.mark.parametrize("family,include_bias", GRADIENT_CASES)
-def test_per_example_gradients_match_autograd(family, include_bias):
+def test_per_sequence_gradients_match_autograd(family, include_bias):
     collect_and_compare(build_model(family), batch_size=3, include_bias=include_bias)
 
 

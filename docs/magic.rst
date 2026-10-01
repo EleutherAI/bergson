@@ -52,14 +52,14 @@ After a run completes, ``run_cfg.run_path`` contains:
   ``(scores, multi_query)``:
 
   * Per-document: ``(num_train_docs, 1)``, indexed directly by ``doc_id``.
-  * Per-token: ``(num_examples, seq_len)``, indexed by ``(example_idx,
-    token_idx)``, with every epoch's pass over an example summed into its
-    row. An example is a chunk of the training dataset when
-    ``chunk_length > 0`` or otherwise a row/document, and ``example_idx`` is
+  * Per-token: ``(num_sequences, seq_len)``, indexed by ``(sequence_idx,
+    token_idx)``, with every epoch's pass over a sequence summed into its
+    row. A sequence is a chunk of the training dataset when
+    ``chunk_length > 0`` or otherwise a row/document, and ``sequence_idx`` is
     its position in the training set after chunking, before each epoch is
     shuffled.
   * Per-query (``query.aggregation: none``) adds a trailing query axis, so
-    per-token per-query scores are ``(num_examples, seq_len,
+    per-token per-query scores are ``(num_sequences, seq_len,
     num_query_docs)``.
 
   Per-token scores are stored ragged — a row holds ``length - 1`` values —
@@ -75,8 +75,8 @@ After a run completes, ``run_cfg.run_path`` contains:
   query axis in ``scores/`` is these tensors stacked.
 
 * ``scores/doc_ids.npy`` — written for per-token runs, shape
-  ``(num_examples, seq_len)``. Each entry is the document id at that token
-  position, so the scores can be summed over examples and token positions
+  ``(num_sequences, seq_len)``. Each entry is the document id at that token
+  position, so the scores can be summed over sequences and token positions
   into per-document scores:
 
   .. code-block:: python
@@ -96,7 +96,7 @@ After a run completes, ``run_cfg.run_path`` contains:
   ``per_doc`` comes back as ``(num_train_docs, num_query_docs)``, or
   ``(num_train_docs, 1)`` for a single-query run.
 
-  With ``data.chunk_length == 0`` each example is one document and scores
+  With ``data.chunk_length == 0`` each sequence is one document and scores
   for document ``i`` can be accessed like ``scores[i]``. With
   ``data.chunk_length > 0`` a chunk may hold several documents, and a
   document may span chunks. In this case, use ``doc_ids`` to aggregate the
@@ -174,7 +174,7 @@ Core components
 Per-token vs per-document attribution
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-By default, ``DataStream`` creates a 1D weight tensor ``[num_train_docs]`` for per-document attribution, indexed by ``doc_id``. By passing a 2D tensor ``[num_examples, max_length]`` as the ``weight_shape`` parameter, each token receives its own attribution score. The ``weighted_causal_lm_ce`` loss function supports both shapes.
+By default, ``DataStream`` creates a 1D weight tensor ``[num_train_docs]`` for per-document attribution, indexed by ``doc_id``. By passing a 2D tensor ``[num_sequences, max_length]`` as the ``weight_shape`` parameter, each token receives its own attribution score. The ``weighted_causal_lm_ce`` loss function supports both shapes.
 
 To use per-token attribution, set ``model.loss_function = weighted_causal_lm_ce`` so the model uses the weighted loss during training.
 

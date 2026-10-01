@@ -147,7 +147,7 @@ class GradientProcessor:
     Projection target. ``per_module`` does a double-sided random projection of each
     module's gradient independently. ``global`` does an independent
     single-sided right projection of each module's flattened gradient then sums the
-    results, producing one ``[proj_dim]`` vector per example.
+    results, producing one ``[proj_dim]`` vector per sequence.
     """
 
     include_bias: bool = False
@@ -537,7 +537,7 @@ class OuterProductGradients:
     vectors they are formed from.
 
     With ``g`` of shape [T, O] there is one gradient per token. With shape
-    [N, S, O] there is one per example, summed over its S positions.
+    [N, S, O] there is one per sequence, summed over its S positions.
     """
 
     g: Tensor
@@ -557,8 +557,8 @@ class OuterProductGradients:
     """[O, W] entry-wise divisor of ``g ⊗ a``, from Adam normalization."""
 
     @property
-    def per_example(self) -> bool:
-        """Whether each row sums an example's positions."""
+    def per_sequence(self) -> bool:
+        """Whether each row sums a sequence's positions."""
         return self.g.ndim == 3
 
     def to(
@@ -608,7 +608,7 @@ class OuterProductGradients:
             divisor = grads.divisor
         q = q.to(grads.g.dtype)
 
-        if self.per_example or len(q) >= max(o, w):
+        if self.per_sequence or len(q) >= max(o, w):
             return (grads.materialize().flatten(1) @ q.flatten(1).T).to(dtype)
 
         # ⟨(g ⊗ a) ⊘ D, q⟩ = gᵀ (q ⊘ D) a
@@ -627,7 +627,7 @@ class OuterProductGradients:
 
     def sq_norm(self) -> Tensor:
         """Squared norms [T] of per-token gradients, in float32."""
-        assert not self.per_example, "Form per-example gradients to take norms"
+        assert not self.per_sequence, "Form per-sequence gradients to take norms"
         grads = self.to(self.g.device, torch.float32)
         g2, a2 = grads.g.pow(2), grads.a.pow(2)
         if grads.divisor is None:

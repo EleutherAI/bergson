@@ -25,7 +25,7 @@ from bergson.utils.utils import get_gradient_dtype, numpy_to_tensor
 class InMemoryCollector(HookCollectorBase):
     """Collector that accumulates gradients in memory.
 
-    Supports both per-example and per-token gradient collection
+    Supports both per-sequence and per-token gradient collection
     via ``cfg.attribute_tokens``.  Uses in-memory builder
     (:class:`Builder`) for flat gradient storage and
     an optional :class:`Scorer` for on-the-fly scoring.

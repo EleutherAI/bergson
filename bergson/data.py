@@ -35,7 +35,7 @@ from .utils.utils import (
 
 
 def compute_num_token_grads(data: Dataset) -> np.ndarray:
-    """Number of per-token gradient rows stored per example.
+    """Number of per-token gradient rows stored per sequence.
 
     Position ``t``'s row is ``g_t (x) a_t``. ``g_t`` is generally nonzero even
     at prompt / masked positions, because the completion-token losses backprop
@@ -73,7 +73,7 @@ def create_token_index(
     Same on-disk format as :func:`create_index` (``gradients.bin`` +
     ``info.json`` with ``num_grads``/``grad_sizes``/``base_dtype``), plus
     ``offsets.npy`` so row ``offsets[i]:offsets[i+1]`` -- rather than row
-    ``i`` -- is example *i*'s gradients. ``info["attribute_tokens"]`` marks
+    ``i`` -- is sequence *i*'s gradients. ``info["attribute_tokens"]`` marks
     that distinction for readers.
 
     Parameters
@@ -82,7 +82,7 @@ def create_token_index(
         Directory in which ``gradients.bin``, ``offsets.npy`` and
         ``info.json`` will be created.
     num_token_grads : np.ndarray
-        Number of valid gradient rows per example, shape ``(num_items,)``.
+        Number of valid gradient rows per sequence, shape ``(num_items,)``.
     grad_sizes : dict[str, int]
         Per-module gradient dimensions (same as :func:`create_index`).
     dtype : DTypeLike
@@ -146,7 +146,7 @@ def load_token_gradients(
     -------
     (mmap, num_token_grads, offsets)
         *mmap* has shape ``(total_tokens, total_grad_dim)``.
-        Example *i*'s gradients are ``mmap[offsets[i]:offsets[i+1]]`` with
+        Sequence *i*'s gradients are ``mmap[offsets[i]:offsets[i+1]]`` with
         shape ``(num_token_grads[i], total_grad_dim)``.
     """
     root_dir = Path(root_dir)
@@ -159,7 +159,7 @@ def load_token_gradients(
 class TokenGradients:
     """Convenience wrapper around the flat per-token gradient memmap.
 
-    Provides ``__getitem__`` to retrieve a single example's gradients as
+    Provides ``__getitem__`` to retrieve a single sequence's gradients as
     a contiguous array of shape ``(num_token_grads[i], grad_dim)``.
 
     Parameters
@@ -222,7 +222,7 @@ def allocate_batches(
     Notes
     -----
     1.  **Per-batch cost constraint**:  Each batch is padded to the maximum
-        sequence length *inside that batch*, so its cost in “token × examples”
+        sequence length *inside that batch*, so its cost in “token × sequences”
         units is ``max_len_in_batch * batch_size``.  This must stay ≤ ``N``.
     2.  **Bin-packing strategy**:  We use a simple greedy bin-packing algorithm
         that sorts the documents by length and tries to fit them into batches
@@ -399,7 +399,7 @@ def create_index(
     (modules laid out in `grad_sizes` order) and persist metadata.
 
     Same on-disk format as :func:`create_token_index` minus ``offsets.npy``:
-    row ``i`` is example *i*'s gradients directly (``num_grads ==
+    row ``i`` is sequence *i*'s gradients directly (``num_grads ==
     num_items``), rather than a range picked out by ``offsets``.
     """
     grad_path = root / "gradients.bin"
@@ -782,8 +782,8 @@ def pad_and_tensor(
     its bin-packer enforces a per-rank token budget
     (``max_len × batch_size ≤ N``) that the global all-reduce silently
     violates when ranks are assigned batches with very different
-    max_lens — a single long-example batch on one rank forces every
-    short-example batch on its peers to pad up to the long length,
+    max_lens — a single long-sequence batch on one rank forces every
+    short-sequence batch on its peers to pad up to the long length,
     blowing the budget by orders of magnitude.
     """
     if labels is None:

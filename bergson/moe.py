@@ -14,7 +14,7 @@ from torch import Tensor
 
 # The experts module only sees hidden states flattened to [N*S, hidden], so a
 # pre-hook on its parent records the batch size here for the forward to read.
-NUM_EXAMPLES_ATTR = "_bergson_num_examples"
+NUM_SEQUENCES_ATTR = "_bergson_num_sequences"
 
 
 class ExpertLinear(nn.Module):
@@ -77,11 +77,11 @@ def moe_forward(
     """
     assert hidden_states.ndim == 2, f"Expected [N*S, hidden], got {hidden_states.shape}"
     num_tokens, hidden_dim = hidden_states.shape
-    num_examples = getattr(self, NUM_EXAMPLES_ATTR)
+    num_sequences = getattr(self, NUM_SEQUENCES_ATTR)
     assert (
-        num_tokens % num_examples == 0
-    ), f"{num_tokens} tokens do not divide into {num_examples} examples"
-    seq_len = num_tokens // num_examples
+        num_tokens % num_sequences == 0
+    ), f"{num_tokens} tokens do not divide into {num_sequences} sequences"
+    seq_len = num_tokens // num_sequences
 
     top_k_index = top_k_index.reshape(num_tokens, -1)
     top_k_weights = top_k_weights.reshape(num_tokens, -1)
@@ -94,42 +94,42 @@ def moe_forward(
         # this comparison drops.
         picked = top_k_index == expert_idx  # [N*S, top_k]
         weights = (top_k_weights * picked).sum(-1)  # [N*S]
-        routed = picked.any(-1).view(num_examples, seq_len)  # [N, S]
+        routed = picked.any(-1).view(num_sequences, seq_len)  # [N, S]
 
-        # One row per example, padded to the widest. positions holds each row's
+        # One row per sequence, padded to the widest. positions holds each row's
         # source position, -1 for padding.
-        example, pos = routed.nonzero(as_tuple=True)
-        token = example * seq_len + pos
-        col = (routed.cumsum(1) - 1)[example, pos]
+        sequence, pos = routed.nonzero(as_tuple=True)
+        token = sequence * seq_len + pos
+        col = (routed.cumsum(1) - 1)[sequence, pos]
         width = max(int(routed.sum(1).max()), 1)
 
         expert = getattr(self, f"expert_{expert_idx}")
-        positions = pos.new_full((num_examples, width), -1)
-        positions[example, col] = pos
+        positions = pos.new_full((num_sequences, width), -1)
+        positions[sequence, col] = pos
         for projection in expert.children():
             projection._positions = positions
 
-        a = hidden_states.new_zeros(num_examples, width, hidden_dim)
-        a[example, col] = hidden_states[token]
+        a = hidden_states.new_zeros(num_sequences, width, hidden_dim)
+        a[sequence, col] = hidden_states[token]
 
         h = getattr(expert, up_name)(a)
         h = self._apply_gate(h) if gated else self.act_fn(h)  # type: ignore[attr-defined]
         h = getattr(expert, down_name)(h)
 
-        h = h[example, col] * weights[token].unsqueeze(-1)
+        h = h[sequence, col] * weights[token].unsqueeze(-1)
         out = out.index_add(0, token, h.to(out.dtype))
 
     return out
 
 
-def _record_num_examples(experts: nn.Module):
+def _record_num_sequences(experts: nn.Module):
     """Build a pre-hook recording its module's batch size on ``experts``."""
 
     def hook(module: nn.Module, args: tuple):
         assert (
             args and args[0].ndim == 3
         ), f"Expected [N, S, hidden] into {type(module).__name__}"
-        setattr(experts, NUM_EXAMPLES_ATTR, args[0].shape[0])
+        setattr(experts, NUM_SEQUENCES_ATTR, args[0].shape[0])
 
     return hook
 
@@ -184,10 +184,10 @@ def expand_moe(model: nn.Module, patterns: str) -> list[str]:
                 )
             experts.add_module(f"expert_{expert_idx}", expert)
 
-        setattr(experts, NUM_EXAMPLES_ATTR, 1)
+        setattr(experts, NUM_SEQUENCES_ATTR, 1)
         experts.forward = types.MethodType(moe_forward, experts)
         parent = model.get_submodule(name.rpartition(".")[0])
-        parent.register_forward_pre_hook(_record_num_examples(experts))
+        parent.register_forward_pre_hook(_record_num_sequences(experts))
 
     if not matched:
         raise ValueError(

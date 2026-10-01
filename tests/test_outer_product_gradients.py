@@ -185,7 +185,7 @@ def test_dot_matches_formed_gradients(module_grads, num_queries):
 
 def test_sq_norm_matches_formed_gradients(module_grads):
     for name, grads in module_grads.items():
-        if grads.per_example:
+        if grads.per_sequence:
             pytest.skip("sq_norm takes per-token norms only")
         formed = grads.materialize().flatten(1)
         torch.testing.assert_close(grads.sq_norm(), formed.pow(2).sum(1), msg=name)

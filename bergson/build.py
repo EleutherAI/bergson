@@ -164,7 +164,7 @@ def build_query(
     dataset and aggregation come from ``query_set_cfg``.
 
     Aggregating collapses per-token query gradients into one target gradient,
-    so a per-token query index is built per example instead.
+    so a per-token query index is built per sequence instead.
     """
     if query_set_cfg.contrast is not None and query_set_cfg.aggregation == "none":
         raise ValueError("query.contrast needs query.aggregation 'mean' or 'sum'")
@@ -184,7 +184,7 @@ def build_query(
     if query_set_cfg.aggregation != "none" and index_cfg.attribute_tokens:
         print(
             "Query aggregation is not compatible with query-side token "
-            "attribution; building a per-example query instead."
+            "attribution; building a per-sequence query instead."
         )
         index_cfg.attribute_tokens = False
     save_run_config(Build(index_cfg, preprocess_cfg), index_cfg.partial_run_path)

@@ -634,7 +634,7 @@ class IndexConfig(AttributionConfig, Serializable):
     projection_target: Literal["per_module", "global"] = "per_module"
     """Projection target. ``per_module`` does a double-sided random projection of
     each module gradient. ``global`` projects each module's flattened gradient with
-    an independent right-side matrix and sums into one vector per example."""
+    an independent right-side matrix and sums into one vector per sequence."""
 
     projection_seed: int | None = None
     """Seed of the random projection. ``trak`` gives each ensemble member its own
@@ -700,7 +700,7 @@ class IndexConfig(AttributionConfig, Serializable):
     needs this."""
 
     attribute_tokens: bool = False
-    """Whether to compute per-token gradients instead of per-example.
+    """Whether to compute per-token gradients instead of per-sequence.
     Incompatible with reduce mode."""
 
     modules: list[str] = field(default_factory=list)
@@ -890,7 +890,7 @@ class ScoreConfig(Serializable):
     ``t`` by the per-token gradient at position ``t``, which is position ``t``'s
     effect on the loss of every later token. ``output`` scores row ``t`` by the
     loss on token ``t + 1`` alone, the output token influence of Grosse et al.
-    (2023). Both kinds of row sum to the per-example score, so without
+    (2023). Both kinds of row sum to the per-sequence score, so without
     ``attribute_tokens``, ``output`` only changes how that score is computed.
     ``output`` costs one forward-mode pass per query column, so aggregate the
     query when you can, and needs an unprojected query and dot-product scoring."""

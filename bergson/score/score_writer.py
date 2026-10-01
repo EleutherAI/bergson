@@ -150,7 +150,7 @@ class MemmapTokenScoreWriter(ScoreWriter):
     :class:`MemmapSequenceScoreWriter` -- so a per-token store is a plain
     per-document store with ``num_rows = total_tokens`` instead of
     ``num_items``, plus an ``offsets.npy`` saying which rows belong to which
-    document. Example *i*'s scores live at rows ``offsets[i]:offsets[i+1]``.
+    document. Sequence *i*'s scores live at rows ``offsets[i]:offsets[i+1]``.
     """
 
     def __init__(

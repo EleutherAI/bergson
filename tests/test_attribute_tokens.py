@@ -135,7 +135,7 @@ def test_create_and_load_token_index(tmp_path: Path):
     np.testing.assert_array_equal(loaded_ntg, num_token_grads)
     np.testing.assert_array_equal(loaded_off, offsets)
 
-    # Example 1 (indices 3..7)
+    # Sequence 1 (indices 3..7)
     ex1 = loaded_mmap[loaded_off[1] : loaded_off[2]]
     assert ex1.shape == (5, 10)
     np.testing.assert_array_equal(ex1, mmap[3:8])
@@ -172,13 +172,13 @@ def test_token_builder_write(tmp_path: Path):
             path=tmp_path,
         )
 
-    # Write examples 0 and 2 (non-contiguous!)
+    # Write sequences 0 and 2 (non-contiguous!)
     mod_grads = {
         "m": torch.tensor([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
     }  # 2 + 1 = 3 rows
     builder([0, 2], mod_grads)
 
-    # Write example 1
+    # Write sequence 1
     mod_grads = {"m": torch.tensor([[7.0, 8.0], [9.0, 10.0], [11.0, 12.0]])}  # 3 rows
     builder([1], mod_grads)
     builder.flush()
@@ -206,15 +206,15 @@ def test_token_score_writer(tmp_path: Path):
         dtype=torch.float32,
     )
 
-    # Write example 1 first (non-contiguous)
+    # Write sequence 1 first (non-contiguous)
     scores_ex1 = torch.tensor([[10.0, 20.0], [30.0, 40.0]])
     writer([1], scores_ex1)
     writer.flush()
 
-    # Example 0's cells aren't written yet.
+    # Sequence 0's cells aren't written yet.
     assert not load_scores(tmp_path).is_written()
 
-    # Write example 0
+    # Write sequence 0
     scores_ex0 = torch.tensor([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
     writer([0], scores_ex0)
     writer.flush()
@@ -233,12 +233,12 @@ def test_token_score_writer(tmp_path: Path):
     assert scores.is_written()
     offsets = scores.offsets
 
-    # Example 0 at offsets[0]:offsets[1] = 0:3
+    # Sequence 0 at offsets[0]:offsets[1] = 0:3
     np.testing.assert_array_equal(
         scores[offsets[0] : offsets[1]],
         [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]],
     )
-    # Example 1 at offsets[1]:offsets[2] = 3:5
+    # Sequence 1 at offsets[1]:offsets[2] = 3:5
     np.testing.assert_array_equal(
         scores[offsets[1] : offsets[2]],
         [[10.0, 20.0], [30.0, 40.0]],
@@ -282,7 +282,7 @@ def test_token_build_e2e(tmp_path: Path, model, dataset):
     tg = TokenGradients(cfg.partial_run_path)
     assert len(tg) == len(dataset)
 
-    # Each example has 5 tokens, all labels valid → 4 token grads
+    # Each sequence has 5 tokens, all labels valid → 4 token grads
     for i in range(len(dataset)):
         assert tg.num_token_grads[i] == 4
         assert tg[i].shape == (4, tg.mmap.shape[1])
@@ -414,7 +414,7 @@ def test_token_score_e2e(tmp_path: Path, model, dataset):
     assert scores.is_written()
     offsets = scores.offsets
 
-    # All examples should have 4 valid tokens (length 5, all labels valid)
+    # All sequences should have 4 valid tokens (length 5, all labels valid)
     for i in range(len(dataset)):
         ex_scores = scores[offsets[i] : offsets[i + 1]]
         assert ex_scores.shape == (4, 1)
@@ -476,7 +476,7 @@ def _collect_in_memory(
 def test_token_sum_equals_sequence(
     tmp_path, model, dataset, normalizer, include_bias, projection_dim
 ):
-    """Sum of per-token grads must equal the per-example sequence grad.
+    """Sum of per-token grads must equal the per-sequence grad.
 
     With loss_reduction='sum' the sequence path computes g.mT @ a which
     is exactly sum_s g_s (x) a_s. Since normalize_weight() and
@@ -561,7 +561,7 @@ def test_token_sum_equals_sequence(
     assert tok_collector.builder is not None
     offsets = tok_collector.builder.offsets
 
-    # Sum token grads per example and compare to sequence grads
+    # Sum token grads per sequence and compare to sequence grads
     for name, seq_grads in seq_collector.gradients.items():
         tok_grads = tok_collector.gradients[name]  # [total_tokens, grad_dim]
         for i in range(len(dataset)):
@@ -573,7 +573,7 @@ def test_token_sum_equals_sequence(
                 seq_grad,
                 atol=1e-2,
                 rtol=1e-2,
-                msg=f"Module {name}, example {i}: "
+                msg=f"Module {name}, sequence {i}: "
                 f"token sum and sequence grad diverge",
             )
 
@@ -681,7 +681,7 @@ def test_trackstar_token_scores_sum_to_sequence_scores_on_disk(
             atol=1e-2,
             rtol=1e-2,
             msg=(
-                f"Example {i}: on-disk token sum {tok_sum:.6e} != "
+                f"Sequence {i}: on-disk token sum {tok_sum:.6e} != "
                 f"on-disk per-doc score {seq_scores[i]:.6e}"
             ),
         )
@@ -701,7 +701,7 @@ def test_masked_prompt_token_grads_cover_all_positions(tmp_path, model):
     via causal attention).
 
     Per-token gradients cover EVERY real position (prompt + completion), so:
-      * there are ``length - 1`` rows per example, and
+      * there are ``length - 1`` rows per sequence, and
       * the rows sum to the per-doc gradient == the autograd gradient.
 
     The test also checks that the prompt genuinely contributes (per-token sum !=

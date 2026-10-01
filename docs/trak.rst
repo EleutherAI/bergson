@@ -10,9 +10,9 @@ A training example ``z_i`` is scored for a query ``z_q`` as
 
    \phi(z_q)^\top (\Phi^\top \Phi)^{-1} \phi(z_i) \,(1 - p_i)
 
-where :math:`\phi` is the projected per-example gradient of the output function :math:`\log p - \log(1 - p)`
-summed over the example's label tokens, :math:`\Phi` is the matrix of projected training gradients, one row
-per example, and :math:`p_i` is the mean probability of the example's label tokens. This is the language
+where :math:`\phi` is the projected per-sequence gradient of the output function :math:`\log p - \log(1 - p)`
+summed over the sequence's label tokens, :math:`\Phi` is the matrix of projected training gradients, one row
+per sequence, and :math:`p_i` is the mean probability of the sequence's label tokens. This is the language
 modeling form of TRAK from `DsDm <https://arxiv.org/abs/2401.12926>`_ (`reference implementation <https://github.com/MadryLab/trak>`).
 
 The Gram :math:`\Phi^\top \Phi` inverse is applied to the query gradients, for computational efficiency,

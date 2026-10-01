@@ -20,7 +20,7 @@ requires_cuda = pytest.mark.skipif(
 
 @pytest.fixture
 def small_dataset():
-    """Dataset with 4 examples, each length 5, all labels valid."""
+    """Dataset with 4 sequences, each length 5, all labels valid."""
     return Dataset.from_dict(
         {
             "input_ids": [[1, 2, 3, 4, 5]] * 4,
@@ -36,7 +36,7 @@ def grad_sizes():
 
 
 def _make_mod_grads(grad_sizes, batch_size, device="cpu", dtype=torch.float32):
-    """Create fake per-example gradients."""
+    """Create fake per-sequence gradients."""
     return {
         name: torch.randn(batch_size, dim, device=device, dtype=dtype)
         for name, dim in grad_sizes.items()
@@ -271,7 +271,7 @@ def test_inmemory_sequence_no_agg_no_hess(small_dataset, grad_sizes):
 
 @requires_cuda
 def test_inmemory_token_noncontiguous_indices(small_dataset, grad_sizes):
-    """Writing to non-contiguous example indices."""
+    """Writing to non-contiguous sequence indices."""
     cfg = PreprocessConfig(aggregation="none")
     builder = _make_builder(
         small_dataset,
