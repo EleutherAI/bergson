@@ -15,6 +15,8 @@ batch size) before committing to full LDS validation runs.
 
 import json
 import os
+import time
+from pathlib import Path
 
 import torch
 import torch.distributed as dist
@@ -155,9 +157,24 @@ def run_metasmoothness(run_cfg: MetasmoothnessConfig):
     """
     os.makedirs(run_cfg.run_path, exist_ok=True)
 
+    # HF datasets caches are not safe for concurrent writers, so the main node
+    # must finish populating the cache before others read from it. The barrier
+    # file is scoped to the Slurm job so a file left by an earlier run cannot
+    # release the wait early.
+    is_main_node = int(os.environ.get("SLURM_PROCID", 0)) == 0
+    multi_node = run_cfg.distributed.nnode > 1
+    job_id = os.environ.get("SLURM_JOB_ID", "")
+    barrier = Path(run_cfg.run_path) / f".preprocess_done{job_id}"
+    if multi_node and not is_main_node:
+        while not barrier.exists():
+            time.sleep(0.5)
+
     train_ds, train_n = setup_data_pipeline(run_cfg)
     train_ds = attach_doc_ids_if_missing(train_ds)
     train_ds = shuffled_epochs(train_ds, run_cfg.seed, max(1, run_cfg.num_epochs))
+
+    if multi_node and is_main_node:
+        barrier.touch()
 
     launch_distributed_run(
         "metasmoothness",
