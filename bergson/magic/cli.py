@@ -383,7 +383,7 @@ def save_magic_scores(
         keep = example_ids < len(scores)
         per_example_ntg = np.zeros(len(scores), dtype=np.int64)
         per_example_ntg[example_ids[keep]] = num_token_grads[keep]
-        per_example_doc_ids = np.zeros((len(scores), doc_ids.shape[1]), np.int64)
+        per_example_doc_ids = np.zeros((len(scores), *doc_ids.shape[1:]), np.int64)
         per_example_doc_ids[example_ids[keep]] = doc_ids[keep]
         num_token_grads, doc_ids = per_example_ntg, per_example_doc_ids
     elif padding:
