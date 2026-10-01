@@ -521,9 +521,9 @@ class ValidationConfig(TrainingConfig, ABC):
     (the rest stay at 1.0). ``0.0`` (default) is standard leave-k-out removal."""
 
     exclude_invalid_rows: bool = False
-    """When True, leave rows that weight no loss term out of the validation
-    pool: documents with fewer than 2 tokens or no supervised labels, and
-    per-token positions whose next token is unsupervised or padding."""
+    """When True, exclude examples that can't be meaningfully attributed from
+    analysis - documents with fewer than 2 tokens or no labels, or tokens whose
+    next token has no label."""
 
     method: Union[LDSConfig, FilterConfig, WeightStepConfig] = tagged_subgroups(
         {"lds": LDSConfig, "filter": FilterConfig, "weight_step": WeightStepConfig},
