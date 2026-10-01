@@ -1,0 +1,55 @@
+# Retrain the tf32 per-token MAGIC setup with the 10% most negative (proponent)
+# token scores weighted 0.2x (the inverse of the 5x upweight run), against a retrain
+# with a random 10% weighted 0.2x.
+# Only chunk positions 64 and later are eligible for either set; earlier
+# positions are zeroed in the score store and excluded.
+# Training settings match magic_tf32_pertoken_b.
+
+# Run with `bergson examples/bergson_paper/downweight_tf32_pertoken_post64.yaml`
+
+run_path: runs/deep_ignorance_ms/downweight_tf32_pertoken_post64
+steps:
+  - validate:
+      run_path: runs/deep_ignorance_ms/downweight_tf32_pertoken_post64
+      resume: true
+      scores: runs/deep_ignorance_ms/scores_tf32_pertoken_post64
+      exclude_zero_scores: true
+      model: EleutherAI/deep-ignorance-e2e-strong-filter
+      precision: fp32
+      use_tf32_matmuls: true
+      peft_init_kwargs: "r=32,lora_alpha=64,lora_dropout=0.0,target_modules=query_key_value|dense|dense_h_to_4h|dense_4h_to_h"
+      data:
+        dataset: runs/deep_ignorance_ms/mix_85_15
+        split: train
+        chunk_length: 1024
+      query:
+        data:
+          dataset: cais/wmdp
+          split: test
+          subset: wmdp-bio
+          prompt_column: question
+        aggregation: mean
+      distributed:
+        nproc_per_node: 4
+        nnode: 8
+      batch_size: 128
+      grad_accum_steps: 2
+      num_epochs: 1
+      lr_schedule:
+        lr_scheduler_type: constant_with_warmup
+        lr: 1.0e-5
+        warmup_steps: 20
+      adam_beta1: 0.9
+      adam_beta2: 0.999
+      adam_eps: 1.0e-8
+      eps_root: 1.0e-17
+      weight_decay: 0.0
+      seed: 42
+      subset_weight: 0.2
+      method:
+        kind: filter
+        direction: proponents
+        fraction: 0.1
+        controls:
+          kind: retrain
+          count: 1
