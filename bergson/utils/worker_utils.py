@@ -154,9 +154,16 @@ def setup_model_and_peft(
     cfg: ModelConfig,
     device_map_auto: bool = False,
     apply_fsdp: bool = True,
+    meta_init: bool = False,
     **model_kwargs,
 ) -> tuple[PreTrainedModel | PeftModel, set | None]:
-    """Handle model loading, quantization, FSDP, and PEFT detection"""
+    """Handle model loading, quantization, FSDP, and PEFT detection
+
+    ``meta_init`` builds the model on the meta device from its config instead
+    of reading the checkpoint, for callers that fill the parameters themselves
+    (see ``bergson.magic.shard_load``). Buffers come out empty, so such a
+    caller must materialise them before the first forward.
+    """
     apply_force_math_sdp(cfg)
 
     local_rank = cfg.distributed.local_rank
@@ -215,14 +222,23 @@ def setup_model_and_peft(
 
     model_kwargs.update(simple_parse_kwargs_string(cfg.model_kwargs))
 
-    model = AutoModelForCausalLM.from_pretrained(
-        base_model_path,
-        device_map=device_map,
-        quantization_config=quantization_config,
-        dtype=dtype,
-        revision=cfg.revision,
-        **model_kwargs,
-    )
+    if meta_init:
+        config = AutoConfig.from_pretrained(base_model_path, revision=cfg.revision)
+        with torch.device("meta"):
+            model = AutoModelForCausalLM.from_config(
+                config,
+                dtype=dtype,
+                **model_kwargs,
+            )
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            base_model_path,
+            device_map=device_map,
+            quantization_config=quantization_config,
+            dtype=dtype,
+            revision=cfg.revision,
+            **model_kwargs,
+        )
     apply_logit_scale(model, getattr(cfg, "logit_scale", 1.0))
     loss_reduction = getattr(cfg, "loss_reduction", "mean")
     model.loss_function = partial(weighted_causal_lm_ce, reduction=loss_reduction)
@@ -238,6 +254,10 @@ def setup_model_and_peft(
         # Initialize a fresh PEFT adapter
         peft_kwargs = simple_parse_kwargs_string(cfg.peft_init_kwargs)
         peft_type = PeftType(peft_kwargs.pop("peft_type", "LORA"))
+        if meta_init and peft_type == PeftType.LORA:
+            # The adapter is initialised per shard, not here, and the default
+            # init would run on meta tensors.
+            peft_kwargs["init_lora_weights"] = False
         peft_config_cls = PEFT_TYPE_TO_CONFIG_MAPPING[peft_type]
         model = get_peft_model(model, peft_config_cls(**peft_kwargs))
         target_modules = extract_peft_target_modules(model)

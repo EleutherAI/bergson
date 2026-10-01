@@ -39,6 +39,7 @@ from .grad_accum import (
 )
 from .optim import muon
 from .rtl_tqdm import RtlTqdm
+from .shard_load import ShardReader, materialize_buffers
 from .swap import swap_parameters
 
 LR_HISTORY_FILENAME = "log_history.json"
@@ -1062,26 +1063,22 @@ class Trainer:
 
 def prepare_trainer(cfg: TrainingConfig, rank: int, schedule: Callable):
     """Prepare the model, optimizer, and trainer for training."""
-    # simple_fsdp moves each parameter to the mesh device as it shards it, so a
-    # sharded run never needs the whole model on one GPU.
     shard = cfg.fsdp and dist.is_initialized()
 
-    # Sharding scatters from one source rank, so every rank still loads the
-    # weights into host memory first: a node needs nproc_per_node full replicas
-    # to get through this call.
+    # A sharded run reads no checkpoint here: the model is built on meta and
+    # every rank fills in only the slice it owns, so neither host memory nor
+    # one GPU ever has to hold the whole thing.
     model, target_modules = setup_model_and_peft(
         cfg,
         attn_implementation="eager",
         apply_fsdp=False,
+        meta_init=shard,
     )
 
     if shard:
-        # simple_fsdp only shards parameters, so move the buffers over here or
-        # they stay in host memory and the first forward fails.
-        for module in model.modules():
-            for name, buf in list(module._buffers.items()):
-                if buf is not None:
-                    module._buffers[name] = buf.to(get_device(rank))
+        # Meta leaves the buffers empty and the rotary tables live there, so
+        # the first forward would read unallocated storage.
+        materialize_buffers(model, model.config, get_device(rank))
     else:
         model.to(get_device(rank))  # type: ignore[reportArgumentType]
 
@@ -1108,8 +1105,16 @@ def prepare_trainer(cfg: TrainingConfig, rank: int, schedule: Callable):
     if shard:
         apply_dtensor_patch()
         mesh = init_device_mesh("cuda", (dist.get_world_size(),))
-        with mesh:
-            model = simple_fsdp(model)
+        reader = ShardReader(cfg.model, dist.get_world_size(), dist.get_rank())
+        device = get_device(rank)
+        try:
+            with mesh:
+                model = simple_fsdp(
+                    model,
+                    local_for=lambda path, param: reader.local(path, param).to(device),
+                )
+        finally:
+            reader.close()
 
     match cfg.optimizer:
         case "adamw":
