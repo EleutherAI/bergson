@@ -32,16 +32,17 @@ from bergson.hessians.preconditioner import (
 )
 from bergson.process_grads import normalize_and_aggregate_grads
 from bergson.score.candidates import select_candidates
-from bergson.score.output_influence import (
-    check_output_influence_supported,
-    output_token_influence,
-    query_directions,
-)
 from bergson.score.score_writer import (
     MemmapSequenceScoreWriter,
     MemmapTokenScoreWriter,
 )
 from bergson.score.scorer import Scorer
+from bergson.score.token_influence import (
+    check_token_influence_supported,
+    input_token_influence,
+    output_token_influence,
+    query_directions,
+)
 from bergson.utils.utils import (
     convert_precision_to_torch,
     dist_backend,
@@ -369,7 +370,7 @@ def score_worker(
         del kwargs["scorer"]
 
 
-def output_influence_worker(
+def token_influence_worker(
     rank: int,
     local_rank: int,
     world_size: int,
@@ -378,7 +379,8 @@ def output_influence_worker(
     preprocess_cfg: PreprocessConfig,
     ds: Dataset,
 ):
-    """Score every loss term in ``ds`` by its rate of change along the query."""
+    """Score every loss term or input token in ``ds`` by its rate of change
+    along the query."""
     if torch.cuda.is_available():
         torch.cuda.set_device(get_device_index(local_rank))
 
@@ -433,7 +435,14 @@ def output_influence_worker(
         index_cfg.token_batch_size,
         max_batch_size=index_cfg.max_batch_size,
     )
-    for indices in tqdm(batches, desc="Scoring output token influence"):
+    influence_fn = (
+        input_token_influence
+        if score_cfg.token_influence == "input"
+        else output_token_influence
+    )
+    for indices in tqdm(
+        batches, desc=f"Scoring {score_cfg.token_influence} token influence"
+    ):
         batch = ds[indices]
         x, y, _, collection_mask = pad_and_tensor(
             batch["input_ids"],
@@ -441,13 +450,16 @@ def output_influence_worker(
             device=device,
             sync_max_len=False,
         )
-        rates, losses = output_token_influence(
+        rates, losses = influence_fn(
             model, x, y, directions, index_cfg, batch.get("advantage")
         )
         per_doc_losses[indices] = losses
         if index_cfg.attribute_tokens:
-            # Row t of the token store is the loss on token t + 1.
-            rates = torch.cat([rates, rates.new_zeros(rates[:, :1].shape)], dim=1)
+            if score_cfg.token_influence == "output":
+                # Row t of the token store is the loss on token t + 1.
+                rates = torch.cat([rates, rates.new_zeros(rates[:, :1].shape)], dim=1)
+            # A document's last input token predicts no label, so dropping its
+            # always-zero input influence loses nothing.
             rates = rates[collection_mask]
         else:
             rates = rates.sum(dim=1)
@@ -515,8 +527,10 @@ def score_dataset(
     if score_cfg.candidates.scores and index_cfg.attribute_tokens:
         raise ValueError("score_cfg.candidates does not support attribute_tokens.")
 
-    if score_cfg.token_influence == "output":
-        check_output_influence_supported(index_cfg, preprocess_cfg)
+    if score_cfg.token_influence != "gradient":
+        check_token_influence_supported(
+            index_cfg, preprocess_cfg, score_cfg.token_influence
+        )
 
     processor = processor_for(index_cfg)
     processor.check_saved_projection(score_cfg.query_path, "The query")
@@ -545,8 +559,8 @@ def score_dataset(
     launch_distributed_run(
         "score",
         (
-            output_influence_worker
-            if score_cfg.token_influence == "output"
+            token_influence_worker
+            if score_cfg.token_influence != "gradient"
             else score_worker
         ),
         [index_cfg, score_cfg, preprocess_cfg, ds],
