@@ -776,9 +776,7 @@ def run_magic(
     # must finish populating the cache before others read from it.
     barrier = run_path / ".preprocess_done" if multi_node else None
     if barrier is not None and not is_main_node:
-        # Don't create run_path here: if this mkdir lands before the main
-        # node's exists() check above, the main node dies with
-        # FileExistsError. Polling the barrier works without the parent dir.
+        # Don't create run_path here to avoid multi-node hang.
         while not barrier.exists():
             time.sleep(0.5)
 
