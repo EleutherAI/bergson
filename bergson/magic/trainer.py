@@ -1062,12 +1062,28 @@ class Trainer:
 
 def prepare_trainer(cfg: TrainingConfig, rank: int, schedule: Callable):
     """Prepare the model, optimizer, and trainer for training."""
+    # simple_fsdp moves each parameter to the mesh device as it shards it, so a
+    # sharded run never needs the whole model on one GPU.
+    shard = cfg.fsdp and dist.is_initialized()
+
+    # Sharding scatters from one source rank, so every rank still loads the
+    # weights into host memory first: a node needs nproc_per_node full replicas
+    # to get through this call.
     model, target_modules = setup_model_and_peft(
         cfg,
         attn_implementation="eager",
         apply_fsdp=False,
     )
-    model.to(get_device(rank))  # type: ignore[reportArgumentType]
+
+    if shard:
+        # simple_fsdp only shards parameters, so move the buffers over here or
+        # they stay in host memory and the first forward fails.
+        for module in model.modules():
+            for name, buf in list(module._buffers.items()):
+                if buf is not None:
+                    module._buffers[name] = buf.to(get_device(rank))
+    else:
+        model.to(get_device(rank))  # type: ignore[reportArgumentType]
 
     # setup_model_and_peft leaves the model in from_pretrained's eval mode.
     if cfg.train_mode:
@@ -1089,7 +1105,7 @@ def prepare_trainer(cfg: TrainingConfig, rank: int, schedule: Callable):
             gradient_checkpointing_kwargs=dict(use_reentrant=False),
         )
 
-    if cfg.fsdp and dist.is_initialized():
+    if shard:
         apply_dtensor_patch()
         mesh = init_device_mesh("cuda", (dist.get_world_size(),))
         with mesh:
