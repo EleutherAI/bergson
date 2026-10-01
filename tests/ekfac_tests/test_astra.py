@@ -4,8 +4,9 @@ from datasets import Dataset
 from torch.func import functional_call, jacrev
 from transformers import GPT2Config, GPT2LMHeadModel
 
-from bergson.config import IndexConfig
-from bergson.hessians.astra import GaussNewtonProduct
+from bergson.config import AstraConfig, IndexConfig
+from bergson.hessians.astra import Astra, GaussNewtonProduct
+from bergson.utils.logger import get_logger
 
 
 @pytest.mark.parametrize("loss_reduction", [None, "mean"])
@@ -61,3 +62,28 @@ def test_gauss_newton_product_matches_explicit_jacobian(loss_reduction):
     product.micro_batch_size = 1
     chunked = product(v, indices)
     torch.testing.assert_close(torch.cat([chunked[n] for n in names]), expected)
+
+
+def test_scaled_start_has_the_lowest_objective_of_its_multiples():
+    """No other multiple of the starting point has a lower objective."""
+    h = torch.tensor([[2.0, 0.5], [0.5, 3.0]])
+    astra = object.__new__(Astra)
+    astra.names = ["layer"]
+    astra.num_docs = 4
+    astra.cfg = AstraConfig(batch_size=2, seed=0)
+    astra.damping = {"layer": torch.tensor(0.25)}
+    astra.logger = get_logger("test")
+    astra.hvp = lambda v, indices: {"layer": h @ v["layer"]}
+
+    q = {"layer": torch.tensor([1.0, -2.0])}
+    x = {"layer": torch.tensor([3.0, -4.0])}
+    start = x["layer"].clone()
+    astra._scale_start(q, x, row=0)
+
+    def objective(s):
+        v = s * start
+        return v @ (h @ v + astra.damping["layer"] * v) / 2 - v @ q["layer"]
+
+    scale = (x["layer"] / start)[0]
+    grid = torch.linspace(scale - 0.5, scale + 0.5, 101)
+    assert objective(scale) <= min(objective(s) for s in grid)
