@@ -773,8 +773,10 @@ def run_magic(
         save_run_config(run_cfg, run_path)
 
     # HF datasets caches are not safe for concurrent writers, so the main node
-    # must finish populating the cache before others read from it.
-    barrier = run_path / ".preprocess_done" if multi_node else None
+    # must finish populating the cache before others read from it. The job id
+    # keeps a stale barrier from releasing the wait early.
+    job_id = os.environ.get("SLURM_JOB_ID", "")
+    barrier = run_path / f".preprocess_done{job_id}" if multi_node else None
     if barrier is not None and not is_main_node:
         # Don't create run_path here to avoid multi-node hang.
         while not barrier.exists():
