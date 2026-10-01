@@ -1,0 +1,35 @@
+run_path: /mnt/ssd-1/lucia/bergson-astra//mnt/ssd-1/lucia/bergson-astra/runs/leaderboard_astra/source_fixed
+steps:
+- approxunrolling:
+    index_cfg:
+      run_path: /mnt/ssd-1/lucia/bergson-astra//mnt/ssd-1/lucia/bergson-astra/runs/leaderboard_astra/source_fixed
+      model: /mnt/ssd-1/lucia/bergson-astra/runs/leaderboard_astra/interval_pub/checkpoint-72
+      overwrite: false
+      precision: fp32
+      token_batch_size: 1024
+      filter_modules: lm_head
+      distributed:
+        nproc_per_node: 4
+        nnode: 1
+      data:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: train
+        chunk_length: 0
+    hessian_cfg:
+      method: kfac
+      hessian_dtype: fp32
+      ev_correction: true
+    approx_unrolling_cfg:
+      checkpoints:
+      - /mnt/ssd-1/lucia/bergson-astra/runs/leaderboard_astra/interval_pub/checkpoint-12
+      - /mnt/ssd-1/lucia/bergson-astra/runs/leaderboard_astra/interval_pub/checkpoint-24
+      - /mnt/ssd-1/lucia/bergson-astra/runs/leaderboard_astra/interval_pub/checkpoint-36
+      - /mnt/ssd-1/lucia/bergson-astra/runs/leaderboard_astra/interval_pub/checkpoint-48
+      - /mnt/ssd-1/lucia/bergson-astra/runs/leaderboard_astra/interval_pub/checkpoint-60
+      - /mnt/ssd-1/lucia/bergson-astra/runs/leaderboard_astra/interval_pub/checkpoint-72
+      segments: 3
+      query:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: test[0:50]
+        chunk_length: 0
+        aggregation: none
