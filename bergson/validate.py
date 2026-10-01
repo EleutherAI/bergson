@@ -1075,9 +1075,9 @@ def evaluate_retrained(
     # Load per-query attribution scores (mirrors run_magic's score loading).
     scores, multi_query = load_scores_loss_signed(score_path)
     if not multi_query:
-        assert scores.ndim == 1 or scores.shape[1] == 1, (
-            "evaluate_retrained expects per-doc (1D) scores"
-        )
+        assert (
+            scores.ndim == 1 or scores.shape[1] == 1
+        ), "evaluate_retrained expects per-doc (1D) scores"
         scores = scores.flatten()
 
     max_idx = max((int(s.max()) for s in subsets if len(s)), default=-1)
