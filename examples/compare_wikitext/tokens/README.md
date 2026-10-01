@@ -4,6 +4,7 @@ Per-token attribution on the WikiText leaderboard model (the `1_magic.yaml` run 
 |---|---|---|---|---|---|---|---|
 | MAGIC | 1.375 | [1.348, 1.403] | 1.368 | 1.175 | 1.592 | 0.0004 | 50/50 |
 | EK-FAC + ASTRA | 1.082 | [1.047, 1.116] | 1.082 | 0.818 | 1.369 | 0.0007 | 50/50 |
+| Eigenvalue-corrected Shampoo | 0.922 | [0.887, 0.957] | 0.922 | 0.671 | 1.270 | 0.0011 | 50/50 |
 | SOURCE (Adam, EK-FAC) | 0.908 | [0.877, 0.942] | 0.903 | 0.686 | 1.266 | 0.0004 | 50/50 |
 | EK-FAC | 0.863 | [0.833, 0.894] | 0.860 | 0.648 | 1.175 | 0.0006 | 50/50 |
 | KFAC | 0.786 | [0.758, 0.815] | 0.784 | 0.584 | 1.058 | 0.0008 | 50/50 |
@@ -21,6 +22,7 @@ Paired over queries, MAGIC exceeds EK-FAC + ASTRA by 0.293 [0.269, 0.317] and EK
 Every other method's rows are the forward-mode equivalent of its document score: row `t` is the method's share of the chunk's score from the loss on token `t + 1`, and a chunk's rows add up to its score.
 
 - KFAC (`kfac_tokens.yaml`) scores the preconditioned queries of `../kfac.yaml` like EK-FAC.
+- Eigenvalue-corrected Shampoo (`shampoo_tokens.yaml`) preconditions the query gradients of `../kfac.yaml` with the Shampoo factors of `../shampoo.yaml`.
 - SOURCE (`source_adam_tokens.yaml`) runs one pass per interval checkpoint along its segment's query (`query_grad_segment` of the `source_adam` run in `../source.yaml`), which `combine_tokens.py source` combines as SOURCE does.
 - Gradient cosine similarity, TrackStar and TRAK score along the full-parameter direction `direction_store.py` rebuilds from the doc-level run: the query preconditioned and normalized as its scorer does, mapped back through the random projection (per module for TrackStar, global for TRAK). `combine_tokens.py rescale` gives each chunk its doc-level normalization (the inverse norm of its training gradient); `combine_tokens.py trak` averages the eight members' log-odds passes as bergson averages members.
 - The gradient-free baselines split their document scores exactly (`token_baselines.py`): activation similarity by position, since its pooled activations are means over positions; BM25 by term occurrence, over the GPT-2 tokens an occurrence spans; Qwen3-Embedding, which pools a causal model's last token, by each token's change in the prefix embedding's cosine. Tokens with no lexical or embedding overlap score exactly zero, which the filter's `exclude_zero_scores` would drop from its pool, so `full_pool.py` gives them `+1e-30` and every method removes 1% of all training tokens.
@@ -39,12 +41,13 @@ done
 python examples/compare_wikitext/qld_from_filters.py runs/compare_wikitext/tokens
 ```
 
-The other rows (after `../kfac.yaml`, `../source.yaml`, `../gradient_cosine.yaml`, `../trackstar.yaml`, `../trak.yaml` and the gradient-free baselines written to `runs/compare_wikitext/baselines`):
+The other rows (after `../kfac.yaml`, `../shampoo.yaml`, `../source.yaml`, `../gradient_cosine.yaml`, `../trackstar.yaml`, `../trak.yaml` and the gradient-free baselines written to `runs/compare_wikitext/baselines`):
 
 ```bash
 T=examples/compare_wikitext/tokens; R=runs/compare_wikitext
 python -c "from bergson.utils.trainer_export import export_checkpoints; export_checkpoints('$R/interval', steps=[12, 24, 36, 48, 60, 72])"
 bergson $T/kfac_tokens.yaml
+bergson $T/shampoo_tokens.yaml
 bergson $T/source_adam_tokens.yaml
 python $T/combine_tokens.py source $R/source_adam $R/tokens $R/tokens/source_adam_tokens/scores
 python $T/direction_store.py $R/gradient_cosine/scores $R/tokens/gradient_cosine_direction
@@ -60,7 +63,7 @@ for b in activation bm25 qwen3; do
   python $T/token_baselines.py $b $R/tokens/${b}_tokens && python $T/token_baselines.py $b $R/tokens/${b}_tokens --merge
 done
 for b in bm25 qwen3; do python $T/full_pool.py $R/tokens/${b}_tokens/scores $R/tokens/${b}_tokens/full; done
-for f in kfac source_adam gradient_cosine trackstar trak bm25 qwen3 activation; do
+for f in kfac shampoo source_adam gradient_cosine trackstar trak bm25 qwen3 activation; do
   bergson $T/filter_${f}_tokens.yaml
 done
 python examples/compare_wikitext/qld_from_filters.py runs/compare_wikitext/tokens

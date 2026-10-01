@@ -105,6 +105,8 @@ Per-token attribution scores, which attribute each training token's loss term, e
      - 1.375 [1.348, 1.403]
    * - EK-FAC + ASTRA
      - 1.082 [1.047, 1.116]
+   * - Eigenvalue-corrected Shampoo
+     - 0.922 [0.887, 0.957]
    * - SOURCE (Adam, EK-FAC)
      - 0.908 [0.877, 0.942]
    * - EK-FAC
