@@ -158,3 +158,67 @@ def test_worker_forwards_grad_accum_and_clipping(monkeypatch):
 
     assert seen.get("grad_accum_steps") == 4
     assert seen.get("max_grad_norm") == 1.0
+
+
+def _free_port() -> int:
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _shard_score_worker(rank, world_size, port, thetas, out):
+    import torch.distributed as dist
+
+    from bergson.magic.metasmoothness import metasmoothness_score, total_movement_l1
+
+    dist.init_process_group(
+        "gloo",
+        init_method=f"tcp://127.0.0.1:{port}",
+        rank=rank,
+        world_size=world_size,
+    )
+    theta0, theta_h, theta_2h = thetas
+    n = theta0.numel() // world_size
+    piece = slice(rank * n, (rank + 1) * n)
+    score = metasmoothness_score(
+        theta0[piece], theta_h[piece], theta_2h[piece], reduce=True
+    )
+    moved = total_movement_l1(theta0[piece], theta_2h[piece], reduce=True)
+    if rank == 0:
+        out["score"] = score
+        out["movement"] = moved
+    dist.destroy_process_group()
+
+
+def test_sharded_score_matches_unsharded():
+    """Reducing over disjoint shards reproduces the whole-vector score.
+
+    This is what lets metasmoothness run under fsdp, where each rank only holds
+    its own slice of the parameters.
+    """
+    import torch.multiprocessing as mp
+
+    from bergson.magic.metasmoothness import metasmoothness_score
+
+    torch.manual_seed(0)
+    theta0 = torch.randn(64)
+    theta_h = theta0 + torch.randn(64)
+    theta_2h = theta_h + torch.randn(64)
+
+    want_score = metasmoothness_score(theta0, theta_h, theta_2h)
+    want_moved = float((theta_2h - theta0).abs().sum())
+
+    ctx = mp.get_context("spawn")
+    with ctx.Manager() as manager:
+        out = manager.dict()
+        mp.start_processes(
+            _shard_score_worker,
+            args=(2, _free_port(), (theta0, theta_h, theta_2h), out),
+            nprocs=2,
+            start_method="spawn",
+            join=True,
+        )
+        assert out["score"] == pytest.approx(want_score, abs=1e-6)
+        assert out["movement"] == pytest.approx(want_moved, rel=1e-6)
