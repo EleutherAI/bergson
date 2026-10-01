@@ -81,7 +81,7 @@ Indicative performance of data attribution methods in the finetuning regime.
    * - Projected gradient cosine similarity
      - 0.016 [0.012, 0.020]
      - 0.132 [0.103, 0.159]
-   * - Activation similarity + MAC
+   * - Activation similarity (activation covariance preconditioner)
      - 0.055 [0.043, 0.069]
      - 0.157 [0.120, 0.192]
    * - Activation similarity
