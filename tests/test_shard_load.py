@@ -1,5 +1,6 @@
 """Unit tests for the streaming shard loader's pure logic."""
 
+import pytest
 import torch
 
 from bergson.magic.shard_load import checkpoint_key, chunk_bounds, lora_init
@@ -74,3 +75,59 @@ def test_lora_b_is_zero_and_a_is_bounded():
     bound = 1.0 / 128**0.5
     assert a.abs().max() <= bound
     assert a.abs().max() > bound / 2  # actually spread over the range
+
+
+def test_slices_reconstruct_the_checkpoint():
+    """Concatenating every rank's slice must give back the checkpoint tensor.
+
+    chunk_bounds being right is not enough: the reader also has to map the
+    parameter path to the right key and read the right rows. If it did not,
+    training would still run and produce plausible-looking scores from a
+    scrambled model.
+    """
+    import glob
+
+    pytest.importorskip("safetensors")
+    from safetensors import safe_open
+
+    try:
+        from huggingface_hub import snapshot_download
+
+        root = snapshot_download("EleutherAI/pythia-160m", local_files_only=True)
+    except Exception:  # noqa: BLE001
+        pytest.skip("pythia-160m is not in the local hub cache")
+
+    from bergson.magic.shard_load import ShardReader
+
+    files = glob.glob(f"{root}/*.safetensors")
+    assert files, "no safetensors in the cached snapshot"
+
+    truth = {}
+    with safe_open(files[0], framework="pt") as handle:
+        for key in handle.keys():  # noqa: SIM118
+            tensor = handle.get_tensor(key)
+            # Legacy scalar buffers are not parameters and never get sharded.
+            if tensor.dim() > 0:
+                truth[key] = tensor
+            if len(truth) >= 12:
+                break
+
+    empties = 0
+    for world in (1, 3, 4, 128):
+        readers = [
+            ShardReader("EleutherAI/pythia-160m", world, r) for r in range(world)
+        ]
+        try:
+            for key, full in truth.items():
+                pieces = []
+                for rank in range(world):
+                    lo, hi = chunk_bounds(full.shape[0], world, rank)
+                    got = readers[rank].local("base_model.model." + key, full)
+                    assert got.shape[0] == hi - lo
+                    empties += got.shape[0] == 0
+                    pieces.append(got)
+                assert torch.equal(torch.cat(pieces, dim=0), full), (key, world)
+        finally:
+            for reader in readers:
+                reader.close()
+    assert empties > 0, "the world=128 case should produce empty shards"
