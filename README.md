@@ -71,12 +71,19 @@ Per-module and per-attention head gradients can be extracted from the store.
 
 Use `bergson validate` and `bergson recall` to compute LDS and recall@k metrics respectively.
 
-# Examples
+# Getting Started
 
-There are many example YAMLs in the `examples` directory. use `bergson <yaml_path>` to try them. For example, to MAGIC-attribute a GPT-2 WikiText fine-tune:
+There are many example YAMLs in the `examples` directory, including various paper experiment replications. Use `bergson <yaml_path>` to run them. For example, to MAGIC-attribute a GPT-2 WikiText fine-tune:
 
 ```bash
 bergson examples/magic/gpt2_wikitext_tiny.yaml
+```
+
+You can use the same fields used to specify experiments in the YAMLs to run experiments from the Bergson CLI. For example, to construct and query an on-disk index of randomly projected gradients from the CLI:
+
+```bash
+bergson build runs/index --model EleutherAI/pythia-14m --dataset NeelNanda/pile-10k --truncation --token_batch_size 4096 --projection_dim 16
+bergson query --index runs/index --unit_norm
 ```
 
 Or check out a notebook for programmatic usage:
@@ -85,13 +92,6 @@ Or check out a notebook for programmatic usage:
 |---|----------|-------------|
 | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/EleutherAI/bergson/blob/main/notebooks/poison_detection.ipynb) | **Poison Detection** | Detect poisoned training examples with gradient attribution (T4, ~5 min) |
 | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/EleutherAI/bergson/blob/main/notebooks/style_ablation.ipynb) | **Style Ablation** | Suppress style to recover semantic matching (A100, ~20 min) |
-
-Construct and query an on-disk index of randomly projected gradients from the CLI:
-
-```bash
-bergson build runs/index --model EleutherAI/pythia-14m --dataset NeelNanda/pile-10k --truncation --token_batch_size 4096 --projection_dim 16
-bergson query --index runs/index --unit_norm
-```
 
 # Development
 
