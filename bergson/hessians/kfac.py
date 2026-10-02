@@ -71,8 +71,12 @@ class CovarianceCollector(HookCollectorBase):
                     self.S_shapes[name], device=device, dtype=self.dtype
                 )
 
-    def with_batch(self, collection_mask: Tensor | None = None):
-        super().with_batch(collection_mask)
+    def with_batch(
+        self,
+        collection_mask: Tensor | None = None,
+        spans: tuple[Tensor, Tensor] | None = None,
+    ):
+        super().with_batch(collection_mask, spans)
         if self.owners is not None and collection_mask is not None:
             # Every rank pads its positions to the batch's largest count.
             counts = gather_batch_shapes(

@@ -49,6 +49,7 @@ class GradientCollectorWithDistributedAutocorrelationMatrices(HookCollectorBase)
             self.model.device, torch.device
         ), "Model device is not set correctly"
         self.attribute_tokens = self.cfg.attribute_tokens
+        self.span_column = self.cfg.data.span_column
         self.owned_modules: set[str] = set()
         self.module_to_rank: dict[str, int] = {}
 
