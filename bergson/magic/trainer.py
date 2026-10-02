@@ -28,7 +28,11 @@ from ..utils.utils import get_device
 from ..utils.worker_utils import setup_model_and_peft
 from .data_stream import DataStream
 from .dtensor_patch import apply_dtensor_patch
-from .fsdp import shallow_copy, simple_fsdp
+from .fsdp import (
+    shallow_copy,
+    simple_fsdp,
+    tensor_parallel_from_checkpoint,
+)
 from .grad_accum import (
     accumulate_grads,
     maybe_get_cuda_rng_state,
@@ -41,6 +45,12 @@ from .optim import muon
 from .rtl_tqdm import RtlTqdm
 from .shard_load import ShardReader, materialize_buffers
 from .swap import swap_parameters
+from .tensor_parallel import (
+    data_parallel_group,
+    data_parallel_world_size,
+    parallel_mesh,
+    tensor_parallel_active,
+)
 
 LR_HISTORY_FILENAME = "log_history.json"
 """Per-step LRs in HF's ``log_history`` shape, written beside a run's
@@ -457,28 +467,56 @@ class Trainer:
         max_grad_norm: float | None = None,
     ) -> TrainerState:
         """Reduce/clip ``grads`` and apply one optimizer update to ``state``."""
+        # The data-parallel average. Under tensor parallelism the gradients are
+        # DTensors (replicated over dp, sharded over tp) but NOTHING averages
+        # them across dp: fsdp gets that from ReplicateComputation's
+        # to_local(grad_placements=Partial("avg")), and the column-parallel
+        # forward takes a plain to_local(), so each data-parallel replica holds
+        # the gradient of its own rows while claiming to be a replica. The
+        # reduction is therefore done here, on the local shard over the dp
+        # group, and re-wrapped. Skipping it was measured: tp=2 x dp=2 scored
+        # r = 0.710 against plain DDP, where tp=2 x dp=1 scored 0.9995.
         if dist.is_initialized() and not fsdp:
+            group = data_parallel_group() or dist.distributed_c10d._get_default_group()
+            n_dp = data_parallel_world_size()
+
+            # One collective for the whole gradient rather than one per
+            # tensor: a LoRA on a deep model has several hundred of them, and
+            # at 64 data-parallel replicas the per-tensor all-reduces alone
+            # were measured at ~15s of a 62s training step.
+            keys = list(grads)
+            locals_ = [
+                g.to_local() if isinstance(g, DTensor) else g for g in grads.values()
+            ]
+            flat = torch.cat([t.reshape(-1) for t in locals_])
             if trace:
                 # Twice-differentiable all-reduce.
-                grads = {
-                    k: cast(
-                        torch.Tensor,
-                        _ReplicatedAllReduceSum.apply(
-                            g / dist.get_world_size(),
-                            dist.distributed_c10d._get_default_group(),
-                        ),
-                    )
-                    for k, g in grads.items()
-                }
+                flat = cast(
+                    torch.Tensor,
+                    _ReplicatedAllReduceSum.apply(flat / n_dp, group),
+                )
             else:
-                for g in grads.values():
-                    dist.all_reduce(g, op=dist.ReduceOp.AVG)
+                dist.all_reduce(flat, op=dist.ReduceOp.AVG, group=group)
+            parts = flat.split([t.numel() for t in locals_])
+            averaged = {}
+            for k, g, local, part in zip(keys, grads.values(), locals_, parts):
+                out = part.reshape(local.shape)
+                if isinstance(g, DTensor):
+                    out = DTensor.from_local(
+                        out,
+                        g.device_mesh,
+                        g.placements,
+                        shape=g.shape,
+                        stride=g.stride(),
+                    )
+                averaged[k] = out
+            grads = averaged
 
         # Clip by global norm over all params and ranks/FSDP shards.
         if max_grad_norm:
             # cast: sum()'s int start value widens the type to `Tensor | int`.
             sq_norm = cast(torch.Tensor, sum(g.pow(2).sum() for g in grads.values()))
-            if fsdp:
+            if fsdp or tensor_parallel_active():
                 # Sharded grads give a partial sum; redistribute (autograd-aware) to
                 # sum across the mesh. DDP grads are already all-reduced above.
                 assert isinstance(
@@ -496,6 +534,44 @@ class Trainer:
             else:
                 for g in grads.values():
                     g.mul_(coef)
+
+        if tensor_parallel_active() and not fsdp:
+            # The optimizer is elementwise, so it runs on each rank's local
+            # shard and the results are re-wrapped. Run on the DTensors
+            # themselves, every op of every parameter goes through DTensor's
+            # Python dispatch, whose cost grows with the mesh: measured at
+            # 64 x 4 ranks, ~30s of a 62s training step sat in torchopt's
+            # moment update.
+            def _local(t):
+                return t.to_local() if isinstance(t, DTensor) else t
+
+            def _like(new, ref):
+                if not isinstance(ref, DTensor) or isinstance(new, DTensor):
+                    return new
+                return DTensor.from_local(
+                    new,
+                    ref.device_mesh,
+                    ref.placements,
+                    shape=ref.shape,
+                    stride=ref.stride(),
+                )
+
+            l_params = {k: _local(p) for k, p in state.params.items()}
+            l_updates, l_state = self.optimizer.update(
+                {k: _local(g) for k, g in grads.items()},
+                torchopt.pytree.tree_map(_local, state.opt_state),
+                inplace=inplace,
+                params=l_params,
+            )
+            l_new = torchopt.apply_updates(l_params, l_updates, inplace=inplace)
+            new_params = {k: _like(l_new[k], state.params[k]) for k in l_new}
+            new_state = torchopt.pytree.tree_map(_like, l_state, state.opt_state)
+            return TrainerState(
+                new_params,
+                new_state,
+                state.buffers,
+                state.batch_index + 1,
+            )
 
         updates, new_state = self.optimizer.update(
             grads, state.opt_state, inplace=inplace, params=state.params
@@ -1034,11 +1110,12 @@ class Trainer:
                 if dist.is_initialized() and not fsdp:
                     # The all-reduce above correctly gives the true, averaged
                     # gradient for the parameter update. But a given document
-                    # only contributes to 1/world_size of that average, so to
-                    # recover its score from the average gradient we divide
-                    # by world_size.
+                    # only contributes to 1/N of that average, so to recover
+                    # its score from the average gradient we divide by N --
+                    # the number of data-parallel peers, which is the whole
+                    # world unless tensor parallelism narrowed it.
                     this_step_weight_grad = (
-                        this_step_weight_grad / dist.get_world_size()
+                        this_step_weight_grad / data_parallel_world_size()
                     )
                 weight_grads = this_step_weight_grad + w_grads
                 bwd_state = BackwardState(param_grads, result[:-1], weight_grads)
@@ -1065,6 +1142,26 @@ def prepare_trainer(cfg: TrainingConfig, rank: int, schedule: Callable):
     """Prepare the model, optimizer, and trainer for training."""
     shard = cfg.fsdp and dist.is_initialized()
 
+    # BERGSON_TP=<width> shards every nn.Linear across <width> ranks and
+    # computes against the shard, instead of gathering each weight to full size
+    # the way cfg.fsdp does. The two are alternatives, not layers: fsdp shards
+    # storage and replicates computation, which is what makes MAGIC's double
+    # backward hold the whole model resident. Set cfg.fsdp false when using
+    # this.
+    tp_width = int(os.environ.get("BERGSON_TP", "1"))
+    use_tp = tp_width > 1 and dist.is_initialized()
+    if use_tp and shard:
+        raise ValueError(
+            "BERGSON_TP and fsdp: true are alternatives, not layers. fsdp "
+            "gathers each weight to full size before use, which is the cost "
+            "BERGSON_TP exists to avoid. Set fsdp: false."
+        )
+    if use_tp and dist.get_world_size() % tp_width:
+        raise ValueError(
+            f"BERGSON_TP={tp_width} does not divide world size "
+            f"{dist.get_world_size()}; the dp x tp mesh would be ragged."
+        )
+
     # A sharded run reads no checkpoint here: the model is built on meta and
     # every rank fills in only the slice it owns, so neither host memory nor
     # one GPU ever has to hold the whole thing.
@@ -1072,15 +1169,28 @@ def prepare_trainer(cfg: TrainingConfig, rank: int, schedule: Callable):
         cfg,
         attn_implementation="eager",
         apply_fsdp=False,
-        meta_init=shard,
+        meta_init=shard or use_tp,
     )
 
     if shard:
         # Meta leaves the buffers empty and the rotary tables live there, so
         # the first forward would read unallocated storage.
         materialize_buffers(model, model.config, get_device(rank))
-    else:
+    elif not use_tp:
         model.to(get_device(rank))  # type: ignore[reportArgumentType]
+        # BERGSON_LORA_INIT=1 gives an ordinarily loaded model the same adapter
+        # initialisation the streaming loaders synthesise. Without it a
+        # sharded run and an unsharded one are different models from step 0 --
+        # PEFT draws lora_A from its own RNG, the loaders from a crc32 of the
+        # parameter path -- and comparing their gradients or scores compares
+        # two random inits, not two code paths.
+        if os.environ.get("BERGSON_LORA_INIT") == "1":
+            from .shard_load import is_adapter_path, lora_init
+
+            with torch.no_grad():
+                for _n, _p in model.named_parameters():
+                    if is_adapter_path(_n):
+                        _p.copy_(lora_init(_n, _p.shape, _p.dtype).to(_p.device))
 
     # setup_model_and_peft leaves the model in from_pretrained's eval mode.
     if cfg.train_mode:
@@ -1100,6 +1210,27 @@ def prepare_trainer(cfg: TrainingConfig, rank: int, schedule: Callable):
     if cfg.grad_checkpointing:
         model.gradient_checkpointing_enable(  # type: ignore[attr-defined]
             gradient_checkpointing_kwargs=dict(use_reentrant=False),
+        )
+
+    if use_tp:
+        # dp x tp. Data-parallel reductions must be restricted to the dp group:
+        # ranks inside a tp group hold different slices of each weight and must
+        # not average with each other.
+        # Already built (and the dp group already registered) by
+        # parallel_mesh() at worker startup; this just retrieves it.
+        tp_mesh = parallel_mesh()
+        if tp_mesh is None:
+            raise RuntimeError(
+                "BERGSON_TP is set but parallel_mesh() returned None; the mesh "
+                "must be built before the data stream is constructed."
+            )
+        model = tensor_parallel_from_checkpoint(
+            model,
+            cfg.model,
+            tp_mesh["tp"].get_group(),
+            get_device(rank),
+            model.config,
+            dp_tp_mesh=tp_mesh,
         )
 
     if shard:

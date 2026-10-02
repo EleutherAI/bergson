@@ -126,8 +126,20 @@ class DataStream:
         if weight_shape is None:
             weight_shape = (self.n,)
 
-        self.rank = dist.get_rank() if dist.is_initialized() else 0
-        self.world_size = dist.get_world_size() if dist.is_initialized() else 1
+        # Rows are split across data-parallel peers only. Under tensor
+        # parallelism the ranks inside a tp group jointly hold one model and
+        # must therefore process the SAME rows; splitting by global rank would
+        # give each of them different data and silently compute a different
+        # model's gradient. data_parallel_group() is None until a tp mesh is
+        # configured, and None is torch's own spelling of the default group, so
+        # this is the previous behaviour verbatim in the flat case.
+        from .tensor_parallel import data_parallel_group
+
+        group = data_parallel_group()
+        self.rank = dist.get_rank(group=group) if dist.is_initialized() else 0
+        self.world_size = (
+            dist.get_world_size(group=group) if dist.is_initialized() else 1
+        )
         self.weights = torch.nn.Parameter(torch.ones(*weight_shape, device=device))
 
     @property

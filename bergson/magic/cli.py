@@ -18,6 +18,7 @@ from torch.distributed._functional_collectives import (
 from torch.distributed._functional_collectives import (
     wait_tensor,
 )
+from torch.distributed.tensor import DTensor
 from torchopt.pytree import tree_iter
 from tqdm import tqdm
 from transformers import AutoTokenizer
@@ -60,6 +61,11 @@ from .data_stream import (
 )
 from .grad_accum import accumulate_grads
 from .score_plot import plot_score_trajectory
+from .tensor_parallel import (
+    data_parallel_group,
+    data_parallel_world_size,
+    parallel_mesh,
+)
 from .trainer import BackwardState, TrainerState, prepare_trainer, write_lr_history
 
 
@@ -134,8 +140,21 @@ def compute_query_gradients(
     assert grad_accum is not None, "Query stream was empty"
 
     if dist.is_initialized():
+        # Over the data-parallel group, not the whole world, and for the same
+        # reason the gradient sum above is: ranks inside a tensor-parallel
+        # group process the SAME query rows, so adding their token counts
+        # over-counts the denominator by the tensor-parallel width and makes
+        # the query gradient that much too small. The numerator and the
+        # denominator have to be reduced over the same set of ranks.
+        #
+        # Measured at tp=4, dp=1 before this: the seeded cotangent entering the
+        # reverse pass was 5.889806e-01 against 4.762609e+00 for a single-GPU
+        # reference, and sharding alone accounts for only a factor of two, so
+        # the residue was 4 = tp. data_parallel_group() is None without a tp
+        # mesh, which is torch's spelling of the default group, so this is
+        # unchanged for fsdp and DDP.
         denom_t = torch.tensor(denom, device=current_device())
-        dist.all_reduce(denom_t)
+        dist.all_reduce(denom_t, group=data_parallel_group())
         denom = int(denom_t.item())
 
     if method != "sum":
@@ -145,21 +164,45 @@ def compute_query_gradients(
         loss_accum /= denom
 
     if dist.is_initialized():
+        # Skipped under tensor parallelism for the same reason as the other
+        # hand-rolled data-parallel reductions: the gradients are DTensors and
+        # their placements already carry the reduction, while passing one to
+        # the functional collective raises "Operator
+        # _c10d_functional.all_reduce.default does not have a sharding
+        # strategy registered".
+        #
+        # The group is the data-parallel one, not the whole world. Each rank
+        # holds the gradient of its own slice of the query set, so the sum runs
+        # over data-parallel peers; ranks inside a tp group share query rows
+        # and must not be summed with each other. data_parallel_group() is
+        # None until a tp mesh exists, which is torch's spelling of the default
+        # group, so this is unchanged without tensor parallelism.
         if not fsdp:
-            grad_accum = {
-                k: wait_tensor(
-                    differentiable_all_reduce(
-                        g,
-                        "sum",
-                        dist.distributed_c10d._get_default_group(),
-                    )
+            _group = data_parallel_group() or dist.distributed_c10d._get_default_group()
+
+            def _dp_sum(g):
+                # On the local shard, then re-wrapped: the functional collective
+                # has no sharding strategy for a DTensor, and under tensor
+                # parallelism nothing else sums the query gradient across the
+                # data-parallel replicas (see Trainer._apply_update).
+                is_dt = isinstance(g, DTensor)
+                local = g.to_local() if is_dt else g
+                out = wait_tensor(differentiable_all_reduce(local, "sum", _group))
+                if not is_dt:
+                    return out
+                return DTensor.from_local(
+                    out, g.device_mesh, g.placements, shape=g.shape, stride=g.stride()
                 )
-                for k, g in grad_accum.items()
-            }
+
+            grad_accum = {k: _dp_sum(g) for k, g in grad_accum.items()}
 
         # Loss is never a DTensor
+        # Same group as the denominator above. Summing over the whole world
+        # counts the query loss once per tensor-parallel rank: a 70B run at
+        # tp=32 reported a baseline loss of 103.73 where the per-step training
+        # losses were 3.56 and 1.88, and 103.73 / 32 = 3.24.
         loss_tensor = torch.tensor(loss_accum, device=current_device())
-        dist.all_reduce(loss_tensor)
+        dist.all_reduce(loss_tensor, group=data_parallel_group())
         loss_accum = loss_tensor.item()
 
     return grad_accum, float(loss_accum)
@@ -289,7 +332,18 @@ def compute_per_query_magic_scores(
             state_prefix=f"backward_q{qi}",
         )
         if world_size > 1:
-            dist.all_reduce(bwd_state.weight_grads, op=dist.ReduceOp.SUM)
+            # Over the data-parallel group. Measured per rank at tp=2: the two
+            # ranks of a tensor-parallel group hold IDENTICAL weight gradients
+            # (cosine 1.000000, norm ratio 1.0000), so each one already has the
+            # whole score and summing across them over-counts by the
+            # tensor-parallel width. The backward's dual collectives gather the
+            # other shards' contributions, which is why a rank's value is
+            # complete rather than its own shard's share.
+            dist.all_reduce(
+                bwd_state.weight_grads,
+                op=dist.ReduceOp.SUM,
+                group=data_parallel_group(),
+            )
 
         s = padding.trim(bwd_state.weight_grads.detach().cpu())
         if main:
@@ -460,8 +514,22 @@ def worker(
             world_size=world_size,
         )
 
-    # Ensure total effective batch size is divisible by world size
-    assert run_cfg.batch_size % world_size == 0
+    # Build the dp x tp mesh now: after the process group exists and before
+    # anything reads the data-parallel group. DataStream splits rows across
+    # data-parallel peers and is constructed below. Placing this before
+    # init_process_group silently did nothing -- parallel_mesh() returns None
+    # when dist is not initialised -- and the stream went on splitting rows
+    # across the whole world, so each rank in a tp group got a DIFFERENT
+    # sequence while the group jointly held one model. Measured: ids_shape
+    # (1, 1024) per rank instead of (4, 1024) and step-0 loss 7.9956903458
+    # against 2.7764315605. No-op unless BERGSON_TP is set.
+    parallel_mesh()
+
+    # The batch is split across data-parallel peers, so that is the width that
+    # has to divide it. Under tensor parallelism the ranks of a tp group share
+    # rows, and requiring the whole world to divide the batch rejects valid
+    # layouts (batch 8 on a dp=1 x tp=32 mesh failed here).
+    assert run_cfg.batch_size % data_parallel_world_size() == 0
 
     # Plain magic runs enter with score_path="" (scores are computed below).
     per_token = (isinstance(run_cfg, MagicConfig) and run_cfg.attribute_tokens) or (
@@ -699,7 +767,18 @@ def worker(
             double_backward_batch_size=run_cfg.double_backward_batch_size,
         )
         if world_size > 1:
-            dist.all_reduce(bwd_state.weight_grads, op=dist.ReduceOp.SUM)
+            # Over the data-parallel group. Measured per rank at tp=2: the two
+            # ranks of a tensor-parallel group hold IDENTICAL weight gradients
+            # (cosine 1.000000, norm ratio 1.0000), so each one already has the
+            # whole score and summing across them over-counts by the
+            # tensor-parallel width. The backward's dual collectives gather the
+            # other shards' contributions, which is why a rank's value is
+            # complete rather than its own shard's share.
+            dist.all_reduce(
+                bwd_state.weight_grads,
+                op=dist.ReduceOp.SUM,
+                group=data_parallel_group(),
+            )
 
         scores = padding.trim(bwd_state.weight_grads.cpu())
 
