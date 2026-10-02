@@ -21,6 +21,7 @@ from torch import nn
 
 from ..distributed import grad_tree
 from .swap import swap_parameters
+from .tensor_parallel import data_parallel_world_size
 
 if TYPE_CHECKING:
     from .trainer import TrainerState
@@ -190,6 +191,24 @@ def microbatch_step_vjp(
     flat_inputs = fwd_state.differentiable_tensors()
     param_keys = list(param_grads.keys())
     param_index = {key: i for i, key in enumerate(param_keys)}
+
+    # ``param_cotangents[i]`` below pairs ``direct_cotangents[i]``, which is
+    # aligned to ``flat_inputs`` (i.e. fwd_state.params order), with
+    # ``param_keys[i]`` (param_grads order). That is only correct while the two
+    # dicts iterate in the same order, and nothing else enforces it, so a
+    # reordering upstream would silently attach each cotangent to the wrong
+    # parameter -- plausible scores, wrong values, no error.
+    state_keys = list(fwd_state.params.keys())
+    if state_keys != param_keys:
+        mismatch = next(
+            (i for i, (a, b) in enumerate(zip(state_keys, param_keys)) if a != b),
+            "len",
+        )
+        raise AssertionError(
+            "param_grads and fwd_state.params disagree on order; cotangents "
+            f"would be mispaired. First mismatch at {mismatch}: "
+            f"state={state_keys[:3]}... grads={param_keys[:3]}..."
+        )
     num_params = len(param_keys)
     num_inputs = len(flat_inputs)
 
@@ -329,10 +348,10 @@ def microbatch_step_vjp(
                 weight_cotangent = weight_cotangent + data_weights_grad
 
     if dist.is_initialized() and not fsdp:
-        # Same 1/world_size correction as the single-shot path in
-        # `Trainer.backward`: a document only contributes to 1/world_size of
-        # the averaged gradient the all-reduce produces.
-        weight_cotangent = weight_cotangent / dist.get_world_size()
+        # Same correction as the single-shot path in `Trainer.backward`: a
+        # document only contributes to 1/N of the averaged gradient the
+        # all-reduce produces, over the data-parallel peers.
+        weight_cotangent = weight_cotangent / data_parallel_world_size()
 
     param_cotangent_dict = {
         key: param_cotangents[i] for i, key in enumerate(param_keys)
