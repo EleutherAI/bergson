@@ -480,29 +480,37 @@ class Trainer:
             group = data_parallel_group() or dist.distributed_c10d._get_default_group()
             n_dp = data_parallel_world_size()
 
-            def _dp_average(g: torch.Tensor) -> torch.Tensor:
-                is_dt = isinstance(g, DTensor)
-                local = g.to_local() if is_dt else g
-                if trace:
-                    # Twice-differentiable all-reduce.
-                    out = cast(
-                        torch.Tensor,
-                        _ReplicatedAllReduceSum.apply(local / n_dp, group),
-                    )
-                else:
-                    out = local.clone() if is_dt else local
-                    dist.all_reduce(out, op=dist.ReduceOp.AVG, group=group)
-                if not is_dt:
-                    return out
-                return DTensor.from_local(
-                    out,
-                    g.device_mesh,
-                    g.placements,
-                    shape=g.shape,
-                    stride=g.stride(),
+            # One collective for the whole gradient rather than one per
+            # tensor: a LoRA on a deep model has several hundred of them, and
+            # at 64 data-parallel replicas the per-tensor all-reduces alone
+            # were measured at ~15s of a 62s training step.
+            keys = list(grads)
+            locals_ = [
+                g.to_local() if isinstance(g, DTensor) else g for g in grads.values()
+            ]
+            flat = torch.cat([t.reshape(-1) for t in locals_])
+            if trace:
+                # Twice-differentiable all-reduce.
+                flat = cast(
+                    torch.Tensor,
+                    _ReplicatedAllReduceSum.apply(flat / n_dp, group),
                 )
-
-            grads = {k: _dp_average(g) for k, g in grads.items()}
+            else:
+                dist.all_reduce(flat, op=dist.ReduceOp.AVG, group=group)
+            parts = flat.split([t.numel() for t in locals_])
+            averaged = {}
+            for k, g, local, part in zip(keys, grads.values(), locals_, parts):
+                out = part.reshape(local.shape)
+                if isinstance(g, DTensor):
+                    out = DTensor.from_local(
+                        out,
+                        g.device_mesh,
+                        g.placements,
+                        shape=g.shape,
+                        stride=g.stride(),
+                    )
+                averaged[k] = out
+            grads = averaged
 
         # Clip by global norm over all params and ranks/FSDP shards.
         if max_grad_norm:
@@ -526,6 +534,44 @@ class Trainer:
             else:
                 for g in grads.values():
                     g.mul_(coef)
+
+        if tensor_parallel_active() and not fsdp:
+            # The optimizer is elementwise, so it runs on each rank's local
+            # shard and the results are re-wrapped. Run on the DTensors
+            # themselves, every op of every parameter goes through DTensor's
+            # Python dispatch, whose cost grows with the mesh: measured at
+            # 64 x 4 ranks, ~30s of a 62s training step sat in torchopt's
+            # moment update.
+            def _local(t):
+                return t.to_local() if isinstance(t, DTensor) else t
+
+            def _like(new, ref):
+                if not isinstance(ref, DTensor) or isinstance(new, DTensor):
+                    return new
+                return DTensor.from_local(
+                    new,
+                    ref.device_mesh,
+                    ref.placements,
+                    shape=ref.shape,
+                    stride=ref.stride(),
+                )
+
+            l_params = {k: _local(p) for k, p in state.params.items()}
+            l_updates, l_state = self.optimizer.update(
+                {k: _local(g) for k, g in grads.items()},
+                torchopt.pytree.tree_map(_local, state.opt_state),
+                inplace=inplace,
+                params=l_params,
+            )
+            l_new = torchopt.apply_updates(l_params, l_updates, inplace=inplace)
+            new_params = {k: _like(l_new[k], state.params[k]) for k in l_new}
+            new_state = torchopt.pytree.tree_map(_like, l_state, state.opt_state)
+            return TrainerState(
+                new_params,
+                new_state,
+                state.buffers,
+                state.batch_index + 1,
+            )
 
         updates, new_state = self.optimizer.update(
             grads, state.opt_state, inplace=inplace, params=state.params
