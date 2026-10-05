@@ -217,7 +217,6 @@ def setup_model_and_peft(
     model_kwargs.update(simple_parse_kwargs_string(cfg.model_kwargs))
 
     if meta_init:
-        # from_config passes kwargs to the model, not the config
         config = AutoConfig.from_pretrained(
             base_model_path, revision=cfg.revision, **model_kwargs
         )
