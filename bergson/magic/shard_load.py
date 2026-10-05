@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import zlib
 from pathlib import Path
 
@@ -24,6 +25,18 @@ def checkpoint_key(path: str) -> str:
     """Checkpoint name for a PEFT-wrapped parameter path."""
     path = path.removeprefix("base_model.model.")
     return path.replace(".base_layer.", ".")
+
+
+def is_adapter_path(path: str) -> bool:
+    """Is this a PEFT adapter weight, i.e. created rather than loaded?
+
+    The readers below synthesise a tensor when a key is absent from the
+    checkpoint. That is right for adapters and catastrophic for anything else:
+    a base weight whose key fails to map would be silently replaced by random
+    uniform values, with no error and a plausible-looking model. Measured once:
+    step-0 training loss 7.9956903458 instead of 2.7764315605.
+    """
+    return ".lora_" in path or "lora_embedding_" in path or ".modules_to_save" in path
 
 
 def lora_init(path: str, shape: torch.Size, dtype: torch.dtype) -> torch.Tensor:
@@ -84,19 +97,55 @@ class ShardReader:
             handle.__exit__(None, None, None)  # type: ignore[attr-defined]
         self._open.clear()
 
-    def local(self, path: str, param: torch.Tensor) -> torch.Tensor:
-        """This rank's dim-0 slice of ``path``, on ``param``'s dtype."""
-        lo, hi = chunk_bounds(param.shape[0], self.world, self.rank)
+    def local(self, path: str, param: torch.Tensor, dim: int = 0) -> torch.Tensor:
+        """This rank's slice of ``path`` along ``dim``, on ``param``'s dtype."""
+        lo, hi = chunk_bounds(param.shape[dim], self.world, self.rank)
+        index = (slice(None),) * dim + (slice(lo, hi),)
         key = checkpoint_key(path)
 
         filename = self.weight_map.get(key)
         if filename is None:
+            if not is_adapter_path(path):
+                raise KeyError(
+                    f"{path} -> checkpoint key {key!r} is not in the checkpoint "
+                    "and is not an adapter weight. Synthesising it would put "
+                    "random values where a trained weight belongs."
+                )
             # Adapter weights are not in the checkpoint
             full = lora_init(path, param.shape, param.dtype)
-            return full[lo:hi].clone()
+            return full[index].clone()
 
-        sliced = self._handle(filename).get_slice(key)[lo:hi]  # type: ignore[attr-defined]
+        sliced = self._handle(filename).get_slice(key)[index]  # type: ignore[attr-defined]
+        if (
+            os.environ.get("BERGSON_TP_NARROW") == "1"
+            and not param.requires_grad
+            and sliced.is_floating_point()
+            and sliced.element_size() < param.element_size()
+        ):
+            # A frozen weight the checkpoint stores narrower than the run's
+            # precision is kept as stored; see tensor_parallel._FrozenLinear.
+            return sliced.contiguous()
         return sliced.to(param.dtype).contiguous()
+
+    def full(self, path: str, param: torch.Tensor) -> torch.Tensor:
+        """The whole of ``path``, for a parameter that is replicated not sharded.
+
+        Under tensor parallelism only the linears are sharded; embeddings and
+        norms are held in full on every rank, so they need a read that ignores
+        this reader's rank.
+        """
+        key = checkpoint_key(path)
+        filename = self.weight_map.get(key)
+        if filename is None:
+            if not is_adapter_path(path):
+                raise KeyError(
+                    f"{path} -> checkpoint key {key!r} is not in the checkpoint "
+                    "and is not an adapter weight. Synthesising it would put "
+                    "random values where a trained weight belongs."
+                )
+            return lora_init(path, param.shape, param.dtype)
+        tensor = self._handle(filename).get_tensor(key)  # type: ignore[attr-defined]
+        return tensor.to(param.dtype).contiguous()
 
 
 def materialize_buffers(model, config, device) -> None:
