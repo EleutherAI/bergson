@@ -1,4 +1,4 @@
-# The paper's per-token attribution case study, end to end.
+# The paper's per-token attribution case study.
 #
 # Step 1 fine-tunes a LoRA on EleutherAI/deep-ignorance-e2e-strong-filter over
 # the WMDP-bio elicitation mix and scores every training token against the mean
@@ -11,17 +11,12 @@
 #   python examples/bergson_paper/build_finetune_mix.py \
 #       --output_dir runs/bergson_paper/mix_85_15
 # Run with `bergson examples/bergson_paper/token_filtering.yaml`
-#
-# As run for the paper: 8 nodes x 4 GPUs (32 ranks, 4 rows each), TF32 matmuls.
-# The retrains must use the scoring run's training settings exactly, so change
-# both steps together.
 
 run_path: runs/bergson_paper/token_filtering
 steps:
   # Step 1/2: fine-tune, then the reverse pass for per-token scores.
   - magic:
       run_path: runs/bergson_paper/token_filtering/magic
-      # The reverse pass saves its state every 50 steps; resume picks it up.
       resume: true
       model: EleutherAI/deep-ignorance-e2e-strong-filter
       precision: fp32
@@ -53,7 +48,6 @@ steps:
       adam_beta2: 0.999
       adam_eps: 1.0e-8
       eps_root: 1.0e-17
-      # Plain Adam, not AdamW
       weight_decay: 0.0
       seed: 42
       skip_validation: true
