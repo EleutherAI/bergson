@@ -217,12 +217,14 @@ def setup_model_and_peft(
     model_kwargs.update(simple_parse_kwargs_string(cfg.model_kwargs))
 
     if meta_init:
-        config = AutoConfig.from_pretrained(base_model_path, revision=cfg.revision)
+        # from_config takes no config overrides, so they go to the config
+        attn_implementation = model_kwargs.pop("attn_implementation", None)
+        config = AutoConfig.from_pretrained(
+            base_model_path, revision=cfg.revision, **model_kwargs
+        )
         with torch.device("meta"):
             model = AutoModelForCausalLM.from_config(
-                config,
-                dtype=dtype,
-                **model_kwargs,
+                config, dtype=dtype, attn_implementation=attn_implementation
             )
     else:
         model = AutoModelForCausalLM.from_pretrained(
