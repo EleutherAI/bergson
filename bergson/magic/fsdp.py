@@ -51,13 +51,7 @@ ModuleT = TypeVar("ModuleT", bound=torch.nn.Module)
 
 
 def simple_fsdp(model: ModuleT, local_for=None) -> ModuleT:
-    """SimpleFSDP: Simpler Fully Sharded Data Parallel with torch.compile
-
-    ``local_for(path, param)`` returns this rank's slice of a parameter. Given
-    it, the shard is wrapped with ``DTensor.from_local`` and no rank ever needs
-    the whole tensor; without it the parameter must already be present in full
-    on every rank so ``distribute_tensor`` can split it.
-    """
+    """SimpleFSDP: Simpler Fully Sharded Data Parallel with torch.compile"""
     # For each unique parameter, construct a list of the places in the model where it
     # appears. This is a bit wonky, but it is the best way to handle tied weights.
     param_to_paths = defaultdict(list)

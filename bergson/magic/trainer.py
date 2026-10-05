@@ -1065,9 +1065,6 @@ def prepare_trainer(cfg: TrainingConfig, rank: int, schedule: Callable):
     """Prepare the model, optimizer, and trainer for training."""
     shard = cfg.fsdp and dist.is_initialized()
 
-    # A sharded run reads no checkpoint here: the model is built on meta and
-    # every rank fills in only the slice it owns, so neither host memory nor
-    # one GPU ever has to hold the whole thing.
     model, target_modules = setup_model_and_peft(
         cfg,
         attn_implementation="eager",
@@ -1076,8 +1073,6 @@ def prepare_trainer(cfg: TrainingConfig, rank: int, schedule: Callable):
     )
 
     if shard:
-        # Meta leaves the buffers empty and the rotary tables live there, so
-        # the first forward would read unallocated storage.
         materialize_buffers(model, model.config, get_device(rank))
     else:
         model.to(get_device(rank))  # type: ignore[reportArgumentType]

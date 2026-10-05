@@ -1,12 +1,4 @@
-"""Build a sharded model without any rank holding a whole parameter.
-
-``distribute_tensor`` scatters from a source rank, so every rank needs the full
-tensor in memory before it is split: a node therefore needs ``nproc_per_node``
-full replicas just to start, which rules out models much larger than host
-memory divided by the local rank count. Reading each rank's own slice out of the
-checkpoint instead keeps peak memory at one slice, and reads ``world_size``
-times fewer bytes off disk.
-"""
+"""Read each rank's own shard of a checkpoint, so no rank holds a whole model."""
 
 from __future__ import annotations
 
@@ -22,11 +14,7 @@ INDEX_NAME = "model.safetensors.index.json"
 
 
 def chunk_bounds(n: int, world: int, rank: int) -> tuple[int, int]:
-    """Half-open bounds of ``rank``'s piece of dim 0 under ``Shard(0)``.
-
-    Matches ``torch.chunk`` semantics, which is what DTensor uses, including
-    the empty shards a rank gets when ``n < world``.
-    """
+    """Bounds of ``rank``'s piece of dim 0 under ``Shard(0)`` (``torch.chunk``)."""
     per = (n + world - 1) // world
     start = min(rank * per, n)
     return start, min(start + per, n)
@@ -39,18 +27,12 @@ def checkpoint_key(path: str) -> str:
 
 
 def lora_init(path: str, shape: torch.Size, dtype: torch.dtype) -> torch.Tensor:
-    """PEFT's adapter init, reproduced identically on every rank.
-
-    Adapter weights are not in the checkpoint, so each rank builds the whole
-    (small) tensor and slices it. The seed comes from the parameter's path via
-    crc32 rather than ``hash``, which is salted per process and would hand
-    different ranks different values.
-    """
+    """PEFT's LoRA init, seeded by the path so every rank builds the same one."""
     out = torch.empty(shape, dtype=dtype)
     if ".lora_B" in path or "lora_embedding_B" in path:
         return out.zero_()
 
-    # kaiming_uniform_(a=sqrt(5)) on a (out, in) weight reduces to this bound.
+    # kaiming_uniform_(a=sqrt(5))
     fan_in = shape[1] if len(shape) > 1 else shape[0]
     bound = 1.0 / math.sqrt(fan_in) if fan_in > 0 else 0.0
     gen = torch.Generator().manual_seed(zlib.crc32(path.encode()))
@@ -80,7 +62,6 @@ class ShardReader:
                 "weight_map"
             ]
         else:
-            # Single-file checkpoints have no index.
             files = sorted(root.glob("*.safetensors"))
             if not files:
                 raise FileNotFoundError(f"no safetensors checkpoint under {root}")
@@ -110,23 +91,16 @@ class ShardReader:
 
         filename = self.weight_map.get(key)
         if filename is None:
-            # Adapter weights are created, not loaded.
+            # Adapter weights are not in the checkpoint
             full = lora_init(path, param.shape, param.dtype)
             return full[lo:hi].clone()
 
-        # get_slice reads only the requested rows off disk.
         sliced = self._handle(filename).get_slice(key)[lo:hi]  # type: ignore[attr-defined]
         return sliced.to(param.dtype).contiguous()
 
 
 def materialize_buffers(model, config, device) -> None:
-    """Give every meta buffer real values.
-
-    A model built on the meta device has no buffer contents, and the rotary
-    tables live there, so the first forward would read empty storage. Each
-    owning module is rebuilt on ``device`` from the same config, which is how
-    those buffers were computed in the first place.
-    """
+    """Rebuild the buffers (e.g. rotary tables) of a model built on meta."""
     for module in model.modules():
         meta_names = [
             name
