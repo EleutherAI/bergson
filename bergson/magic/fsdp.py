@@ -1,5 +1,5 @@
 from collections import defaultdict
-from typing import Callable, TypeVar
+from typing import TypeVar
 
 import torch
 from torch.distributed.tensor import (
@@ -7,7 +7,6 @@ from torch.distributed.tensor import (
     Partial,
     Replicate,
     Shard,
-    distribute_tensor,
 )
 from torch.nn.utils.parametrize import register_parametrization
 from torch.utils.checkpoint import (
@@ -15,6 +14,8 @@ from torch.utils.checkpoint import (
     checkpoint,
     create_selective_checkpoint_contexts,
 )
+
+from .shard_load import ShardReader
 
 
 def fsdp_policy():
@@ -51,8 +52,7 @@ ModuleT = TypeVar("ModuleT", bound=torch.nn.Module)
 
 
 def simple_fsdp(
-    model: ModuleT,
-    load_shard: Callable[[str, torch.nn.Parameter], torch.Tensor] | None = None,
+    model: ModuleT, reader: ShardReader, device: torch.device | str
 ) -> ModuleT:
     """SimpleFSDP: Simpler Fully Sharded Data Parallel with torch.compile"""
     # For each unique parameter, construct a list of the places in the model where it
@@ -67,15 +67,12 @@ def simple_fsdp(
         param, paths = param_to_paths.popitem()
 
         # Create a new distributed version of this param
-        if load_shard is None:
-            sharded = distribute_tensor(param, placements=(Shard(0),))
-        else:
-            sharded = DTensor.from_local(
-                load_shard(paths[0], param),
-                placements=(Shard(0),),
-                shape=param.shape,
-                stride=param.stride(),
-            )
+        sharded = DTensor.from_local(
+            reader.local(paths[0], param).to(device),
+            placements=(Shard(0),),
+            shape=param.shape,
+            stride=param.stride(),
+        )
         dist_param = torch.nn.Parameter(sharded, requires_grad=param.requires_grad)
 
         # Update all occurrences of this parameter in the model

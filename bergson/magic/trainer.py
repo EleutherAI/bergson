@@ -1101,13 +1101,9 @@ def prepare_trainer(cfg: TrainingConfig, rank: int, schedule: Callable):
         apply_dtensor_patch()
         mesh = init_device_mesh("cuda", (dist.get_world_size(),))
         reader = ShardReader(cfg.model, dist.get_world_size(), dist.get_rank())
-        device = get_device(rank)
         try:
             with mesh:
-                model = simple_fsdp(
-                    model,
-                    load_shard=lambda path, param: reader.local(path, param).to(device),
-                )
+                model = simple_fsdp(model, reader, get_device(rank))
         finally:
             reader.close()
 
