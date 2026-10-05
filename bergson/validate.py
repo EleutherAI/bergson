@@ -190,6 +190,23 @@ def mean_query_loss(
     return total / tokens
 
 
+def eval_extra_streams(
+    model: torch.nn.Module,
+    extra_streams: dict[str, DataStream] | None,
+    extra_csv: CSVWriter | None,
+    label: str,
+    grad_accum_steps: int = 1,
+) -> None:
+    """Mean loss of an activated model on each extra eval stream (datasets
+    named in ``BERGSON_EXTRA_EVAL``), appended to ``extra_eval.csv``."""
+    for name, extra in (extra_streams or {}).items():
+        loss = mean_query_loss(model, extra, grad_accum_steps).item()
+        if extra_csv is not None:
+            extra_csv.writerow(label, name, loss)
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            print(f"Extra eval [{label}] {name}: loss {loss:.6f}", flush=True)
+
+
 def build_contrast_stream(
     run_cfg: ValidationConfig, device: torch.device | str, rank: int
 ) -> DataStream | None:
@@ -464,6 +481,8 @@ def tail_filter_retrain(
     num_query_docs: int,
     num_queries: int,
     padding: Padding,
+    extra_streams: dict[str, DataStream] | None = None,
+    extra_csv: CSVWriter | None = None,
 ):
     """Retrain with one tail of the score ranking filtered out.
 
@@ -514,7 +533,7 @@ def tail_filter_retrain(
         )
         return loss.reshape(1).cpu()
 
-    def retrain_and_eval(removed: torch.Tensor) -> torch.Tensor:
+    def retrain_and_eval(removed: torch.Tensor, label: str = "") -> torch.Tensor:
         """Query losses after retraining with ``removed`` down-weighted."""
         trainer, fwd_state, model = prepare_trainer(run_cfg, rank, schedule)
         fwd_state.detach_()
@@ -534,6 +553,9 @@ def tail_filter_retrain(
             )
 
         with fwd_state.activate(model):
+            eval_extra_streams(
+                model, extra_streams, extra_csv, label, run_cfg.grad_accum_steps
+            )
             return eval_losses(model)
 
     hf_disable_pbar()
@@ -576,7 +598,7 @@ def tail_filter_retrain(
         removed = _select_filter_slice(
             flat_scores, valid_indices, q, num_filtered, method.name
         )
-        losses = retrain_and_eval(removed)
+        losses = retrain_and_eval(removed, method.name)
 
         base_loss = baseline_vec[q].item()
         filtered_loss = losses[q].item()
@@ -623,8 +645,10 @@ def tail_filter_retrain(
         random_baseline = baseline_vec
         random_losses = torch.stack(
             [
-                retrain_and_eval(x)
-                for x in tqdm(subsets, desc="random", disable=global_rank != 0)
+                retrain_and_eval(x, f"random_{i}")
+                for i, x in enumerate(
+                    tqdm(subsets, desc="random", disable=global_rank != 0)
+                )
             ]
         )
         source = "retrained here"
@@ -687,6 +711,7 @@ def validate_scores(
     num_query_docs: int,
     query_padding: Padding,
     padding: Padding,
+    extra_streams: dict[str, DataStream] | None = None,
 ):
     """Validate attribution scores via leave-subset-out retraining.
 
@@ -698,6 +723,19 @@ def validate_scores(
     """
     diffs = []
     score_sums = []
+
+    # Extra evals of the fully-trained model; the filter retrains add theirs.
+    extra_csv = None
+    if extra_streams:
+        extra_csv = CSVWriter(
+            os.path.join(run_cfg.run_path, "extra_eval.csv"),
+            columns=["model", "eval", "loss"],
+            enabled=global_rank == 0,
+        )
+        with fwd_state.activate(model):
+            eval_extra_streams(
+                model, extra_streams, extra_csv, "baseline", run_cfg.grad_accum_steps
+            )
 
     num_real_query_docs = num_query_docs - query_padding.num_docs
     baseline_per_doc = torch.zeros(num_real_query_docs)
@@ -739,6 +777,8 @@ def validate_scores(
             num_query_docs=num_query_docs,
             num_queries=num_queries,
             padding=padding,
+            extra_streams=extra_streams,
+            extra_csv=extra_csv,
         )
         return
 
