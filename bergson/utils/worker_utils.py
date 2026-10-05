@@ -217,7 +217,8 @@ def setup_model_and_peft(
     model_kwargs.update(simple_parse_kwargs_string(cfg.model_kwargs))
 
     if meta_init:
-        # from_config takes no config overrides, so they go to the config
+        # model_kwargs may set config fields (e.g. attention_dropout), which
+        # from_pretrained applies to the config but from_config does not
         attn_implementation = model_kwargs.pop("attn_implementation", None)
         config = AutoConfig.from_pretrained(
             base_model_path, revision=cfg.revision, **model_kwargs
