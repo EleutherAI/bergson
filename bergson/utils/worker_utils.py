@@ -217,16 +217,12 @@ def setup_model_and_peft(
     model_kwargs.update(simple_parse_kwargs_string(cfg.model_kwargs))
 
     if meta_init:
-        # model_kwargs may set config fields (e.g. attention_dropout), which
-        # from_pretrained applies to the config but from_config does not
-        attn_implementation = model_kwargs.pop("attn_implementation", None)
+        # from_config passes kwargs to the model, not the config
         config = AutoConfig.from_pretrained(
             base_model_path, revision=cfg.revision, **model_kwargs
         )
         with torch.device("meta"):
-            model = AutoModelForCausalLM.from_config(
-                config, dtype=dtype, attn_implementation=attn_implementation
-            )
+            model = AutoModelForCausalLM.from_config(config, dtype=dtype)
     else:
         model = AutoModelForCausalLM.from_pretrained(
             base_model_path,
