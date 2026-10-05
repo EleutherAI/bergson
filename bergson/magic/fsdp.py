@@ -1,6 +1,6 @@
 import os
 from collections import defaultdict
-from typing import Callable, TypeVar
+from typing import TypeVar
 
 import torch
 from torch.distributed.tensor import (
@@ -8,7 +8,6 @@ from torch.distributed.tensor import (
     Partial,
     Replicate,
     Shard,
-    distribute_tensor,
 )
 from torch.nn.utils.parametrize import register_parametrization
 from torch.utils.checkpoint import (
@@ -17,6 +16,7 @@ from torch.utils.checkpoint import (
     create_selective_checkpoint_contexts,
 )
 
+from .shard_load import ShardReader, materialize_buffers
 from .tensor_parallel import ColumnParallelLinear, RowParallelLinear
 
 
@@ -165,10 +165,8 @@ ModuleT = TypeVar("ModuleT", bound=torch.nn.Module)
 def tensor_parallel_model(
     model: ModuleT,
     tp_group,
-    *,
-    load_rows: (
-        Callable[[str, torch.nn.Parameter, int, int, int], torch.Tensor] | None
-    ) = None,
+    reader: ShardReader,
+    device: torch.device | str,
     dp_tp_mesh=None,
 ) -> ModuleT:
     """Shard every plain ``nn.Linear`` along dim 0 across ``tp_group``.
@@ -185,12 +183,10 @@ def tensor_parallel_model(
     embedding is 4.2GiB fp32 against roughly 254GiB of linears, and ``lm_head``
     is itself an ``nn.Linear`` so it shards with the rest.
 
-    ``load_rows(path, param, lo, hi, dim)`` returns ``[lo:hi]`` of a parameter if
-    given, so a streaming loader can read only the slice this rank owns instead
-    of materialising the full tensor first.
+    ``model`` is built on the meta device; each rank reads only its own slice
+    of every sharded weight from ``reader``.
     """
     world = torch.distributed.get_world_size(group=tp_group)
-    tp_rank = torch.distributed.get_rank(group=tp_group)
 
     targets = _linear_weight_paths(model)
     attention = _shardable_attention(model, world)
@@ -226,13 +222,6 @@ def tensor_parallel_model(
                     flush=True,
                 )
             continue
-        # Same bounds helper the shard reader uses, so the rows a rank
-        # computes with and the rows it loads cannot drift apart.
-        from .shard_load import chunk_bounds
-
-        lo, hi = chunk_bounds(out_features, world, tp_rank)
-        index = (slice(None),) * dim + (slice(lo, hi),)
-
         for p_name in ("weight", "bias"):
             param = getattr(mod, p_name, None)
             if param is None:
@@ -241,10 +230,7 @@ def tensor_parallel_model(
                 # Replicated, added once after the all-reduce; left for the
                 # caller to load in full like any other replicated parameter.
                 continue
-            if load_rows is not None:
-                local = load_rows(f"{mod_name}.{p_name}", param, lo, hi, dim)
-            else:
-                local = param.data[index].clone()
+            local = reader.local(f"{mod_name}.{p_name}", param, dim).to(device)
 
             if dp_tp_mesh is not None:
                 # Register as a DTensor, replicated over dp and sharded over
@@ -281,8 +267,7 @@ def tensor_parallel_model(
 
 
 def simple_fsdp(
-    model: ModuleT,
-    load_shard: Callable[[str, torch.nn.Parameter], torch.Tensor] | None = None,
+    model: ModuleT, reader: ShardReader, device: torch.device | str
 ) -> ModuleT:
     """SimpleFSDP: Simpler Fully Sharded Data Parallel with torch.compile"""
     # For each unique parameter, construct a list of the places in the model where it
@@ -297,15 +282,12 @@ def simple_fsdp(
         param, paths = param_to_paths.popitem()
 
         # Create a new distributed version of this param
-        if load_shard is None:
-            sharded = distribute_tensor(param, placements=(Shard(0),))
-        else:
-            sharded = DTensor.from_local(
-                load_shard(paths[0], param),
-                placements=(Shard(0),),
-                shape=param.shape,
-                stride=param.stride(),
-            )
+        sharded = DTensor.from_local(
+            reader.local(paths[0], param).to(device),
+            placements=(Shard(0),),
+            shape=param.shape,
+            stride=param.stride(),
+        )
         dist_param = torch.nn.Parameter(sharded, requires_grad=param.requires_grad)
 
         # Update all occurrences of this parameter in the model
@@ -374,8 +356,6 @@ def tensor_parallel_from_checkpoint(
     """
     import torch.distributed as dist
 
-    from .shard_load import ShardReader, materialize_buffers
-
     world = dist.get_world_size(group=tp_group)
     tp_rank = dist.get_rank(group=tp_group)
     reader = ShardReader(model_path, world, tp_rank)
@@ -384,19 +364,7 @@ def tensor_parallel_from_checkpoint(
         # Rotary tables and friends live in buffers, which meta leaves empty.
         materialize_buffers(model, config, device)
 
-        def load_rows(path, param, lo, hi, dim=0):
-            local = reader.local(path, param, dim)
-            if local.shape[dim] != hi - lo:
-                raise RuntimeError(
-                    f"{path}: reader gave {local.shape[0]} rows, the forward "
-                    f"expects rows [{lo}:{hi}). The two must agree or each rank "
-                    "would compute against rows it does not own."
-                )
-            return local.to(device)
-
-        model = tensor_parallel_model(
-            model, tp_group, load_rows=load_rows, dp_tp_mesh=dp_tp_mesh
-        )
+        model = tensor_parallel_model(model, tp_group, reader, device, dp_tp_mesh)
 
         replicated = 0
         for path, param in list(model.named_parameters(remove_duplicate=False)):
