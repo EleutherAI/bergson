@@ -1,0 +1,107 @@
+# The paper's per-token attribution case study, end to end.
+#
+# Step 1 fine-tunes a LoRA on EleutherAI/deep-ignorance-e2e-strong-filter over
+# the WMDP-bio elicitation mix and scores every training token against the mean
+# WMDP-bio question loss with MAGIC. Step 2 retrains with the 10% most
+# influential (proponent) tokens removed, and again with 10% of tokens removed
+# uniformly at random, and reports each retrain's change in query loss
+# (paper: +0.062 filtered, +0.003 random).
+#
+# Build the training mix first:
+#   python examples/bergson_paper/build_finetune_mix.py \
+#       --output_dir runs/bergson_paper/mix_85_15
+# Run with `bergson examples/bergson_paper/token_filtering.yaml`
+#
+# As run for the paper: 8 nodes x 4 GPUs (32 ranks, 4 rows each), TF32 matmuls.
+# The retrains must use the scoring run's training settings exactly, so change
+# both steps together.
+
+run_path: runs/bergson_paper/token_filtering
+steps:
+  # Step 1/2: fine-tune, then the reverse pass for per-token scores.
+  - magic:
+      run_path: runs/bergson_paper/token_filtering/magic
+      # The reverse pass saves its state every 50 steps; resume picks it up.
+      resume: true
+      model: EleutherAI/deep-ignorance-e2e-strong-filter
+      precision: fp32
+      use_tf32_matmuls: true
+      peft_init_kwargs: "r=32,lora_alpha=64,lora_dropout=0.0,target_modules=query_key_value|dense|dense_h_to_4h|dense_4h_to_h"
+      save_models: true
+      data:
+        dataset: runs/bergson_paper/mix_85_15
+        split: train
+        chunk_length: 1024
+      query:
+        dataset: cais/wmdp
+        split: test
+        subset: wmdp-bio
+        prompt_column: question
+        aggregation: mean
+      distributed:
+        nproc_per_node: 4
+        nnode: 8
+      batch_size: 128
+      grad_accum_steps: 2
+      double_backward_batch_size: 1
+      num_epochs: 1
+      lr_schedule:
+        lr_scheduler_type: constant_with_warmup
+        lr: 1.0e-5
+        warmup_steps: 20
+      adam_beta1: 0.9
+      adam_beta2: 0.999
+      adam_eps: 1.0e-8
+      eps_root: 1.0e-17
+      # Plain Adam, not AdamW
+      weight_decay: 0.0
+      seed: 42
+      skip_validation: true
+      backward_save_every: 50
+      attribute_tokens: true
+
+  # Step 2/2: retrain without the top 10% proponent tokens, and without a
+  # random 10%. Writes filter_summary.csv.
+  - validate:
+      run_path: runs/bergson_paper/token_filtering/filter
+      resume: true
+      scores: runs/bergson_paper/token_filtering/magic/scores
+      model: EleutherAI/deep-ignorance-e2e-strong-filter
+      precision: fp32
+      use_tf32_matmuls: true
+      peft_init_kwargs: "r=32,lora_alpha=64,lora_dropout=0.0,target_modules=query_key_value|dense|dense_h_to_4h|dense_4h_to_h"
+      data:
+        dataset: runs/bergson_paper/mix_85_15
+        split: train
+        chunk_length: 1024
+      query:
+        dataset: cais/wmdp
+        split: test
+        subset: wmdp-bio
+        prompt_column: question
+        aggregation: mean
+      distributed:
+        nproc_per_node: 4
+        nnode: 8
+      batch_size: 128
+      grad_accum_steps: 2
+      num_epochs: 1
+      lr_schedule:
+        lr_scheduler_type: constant_with_warmup
+        lr: 1.0e-5
+        warmup_steps: 20
+      adam_beta1: 0.9
+      adam_beta2: 0.999
+      adam_eps: 1.0e-8
+      eps_root: 1.0e-17
+      weight_decay: 0.0
+      seed: 42
+      # Removed tokens get weight 0.
+      subset_weight: 0.0
+      method:
+        kind: filter
+        direction: proponents
+        fraction: 0.1
+        controls:
+          kind: retrain
+          count: 1
