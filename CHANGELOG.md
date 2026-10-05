@@ -1,6 +1,26 @@
 # CHANGELOG
 
 
+## v2.2.2 (2026-10-05)
+
+### Bug Fixes
+
+- Load and shard the MAGIC trainer's model without a full replica
+  ([#536](https://github.com/EleutherAI/bergson/pull/536),
+  [`f3e5a10`](https://github.com/EleutherAI/bergson/commit/f3e5a10439b60602e1eb37ea9a2eb2442c25be33))
+
+### Documentation
+
+- Per-method notes on the leaderboard; fix Adam SOURCE
+  ([#521](https://github.com/EleutherAI/bergson/pull/521),
+  [`b7245f0`](https://github.com/EleutherAI/bergson/commit/b7245f06b0ec236e009db56dbbbb876136be8a5c))
+
+### Refactoring
+
+- Clarify padding logic ([#523](https://github.com/EleutherAI/bergson/pull/523),
+  [`30b6190`](https://github.com/EleutherAI/bergson/commit/30b6190f66d7a0857b08057d3239d886b3faf18a))
+
+
 ## v2.2.1 (2026-09-29)
 
 ### Bug Fixes
