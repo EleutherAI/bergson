@@ -1,6 +1,6 @@
 import os
 from collections import defaultdict
-from typing import TypeVar
+from typing import Callable, TypeVar
 
 import torch
 from torch.distributed.tensor import (
@@ -166,7 +166,9 @@ def tensor_parallel_model(
     model: ModuleT,
     tp_group,
     *,
-    row_for=None,
+    load_rows: (
+        Callable[[str, torch.nn.Parameter, int, int, int], torch.Tensor] | None
+    ) = None,
     dp_tp_mesh=None,
 ) -> ModuleT:
     """Shard every plain ``nn.Linear`` along dim 0 across ``tp_group``.
@@ -183,7 +185,7 @@ def tensor_parallel_model(
     embedding is 4.2GiB fp32 against roughly 254GiB of linears, and ``lm_head``
     is itself an ``nn.Linear`` so it shards with the rest.
 
-    ``row_for(path, param, lo, hi)`` returns rows ``[lo:hi]`` of a parameter if
+    ``load_rows(path, param, lo, hi, dim)`` returns ``[lo:hi]`` of a parameter if
     given, so a streaming loader can read only the slice this rank owns instead
     of materialising the full tensor first.
     """
@@ -239,8 +241,8 @@ def tensor_parallel_model(
                 # Replicated, added once after the all-reduce; left for the
                 # caller to load in full like any other replicated parameter.
                 continue
-            if row_for is not None:
-                local = row_for(f"{mod_name}.{p_name}", param, lo, hi, dim)
+            if load_rows is not None:
+                local = load_rows(f"{mod_name}.{p_name}", param, lo, hi, dim)
             else:
                 local = param.data[index].clone()
 
@@ -278,7 +280,10 @@ def tensor_parallel_model(
     return model
 
 
-def simple_fsdp(model: ModuleT, local_for=None) -> ModuleT:
+def simple_fsdp(
+    model: ModuleT,
+    load_shard: Callable[[str, torch.nn.Parameter], torch.Tensor] | None = None,
+) -> ModuleT:
     """SimpleFSDP: Simpler Fully Sharded Data Parallel with torch.compile"""
     # For each unique parameter, construct a list of the places in the model where it
     # appears. This is a bit wonky, but it is the best way to handle tied weights.
@@ -292,11 +297,11 @@ def simple_fsdp(model: ModuleT, local_for=None) -> ModuleT:
         param, paths = param_to_paths.popitem()
 
         # Create a new distributed version of this param
-        if local_for is None:
+        if load_shard is None:
             sharded = distribute_tensor(param, placements=(Shard(0),))
         else:
             sharded = DTensor.from_local(
-                local_for(paths[0], param),
+                load_shard(paths[0], param),
                 placements=(Shard(0),),
                 shape=param.shape,
                 stride=param.stride(),
@@ -379,7 +384,7 @@ def tensor_parallel_from_checkpoint(
         # Rotary tables and friends live in buffers, which meta leaves empty.
         materialize_buffers(model, config, device)
 
-        def row_for(path, param, lo, hi, dim=0):
+        def load_rows(path, param, lo, hi, dim=0):
             local = reader.local(path, param, dim)
             if local.shape[dim] != hi - lo:
                 raise RuntimeError(
@@ -390,7 +395,7 @@ def tensor_parallel_from_checkpoint(
             return local.to(device)
 
         model = tensor_parallel_model(
-            model, tp_group, row_for=row_for, dp_tp_mesh=dp_tp_mesh
+            model, tp_group, load_rows=load_rows, dp_tp_mesh=dp_tp_mesh
         )
 
         replicated = 0
