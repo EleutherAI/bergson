@@ -7,7 +7,6 @@ from torch.distributed.tensor import (
     Partial,
     Replicate,
     Shard,
-    distribute_tensor,
 )
 from torch.nn.utils.parametrize import register_parametrization
 from torch.utils.checkpoint import (
@@ -15,6 +14,8 @@ from torch.utils.checkpoint import (
     checkpoint,
     create_selective_checkpoint_contexts,
 )
+
+from .shard_load import ShardReader
 
 
 def fsdp_policy():
@@ -50,7 +51,9 @@ class ReplicateComputation(torch.nn.Module):
 ModuleT = TypeVar("ModuleT", bound=torch.nn.Module)
 
 
-def simple_fsdp(model: ModuleT) -> ModuleT:
+def simple_fsdp(
+    model: ModuleT, reader: ShardReader, device: torch.device | str
+) -> ModuleT:
     """SimpleFSDP: Simpler Fully Sharded Data Parallel with torch.compile"""
     # For each unique parameter, construct a list of the places in the model where it
     # appears. This is a bit wonky, but it is the best way to handle tied weights.
@@ -64,10 +67,13 @@ def simple_fsdp(model: ModuleT) -> ModuleT:
         param, paths = param_to_paths.popitem()
 
         # Create a new distributed version of this param
-        dist_param = torch.nn.Parameter(
-            distribute_tensor(param, placements=(Shard(0),)),
-            requires_grad=param.requires_grad,
+        sharded = DTensor.from_local(
+            reader.local(paths[0], param).to(device),
+            placements=(Shard(0),),
+            shape=param.shape,
+            stride=param.stride(),
         )
+        dist_param = torch.nn.Parameter(sharded, requires_grad=param.requires_grad)
 
         # Update all occurrences of this parameter in the model
         for path in paths:

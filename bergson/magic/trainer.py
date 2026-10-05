@@ -39,6 +39,7 @@ from .grad_accum import (
 )
 from .optim import muon
 from .rtl_tqdm import RtlTqdm
+from .shard_load import ShardReader, materialize_buffers
 from .swap import swap_parameters
 
 LR_HISTORY_FILENAME = "log_history.json"
@@ -1062,12 +1063,19 @@ class Trainer:
 
 def prepare_trainer(cfg: TrainingConfig, rank: int, schedule: Callable):
     """Prepare the model, optimizer, and trainer for training."""
+    shard = cfg.fsdp and dist.is_initialized()
+
     model, target_modules = setup_model_and_peft(
         cfg,
         attn_implementation="eager",
         apply_fsdp=False,
+        meta_init=shard,
     )
-    model.to(get_device(rank))  # type: ignore[reportArgumentType]
+
+    if shard:
+        materialize_buffers(model, model.config, get_device(rank))
+    else:
+        model.to(get_device(rank))  # type: ignore[reportArgumentType]
 
     # setup_model_and_peft leaves the model in from_pretrained's eval mode.
     if cfg.train_mode:
@@ -1089,11 +1097,15 @@ def prepare_trainer(cfg: TrainingConfig, rank: int, schedule: Callable):
             gradient_checkpointing_kwargs=dict(use_reentrant=False),
         )
 
-    if cfg.fsdp and dist.is_initialized():
+    if shard:
         apply_dtensor_patch()
         mesh = init_device_mesh("cuda", (dist.get_world_size(),))
-        with mesh:
-            model = simple_fsdp(model)
+        reader = ShardReader(cfg.model, dist.get_world_size(), dist.get_rank())
+        try:
+            with mesh:
+                model = simple_fsdp(model, reader, get_device(rank))
+        finally:
+            reader.close()
 
     match cfg.optimizer:
         case "adamw":
