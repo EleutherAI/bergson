@@ -1,5 +1,5 @@
 from collections import defaultdict
-from typing import TypeVar
+from typing import Callable, TypeVar
 
 import torch
 from torch.distributed.tensor import (
@@ -50,7 +50,10 @@ class ReplicateComputation(torch.nn.Module):
 ModuleT = TypeVar("ModuleT", bound=torch.nn.Module)
 
 
-def simple_fsdp(model: ModuleT, local_for=None) -> ModuleT:
+def simple_fsdp(
+    model: ModuleT,
+    load_shard: Callable[[str, torch.nn.Parameter], torch.Tensor] | None = None,
+) -> ModuleT:
     """SimpleFSDP: Simpler Fully Sharded Data Parallel with torch.compile"""
     # For each unique parameter, construct a list of the places in the model where it
     # appears. This is a bit wonky, but it is the best way to handle tied weights.
@@ -64,11 +67,11 @@ def simple_fsdp(model: ModuleT, local_for=None) -> ModuleT:
         param, paths = param_to_paths.popitem()
 
         # Create a new distributed version of this param
-        if local_for is None:
+        if load_shard is None:
             sharded = distribute_tensor(param, placements=(Shard(0),))
         else:
             sharded = DTensor.from_local(
-                local_for(paths[0], param),
+                load_shard(paths[0], param),
                 placements=(Shard(0),),
                 shape=param.shape,
                 stride=param.stride(),

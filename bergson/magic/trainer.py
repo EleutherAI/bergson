@@ -1106,7 +1106,7 @@ def prepare_trainer(cfg: TrainingConfig, rank: int, schedule: Callable):
             with mesh:
                 model = simple_fsdp(
                     model,
-                    local_for=lambda path, param: reader.local(path, param).to(device),
+                    load_shard=lambda path, param: reader.local(path, param).to(device),
                 )
         finally:
             reader.close()
