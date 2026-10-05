@@ -15,9 +15,12 @@ batch size) before committing to full LDS validation runs.
 
 import json
 import os
+import time
+from pathlib import Path
 
 import torch
 import torch.distributed as dist
+from torch.distributed.tensor import DTensor
 from transformers import AutoTokenizer
 
 from ..config.config import MetasmoothnessConfig
@@ -26,25 +29,46 @@ from ..utils.utils import dist_backend, dist_device_id, get_device, get_device_i
 from ..utils.worker_utils import setup_data_pipeline
 from .cli import attach_doc_ids_if_missing, shuffled_epochs
 from .data_stream import DataStream, pad_dataset_to_batch_size
+from .tensor_parallel import data_parallel_world_size, parallel_mesh
 from .trainer import prepare_trainer
 
 
 def metasmoothness_score(
-    theta0: torch.Tensor, theta_h: torch.Tensor, theta_2h: torch.Tensor
+    theta0: torch.Tensor,
+    theta_h: torch.Tensor,
+    theta_2h: torch.Tensor,
+    *,
+    reduce: bool = False,
 ) -> float:
     """Movement-weighted sign agreement of consecutive finite differences.
 
     ``sign(theta_2h - theta_h) . diag(d / |d|_1) . sign(theta_h - theta0)``
     with ``d = |theta_2h - theta0|`` (Def. 2 of arXiv 2503.13751; the ``/h``
     factors cancel inside ``sign``).
+
+    With ``reduce`` the arguments are one rank's shard and the sums are
+    all-reduced.
     """
     d = (theta_2h - theta0).abs()
-    total = d.sum()
-    if total == 0:
-        return 1.0
     s1 = torch.sign(theta_h - theta0)
     s2 = torch.sign(theta_2h - theta_h)
-    return float((d / total * s1 * s2).sum())
+    packed = torch.stack([(d * s1 * s2).sum(), d.sum()])
+    if reduce:
+        dist.all_reduce(packed)
+    weighted, total = packed[0], packed[1]
+    if total == 0:
+        return 1.0
+    return float(weighted / total)
+
+
+def total_movement_l1(
+    theta0: torch.Tensor, theta_2h: torch.Tensor, *, reduce: bool = False
+) -> float:
+    """``|theta_2h - theta0|_1``, summed across shards when ``reduce``."""
+    moved = (theta_2h - theta0).abs().sum()
+    if reduce:
+        dist.all_reduce(moved)
+    return float(moved)
 
 
 def metasmoothness_worker(
@@ -71,10 +95,21 @@ def metasmoothness_worker(
             world_size=world_size,
         )
 
-    assert not run_cfg.fsdp, "metasmoothness does not support FSDP parameters"
+    # Register the dp x tp mesh before the DataStream splits rows across ranks
+    if world_size > 1:
+        parallel_mesh()
+    dp_world = data_parallel_world_size() if world_size > 1 else 1
+
     assert not getattr(run_cfg, "per_token", False)
 
-    assert run_cfg.batch_size % world_size == 0
+    if run_cfg.fsdp and run_cfg.save_models:
+        raise ValueError(
+            "metasmoothness save_models is not supported with fsdp: the "
+            "parameters are sharded DTensors and each rank would write its "
+            "own slice as if it were the whole adapter."
+        )
+
+    assert run_cfg.batch_size % dp_world == 0
 
     train_dataset, num_train_docs, padding = pad_dataset_to_batch_size(
         train_dataset, run_cfg.batch_size, num_train_docs, "Train", global_rank
@@ -94,8 +129,16 @@ def metasmoothness_worker(
     v = torch.randn(num_train_docs, generator=gen)
     padding.zero_weights(v)
 
+    # BERGSON_MS_K runs one of the three trainings and writes its theta shards,
+    # so they can run as separate jobs (see combine_ms_thetas).
+    only_k = os.environ.get("BERGSON_MS_K")
+    todo = [int(only_k)] if only_k is not None else [0, 1, 2]
+    if only_k is not None and global_rank == 0:
+        print(f"[metasmoothness] running training {int(only_k) + 1}/3 only")
+
     thetas: list[torch.Tensor] = []
-    for k in range(3):
+    sharded = False
+    for k in todo:
         weights = 1.0 + run_cfg.fd_step * k * v
         padding.zero_weights(weights)
         stream.weights.data.copy_(weights.to(stream.weights.device))
@@ -114,12 +157,42 @@ def metasmoothness_worker(
             grad_accum_steps=run_cfg.grad_accum_steps,
         )
 
+        sharded = any(isinstance(p, DTensor) for p in fwd_state.params.values())
+        theta = torch.cat(
+            [
+                (p.to_local() if isinstance(p, DTensor) else p)
+                .detach()
+                .float()
+                .flatten()
+                for p in fwd_state.params.values()
+            ]
+        )
+        thetas.append(theta if sharded else theta.cpu())
+
         if global_rank == 0:
-            theta = torch.cat(
-                [p.detach().float().cpu().flatten() for p in fwd_state.params.values()]
-            )
-            thetas.append(theta)
             print(f"[metasmoothness] finished training {k + 1}/3 (w = 1 + {k}*h*v)")
+
+        if only_k is not None:
+            shard_dir = os.path.join(run_cfg.run_path, "theta_shards")
+            os.makedirs(shard_dir, exist_ok=True)
+            torch.save(
+                {
+                    "k": k,
+                    "rank": global_rank,
+                    "world_size": world_size,
+                    "sharded": sharded,
+                    "theta": theta.detach().cpu(),
+                    # (name, local numel) in concatenation order
+                    "layout": [
+                        (
+                            name,
+                            (p.to_local() if isinstance(p, DTensor) else p).numel(),
+                        )
+                        for name, p in fwd_state.params.items()
+                    ],
+                },
+                os.path.join(shard_dir, f"theta_k{k}_rank{global_rank}.pt"),
+            )
 
         if k == 0 and run_cfg.save_models and global_rank == 0:
             out_dir = os.path.join(run_cfg.run_path, "model")
@@ -131,9 +204,21 @@ def metasmoothness_worker(
             ).save_pretrained(out_dir)
         del trainer, fwd_state, model
 
+    if only_k is not None:
+        if global_rank == 0:
+            print(
+                f"[metasmoothness] wrote theta shards for k={todo[0]}; "
+                "combine with python -m bergson.magic.combine_ms_thetas"
+            )
+        return
+
+    score = metasmoothness_score(*thetas, reduce=sharded)
+    movement = total_movement_l1(thetas[0], thetas[2], reduce=sharded)
+    if sharded and world_size > 1 and dp_world != world_size:
+        # Every dp replica holds the same shards
+        movement /= dp_world
+
     if global_rank == 0:
-        score = metasmoothness_score(*thetas)
-        movement = float((thetas[2] - thetas[0]).abs().sum())
         result = {
             "score": score,
             "fd_step": run_cfg.fd_step,
@@ -155,9 +240,21 @@ def run_metasmoothness(run_cfg: MetasmoothnessConfig):
     """
     os.makedirs(run_cfg.run_path, exist_ok=True)
 
+    # The main node populates the HF datasets cache before the others read it
+    is_main_node = int(os.environ.get("SLURM_PROCID", 0)) == 0
+    multi_node = run_cfg.distributed.nnode > 1
+    job_id = os.environ.get("SLURM_JOB_ID", "")
+    barrier = Path(run_cfg.run_path) / f".preprocess_done{job_id}"
+    if multi_node and not is_main_node:
+        while not barrier.exists():
+            time.sleep(0.5)
+
     train_ds, train_n = setup_data_pipeline(run_cfg)
     train_ds = attach_doc_ids_if_missing(train_ds)
     train_ds = shuffled_epochs(train_ds, run_cfg.seed, max(1, run_cfg.num_epochs))
+
+    if multi_node and is_main_node:
+        barrier.touch()
 
     launch_distributed_run(
         "metasmoothness",

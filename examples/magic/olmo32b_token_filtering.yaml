@@ -1,0 +1,124 @@
+# Per-token MAGIC token filtering on allenai/Olmo-3.1-32B-Think, tensor-parallel
+# on 64 nodes x 4 GPUs. Launch every step with
+#   BERGSON_TP=4 BERGSON_TP_NARROW=1 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+#
+# The three metasmoothness trainings can run as separate jobs with
+# BERGSON_MS_K=0,1,2 (see bergson.magic.combine_ms_thetas).
+# BERGSON_EXTRA_EVAL="mmlu|cais/mmlu|all|test|question" makes validate also
+# write each model's loss on another dataset to extra_eval.csv.
+
+run_path: runs/olmo32b_token_filtering
+steps:
+  - metasmoothness:
+      run_path: runs/olmo32b_token_filtering/metasmoothness
+      fd_step: 0.1
+      direction_seed: 0
+      grad_checkpointing: true
+      model: allenai/Olmo-3.1-32B-Think
+      precision: fp32
+      use_tf32_matmuls: false
+      fsdp: false   # BERGSON_TP replaces it
+      peft_init_kwargs: "r=32,lora_alpha=64,lora_dropout=0.0,target_modules=q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj,layers_to_transform=32|33|34|35|36|37|38|39|40|41|42|43|44|45|46|47|48|49|50|51|52|53|54|55|56|57|58|59|60|61|62|63"
+      data:
+        dataset: runs/bergson_paper/mix_85_15
+        split: train
+        chunk_length: 512
+      distributed:
+        nproc_per_node: 4
+        nnode: 64
+      batch_size: 1024
+      grad_accum_steps: 16
+      num_epochs: 1
+      lr_schedule:
+        lr_scheduler_type: constant_with_warmup
+        lr: 1.0e-5
+        warmup_steps: 6
+      adam_beta1: 0.9
+      adam_beta2: 0.999
+      adam_eps: 1.0e-8
+      eps_root: 1.0e-17
+      weight_decay: 0.0
+      seed: 42
+
+  - magic:
+      run_path: runs/olmo32b_token_filtering/magic
+      resume: true
+      grad_checkpointing: true
+      double_backward_batch_size: 1
+      skip_validation: true
+      backward_save_every: 50
+      attribute_tokens: true
+      model: allenai/Olmo-3.1-32B-Think
+      precision: fp32
+      use_tf32_matmuls: false
+      fsdp: false   # BERGSON_TP replaces it
+      peft_init_kwargs: "r=32,lora_alpha=64,lora_dropout=0.0,target_modules=q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj,layers_to_transform=32|33|34|35|36|37|38|39|40|41|42|43|44|45|46|47|48|49|50|51|52|53|54|55|56|57|58|59|60|61|62|63"
+      data:
+        dataset: runs/bergson_paper/mix_85_15
+        split: train
+        chunk_length: 512
+      distributed:
+        nproc_per_node: 4
+        nnode: 64
+      batch_size: 1024
+      grad_accum_steps: 16
+      num_epochs: 1
+      lr_schedule:
+        lr_scheduler_type: constant_with_warmup
+        lr: 1.0e-5
+        warmup_steps: 6
+      adam_beta1: 0.9
+      adam_beta2: 0.999
+      adam_eps: 1.0e-8
+      eps_root: 1.0e-17
+      weight_decay: 0.0
+      seed: 42
+      query:
+        dataset: cais/wmdp
+        split: test
+        subset: wmdp-bio
+        prompt_column: question
+        aggregation: mean
+
+  - validate:
+      run_path: runs/olmo32b_token_filtering/filter
+      scores: runs/olmo32b_token_filtering/magic/scores
+      subset_weight: 0.0
+      method:
+        kind: filter
+        direction: proponents
+        fraction: 0.1
+        controls:
+          kind: retrain
+          count: 1
+      model: allenai/Olmo-3.1-32B-Think
+      precision: fp32
+      use_tf32_matmuls: false
+      fsdp: false   # BERGSON_TP replaces it
+      peft_init_kwargs: "r=32,lora_alpha=64,lora_dropout=0.0,target_modules=q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj,layers_to_transform=32|33|34|35|36|37|38|39|40|41|42|43|44|45|46|47|48|49|50|51|52|53|54|55|56|57|58|59|60|61|62|63"
+      data:
+        dataset: runs/bergson_paper/mix_85_15
+        split: train
+        chunk_length: 512
+      distributed:
+        nproc_per_node: 4
+        nnode: 64
+      batch_size: 1024
+      grad_accum_steps: 16
+      num_epochs: 1
+      lr_schedule:
+        lr_scheduler_type: constant_with_warmup
+        lr: 1.0e-5
+        warmup_steps: 6
+      adam_beta1: 0.9
+      adam_beta2: 0.999
+      adam_eps: 1.0e-8
+      eps_root: 1.0e-17
+      weight_decay: 0.0
+      seed: 42
+      query:
+        dataset: cais/wmdp
+        split: test
+        subset: wmdp-bio
+        prompt_column: question
+        aggregation: mean

@@ -492,6 +492,7 @@ def worker(
     score_path: str = "",
     validate: bool = False,
     baseline_model: str = "",
+    extra_evals: list | None = None,
 ):
     if torch.cuda.is_available():
         torch.cuda.set_device(get_device_index(rank))
@@ -804,6 +805,23 @@ def worker(
     if not validate:
         return
 
+    # Extra eval datasets (BERGSON_EXTRA_EVAL): loss-only streams evaluated on
+    # the fully-trained model and on every filter retrain.
+    extra_streams = {}
+    for name, extra_ds, extra_n, column in extra_evals or []:
+        extra_ds, extra_n, extra_padding = pad_dataset_to_batch_size(
+            extra_ds, run_cfg.batch_size, extra_n, name, global_rank
+        )
+        extra_stream = DataStream(
+            extra_ds,
+            run_cfg.batch_size,
+            device=get_device(rank),
+            input_key=column,
+            weight_shape=(extra_n,),
+        )
+        extra_padding.zero_weights(extra_stream.weights.data)
+        extra_streams[name] = extra_stream
+
     validate_scores(
         run_cfg,
         scores,
@@ -820,6 +838,7 @@ def worker(
         num_query_docs=num_query_docs,
         query_padding=query_padding,
         padding=padding,
+        extra_streams=extra_streams,
     )
 
 
@@ -855,7 +874,6 @@ def run_magic(
     # must finish populating the cache before others read from it.
     barrier = run_path / ".preprocess_done" if multi_node else None
     if barrier is not None and not is_main_node:
-        run_path.mkdir(parents=True, exist_ok=True)
         while not barrier.exists():
             time.sleep(0.5)
 
@@ -869,6 +887,23 @@ def run_magic(
         query_ds, query_n = setup_data_pipeline(run_cfg, run_cfg.query)
     else:
         query_ds, query_n = None, 0
+
+    # BERGSON_EXTRA_EVAL="name|dataset|subset|split|column;..." adds loss-only
+    # evals of the fully-trained model and each filter retrain to validation,
+    # written to <run_path>/extra_eval.csv.
+    extra_evals = []
+    if isinstance(run_cfg, ValidationConfig):
+        for spec in filter(None, os.environ.get("BERGSON_EXTRA_EVAL", "").split(";")):
+            name, dataset, subset, split, column = spec.split("|")
+            extra_cfg = replace(
+                run_cfg.query,
+                dataset=dataset,
+                subset=subset or None,
+                split=split,
+                prompt_column=column,
+            )
+            extra_ds, extra_n = setup_data_pipeline(run_cfg, extra_cfg)
+            extra_evals.append((name, extra_ds, extra_n, column))
 
     if barrier is not None and is_main_node:
         barrier.touch()
@@ -885,6 +920,7 @@ def run_magic(
             score_path,
             validate,
             baseline_model,
+            extra_evals,
         ],
         run_cfg.distributed,
     )
