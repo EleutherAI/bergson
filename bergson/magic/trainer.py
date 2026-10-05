@@ -1162,9 +1162,6 @@ def prepare_trainer(cfg: TrainingConfig, rank: int, schedule: Callable):
             f"{dist.get_world_size()}; the dp x tp mesh would be ragged."
         )
 
-    # A sharded run reads no checkpoint here: the model is built on meta and
-    # every rank fills in only the slice it owns, so neither host memory nor
-    # one GPU ever has to hold the whole thing.
     model, target_modules = setup_model_and_peft(
         cfg,
         attn_implementation="eager",
@@ -1173,8 +1170,6 @@ def prepare_trainer(cfg: TrainingConfig, rank: int, schedule: Callable):
     )
 
     if shard:
-        # Meta leaves the buffers empty and the rotary tables live there, so
-        # the first forward would read unallocated storage.
         materialize_buffers(model, model.config, get_device(rank))
     elif not use_tp:
         model.to(get_device(rank))  # type: ignore[reportArgumentType]
@@ -1237,13 +1232,9 @@ def prepare_trainer(cfg: TrainingConfig, rank: int, schedule: Callable):
         apply_dtensor_patch()
         mesh = init_device_mesh("cuda", (dist.get_world_size(),))
         reader = ShardReader(cfg.model, dist.get_world_size(), dist.get_rank())
-        device = get_device(rank)
         try:
             with mesh:
-                model = simple_fsdp(
-                    model,
-                    local_for=lambda path, param: reader.local(path, param).to(device),
-                )
+                model = simple_fsdp(model, reader, get_device(rank))
         finally:
             reader.close()
 
