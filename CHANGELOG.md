@@ -1,6 +1,21 @@
 # CHANGELOG
 
 
+## v2.2.3 (2026-10-06)
+
+### Bug Fixes
+
+- Eigendecompose autocorrelation Grams after summing them across ranks
+  ([#539](https://github.com/EleutherAI/bergson/pull/539),
+  [`4d17bc9`](https://github.com/EleutherAI/bergson/commit/4d17bc9ca18c4b97771b92e9bcacfe206d58ec9a))
+
+### Build System
+
+- Pick the torch build matching the GPU driver in uv pip installs
+  ([#520](https://github.com/EleutherAI/bergson/pull/520),
+  [`f32e002`](https://github.com/EleutherAI/bergson/commit/f32e002238d2dbbb95e2246afd5712299a1aa9b6))
+
+
 ## v2.2.2 (2026-10-05)
 
 ### Bug Fixes
