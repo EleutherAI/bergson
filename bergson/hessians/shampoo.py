@@ -15,13 +15,13 @@ from bergson.utils.utils import assert_type
 @dataclass(kw_only=True)
 class ShampooCollector(HookCollectorBase):
     """
-    Collects the Shampoo factors of each module's per-batch gradient.
+    Collects activation and gradient covariances for Shampoo.
 
     Computes:
-        A_shampoo = sum over batches of (Grad^T @ Grad) / trace  for activations
-        S_shampoo = sum over batches of (Grad @ Grad^T)  for gradients
+        A_shampoo = sum over batches of (Grad.T @ Grad) / trace  for activations
+        S_shampoo = sum over batches of (Grad @ Grad.T)  for gradients
 
-    where Grad = G^T @ X is the batch gradient [O, I], X is input activations
+    where Grad = G.T @ X is the batch gradient [O, I], X is input activations
     [N*S, I], G is output gradients [N*S, O], and trace is the trace of the
     summed activation factor.
     """
@@ -61,7 +61,7 @@ class ShampooCollector(HookCollectorBase):
         module._inputs = a_bi
 
     def backward_hook(self, module: nn.Module, g: Tensor) -> None:
-        """Accumulate both Shampoo factors of the batch gradient."""
+        """Accumulate gradient and activation covariances, A.T @ A and G.T @ G."""
         name = assert_type(str, module._name)
         S_shampoo_po = self.S_shampoo_dict[name]
         A_shampoo_ki = self.A_shampoo_dict[name]
