@@ -15,14 +15,15 @@ from bergson.utils.utils import assert_type
 @dataclass(kw_only=True)
 class ShampooCollector(HookCollectorBase):
     """
-    Collects activation and gradient covariances for TKFAC.
+    Collects the Shampoo factors of each module's per-batch gradient.
 
     Computes:
-        A_shampoo = sum over batches of Grad @ Grad.T  for activations
-        S_shampoo = sum over batches of Grad.T @ Grad for gradients * trace(A_cov)
+        A_shampoo = sum over batches of (Grad^T @ Grad) / trace  for activations
+        S_shampoo = sum over batches of (Grad @ Grad^T)  for gradients
 
-
-    where X is input activations [N*S, I] and G is output gradients [N*S, O].
+    where Grad = G^T @ X is the batch gradient [O, I], X is input activations
+    [N*S, I], G is output gradients [N*S, O], and trace is the trace of the
+    summed activation factor.
     """
 
     dtype: torch.dtype
@@ -42,7 +43,7 @@ class ShampooCollector(HookCollectorBase):
         )
 
     def forward_hook(self, module: nn.Module, a: Tensor) -> None:
-        """Compute activation covariance: A^T @ A."""
+        """Store the input activations for the backward hook."""
 
         mask = self.collection_mask(module)
         assert mask is not None, "Collection mask not set for forward hook."
@@ -60,7 +61,7 @@ class ShampooCollector(HookCollectorBase):
         module._inputs = a_bi
 
     def backward_hook(self, module: nn.Module, g: Tensor) -> None:
-        """Compute gradient covariance: G^T @ G."""
+        """Accumulate both Shampoo factors of the batch gradient."""
         name = assert_type(str, module._name)
         S_shampoo_po = self.S_shampoo_dict[name]
         A_shampoo_ki = self.A_shampoo_dict[name]
