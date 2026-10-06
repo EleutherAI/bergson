@@ -9,7 +9,7 @@ Per-token attribution on the WikiText leaderboard model (the `1_magic.yaml` run 
 | EK-FAC | 0.863 | [0.833, 0.894] | 0.860 | 0.648 | 1.175 | 0.0006 | 50/50 |
 | KFAC | 0.786 | [0.758, 0.815] | 0.784 | 0.584 | 1.058 | 0.0008 | 50/50 |
 | BM25 | 0.677 | [0.650, 0.704] | 0.678 | 0.462 | 0.926 | 0.0004 | 50/50 |
-| TrackStar (no optimizer correction, projection 64) | 0.489 | [0.465, 0.515] | 0.488 | 0.336 | 0.735 | 0.0012 | 50/50 |
+| TrackStar (no optimizer correction, projection 64) | 0.492 | [0.467, 0.517] | 0.491 | 0.339 | 0.738 | 0.0012 | 50/50 |
 | Gradient cosine similarity | 0.217 | [0.206, 0.229] | 0.212 | 0.148 | 0.342 | 0.0009 | 50/50 |
 | TRAK (8-model ensemble) | 0.119 | [0.112, 0.125] | 0.116 | 0.072 | 0.191 | 0.0004 | 50/50 |
 | Activation similarity | 0.028 | [0.018, 0.039] | 0.012 | -0.005 | 0.163 | 0.0004 | 47/50 |

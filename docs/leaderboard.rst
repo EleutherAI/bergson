@@ -47,16 +47,16 @@ Indicative performance of data attribution methods in the finetuning regime.
      - 0.124 [0.087, 0.160]
    * - TrackStar (no optimizer correction, projection 64)
      - 0.045 [0.036, 0.055]
-     - 0.270 [0.240, 0.295]
+     - 0.276 [0.252, 0.299]
    * - TrackStar (Adam, projection 64)
      - 0.043 [0.034, 0.052]
-     - 0.225 [0.195, 0.252]
+     - 0.242 [0.216, 0.267]
    * - TrackStar (no optimizer correction, projection 32)
      - 0.035 [0.027, 0.044]
-     - 0.211 [0.183, 0.238]
+     - 0.194 [0.171, 0.216]
    * - TrackStar (Adam, projection 32)
      - 0.032 [0.025, 0.041]
-     - 0.173 [0.144, 0.201]
+     - 0.182 [0.156, 0.209]
    * - TRAK (8-model ensemble)
      - 0.032 [0.024, 0.040]
      - 0.138 [0.111, 0.165]
@@ -68,13 +68,13 @@ Indicative performance of data attribution methods in the finetuning regime.
      - 0.165 [0.138, 0.191]
    * - TrackStar (no optimizer correction, projection 16)
      - 0.022 [0.016, 0.028]
-     - 0.143 [0.113, 0.173]
+     - 0.120 [0.090, 0.149]
    * - Gradient cosine similarity
      - 0.021 [0.016, 0.027]
      - 0.156 [0.131, 0.181]
    * - TrackStar (Adam, projection 16)
      - 0.020 [0.014, 0.026]
-     - 0.103 [0.072, 0.133]
+     - 0.114 [0.084, 0.143]
    * - Gradient dot product
      - 0.019 [0.015, 0.024]
      - 0.156 [0.130, 0.180]
@@ -116,7 +116,7 @@ Per-token attribution scores, which attribute each training token's loss term, e
    * - BM25
      - 0.677 [0.650, 0.704]
    * - TrackStar (no optimizer correction, projection 64)
-     - 0.489 [0.465, 0.515]
+     - 0.492 [0.467, 0.517]
    * - Gradient cosine similarity
      - 0.217 [0.206, 0.229]
    * - TRAK (8-model ensemble)
