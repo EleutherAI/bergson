@@ -2,7 +2,6 @@ import gc
 import os
 import shutil
 import warnings
-from contextlib import ExitStack
 
 import torch
 import torch.distributed as dist
@@ -79,33 +78,56 @@ def partition_modules(names: list[str], num_partitions: int) -> list[list[str]]:
 
 def merge_partitions(run_path: str | os.PathLike, num_partitions: int, rank: int):
     """Merge this rank's shard from every ``partition_{i}`` under ``run_path`` into
-    the run's factor stores; rank 0 then deletes the partition directories."""
+    the run's factor stores; rank 0 then deletes the partition directories.
+
+    Each partition shard is deleted once its merged shard is written, so the disk
+    holds at most one merged shard per rank twice.
+    """
     part_dirs = [
         os.path.join(run_path, f"partition_{p}") for p in range(num_partitions)
     ]
     shard = f"shard_{rank}.safetensors"
     for sub in FACTOR_SUBDIRS:
-        files = [os.path.join(d, sub, shard) for d in part_dirs]
-        present = [os.path.exists(f) for f in files]
-        if not any(present):
-            continue
-        if not all(present):
-            missing = [f for f, ok in zip(files, present) if not ok]
-            raise FileNotFoundError(f"Partition shards missing for {sub}: {missing}")
-
-        merged = {}
-        with ExitStack() as stack:
-            for f in files:
-                handle = stack.enter_context(safe_open(f, framework="pt", device="cpu"))
-                for key in handle.keys():
-                    merged[key] = handle.get_tensor(key)
-            os.makedirs(os.path.join(run_path, sub), exist_ok=True)
-            save_file(merged, os.path.join(run_path, sub, shard))
+        _merge_shard(
+            [os.path.join(d, sub, shard) for d in part_dirs],
+            os.path.join(run_path, sub, shard),
+        )
 
     dist.barrier() if dist.is_initialized() else None
     if rank == 0:
         for d in part_dirs:
-            shutil.rmtree(d)
+            shutil.rmtree(d, ignore_errors=True)
+
+
+def _merge_shard(files: list[str], out: str):
+    """Write the union of the tensors in ``files`` to ``out``, then delete ``files``.
+
+    A complete set of ``files`` replaces any existing ``out``, since a refit
+    rewrites the partitions; a partial set means ``out`` was already merged.
+    """
+    present = [os.path.exists(f) for f in files]
+    if not any(present):
+        return
+    if all(present):
+        merged = {}
+        for f in files:
+            with safe_open(f, framework="pt", device="cpu") as handle:
+                for key in handle.keys():
+                    merged[key] = handle.get_tensor(key)
+        if os.path.exists(out):
+            os.remove(out)
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        tmp = out + ".tmp"
+        save_file(merged, tmp)
+        del merged
+        os.replace(tmp, out)
+    elif not os.path.exists(out):
+        missing = [f for f, ok in zip(files, present) if not ok]
+        raise FileNotFoundError(f"Partition shards missing for {out}: {missing}")
+
+    for f, ok in zip(files, present):
+        if ok:
+            os.remove(f)
 
 
 def approximate_hessians(
