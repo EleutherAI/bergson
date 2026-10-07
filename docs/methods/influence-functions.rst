@@ -85,18 +85,17 @@ The paper estimates output token influence by moving the weights a small step al
 Compress Gradients
 ------------------
 
-``index_cfg.projection_dim`` randomly down-projects the gradients before they are scored. ``projection_target: per_module`` compresses each module's gradient to its own ``[projection_dim, projection_dim]`` block; ``global`` compresses the whole gradient to one ``[projection_dim]`` vector:
+``index_cfg.projection_dim`` randomly down-projects the gradients before they are scored, compressing each module's gradient to its own ``[projection_dim, projection_dim]`` block:
 
 .. code-block:: yaml
 
    steps:
      - influence:
          index_cfg:
-           projection_dim: 4096
-           projection_target: global
+           projection_dim: 64
          hessian_cfg: {method: kfac}
 
-The factored preconditioners apply :math:`H^{-1}` to the unprojected query and down-project the result to match the index. EK-FAC (``ev_correction``) doesn't support projection.
+The Kronecker factors are projected with the same matrices as the gradients, and the inverse of :math:`(P_l G P_l^\top) \otimes (P_r A P_r^\top)` is applied to the projected query, where :math:`G` and :math:`A` are the gradient and activation factors. The damping is relative to the mean eigenvalue of the projected factors. ``projection_target: global`` isn't supported, and EK-FAC (``ev_correction``) doesn't support projection.
 
 Method details
 --------------
