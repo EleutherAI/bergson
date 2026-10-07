@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Literal
 
 from ..config.config import ValidationConfig
 
@@ -13,6 +14,10 @@ class MagicConfig(ValidationConfig):
     cleanup_ckpts: bool = True
     """Whether to delete all but the last checkpoint during the backward pass."""
 
+    curvature: Literal["hessian", "gauss_newton"] = "hessian"
+    """Curvature of each step's loss in the backward through training.
+    ``"gauss_newton"`` gives unrolled Gauss-Newton scores."""
+
     attribute_tokens: bool = False
     """Whether to compute attribution scores per token (instead of per sequence);
     the same toggle as ``IndexConfig.attribute_tokens``."""
@@ -26,6 +31,8 @@ class MagicConfig(ValidationConfig):
 
     def __post_init__(self):
         super().__post_init__()
+        if self.curvature == "gauss_newton" and self.fsdp:
+            raise ValueError("curvature 'gauss_newton' does not support fsdp.")
         if self.per_token:
             self.attribute_tokens = True
         if self.query.aggregation == "none" and self.query.contrast is not None:
