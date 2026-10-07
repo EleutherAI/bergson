@@ -27,6 +27,11 @@ Usage
        --query.split "train[:8]" \
        --model EleutherAI/pythia-14m
 
+Gauss-Newton curvature
+----------------------
+
+``--curvature gauss_newton`` replaces each step's loss Hessian in the backward with its Gauss-Newton approximation :math:`J^\top \nabla^2 \ell J`, where :math:`J` is the Jacobian of the logits. The optimizer update, Adam's second moment included, is still differentiated exactly, so the scores are an unrolled Gauss-Newton approximation of MAGIC. Each step costs a Jacobian-vector product and a vector-Jacobian product through the model. FSDP is unsupported.
+
 Contrastive queries
 -------------------
 
