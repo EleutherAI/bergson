@@ -18,6 +18,9 @@ Indicative performance of data attribution methods in the finetuning regime.
    * - MAGIC (cross-seed)
      - 0.098 [0.087, 0.110]
      - 0.829 [0.815, 0.840]
+   * - EK-FAC + band ridge (fitted to MAGIC)
+     - 0.076 [0.065, 0.088]
+     - 0.574 [0.551, 0.594]
    * - EK-FAC + ASTRA
      - 0.074 [0.063, 0.087]
      - 0.643 [0.624, 0.660]
