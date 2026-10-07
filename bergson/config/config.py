@@ -1026,6 +1026,11 @@ class HessianPipelineConfig:
     inversion_cfg: InversionConfig = field(default_factory=InversionConfig)
     """How to invert the fitted EKFAC Hessian when applying it to the query."""
 
+    project_factors: bool = False
+    """With ``index_cfg.projection_dim > 0``, project the Kronecker factors with
+    the gradients' projection matrices and invert them in the projected space,
+    instead of inverting unprojected and projecting the result."""
+
     astra: AstraConfig = field(default_factory=AstraConfig)
     """Refine the inverse-Hessian-vector products iteratively before scoring."""
 

@@ -87,3 +87,15 @@ Compressing the gradients
          hessian_cfg: {method: kfac}
 
 The factored preconditioners apply :math:`H^{-1}` to the unprojected query and down-project the result to match the index. EK-FAC (``ev_correction``) doesn't support projection.
+
+``hessian_pipeline_cfg.project_factors`` inverts in the projected space instead. With per-module projection matrices :math:`P_l` and :math:`P_r`, the query is projected first and the inverse of :math:`(P_l G P_l^\top) \otimes (P_r A P_r^\top)` is applied to it, where :math:`G` and :math:`A` are the gradient and activation factors. The damping is relative to the mean eigenvalue of the projected factors.
+
+.. code-block:: yaml
+
+   steps:
+     - ekfac:
+         index_cfg:
+           projection_dim: 64
+         hessian_cfg: {method: kfac}
+         hessian_pipeline_cfg:
+           project_factors: true

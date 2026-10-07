@@ -354,6 +354,62 @@ def test_apply_hessian_compresses_per_module(tmp_path):
         ), f"{name}: compressed IVHP output doesn't match manual post-projection"
 
 
+def test_apply_hessian_projects_factors(tmp_path):
+    """``project_factors`` applies the damped inverse of
+    ``(P_l G P_l^T) ⊗ (P_r A P_r^T)`` to an already projected query."""
+    modules = {"a": (4, 6), "b": (5, 3)}  # (O, I)
+    hessian_path = tmp_path / "hessian"
+    _write_factored_hessian(hessian_path, modules, num_shards=2, seed=0)
+
+    p, num_grads = 2, 3
+    query_path = tmp_path / "query"
+    _make_query_gradients(str(query_path), {name: p * p for name in modules}, num_grads)
+    processor_for(IndexConfig(run_path="", projection_dim=p)).save(query_path)
+    query = load_module_gradients(str(query_path))
+
+    cfg = EkfacConfig(
+        hessian_method_path=str(hessian_path),
+        gradient_path=str(query_path),
+        run_path=str(tmp_path / "out"),
+        ev_correction=False,
+        projection_dim=p,
+        project_factors=True,
+    )
+    EkfacApplicator(cfg, inversion_cfg=InversionConfig()).compute_ivhp_sharded()
+    got = load_module_gradients(str(tmp_path / "out"))
+
+    def full(sub, name):
+        shards = [
+            load_file(hessian_path / sub / f"shard_{r}.safetensors") for r in (0, 1)
+        ]
+        return torch.cat([shard[name] for shard in shards]).double()
+
+    for name, (o, i) in modules.items():
+        q_a, q_g = full("eigen_activation_sharded", name), full(
+            "eigen_gradient_sharded", name
+        )
+        lam_a = load_file(hessian_path / "factor_eig_a" / "shard_0.safetensors")[name]
+        A = (q_a * lam_a.double()) @ q_a.T
+        G = (q_g * full("factor_eig_g", name)) @ q_g.T
+        P_l = create_projection_matrix(
+            f"{name}/left", p, o, torch.float64, "cpu", "rademacher"
+        )
+        P_r = create_projection_matrix(
+            f"{name}/right", p, i, torch.float64, "cpu", "rademacher"
+        )
+        H = torch.kron(P_l @ G @ P_l.T, P_r @ A @ P_r.T)
+        damped = H + 0.1 * torch.linalg.eigvalsh(H).mean() * torch.eye(p * p)
+        q = torch.from_numpy(np.asarray(query[name][:])).double()
+        expected = torch.linalg.solve(damped, q.T).T
+
+        torch.testing.assert_close(
+            torch.from_numpy(np.asarray(got[name][:])).double(),
+            expected,
+            rtol=1e-3,
+            atol=1e-5,
+        )
+
+
 def test_apply_hessian_compression_matches_collector(tmp_path, model, dataset):
     """The compressed IVHP output must use the same projection matrices as the
     gradient collector, including with a non-default type, scale and seed.
