@@ -991,6 +991,11 @@ class AstraConfig(Serializable):
     num_steps: int = 0
     """Steps per query; 0 scores the factored solution unchanged."""
 
+    solver: Literal["sgd", "cg"] = "sgd"
+    """``sgd`` is ASTRA's momentum SGD. ``cg`` runs preconditioned conjugate
+    gradients on one batch of ``batch_size`` documents and ignores ``lr``,
+    ``momentum`` and the decay."""
+
     loss_reduction: Literal["mean", "sum"] | None = None
     """Overrides ``index_cfg.loss_reduction`` in the Hessian-vector products.
     Used to replicate ASTRA; its theoretical interpretation is unclear."""
