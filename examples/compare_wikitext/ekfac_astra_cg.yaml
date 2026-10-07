@@ -1,14 +1,14 @@
-# EK-FAC scores refined by ASTRA for the 1_magic.yaml model against the test
-# queries, one score column per query. LDS:
-# examples/compare_wikitext/lds_from_bank.py --sign grad.
+# EK-FAC scores refined by ASTRA's conjugate-gradient solver for the 1_magic.yaml
+# model against the test queries, one score column per query.
+# LDS: examples/compare_wikitext/lds_from_bank.py --sign grad.
 
-# Run with `bergson examples/compare_wikitext/ekfac_astra.yaml`
+# Run with `bergson examples/compare_wikitext/ekfac_astra_cg.yaml`
 
-run_path: runs/compare_wikitext/ekfac_astra
+run_path: runs/compare_wikitext/ekfac_astra_cg
 steps:
   - ekfac:
       index_cfg:
-        run_path: runs/compare_wikitext/ekfac_astra
+        run_path: runs/compare_wikitext/ekfac_astra_cg
         model: runs/compare_wikitext/interval/exported/checkpoint-72
         overwrite: true
         # GPT-2's max context length is 1024.
@@ -19,7 +19,7 @@ steps:
         # GPT-2 uses an nn.Linear for its LM head.
         filter_modules: "lm_head"
         distributed:
-          nproc_per_node: 4
+          nproc_per_node: 2
           nnode: 1
         data:
           dataset: EleutherAI/bergson-wikitext-512-chunks
@@ -46,15 +46,9 @@ steps:
           # One score column per query, for per-query LDS.
           aggregation: none
         inversion_cfg:
-          damping_factor: 0.1
+          damping_factor: 10.0
         astra:
-          # The paper's schedule at the step size this damping tolerates: the
-          # objective over test[0:2] falls to -31947 at 1e-1, against -20503 at
-          # 1e-2 and -25719 at 3e-1.
-          num_steps: 300
-          lr: 0.1
-          momentum: 0.9
-          batch_size: 16
+          solver: cg
+          num_steps: 20
+          batch_size: 256
           micro_batch_size: 8
-          lr_decay: 0.9
-          lr_decay_interval: 100
