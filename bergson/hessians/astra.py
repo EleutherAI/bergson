@@ -223,8 +223,13 @@ class Astra:
             }
 
     def refine(self, q: dict[str, Tensor], x: dict[str, Tensor], row: int):
-        """Momentum SGD from ``x`` on ``x^T (H + D) x / 2 - x^T q``."""
+        """Minimize ``x^T (H + D) x / 2 - x^T q`` from ``x``."""
         gen = torch.Generator().manual_seed(self.cfg.seed * 1_000_003 + row)
+        if self.cfg.solver == "cg":
+            indices = torch.randperm(self.num_docs, generator=gen)[
+                : self.cfg.batch_size
+            ].tolist()
+            return self._cg(q, x, row, indices)
         buf = {n: torch.zeros_like(x[n]) for n in self.names}
         lr = self.cfg.lr
         for step in range(self.cfg.num_steps):
@@ -251,6 +256,49 @@ class Astra:
             for n in self.names:
                 buf[n].mul_(self.cfg.momentum).add_(direction[n][0])
                 x[n].sub_(buf[n], alpha=lr)
+        return x
+
+    def _damped_product(
+        self, v: dict[str, Tensor], indices: list[int]
+    ) -> dict[str, Tensor]:
+        """``(H_B + D) v`` on the documents ``indices``."""
+        hv = self.hvp(v, indices)
+        return {n: hv[n] + self.damping[n] * v[n] for n in self.names}
+
+    def _precondition(self, r: dict[str, Tensor]) -> dict[str, Tensor]:
+        out = self.preconditioner.apply({n: r[n][None] for n in self.names})
+        return {n: out[n][0] for n in self.names}
+
+    def _dot(self, u: dict[str, Tensor], v: dict[str, Tensor]) -> float:
+        return sum((u[n].double() @ v[n].double()).item() for n in self.names)
+
+    def _cg(
+        self, q: dict[str, Tensor], x: dict[str, Tensor], row: int, indices: list[int]
+    ):
+        """Preconditioned conjugate gradients on the documents ``indices``."""
+        ax = self._damped_product(x, indices)
+        r = {n: q[n] - ax[n] for n in self.names}
+        z = self._precondition(r)
+        p = {n: z[n].clone() for n in self.names}
+        rz = self._dot(r, z)
+        for step in range(self.cfg.num_steps):
+            if step % 50 == 0 or step == self.cfg.num_steps - 1:
+                # With r = q - (H_B + D) x, the objective is -(q + r)^T x / 2.
+                objective = -(self._dot(q, x) + self._dot(r, x)) / 2
+                self.logger.info(f"query {row} step {step}: objective {objective:.6g}")
+            ap = self._damped_product(p, indices)
+            pap = self._dot(p, ap)
+            if pap <= 0:
+                self.logger.warning(f"query {row} step {step}: curvature {pap:.3g}")
+                break
+            alpha = rz / pap
+            for n in self.names:
+                x[n].add_(p[n], alpha=alpha)
+                r[n].sub_(ap[n], alpha=alpha)
+            z = self._precondition(r)
+            rz, rz_old = self._dot(r, z), rz
+            for n in self.names:
+                p[n] = z[n] + (rz / rz_old) * p[n]
         return x
 
     def run(self, rows: range):
