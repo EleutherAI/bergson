@@ -21,7 +21,7 @@ The eigenvalue math lives in :mod:`bergson.hessians.inversion`.
 import os
 from glob import glob
 from pathlib import Path
-from typing import Iterable, Protocol, runtime_checkable
+from typing import Callable, Iterable, Literal, Protocol, runtime_checkable
 
 import torch
 import torch.distributed as dist
@@ -216,6 +216,59 @@ class FactoredPreconditioner:
             apply_fn,
             power,
             ev_correction,
+            sharded=False,
+        )
+
+    @classmethod
+    def from_projected_path(
+        cls,
+        hessian_path: str | Path,
+        projection: Callable[[str, Literal["left", "right"], int], Tensor],
+        *,
+        inversion_cfg: InversionConfig | None = None,
+        device: str | torch.device = "cpu",
+    ) -> "FactoredPreconditioner":
+        """Load the full factors and project them, so the inverse applies to
+        ``[p, p]`` projected gradients.
+
+        ``projection(name, role, n)`` returns module ``name``'s ``[p, n]``
+        projection matrix: ``left`` for the gradient factor, ``right`` for the
+        activation factor. The projected Hessian is
+        ``(P_l G P_l^T) ⊗ (P_r A P_r^T)``.
+        """
+
+        def project(vectors: Tensor, values: Tensor, P: Tensor):
+            rotated = P.to(torch.float64) @ vectors.to(torch.float64)
+            factor = (rotated * values.to(torch.float64).clamp_min(0)) @ rotated.T
+            return torch.linalg.eigh(factor)
+
+        eigen_a = _load_full(hessian_path, "eigen_activation_sharded", device)
+        eigen_g = _load_full(hessian_path, "eigen_gradient_sharded", device)
+        values_a = _load_shard(hessian_path, "factor_eig_a", 0, device)
+        values_g = _load_full(hessian_path, "factor_eig_g", device)
+
+        projected_a, projected_g, lambdas, factor_a, factor_g = {}, {}, {}, {}, {}
+        for name in list(eigen_a):
+            q_a, q_g = eigen_a.pop(name), eigen_g.pop(name)
+            lam_a, vec_a = project(
+                q_a, values_a[name], projection(name, "right", q_a.shape[0])
+            )
+            lam_g, vec_g = project(
+                q_g, values_g[name], projection(name, "left", q_g.shape[0])
+            )
+            projected_a[name] = vec_a.to(torch.float32)
+            projected_g[name] = vec_g.to(torch.float32)
+            factor_a[name] = lam_a.to(torch.float32)
+            factor_g[name] = lam_g.to(torch.float32)
+            lambdas[name] = torch.outer(lam_g, lam_a).to(torch.float32)
+
+        return cls(
+            projected_a,
+            projected_g,
+            lambdas,
+            inversion_cfg=inversion_cfg,
+            factor_eig_a=factor_a,
+            factor_eig_g=factor_g,
             sharded=False,
         )
 

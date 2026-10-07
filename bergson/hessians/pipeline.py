@@ -69,6 +69,13 @@ def hessian_pipeline(
             "only ever fits and applies a factored (kfac/tkfac/shampoo) "
             "Hessian."
         )
+    if hessian_pipeline_cfg.project_factors and (
+        index_cfg.projection_dim == 0 or index_cfg.projection_target != "per_module"
+    ):
+        raise ValueError(
+            "project_factors needs index_cfg.projection_dim > 0 and "
+            "projection_target='per_module'."
+        )
 
     run_path = index_cfg.run_path
     method = hessian_cfg.method
@@ -95,10 +102,12 @@ def hessian_pipeline(
     elif not _step_complete(query_path, resume):
         with _timed("step1_build_query", durations):
             # The preconditioner keys on module names, so the query stays
-            # uncompressed; only its output is randomly down-projected.
+            # uncompressed; only its output is randomly down-projected. With
+            # project_factors the factors are projected to match the query.
             query_cfg = deepcopy(index_cfg)
             query_cfg.run_path = query_path
-            query_cfg.projection_dim = 0
+            if not hessian_pipeline_cfg.project_factors:
+                query_cfg.projection_dim = 0
             _validate(query_cfg)
             build_query(query_cfg, query_set_cfg, PreprocessConfig())
 
@@ -129,6 +138,7 @@ def hessian_pipeline(
             projection_type=index_cfg.projection_type,
             projection_scale=index_cfg.projection_scale,
             projection_seed=index_cfg.projection_seed,
+            project_factors=hessian_pipeline_cfg.project_factors,
             apply_batch_size=hessian_pipeline_cfg.inversion_cfg.apply_batch_size,
             module_partitions=hessian_cfg.module_partitions,
         )
