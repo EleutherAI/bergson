@@ -320,9 +320,10 @@ def microbatch_step_vjp(
                     allow_unused=True,
                 )
         for i, key in enumerate(grad_keys):
-            if contributions[i] is not None:
+            contribution = contributions[i]
+            if contribution is not None:
                 param_cotangents[param_index[key]] = (
-                    param_cotangents[param_index[key]] + contributions[i]
+                    param_cotangents[param_index[key]] + contribution
                 )
         if example_weight_cotangent is not None and contributions[-1] is not None:
             example_weight_cotangent = example_weight_cotangent + contributions[-1]
@@ -391,13 +392,13 @@ def gauss_newton_vjp(
 
     primals = tuple(state_params[k].detach() for k in keys)
     rng_restore(snapshot)
-    logits, logits_tangent = torch.func.jvp(
-        logits_of, primals, tuple(grad_cotangent[k] for k in keys)
-    )
+    jvp_out = torch.func.jvp(logits_of, primals, tuple(grad_cotangent[k] for k in keys))
+    logits, logits_tangent = jvp_out[0], jvp_out[1]
 
     # ∇²L J z and ∂/∂w ⟨∇L, J z⟩ from one double backward at the logits.
     logits = logits.detach().requires_grad_(True)
-    loss = model.loss_function(logits, micro_batch["labels"], **loss_kwargs) * coef
+    loss_fn = getattr(model, "loss_function")
+    loss = loss_fn(logits, micro_batch["labels"], **loss_kwargs) * coef
     (logits_grad,) = torch.autograd.grad(loss, logits, create_graph=True)
     inner = (logits_grad * logits_tangent.detach()).sum()
     targets = [logits] + ([example_weight] if example_weight is not None else [])

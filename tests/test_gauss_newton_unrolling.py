@@ -23,7 +23,7 @@ def _trainer(head_only: bool):
     model.loss_function = weighted_causal_lm_ce
     model.requires_grad_(not head_only)
     if head_only:
-        model.embed_out.requires_grad_(True)
+        model.get_output_embeddings().requires_grad_(True)
     optimizer = torchopt.adamw(1e-3, betas=(0.9, 0.99), eps_root=1e-8)
     trainer, state = Trainer.initialize(model, optimizer)
     return trainer, state, model
