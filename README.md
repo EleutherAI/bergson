@@ -30,6 +30,7 @@ Indicative performance of data attribution methods in the finetuning regime - se
 | Method | QLD | LDS | Per-token QLD |
 |:---|:---:|:---:|:---:|
 | MAGIC | 0.100 [0.090, 0.112] | 0.931 [0.925, 0.936] | 1.375 [1.348, 1.403] |
+| Unrolled Gauss-Newton | 0.101 [0.091, 0.113] | 0.924 [0.917, 0.929] | – |
 | EK-FAC + ASTRA | 0.074 [0.063, 0.087] | 0.643 [0.624, 0.660] | 1.082 [1.047, 1.116] |
 | Eigenvalue-corrected Shampoo | 0.071 [0.060, 0.082] | 0.517 [0.491, 0.539] | 0.922 [0.887, 0.957] |
 | SOURCE (Adam, EK-FAC) | 0.071 [0.060, 0.084] | 0.473 [0.446, 0.498] | 0.908 [0.877, 0.942] |
