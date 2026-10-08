@@ -13,7 +13,7 @@ trainer for that reason.
 """
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import torch
 import torch.distributed as dist
@@ -166,6 +166,7 @@ def microbatch_step_vjp(
     max_grad_norm: float | None = None,
     grad_accum_steps: int = 1,
     double_backward_batch_size: int | None = None,
+    curvature: Literal["hessian", "gauss_newton"] = "hessian",
 ) -> tuple[dict[str, torch.Tensor], list[torch.Tensor], torch.Tensor]:
     """VJP through one training step, one micro-batch graph at a time.
 
@@ -181,6 +182,9 @@ def microbatch_step_vjp(
          combined-gradient cotangent, and free it before the next micro-batch.
 
     Both stages run the model and so must rewind the RNG.
+
+    With ``curvature="gauss_newton"``, stage B replaces the gradient's Hessian
+    with its Gauss-Newton approximation (see :func:`gauss_newton_vjp`).
 
     Returns ``(param_cotangents, opt_cotangents, weight_cotangents)`` for the
     incoming state and this batch's ``data_weights``.
@@ -283,28 +287,43 @@ def microbatch_step_vjp(
         ]
 
     for micro_batch, snapshot in stage_b:
-        with swap_parameters(
-            model, state_params, buffers, preserve_graph=True
-        ) as params:
-            rng_restore(snapshot)
-            outputs = model(**micro_batch)
-            micro_loss = outputs.loss if hasattr(outputs, "loss") else outputs
-            coef = loss_denom(micro_batch) / total_denom
-            micro_grads = grad_tree(micro_loss * coef, params, create_graph=True)
-            grad_keys = list(micro_grads.keys())
-            targets = [params[key] for key in grad_keys]
-            if example_weight is not None:
-                targets = targets + [example_weight]
-            contributions = torch.autograd.grad(
-                [micro_grads[key] for key in grad_keys],
-                targets,
-                grad_outputs=[grad_cotangent[key] for key in grad_keys],
-                allow_unused=True,
+        coef = loss_denom(micro_batch) / total_denom
+        if curvature == "gauss_newton":
+            grad_keys = list(grad_cotangent.keys())
+            contributions = gauss_newton_vjp(
+                model,
+                state_params,
+                buffers,
+                micro_batch,
+                grad_cotangent,
+                coef,
+                snapshot,
+                example_weight,
             )
+            outputs = micro_loss = micro_grads = None
+        else:
+            with swap_parameters(
+                model, state_params, buffers, preserve_graph=True
+            ) as params:
+                rng_restore(snapshot)
+                outputs = model(**micro_batch)
+                micro_loss = outputs.loss if hasattr(outputs, "loss") else outputs
+                micro_grads = grad_tree(micro_loss * coef, params, create_graph=True)
+                grad_keys = list(micro_grads.keys())
+                targets = [params[key] for key in grad_keys]
+                if example_weight is not None:
+                    targets = targets + [example_weight]
+                contributions = torch.autograd.grad(
+                    [micro_grads[key] for key in grad_keys],
+                    targets,
+                    grad_outputs=[grad_cotangent[key] for key in grad_keys],
+                    allow_unused=True,
+                )
         for i, key in enumerate(grad_keys):
-            if contributions[i] is not None:
+            contribution = contributions[i]
+            if contribution is not None:
                 param_cotangents[param_index[key]] = (
-                    param_cotangents[param_index[key]] + contributions[i]
+                    param_cotangents[param_index[key]] + contribution
                 )
         if example_weight_cotangent is not None and contributions[-1] is not None:
             example_weight_cotangent = example_weight_cotangent + contributions[-1]
@@ -338,3 +357,60 @@ def microbatch_step_vjp(
         key: param_cotangents[i] for i, key in enumerate(param_keys)
     }
     return param_cotangent_dict, opt_cotangents, weight_cotangent
+
+
+def gauss_newton_vjp(
+    model: nn.Module,
+    state_params: dict[str, torch.Tensor],
+    buffers: dict[str, torch.Tensor],
+    micro_batch: dict[str, Any],
+    grad_cotangent: dict[str, torch.Tensor],
+    coef: float,
+    snapshot: tuple[torch.Tensor, torch.Tensor],
+    example_weight: torch.Tensor | None,
+) -> tuple[torch.Tensor | None, ...]:
+    """Stage B of :func:`microbatch_step_vjp` with Gauss-Newton curvature.
+
+    For the micro-batch loss ``coef * L(f(θ), w)`` with logits ``f`` and
+    cotangent ``z`` on its gradient, returns ``J^T ∇²L J z`` for each trainable
+    tensor, then the cotangent on ``example_weight`` (``∂/∂w ⟨∇_θ L, z⟩``, the
+    same as the exact Hessian's). Costs a JVP and a VJP through the model.
+    """
+    keys = list(grad_cotangent.keys())
+    inputs = {"input_ids": micro_batch["input_ids"]}
+    loss_kwargs = {
+        k: micro_batch[k]
+        for k in ("example_weight", "shift_loss_mask")
+        if micro_batch.get(k) is not None
+    }
+
+    def logits_of(*tensors):
+        with swap_parameters(
+            model, dict(zip(keys, tensors)), buffers, preserve_graph=True
+        ):
+            return model(**inputs).logits
+
+    primals = tuple(state_params[k].detach() for k in keys)
+    rng_restore(snapshot)
+    jvp_out = torch.func.jvp(logits_of, primals, tuple(grad_cotangent[k] for k in keys))
+    logits, logits_tangent = jvp_out[0], jvp_out[1]
+
+    # ∇²L J z and ∂/∂w ⟨∇L, J z⟩ from one double backward at the logits.
+    logits = logits.detach().requires_grad_(True)
+    loss_fn = getattr(model, "loss_function")
+    loss = loss_fn(logits, micro_batch["labels"], **loss_kwargs) * coef
+    (logits_grad,) = torch.autograd.grad(loss, logits, create_graph=True)
+    inner = (logits_grad * logits_tangent.detach()).sum()
+    targets = [logits] + ([example_weight] if example_weight is not None else [])
+    out_cot, *weight_cot = torch.autograd.grad(inner, targets, allow_unused=True)
+    del loss, logits_grad, inner, logits_tangent
+
+    with swap_parameters(model, state_params, buffers, preserve_graph=True) as params:
+        rng_restore(snapshot)
+        param_cot = torch.autograd.grad(
+            model(**inputs).logits,
+            [params[k] for k in keys],
+            grad_outputs=out_cot,
+            allow_unused=True,
+        )
+    return (*param_cot, *weight_cot)

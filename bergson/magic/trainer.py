@@ -8,7 +8,7 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from shutil import rmtree
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import psutil
 import torch
@@ -519,6 +519,7 @@ class Trainer:
         max_grad_norm: float | None = None,
         grad_accum_steps: int = 1,
         double_backward_batch_size: int | None = None,
+        curvature: Literal["hessian", "gauss_newton"] = "hessian",
     ) -> "BackwardState":
         """Micro-batched VJP through one training step (metagradient replay).
 
@@ -540,6 +541,7 @@ class Trainer:
             max_grad_norm=max_grad_norm,
             grad_accum_steps=grad_accum_steps,
             double_backward_batch_size=double_backward_batch_size,
+            curvature=curvature,
         )
         return BackwardState(
             param_grads, opt_grads, weight_cot + bwd_state.weight_grads
@@ -790,6 +792,7 @@ class Trainer:
         grad_accum_steps: int = 1,
         double_backward_batch_size: int | None = None,
         state_prefix: str = "backward",
+        curvature: Literal["hessian", "gauss_newton"] = "hessian",
     ) -> BackwardState:
         """Run a backward pass through the training trajectory saved at `ckpt_dir`.
 
@@ -828,6 +831,9 @@ class Trainer:
             double_backward_batch_size: Max sequences per double-backward graph in the
                 micro-VJP; see `TrainingConfig.double_backward_batch_size`.
             state_prefix: Filename prefix for the saved backward state.
+            curvature: ``"gauss_newton"`` replaces each step's loss Hessian with
+                its Gauss-Newton approximation (unrolled Gauss-Newton), using
+                the micro-batched VJP.
 
         Returns:
             The final backward state after processing the entire trajectory.
@@ -978,7 +984,7 @@ class Trainer:
 
             # Two equivalent VJP paths that must stay in sync: micro-batched
             # (memory-bounded) when accumulating, single-shot traced otherwise.
-            if grad_accum_steps > 1:
+            if grad_accum_steps > 1 or curvature == "gauss_newton":
                 bwd_state = self.metagrad_step(
                     fwd_state,
                     data[fwd_state.batch_index],
@@ -988,6 +994,7 @@ class Trainer:
                     max_grad_norm=max_grad_norm,
                     grad_accum_steps=grad_accum_steps,
                     double_backward_batch_size=double_backward_batch_size,
+                    curvature=curvature,
                 )
                 main_pbar.update()
             else:
