@@ -47,9 +47,14 @@ class EkfacConfig:
     """``per_module`` compresses each module to its own ``[p, p]`` block.
     ``global`` sums every module's projection into one ``[p]`` vector."""
     projection_type: Literal["normal", "rademacher"] = "rademacher"
+    """Type of random projection. Must match the index being scored. See
+    ``IndexConfig``."""
     projection_scale: Literal["jl", "row_norm"] = "jl"
+    """Scaling of the random projection entries. Must match the index being
+    scored. See ``IndexConfig``."""
     projection_seed: int | None = None
-    """Must match the index being scored. See ``IndexConfig``."""
+    """Seed of the random projection. Must match the index being scored. See
+    ``IndexConfig``."""
     preconditioner_path: str = ""
     """Safetensors of a diagonal optimizer preconditioner (module name ->
     [out, in] grid), for the Adam SOURCE variant."""
