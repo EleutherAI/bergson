@@ -39,13 +39,17 @@ def step_state(path: Path | str) -> StepState:
     return "missing"
 
 
-def prepare_step(path: Path | str, *, resume: bool) -> bool:
+def prepare_step(path: Path | str, *, resume: bool, resumable: bool = False) -> bool:
     """Decide whether to run the step writing to `path`, clearing stale output.
 
     Returns True when the caller should run the step. A completed output is
     left in place even for a rerun: :func:`promote_step` replaces it atomically
-    once the rerun finishes, so a crash mid-rerun keeps the old output. Only an
-    interrupted ``.part`` is removed here.
+    once the rerun finishes, so a crash mid-rerun keeps the old output.
+
+    An interrupted ``.part`` is normally removed here so the step restarts
+    from scratch. Pass ``resumable=True`` for steps that can pick up from
+    their own partial output (e.g. a checkpointed fit); with ``resume=True``
+    that leaves ``.part`` in place instead of deleting it.
     """
     path = Path(path)
 
@@ -53,7 +57,7 @@ def prepare_step(path: Path | str, *, resume: bool) -> bool:
         return False
 
     part = partial_path(path)
-    if part.exists():
+    if part.exists() and not (resume and resumable):
         shutil.rmtree(part)
     superseded = _superseded_path(path)
     if superseded.exists():
