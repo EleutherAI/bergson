@@ -28,7 +28,7 @@ from transformers import PreTrainedModel
 
 from bergson.collector.projection_matrix import random_matrix
 from bergson.config import AttentionConfig, HessianConfig, IndexConfig
-from bergson.data import compute_num_token_grads, pad_and_tensor
+from bergson.data import compute_num_token_grads, pad_and_tensor, span_rows
 from bergson.gradients import (
     AdafactorNormalizer,
     AdamNormalizer,
@@ -37,6 +37,7 @@ from bergson.gradients import (
     OuterProductGradients,
 )
 from bergson.moe import ExpertLinear
+from bergson.spans import span_gather
 from bergson.utils.logger import get_logger
 from bergson.utils.peft import set_peft_enabled
 from bergson.utils.utils import assert_type
@@ -89,6 +90,11 @@ class HookCollectorBase(ContextDecorator, ABC):
     attribute_tokens: bool = False
     """When True, compute per-position gradients instead of per-example."""
 
+    span_column: str | None = None
+    """When set, compute per-span gradients instead of per-example, over the
+    spans this dataset column holds. Each batch's spans arrive through
+    :meth:`with_batch`."""
+
     lo: float = float("-inf")
     """Lower clamp bound for gradients. May be narrowed in subclass ``setup()``."""
 
@@ -115,6 +121,8 @@ class HookCollectorBase(ContextDecorator, ABC):
 
         self._fwd_hooks: list[RemovableHandle] = []
         self._bwd_hooks: list[RemovableHandle] = []
+        self._current_collection_mask: Tensor | None = None
+        self._current_spans: tuple[Tensor, Tensor] | None = None
 
         # Discover target modules using the static method
         self.target_info = self.discover_targets(
@@ -283,6 +291,11 @@ class HookCollectorBase(ContextDecorator, ABC):
         return normalizer
 
     @property
+    def attribute_spans(self) -> bool:
+        """Whether gradient rows are spans, which ``span_column`` decides."""
+        return self.span_column is not None
+
+    @property
     def per_module_projection_dim(self) -> int | None:
         """Per-module projection dimension, or None if projection is disabled."""
         if self.processor.projection_target == "global":
@@ -418,13 +431,21 @@ class HookCollectorBase(ContextDecorator, ABC):
     def num_rows(self, data: Dataset) -> int:
         """Number of gradient rows accumulated into an autocorrelation Gram
         over ``data``: one per gradient-carrying token when
-        ``attribute_tokens`` is set, else one per document. Used to normalize
-        the Gram into a second moment over the matching unit."""
+        ``attribute_tokens`` is set, one per span when ``attribute_spans`` is,
+        else one per document. Used to normalize the Gram into a second moment
+        over the matching unit."""
         if self.attribute_tokens:
             return int(compute_num_token_grads(data).sum())
+        if self.attribute_spans:
+            column = assert_type(str, self.span_column)
+            return int(span_rows(data, column)[0].sum())
         return len(data)
 
-    def with_batch(self, collection_mask: Tensor | None = None) -> "HookCollectorBase":
+    def with_batch(
+        self,
+        collection_mask: Tensor | None = None,
+        spans: tuple[Tensor, Tensor] | None = None,
+    ) -> "HookCollectorBase":
         """
         Set the current collection mask before entering the context.
 
@@ -439,11 +460,15 @@ class HookCollectorBase(ContextDecorator, ABC):
                 aligned with input positions, marking which positions the hooks
                 collect. This normally spans every real (non-padding) position
                 but each sequence's last.
+            spans: Optional ``(index, valid)`` pair from :func:`span_gather`,
+                grouping the batch's positions into the rows ``attribute_spans``
+                sums over.
 
         Returns:
             self, for use as a context manager.
         """
         self._current_collection_mask = collection_mask
+        self._current_spans = spans
         return self
 
     def collection_mask(self, module: nn.Module) -> Tensor | None:
@@ -461,11 +486,14 @@ class HookCollectorBase(ContextDecorator, ABC):
 
     def __enter__(self):
         """Register forward and backward hooks on all target modules."""
-        if self.attribute_tokens and any(
+        if (self.attribute_tokens or self.attribute_spans) and any(
             isinstance(self.model.get_submodule(name), ExpertLinear)
             for name in self.target_info
         ):
-            raise ValueError("attribute_tokens is incompatible with fused MoE experts.")
+            raise ValueError(
+                "Per-token and per-span attribution are incompatible with fused "
+                "MoE experts."
+            )
 
         for name in self.target_info:
             layer = self.model.get_submodule(name)
@@ -585,7 +613,8 @@ class HookCollectorBase(ContextDecorator, ABC):
         they are formed from.
 
         Handles normalizer preprocessing, bias gradients, per-module random
-        projection and ``attribute_tokens``, but not global random projection.
+        projection, ``attribute_tokens`` and ``attribute_spans``, but not global
+        random projection.
         Adam normalizes each entry, so with projection its gradients are formed
         before they are projected, and returned as a [rows, p, p] tensor.
         """
@@ -602,6 +631,15 @@ class HookCollectorBase(ContextDecorator, ABC):
             # position) before forming any [O, I] gradients
             mask = self._current_collection_mask
             g, a = g[mask], a[mask]  # [T, O], [T, I/q]
+
+        if self.attribute_spans:
+            # Group the positions into spans, then let the per-example path sum
+            # each span's outer products. Zeroing g at the padded positions
+            # drops them from both that sum and the bias gradient's.
+            assert self._current_spans is not None, "Span grouping missing for batch"
+            index, valid = self._current_spans
+            g = g.flatten(0, 1)[index].masked_fill_(~valid.unsqueeze(-1), 0.0)
+            a = a.flatten(0, 1)[index]  # [K, L, O], [K, L, I/q]
 
         adam = isinstance(normalizer, AdamNormalizer)
 
@@ -808,8 +846,17 @@ class CollectorComputer:
                 # Must count the same positions the collectors ingest.
                 total_processed += collection_mask.sum()
 
+                spans = None
+                if self.collector.attribute_spans:
+                    spans = span_gather(
+                        batch,
+                        assert_type(str, self.collector.span_column),
+                        x.shape[1],
+                        self.device,
+                    )
+
                 with (
-                    self.collector.with_batch(collection_mask),
+                    self.collector.with_batch(collection_mask, spans),
                     (
                         record_function(f"step_{step}")
                         if self.cfg.profile

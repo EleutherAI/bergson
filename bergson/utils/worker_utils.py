@@ -475,6 +475,8 @@ def setup_data_pipeline(
 
     # Remove extraneous columns
     keep = {"length", "input_ids", "labels"}
+    if data_cfg.span_column:
+        keep.add(data_cfg.span_column)
     remove_columns -= keep
     remove_columns &= set(ds.column_names)
     if remove_columns:

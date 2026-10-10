@@ -179,6 +179,11 @@ def build_query(
     from bergson.cli.commands import Build, save_run_config
 
     index_cfg.data = query_set_cfg.to_data()
+    if index_cfg.data.span_column:
+        raise ValueError(
+            "span_column attributes training data; a query's rows are its "
+            "documents or their aggregate."
+        )
     preprocess_cfg = deepcopy(preprocess_cfg)
     preprocess_cfg.aggregation = query_set_cfg.aggregation
     if query_set_cfg.aggregation != "none" and index_cfg.attribute_tokens:
