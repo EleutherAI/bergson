@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Any
 
 import torch
 import torch.distributed as dist
@@ -146,19 +147,34 @@ class DataStream:
         )
         return list(rng)[self.rank :: self.world_size]
 
+    def all_batch_rows(self, i: int) -> list[int]:
+        """Every rank's dataset row indices for batch ``i``."""
+        return list(range(i * self.batch_size, min((i + 1) * self.batch_size, self.n)))
+
     def __getitem__(self, i: int) -> dict:
         if i < 0 or i >= len(self):
             raise IndexError("DataStream index out of range")
+        return self.collate(self.batch_rows(i))
 
-        indices = self.batch_rows(i)
+    def full_batch(self, i: int) -> dict:
+        """Batch ``i`` with every rank's rows; involves no collective."""
+        if i < 0 or i >= len(self):
+            raise IndexError("DataStream index out of range")
+        return self.collate(self.all_batch_rows(i), sync_max_len=False)
+
+    def collate(self, indices: list[int], sync_max_len: bool = True) -> dict:
+        """The model inputs and example weights of dataset rows ``indices``.
+        ``sync_max_len`` pads to the longest sequence across ranks."""
         batch = self.dataset[indices]
         x, y, shift_loss_mask, _ = pad_and_tensor(
             batch["input_ids"],
             labels=batch.get("labels"),
             device=self.device,
+            sync_max_len=sync_max_len,
         )
         # If the weights are 1D, we assume they correspond to documents and look for
         # "doc_ids" in the batch to index them. If they're 2D, they correspond to tokens
+        index: Any = indices
         if self.weights.ndim == 2:
             # One weight row per example: a shuffled multi-epoch stream reaches
             # its rows through "example_ids". Truncate to the max sequence
@@ -168,18 +184,18 @@ class DataStream:
                 if "example_ids" in batch
                 else indices
             )
-            indices = (rows, slice(None, x.shape[1]))
+            index = (rows, slice(None, x.shape[1]))
         elif "doc_ids" in batch:
-            indices = torch.tensor(batch["doc_ids"], device=self.device)
+            index = torch.tensor(batch["doc_ids"], device=self.device)
             # doc_ids may be longer than the per-batch padded seq_len (unpacked
             # path stores doc_ids at dataset-wide max_len); truncate to match.
-            if indices.ndim == 2:
-                indices = indices[:, : x.shape[1]]
+            if index.ndim == 2:
+                index = index[:, : x.shape[1]]
 
         return {
             "input_ids": x,
             "labels": y,
-            "example_weight": self.weights[indices],
+            "example_weight": self.weights[index],
             "shift_loss_mask": shift_loss_mask,
         }
 

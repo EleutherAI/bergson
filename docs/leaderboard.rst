@@ -15,6 +15,9 @@ Indicative performance of data attribution methods in the finetuning regime.
    * - MAGIC
      - 0.100 [0.090, 0.112]
      - 0.931 [0.925, 0.936]
+   * - Unrolled Gauss-Newton
+     - 0.084 [0.072, 0.096]
+     - 0.819 [0.806, 0.829]
    * - MAGIC (cross-seed)
      - 0.098 [0.087, 0.110]
      - 0.829 [0.815, 0.840]
@@ -135,6 +138,9 @@ There are many method selection considerations not captured by LDS or QLD. Here 
 
 MAGIC
    This method backpropagates through the training process once per query and doesn't support query batching. It works well in FP32 or TF32 but may significantly degrade when used to attribute BF16 training runs, or training runs with low batch sizes.
+
+Unrolled Gauss-Newton
+   The AdamW training run differentiated backward on the weights of the linear layers (``unroll.enabled``), with each step's curvature taken as the Gauss-Newton matrix of the full batch and the step's weights and moments replayed from the run's checkpoints. Each rank carries its own queries through the shared replay, so queries batch across ranks. 80 minutes for 50 queries on 8 A40s here, 0.21 GPU-hours per query.
 
 ASTRA
    ASTRA improves any existing Kronecker-factored Hessian approximation during each query's application stage, so it adds a constant amount of compute to each query on top of a basic influence function like EK-FAC.
