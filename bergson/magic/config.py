@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Literal
 
 from simple_parsing import Serializable, field
 
@@ -23,7 +24,18 @@ class UnrollConfig(Serializable):
     """TF32 matmuls in the Gauss-Newton products."""
 
     bf16: bool = False
-    """Autocast the Gauss-Newton products to bf16."""
+    """Autocast the curvature products to bf16."""
+
+    curvature: Literal["gauss_newton", "gradient_outer", "fisher_token"] = (
+        "gauss_newton"
+    )
+    """Each step's curvature: the Gauss-Newton matrix of the batch loss, the
+    mean outer product of the documents' loss gradients, or the mean outer
+    product of the tokens' loss gradients."""
+
+    parameters: Literal["linear", "all"] = "linear"
+    """Parameters carried through the backward: the linear-layer weights, or
+    every trainable parameter."""
 
 
 @dataclass

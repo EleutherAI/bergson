@@ -15,9 +15,15 @@ Indicative performance of data attribution methods in the finetuning regime.
    * - MAGIC
      - 0.100 [0.090, 0.112]
      - 0.931 [0.925, 0.936]
+   * - Unrolled Gauss-Newton (all parameters)
+     - 0.102 [0.092, 0.114]
+     - 0.945 [0.940, 0.949]
    * - Unrolled Gauss-Newton
      - 0.084 [0.072, 0.096]
      - 0.819 [0.806, 0.829]
+   * - AdamW-influence (Deng et al. 2026)
+     - 0.062 [0.053, 0.072]
+     - 0.365 [0.336, 0.390]
    * - MAGIC (cross-seed)
      - 0.098 [0.087, 0.110]
      - 0.829 [0.815, 0.840]
@@ -140,7 +146,10 @@ MAGIC
    This method backpropagates through the training process once per query and doesn't support query batching. It works well in FP32 or TF32 but may significantly degrade when used to attribute BF16 training runs, or training runs with low batch sizes.
 
 Unrolled Gauss-Newton
-   The AdamW training run differentiated backward on the weights of the linear layers (``unroll.enabled``), with each step's curvature taken as the Gauss-Newton matrix of the full batch and the step's weights and moments replayed from the run's checkpoints. Each rank carries its own queries through the shared replay, so queries batch across ranks. 80 minutes for 50 queries on 8 A40s here, 0.21 GPU-hours per query.
+   The AdamW training run differentiated backward on the weights of the linear layers (``unroll.enabled``), with each step's curvature taken as the Gauss-Newton matrix of the full batch and the step's weights and moments replayed from the run's checkpoints. Each rank carries its own queries through the shared replay, so queries batch across ranks. 80 minutes for 50 queries on 8 A40s here, 0.21 GPU-hours per query. With ``unroll.parameters: all`` every trainable parameter is carried: 99 minutes for 50 queries on 8 A40s, 0.26 GPU-hours per query.
+
+AdamW-influence
+   The same backward with every parameter carried and each step's curvature the mean outer product of the documents' loss gradients (``unroll.curvature: gradient_outer``), the AdamW-influence of Deng et al. 2026 (arXiv 2605.18814). Its lower LDS here is the per-sequence outer-product curvature at this run's learning rate of 4e-4, against the 1e-5 to 1e-4 of the paper's runs (https://arxiv.org/html/2605.18814#S4.SS2). 108 minutes for 50 queries on 8 A40s at 4 queries per rank, 0.29 GPU-hours per query.
 
 ASTRA
    ASTRA improves any existing Kronecker-factored Hessian approximation during each query's application stage, so it adds a constant amount of compute to each query on top of a basic influence function like EK-FAC.

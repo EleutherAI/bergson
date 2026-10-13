@@ -1,5 +1,7 @@
 """Unrolled Gauss-Newton scores."""
 
+from typing import Any
+
 import torch
 import torchopt
 from datasets import Dataset
@@ -145,3 +147,166 @@ def test_fewer_queries_than_ranks(tmp_path):
     torch.save(queries[0], tmp_path / "query.pt")
     mp.spawn(_sharded_worker, args=(str(tmp_path), 29731), nprocs=2, join=True)
     torch.testing.assert_close(torch.load(tmp_path / "scores.pt"), reference[:, 0])
+
+
+def _kwargs(**extra: Any) -> dict[str, Any]:
+    return dict(
+        lr=lr, betas=BETAS, eps=EPS, eps_root=EPS_ROOT, weight_decay=WD, **extra
+    )
+
+
+def test_gradient_outer_matches_per_document_outer_products(tmp_path):
+    """One step with ``gradient_outer`` applies the mean outer product of the
+    documents' mean-token loss gradients."""
+    from bergson.magic.unroll import _gauss_newton_and_scores, unrolled_names
+
+    trainer, state, stream, queries = _train(str(tmp_path / "g"))
+    model = trainer.model
+    params = {k: v.detach() for k, v in state.params.items()}
+    names = unrolled_names(model, params)
+    batch = stream.full_batch(0)
+    torch.manual_seed(3)
+    z = [torch.randn(1, *params[k].shape, dtype=torch.float64) for k in names]
+    scores = torch.zeros(stream.weights.shape[0], 1, dtype=torch.float64)
+    out = _gauss_newton_and_scores(
+        model,
+        params,
+        state.buffers,
+        batch,
+        names,
+        z,
+        stream.weights,
+        scores,
+        micro_batch_size=1,
+        bf16=False,
+        curvature="gradient_outer",
+    )
+
+    expected = [torch.zeros_like(v[0]) for v in z]
+    docs = batch["input_ids"]
+    for d in range(len(docs)):
+        with state.activate(model) as live:
+            logits = model(input_ids=docs[d : d + 1]).logits[:, :-1]
+            labels = batch["labels"][d : d + 1, 1:]
+            loss = torch.nn.functional.cross_entropy(
+                logits.flatten(0, 1), labels.flatten(), ignore_index=-100
+            )
+            grads = torch.autograd.grad(loss, [live[k] for k in names])
+        inner = sum((g * v[0]).sum() for g, v in zip(grads, z))
+        for e, g in zip(expected, grads):
+            e += g * inner / len(docs)
+    for o, e in zip(out, expected):
+        torch.testing.assert_close(o[0], e)
+
+
+def test_all_parameters_track_magic_more_closely(tmp_path):
+    """On a tied tiny GPT-2 trained end to end, unrolling every parameter lands
+    closer to MAGIC's exact backward than unrolling the linear weights."""
+    from transformers import GPT2Config, GPT2LMHeadModel
+
+    def train(ckpt_dir):
+        torch.manual_seed(0)
+        config = GPT2Config(
+            n_layer=1,
+            n_head=2,
+            n_embd=8,
+            vocab_size=64,
+            n_positions=8,
+            bos_token_id=0,
+            eos_token_id=0,
+            attn_implementation="eager",
+        )
+        model = GPT2LMHeadModel(config).double().eval()
+        model.loss_function = weighted_causal_lm_ce
+        optimizer = torchopt.adamw(
+            lr, betas=BETAS, eps=EPS, eps_root=EPS_ROOT, weight_decay=WD
+        )
+        trainer, state = Trainer.initialize(model, optimizer)
+        torch.manual_seed(1)
+        rows = torch.randint(0, 64, (8, 6)).tolist()
+        stream = DataStream(Dataset.from_dict({"input_ids": rows, "labels": rows}), 2)
+        state = trainer.train(
+            state, stream, inplace=True, save_dir=ckpt_dir, save_mode="log"
+        )
+        with state.activate(model) as params:
+            batch = stream[0]
+            del batch["example_weight"]
+            grads = grad_tree(model(**batch).loss, params)
+            query = {k: g.detach().clone() for k, g in grads.items()}
+        return trainer, state, stream, query
+
+    trainer, state, stream, query = train(str(tmp_path / "m"))
+    opt = [
+        torch.zeros_like(t)
+        for t in tree_iter(state.opt_state)
+        if isinstance(t, torch.Tensor) and t.is_floating_point()
+    ]
+    stream.requires_grad = True
+    exact = trainer.backward(
+        str(tmp_path / "m"),
+        stream,
+        BackwardState(query, opt, torch.zeros_like(stream.weights)),
+        state,
+        inplace=True,
+        save_mode="log",
+    ).weight_grads.detach()
+
+    errors = {}
+    for parameters in ("linear", "all"):
+        trainer, state, stream, query = train(str(tmp_path / parameters))
+        scores = unroll_scores(
+            trainer,
+            str(tmp_path / parameters),
+            stream,
+            state,
+            [query],
+            **_kwargs(parameters=parameters),
+        )[:, 0]
+        errors[parameters] = ((scores - exact).norm() / exact.norm()).item()
+    assert errors["all"] < errors["linear"]
+    assert errors["all"] < 0.1
+
+
+def test_fisher_token_matches_per_token_outer_products(tmp_path):
+    """One step with ``fisher_token`` applies the mean outer product of the
+    tokens' loss gradients."""
+    from bergson.magic.unroll import _gauss_newton_and_scores, unrolled_names
+
+    trainer, state, stream, _ = _train(str(tmp_path / "f"))
+    model = trainer.model
+    params = {k: v.detach() for k, v in state.params.items()}
+    names = unrolled_names(model, params)
+    batch = stream.full_batch(0)
+    torch.manual_seed(4)
+    z = [torch.randn(1, *params[k].shape, dtype=torch.float64) for k in names]
+    scores = torch.zeros(stream.weights.shape[0], 1, dtype=torch.float64)
+    out = _gauss_newton_and_scores(
+        model,
+        params,
+        state.buffers,
+        batch,
+        names,
+        z,
+        stream.weights,
+        scores,
+        micro_batch_size=1,
+        bf16=False,
+        curvature="fisher_token",
+    )
+
+    expected = [torch.zeros_like(v[0]) for v in z]
+    docs, labels = batch["input_ids"], batch["labels"]
+    tokens = (labels[:, 1:] != -100).sum().item()
+    for d in range(len(docs)):
+        for t in range(labels.shape[1] - 1):
+            with state.activate(model) as live:
+                logits = model(input_ids=docs[d : d + 1]).logits[0, t]
+                loss = torch.nn.functional.cross_entropy(
+                    logits[None], labels[d : d + 1, t + 1]
+                )
+                grads = torch.autograd.grad(loss, [live[k] for k in names])
+            inner = sum((g * v[0]).sum() for g, v in zip(grads, z))
+            for e, g in zip(expected, grads):
+                e += g * inner / tokens
+    for o, e in zip(out, expected):
+        torch.testing.assert_close(o[0], e)
