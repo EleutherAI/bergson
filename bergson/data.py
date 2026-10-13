@@ -28,6 +28,7 @@ from transformers import PreTrainedTokenizerFast, logging
 
 from .config.config import DataConfig, ScoreConfig
 from .config.config_io import CONFIG_FILENAME, load_subconfig, read_config
+from .spans import check_span_starts, span_row_bounds
 from .utils.utils import (
     assert_type,
     simple_parse_kwargs_string,
@@ -62,11 +63,41 @@ def compute_num_token_grads(data: Dataset) -> np.ndarray:
     return np.maximum(lengths - 1, 0)
 
 
+def span_rows(
+    data: Dataset, span_column: str, shift: int = 0
+) -> tuple[np.ndarray, np.ndarray]:
+    """Each example's span count, and every span's ``[lo, hi)`` range of
+    per-token rows with the examples concatenated in dataset order.
+
+    Examples with no gradient row get no spans, matching
+    :func:`compute_num_token_grads`, so the store has no holes for the short
+    documents ``_allocate_batches_world`` drops from the forward pass.
+    """
+    if span_column not in data.column_names:
+        raise ValueError(
+            f"span_column {span_column!r} is not a column of the dataset: "
+            f"{data.column_names}."
+        )
+    num_rows = compute_num_token_grads(data)
+    bounds = []
+    for i, raw in enumerate(data[span_column]):
+        if num_rows[i] == 0:
+            bounds.append(np.zeros((0, 2), dtype=np.int64))
+            continue
+        starts = np.asarray(raw, dtype=np.int64)
+        check_span_starts(starts, int(num_rows[i]) + 1, i)
+        bounds.append(span_row_bounds(starts, int(num_rows[i]), shift))
+
+    counts = np.array([len(b) for b in bounds], dtype=np.int64)
+    return counts, np.concatenate(bounds) if len(bounds) else np.zeros((0, 2), np.int64)
+
+
 def create_token_index(
     root: Path,
     num_token_grads: np.ndarray,
     grad_sizes: dict[str, int],
     dtype: DTypeLike,
+    spans: np.ndarray | None = None,
 ) -> tuple[np.memmap, np.ndarray]:
     """Allocate a flat memory-mapped file for ragged per-token gradients.
 
@@ -75,6 +106,9 @@ def create_token_index(
     ``offsets.npy`` so row ``offsets[i]:offsets[i+1]`` -- rather than row
     ``i`` -- is example *i*'s gradients. ``info["attribute_tokens"]`` marks
     that distinction for readers.
+
+    Passing ``spans`` makes the rows spans rather than tokens, marked by
+    ``info["attribute_spans"]`` and described by ``spans.npy``.
 
     Parameters
     ----------
@@ -111,11 +145,14 @@ def create_token_index(
             os.fsync(f.fileno())
 
         np.save(root / "offsets.npy", offsets)
+        if spans is not None:
+            np.save(root / "spans.npy", spans)
 
+        kind = "attribute_spans" if spans is not None else "attribute_tokens"
         with (root / "info.json").open("w") as f:
             json.dump(
                 {
-                    "attribute_tokens": True,
+                    kind: True,
                     "num_items": len(num_token_grads),
                     "num_grads": total_tokens,
                     "grad_sizes": grad_sizes,
@@ -590,10 +627,12 @@ class Scores:
     :class:`bergson.score.score_writer.MemmapTokenScoreWriter` -- both write
     the same ``scores.bin`` layout (a structured ``(score_i, written_i))``
     array), differing only in what a row means. ``offsets`` is set when the
-    store is per-token (``info["attribute_tokens"]``): row
-    ``offsets[i]:offsets[i+1]`` holds document ``i``'s per-token scores.
-    Otherwise row ``i`` is document ``i`` directly, or training row
-    ``candidates[i]`` when the store was scored with ``score_cfg.candidates``."""
+    store is ragged (``info["attribute_tokens"]`` or
+    ``info["attribute_spans"]``): row ``offsets[i]:offsets[i+1]`` holds
+    document ``i``'s per-token or per-span scores. Otherwise row ``i`` is
+    document ``i`` directly, or training row ``candidates[i]`` when the store
+    was scored with ``score_cfg.candidates``. ``spans`` gives each span row the
+    per-token rows it covers."""
 
     def __init__(
         self,
@@ -601,11 +640,13 @@ class Scores:
         info: dict[str, Any],
         offsets: NDArray | None = None,
         candidates: NDArray | None = None,
+        spans: NDArray | None = None,
     ):
         self.mmap = mmap
         self.info = info
         self.offsets = offsets
         self.candidates = candidates
+        self.spans = spans
         self.num_scores = info["num_scores"]
 
         self._score_fields = [f"score_{i}" for i in range(self.num_scores)]
@@ -626,20 +667,29 @@ class Scores:
         return all(np.all(self.mmap[f"written_{i}"]) for i in range(self.num_scores))
 
     def to_grid(self) -> torch.Tensor:
-        """Unpack a per-token store into a zero-padded ``[docs, seq_len]``
-        grid (``[docs, seq_len, num_scores]`` when multi-query), so token
-        ``t`` of doc ``d`` lands at ``grid[d, t]`` -- the per-token training
-        weight layout. Only valid when ``offsets`` is set."""
-        assert self.offsets is not None, "to_grid() requires a per-token store"
+        """Unpack a ragged store into a zero-padded ``[docs, seq_len]`` grid
+        (``[docs, seq_len, num_scores]`` when multi-query), so token ``t`` of
+        doc ``d`` lands at ``grid[d, t]`` -- the per-token training weight
+        layout. A span store repeats each span's score over the rows it
+        covers, so the units a filter ranks are whole spans. Only valid when
+        ``offsets`` is set."""
+        assert self.offsets is not None, "to_grid() requires a ragged store"
         num_docs = len(self)
-        tokens_per_doc = np.diff(self.offsets).astype(np.int64)
-        seq_len = int(tokens_per_doc.max()) + 1
+        rows_per_doc = np.diff(self.offsets).astype(np.int64)
+        if self.spans is None:
+            seq_len = int(rows_per_doc.max()) + 1
+        else:
+            seq_len = int(self.spans[:, 1].max()) + 1 if len(self.spans) else 1
 
         grid = np.zeros((num_docs, seq_len, self.num_scores), dtype=np.float32)
         for doc in range(num_docs):
-            grid[doc, : tokens_per_doc[doc]] = self[
-                self.offsets[doc] : self.offsets[doc + 1]
-            ]
+            lo, hi = int(self.offsets[doc]), int(self.offsets[doc + 1])
+            rows = self[lo:hi]
+            if self.spans is None:
+                grid[doc, : rows_per_doc[doc]] = rows
+                continue
+            for (row_lo, row_hi), score in zip(self.spans[lo:hi], rows):
+                grid[doc, row_lo:row_hi] = score
 
         scores = torch.from_numpy(grid)
         return scores[..., 0] if self.num_scores == 1 else scores
@@ -649,8 +699,9 @@ def load_scores(path: Path) -> Scores:
     """Load a score store written by the standard scoring pipeline.
 
     A score directory loads its ``scores.bin`` as :class:`Scores`, with
-    ``offsets`` set when ``info["attribute_tokens"]`` marks it as a per-token
-    store.
+    ``offsets`` set when ``info["attribute_tokens"]`` or
+    ``info["attribute_spans"]`` marks it as a ragged store, and ``spans`` set
+    for the latter.
     """
     info_path = path / "info.json"
     with open(info_path, "r") as f:
@@ -662,11 +713,13 @@ def load_scores(path: Path) -> Scores:
         mode="r",
         shape=(info["num_rows"],),
     )
-    offsets = np.load(path / "offsets.npy") if info.get("attribute_tokens") else None
+    ragged = info.get("attribute_tokens") or info.get("attribute_spans")
+    offsets = np.load(path / "offsets.npy") if ragged else None
     candidates_path = path / "candidates.npy"
     candidates = np.load(candidates_path) if candidates_path.exists() else None
+    spans = np.load(path / "spans.npy") if info.get("attribute_spans") else None
 
-    return Scores(mmap, info, offsets, candidates)
+    return Scores(mmap, info, offsets, candidates, spans)
 
 
 def _load_legacy_pt_scores(score_path: str) -> tuple[torch.Tensor, bool]:

@@ -9,7 +9,7 @@ import torch
 import torch.distributed as dist
 from datasets import Dataset
 
-from bergson.data import compute_num_token_grads
+from bergson.data import compute_num_token_grads, span_rows
 from bergson.utils.utils import convert_dtype_to_np, numpy_to_tensor, tensor_to_numpy
 
 
@@ -151,6 +151,10 @@ class MemmapTokenScoreWriter(ScoreWriter):
     per-document store with ``num_rows = total_tokens`` instead of
     ``num_items``, plus an ``offsets.npy`` saying which rows belong to which
     document. Example *i*'s scores live at rows ``offsets[i]:offsets[i+1]``.
+
+    Passing ``spans`` writes a span store instead: the rows are spans rather
+    than tokens, and ``spans.npy`` records the per-token rows each one covers
+    so readers can lay the scores back out over token positions.
     """
 
     def __init__(
@@ -163,6 +167,7 @@ class MemmapTokenScoreWriter(ScoreWriter):
         flush_interval: int = 64,
         overwrite: bool = False,
         distributed: bool = True,
+        spans: np.ndarray | None = None,
     ):
         self.path = path
         self.num_scores = num_scores
@@ -193,10 +198,11 @@ class MemmapTokenScoreWriter(ScoreWriter):
                 shape=(total_tokens,),
             )
 
+            kind = "attribute_spans" if spans is not None else "attribute_tokens"
             with (path / "info.json").open("w") as f:
                 json.dump(
                     {
-                        "attribute_tokens": True,
+                        kind: True,
                         "num_items": num_items,
                         "num_rows": total_tokens,
                         "num_scores": num_scores,
@@ -207,6 +213,8 @@ class MemmapTokenScoreWriter(ScoreWriter):
                 )
 
             np.save(path / "offsets.npy", self.offsets)
+            if spans is not None:
+                np.save(path / "spans.npy", spans)
 
         if synchronize:
             dist.barrier()
@@ -222,6 +230,21 @@ class MemmapTokenScoreWriter(ScoreWriter):
     def from_dataset(cls, path: Path, data: Dataset, num_scores: int, **kwargs):
         """For callers holding the dataset the scores were computed over."""
         return cls(path, compute_num_token_grads(data), num_scores, **kwargs)
+
+    @classmethod
+    def from_spans(
+        cls,
+        path: Path,
+        data: Dataset,
+        num_scores: int,
+        span_column: str,
+        shift: int = 0,
+        **kwargs,
+    ):
+        """A span store over ``data``'s ``span_column``. ``shift`` is the token
+        influence's, as :mod:`bergson.spans` describes."""
+        counts, spans = span_rows(data, span_column, shift)
+        return cls(path, counts, num_scores, spans=spans, **kwargs)
 
     def __call__(self, indices: list[int], scores: torch.Tensor, query_offset: int = 0):
         # scores: [total_valid_in_batch, num_scores]

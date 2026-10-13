@@ -72,6 +72,64 @@ The paper estimates output token influence by moving the weights a small step al
 
 ``output`` needs an unprojected query (``projection_dim: 0``) and dot-product scoring, and doesn't support ``loss_fn: kl``, ``optimizer_state``, ``split_attention_modules``, quantized models, FSDP, or fused MoE experts. The fused attention kernels don't implement forward-mode derivatives, so the model is loaded with eager attention. The run saves ``data.hf`` with each example's loss, as the gradient path does, but not ``total_processed.pt``, which only Hessian fitting reads.
 
+Span attribution
+----------------
+
+``data.span_column`` names a column holding each document's span start positions, which makes a gradient row a span -- a contiguous run of token positions, such as a sentence, a paragraph or a fixed-width window -- instead of a whole document. The starts must be increasing and begin at 0, so the spans partition the document:
+
+.. code-block:: yaml
+
+   steps:
+     - score:
+         index_cfg:
+           data:
+             dataset: my_pretokenized_dataset
+             span_column: span_starts     # e.g. [0, 46, 91, ...] per document
+         score_cfg:
+           query_path: runs/ekfac/kfac_query
+
+Nothing generates the column, so any rule can cut the documents. Fixed windows are one ``map``:
+
+.. code-block:: python
+
+   ds = ds.map(lambda row: {"span_starts": list(range(0, len(row["input_ids"]), 64))})
+
+A span's gradient is the sum of its positions', so its score is the sum of the per-token scores over the same rows, and a document's spans still sum to the document. Span attribution therefore changes only the cost and the size of the store, never the numbers.
+
+That cost sits between the two granularities it interpolates. A per-document gradient is one ``[out, in]`` matrix formed by a matmul over the document's positions, and scoring it is one dot product per query; per-token scoring cannot form ``[tokens, out, in]``, so it contracts the query with each position separately and the token count multiplies the query count. Spans form one matrix per span, which is affordable again, so the query cost scales with the number of spans. For 512-token documents and 50 queries, on one ``[768, 3072]`` module:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Rows per document
+     - Scoring FLOPs
+     - Relative
+   * - 1 (document)
+     - 2.65 G
+     - 1.00x
+   * - 4 (128-token spans)
+     - 3.36 G
+     - 1.27x
+   * - 8 (64-token spans)
+     - 4.30 G
+     - 1.62x
+   * - 16 (32-token spans)
+     - 6.19 G
+     - 2.33x
+   * - 512 (per token)
+     - 120.84 G
+     - 45.57x
+
+Uneven spans cost a little more than even ones: a batch's spans are padded to its longest before they are summed, so the padding is the ratio of the longest span to the mean one.
+
+``score_cfg.token_influence`` decides which rows a span owns. Under ``gradient`` row ``t`` is position ``t``, so a span over positions ``[a, b)`` owns rows ``[a, b)``; under ``output`` row ``t`` is the loss on token ``t + 1``, so it owns rows ``[a - 1, b - 1)`` -- the loss terms of its own tokens. The store records the resolved row ranges in ``spans.npy``, so readers need not repeat that reasoning, and a span whose tokens carry no loss term keeps a row with a zero score rather than dropping out, which would make the store's shape depend on the token influence. ``output`` costs one forward-mode pass per query column whatever the granularity, so spans save storage there rather than compute.
+
+The unit carries into a dense (``autocorrelation``) Hessian fitted with the same ``span_column``, whose Gram is then a second moment over span gradients, normalized by their count. The Kronecker-factored methods fit over token activations and gradients either way.
+
+``load_scores`` marks a span store with ``info["attribute_spans"]``, and ``Scores.to_grid`` lays each span's score back over the token positions it covers. Leave-out validation and the filters therefore rank token rows as they always have, and removing a tail of them removes whole spans.
+
+Span attribution needs a pre-tokenized dataset, since the positions index ``input_ids``. It is incompatible with ``attribute_tokens`` and ``chunk_length``, which set or re-cut the same unit, and with ``score_cfg.candidates``, fused MoE experts, and MAGIC -- for MAGIC, attribute tokens and sum each span's rows.
+
 Compressing the gradients
 -------------------------
 

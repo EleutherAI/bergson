@@ -6,7 +6,12 @@ import torch.distributed as dist
 from datasets import Dataset
 
 from .config.config import PreprocessConfig
-from .data import compute_num_token_grads, create_index, create_token_index
+from .data import (
+    compute_num_token_grads,
+    create_index,
+    create_token_index,
+    span_rows,
+)
 from .hessians.preconditioner import Preconditioner, load_preconditioner
 from .process_grads import normalize_flat_grad
 from .utils.utils import convert_dtype_to_np, current_device, tensor_to_numpy
@@ -36,7 +41,7 @@ class Builder:
     """Gradient index writer.
 
     Handles all combinations of storage (disk / in-memory) and
-    granularity (per-sequence / per-token), with optional
+    granularity (per-sequence / per-span / per-token), with optional
     preconditioning and aggregation.
 
     Parameters
@@ -51,6 +56,9 @@ class Builder:
         Preconditioning, normalization, and aggregation settings.
     attribute_tokens : bool
         Per-token gradients instead of per-example.
+    span_column : str | None
+        When set, per-span gradients instead of per-example, over the spans
+        this column of ``data`` holds.
     path : Path | None
         When given, write to a memory-mapped file on disk.
         When ``None``, store in a plain numpy array.
@@ -66,6 +74,7 @@ class Builder:
         preprocess_cfg: PreprocessConfig,
         *,
         attribute_tokens: bool = False,
+        span_column: str | None = None,
         path: Path | None = None,
     ):
         self.grad_sizes = grad_sizes
@@ -97,15 +106,20 @@ class Builder:
             num_grads = self.num_items
             self.in_memory_grad_buffer = None
 
-        # ── Gradient buffer (disk or memory, sequence or token) ──────────
-        if attribute_tokens:
-            self.num_token_grads = compute_num_token_grads(data)
+        # ── Gradient buffer (disk or memory, sequence, span or token) ────
+        if attribute_tokens or span_column is not None:
+            spans = None
+            if span_column is None:
+                self.num_token_grads = compute_num_token_grads(data)
+            else:
+                self.num_token_grads, spans = span_rows(data, span_column)
             if path is not None:
                 self.grad_buffer, self.offsets = create_token_index(
                     path,
                     self.num_token_grads,
                     grad_sizes,
                     np_dtype,
+                    spans,
                 )
             else:
                 self.offsets = np.zeros(

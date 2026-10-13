@@ -61,11 +61,12 @@ class GradientCollector(HookCollectorBase):
         ), "Model device is not set correctly"
 
         self.attribute_tokens = self.cfg.attribute_tokens
+        self.span_column = self.cfg.data.span_column
 
-        if self.cfg.attribute_tokens:
+        if self.cfg.attribute_tokens or self.attribute_spans:
             assert (
                 self.preprocess_cfg.aggregation == "none"
-            ), "attribute_tokens is incompatible with reduce mode."
+            ), "Per-token and per-span attribution are incompatible with reduce mode."
 
         self.save_dtype = get_gradient_dtype(self.model)
         self.lo = torch.finfo(self.save_dtype).min
@@ -89,6 +90,7 @@ class GradientCollector(HookCollectorBase):
                 self.save_dtype,
                 self.preprocess_cfg,
                 attribute_tokens=self.cfg.attribute_tokens,
+                span_column=self.span_column,
                 path=self.cfg.partial_run_path,
             )
         else:
