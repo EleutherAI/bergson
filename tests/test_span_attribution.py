@@ -258,6 +258,18 @@ def test_span_store_to_grid_repeats_each_span(tmp_path: Path):
     torch.testing.assert_close(grid[1], torch.tensor([4.0, 4, 4, 4, 5, 5, 5, 0, 0, 0]))
 
 
+def test_span_store_trains_on_token_weights(tmp_path: Path):
+    """Validation gives a span store per-token training weights, since its
+    scores load as a token grid."""
+    from bergson.magic.cli import scores_are_per_token
+
+    ds = Dataset.from_dict(
+        {"input_ids": [[1] * 10, [1] * 8], "length": [10, 8], "span_starts": SPANS}
+    )
+    MemmapTokenScoreWriter.from_spans(tmp_path / "s", ds, 1, "span_starts").flush()
+    assert scores_are_per_token(str(tmp_path / "s"))
+
+
 # ---------------------------------------------------------------------------
 # End to end, through both token influences
 # ---------------------------------------------------------------------------
