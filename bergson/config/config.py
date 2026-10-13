@@ -885,15 +885,19 @@ class ScoreConfig(Serializable):
     capability (e.g. in influence functions). False for unrolled
     differentiation."""
 
-    token_influence: Literal["gradient", "output"] = "gradient"
+    token_influence: Literal["gradient", "output", "input"] = "gradient"
     """What each row scores with ``attribute_tokens``. ``gradient`` scores row
     ``t`` by the per-token gradient at position ``t``, which is position ``t``'s
     effect on the loss of every later token. ``output`` scores row ``t`` by the
     loss on token ``t + 1`` alone, the output token influence of Grosse et al.
     (2023). Both kinds of row sum to the per-example score, so without
     ``attribute_tokens``, ``output`` only changes how that score is computed.
-    ``output`` costs one forward-mode pass per query column, so aggregate the
-    query when you can, and needs an unprojected query and dot-product scoring."""
+    ``input`` scores row ``t`` by how the per-example score changes as token
+    ``t``'s embedding is scaled up, Grosse et al.'s input token influence. Its
+    rows don't sum to the per-example score, so it needs ``attribute_tokens``.
+    ``output`` and ``input`` cost one forward-mode pass per query column
+    (``input`` adds a backward pass), so aggregate the query when you can, and
+    need an unprojected query and dot-product scoring."""
 
     candidates: CandidateConfig = field(default_factory=CandidateConfig)
     """Score only the rows an earlier run ranked highest. The store then has one
