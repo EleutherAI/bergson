@@ -321,11 +321,14 @@ def compute_per_query_magic_scores(
 
 
 def scores_are_per_token(score_path: str) -> bool:
+    """Whether a store's scores load as a ``[docs, seq_len]`` token grid, as
+    per-token and span stores do."""
     info_path = os.path.join(score_path, "info.json")
     if not os.path.isfile(info_path):
         return False
     with open(info_path) as f:
-        return bool(json.load(f).get("attribute_tokens", False))
+        info = json.load(f)
+    return bool(info.get("attribute_tokens") or info.get("attribute_spans"))
 
 
 def attach_doc_ids_if_missing(dataset: Dataset) -> Dataset:
