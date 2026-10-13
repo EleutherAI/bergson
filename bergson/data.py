@@ -630,9 +630,9 @@ class Scores:
     store is ragged (``info["attribute_tokens"]`` or
     ``info["attribute_spans"]``): row ``offsets[i]:offsets[i+1]`` holds
     document ``i``'s per-token or per-span scores. Otherwise row ``i`` is
-    document ``i`` directly, or training row ``candidates[i]`` when the store
-    was scored with ``score_cfg.candidates``. ``spans`` gives each span row the
-    per-token rows it covers."""
+    document ``i`` directly. Document ``i`` is training row ``candidates[i]``
+    when the store was scored with ``score_cfg.candidates``. ``spans`` gives
+    each span row the per-token rows it covers."""
 
     def __init__(
         self,
