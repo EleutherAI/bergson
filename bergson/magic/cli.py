@@ -333,6 +333,8 @@ def unroll_kwargs(run_cfg: "MagicConfig", schedule) -> dict:
         micro_batch_size=run_cfg.unroll.micro_batch_size,
         tf32=run_cfg.unroll.tf32,
         bf16=run_cfg.unroll.bf16,
+        curvature=run_cfg.unroll.curvature,
+        parameters=run_cfg.unroll.parameters,
         debug=run_cfg.debug,
     )
 
@@ -365,7 +367,7 @@ def compute_per_query_unrolled_scores(
     def query_path(qi: int) -> str:
         return os.path.join(scores_dir, f"q{qi}.pt")
 
-    names = unrolled_names(model, fwd_state.params)
+    names = unrolled_names(model, fwd_state.params, run_cfg.unroll.parameters)
     mine = list(range(global_rank, num_query_docs, world_size))
     size = run_cfg.unroll.query_batch_size
     passes = -(-max(1, -(-num_query_docs // world_size)) // size)

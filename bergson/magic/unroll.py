@@ -30,8 +30,14 @@ from .grad_accum import loss_denom
 from .trainer import Trainer, TrainerState
 
 
-def unrolled_names(model: nn.Module, params: dict[str, Tensor]) -> list[str]:
-    """Trainable linear-layer weights, excluding those shared with an embedding."""
+def unrolled_names(
+    model: nn.Module, params: dict[str, Tensor], parameters: str = "linear"
+) -> list[str]:
+    """Parameters carried through the backward: every trainable one for
+    ``parameters="all"``; for ``"linear"`` the linear-layer weights, excluding
+    those shared with an embedding."""
+    if parameters == "all":
+        return list(params)
     embedding_ptrs = {
         params[f"{name}.weight"].data_ptr()
         for name, mod in model.named_modules()
@@ -44,6 +50,15 @@ def unrolled_names(model: nn.Module, params: dict[str, Tensor]) -> list[str]:
         if linear and key in params and params[key].data_ptr() not in embedding_ptrs:
             names.append(key)
     return names
+
+
+def tied_groups(params: dict[str, Tensor], names: list[str]) -> list[list[str]]:
+    """``names`` grouped by shared storage. Each name keeps its own moments and
+    gradient; the group shares one weight cotangent."""
+    groups: dict[int, list[str]] = {}
+    for k in names:
+        groups.setdefault(params[k].data_ptr(), []).append(k)
+    return list(groups.values())
 
 
 def adam_moments(
@@ -94,10 +109,16 @@ def _gauss_newton_and_scores(
     *,
     micro_batch_size: int,
     bf16: bool,
+    curvature: str = "gauss_newton",
     timings: dict[str, float] | None = None,
 ) -> list[Tensor]:
-    """``G_t z`` over ``batch``; adds ``<z, dg_t/dw>`` to ``scores``."""
+    """``H_t z`` over ``batch``; adds ``<z, dg_t/dw>`` to ``scores``.
+
+    ``curvature="gauss_newton"`` applies ``J^T (d^2 loss / d logits^2) J``;
+    ``"gradient_outer"`` applies the mean over documents of the outer product
+    of their mean-token loss gradients."""
     nq = z[0].shape[0]
+    num_docs = len(batch["input_ids"])
 
     def clock() -> float:
         if timings is None:
@@ -147,10 +168,20 @@ def _gauss_newton_and_scores(
             scores[..., q] += g
         t_vjp = clock()
 
-        # Gauss-Newton cotangent at the logits: the softmax Hessian times J z
-        scale = (w.detach() * valid / denom)[None, ..., None]
-        u = jv.sub_(pj[..., None]).mul_(p).mul_(scale)
-        del jv, p, pj
+        if curvature == "gradient_outer":
+            # Each document's gradient, weighted by its inner product with z
+            onehot = torch.zeros_like(p).scatter_(-1, y.clamp_min(0)[..., None], 1.0)
+            tokens = valid.sum(-1)
+            coef = denom**2 / (num_docs * tokens.clamp_min(1) ** 2)
+            coef = coef * (w.detach() * dots.detach()).sum(-1)
+            scale = (coef[..., None] * valid / denom)[..., None]
+            u = (p - onehot)[None] * scale
+            del jv, p, pj, onehot
+        else:
+            # Gauss-Newton cotangent at the logits: the softmax Hessian times J z
+            scale = (w.detach() * valid / denom)[None, ..., None]
+            u = jv.sub_(pj[..., None]).mul_(p).mul_(scale)
+            del jv, p, pj
         h = vmap(vjp_fn)(u.to(logits.dtype))
         for o, hh in zip(out, h):
             o += hh.to(o.dtype)
@@ -179,9 +210,11 @@ def unroll_scores(
     micro_batch_size: int = 4,
     tf32: bool = True,
     bf16: bool = False,
+    curvature: str = "gauss_newton",
+    parameters: str = "linear",
     debug: bool = False,
 ) -> Tensor:
-    """Unrolled Gauss-Newton scores, ``[*data.weights.shape, len(queries)]``.
+    """Unrolled scores, ``[*data.weights.shape, len(queries)]``.
 
     ``queries`` are this rank's query gradients; every rank replays the
     trajectory together and scores its own queries against every document.
@@ -215,7 +248,9 @@ def unroll_scores(
             log.flush()
 
     num_steps = len(data)
-    names = unrolled_names(model, state.params)
+    names = unrolled_names(model, state.params, parameters)
+    groups = tied_groups(state.params, names)
+    group_of = {k: g for g, group in enumerate(groups) for k in group}
 
     final = state.to("cpu").detach_()
     mu, nu = adam_moments(state, names)
@@ -226,17 +261,18 @@ def unroll_scores(
     dtype = torch.float32
     if queries:
         dtype = torch.promote_types(queries[0][names[0]].dtype, torch.float32)
-    alpha = [
-        (
-            torch.stack([q[k] for q in queries]).to(dtype)
-            if queries
-            else torch.zeros(0, *state.params[k].shape, device=device, dtype=dtype)
-        )
-        for k in names
-    ]
+    # One weight cotangent per shared tensor, one moment pair per name
+    alpha = []
+    for group in groups:
+        shape = (len(queries), *state.params[group[0]].shape)
+        a = torch.zeros(shape, device=device, dtype=dtype)
+        for k in group:
+            for i, q in enumerate(queries):
+                a[i] += q[k].to(device, dtype)
+        alpha.append(a)
     timings = {"gn": 0.0, "scores": 0.0}
-    gam = [torch.zeros_like(a) for a in alpha]
-    nu_adj = [torch.zeros_like(a) for a in alpha]
+    gam = [torch.zeros_like(alpha[group_of[k]]) for k in names]
+    nu_adj = [torch.zeros_like(alpha[group_of[k]]) for k in names]
     scores = torch.zeros(*data.weights.shape, len(queries), device=device)
 
     ckpts = [(i, p) for i, p in sorted_checkpoints(ckpt_dir) if i < num_steps]
@@ -282,16 +318,17 @@ def unroll_scores(
             z = []
             with torch.no_grad():
                 for j, k in enumerate(names):
+                    a = alpha[group_of[k]]
                     m_post = post_mu[k].to(device, non_blocking=True).double()
                     vh = post_nu[k].to(device, non_blocking=True).double()
                     vh = vh / (1 - b2**count)
                     vh = vh + eps_root
                     precond = 1 / (vh.sqrt() + eps)
-                    gam[j].mul_(b1).add_((alpha[j] * precond).to(dtype), alpha=-coef)
+                    gam[j].mul_(b1).add_((a * precond).to(dtype), alpha=-coef)
                     zj = (1 - b1) * gam[j]
 
                     r = coef * m_post * 0.5 * vh.rsqrt() * precond**2 / (1 - b2**count)
-                    nu_adj[j] = (b2 * nu_adj[j] + r * alpha[j]).to(dtype)
+                    nu_adj[j] = (b2 * nu_adj[j] + r * a).to(dtype)
                     mu_prev = mu_t[k].to(device, non_blocking=True).double()
                     g = (m_post - b1 * mu_prev) / (1 - b1)
                     z.append(zj + (2 * (1 - b2) * g * nu_adj[j]).to(dtype))
@@ -320,6 +357,7 @@ def unroll_scores(
                     scores,
                     micro_batch_size=micro_batch_size,
                     bf16=bf16,
+                    curvature=curvature,
                     timings=timings if debug else None,
                 )
             finally:
@@ -328,8 +366,10 @@ def unroll_scores(
             t2 = clock()
 
             with torch.no_grad():
-                for j in range(len(names)):
-                    alpha[j].mul_(1 - step_lr * weight_decay).add_(gz[j])
+                for g, group in enumerate(groups):
+                    alpha[g].mul_(1 - len(group) * step_lr * weight_decay)
+                    for k in group:
+                        alpha[g].add_(gz[names.index(k)])
             post = (mu_t, nu_t)
             del z, gz, params, step_params
             if debug:
