@@ -48,6 +48,9 @@ Indicative performance of data attribution methods in the finetuning regime.
    * - Activation similarity (activation covariance preconditioner)
      - 0.055 [0.043, 0.069]
      - 0.157 [0.120, 0.192]
+   * - Activation similarity (activation covariance preconditioner, projection 64)
+     - 0.055 [0.043, 0.069]
+     - 0.152 [0.116, 0.187]
    * - `Qwen3-Embedding-8B <https://huggingface.co/spaces/mteb/leaderboard>`_ semantic search
      - 0.049 [0.038, 0.061]
      - 0.132 [0.093, 0.169]
