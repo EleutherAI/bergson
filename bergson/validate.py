@@ -913,8 +913,11 @@ def validate_scores(
         # evaluate_retrained needs this to reuse the models. The first
         # process owns the shared files.
         if start == 0:
-            with open(os.path.join(run_cfg.run_path, "subsets.json"), "w") as f:
+            # Write then rename: a filter can read this file while the bank resumes.
+            path = os.path.join(run_cfg.run_path, "subsets.json")
+            with open(path + ".tmp", "w") as f:
                 json.dump([s.tolist() for s in subsets], f)
+            os.replace(path + ".tmp", path)
 
     pbar = tqdm(subsets[start:stop], desc="Validating", disable=global_rank != 0)
     for i, subset in enumerate(pbar, start=start):
