@@ -471,6 +471,7 @@ def worker(
         train_dataset = attach_example_ids(train_dataset)
 
     # Pad train dataset to be divisible by batch_size (weight=0 for padding)
+    num_real_train_docs = num_train_docs
     train_dataset, num_train_docs, padding = pad_dataset_to_batch_size(
         train_dataset, run_cfg.batch_size, num_train_docs, "Train", global_rank
     )
@@ -631,7 +632,21 @@ def worker(
         baseline = baseline - contrast_baseline
 
     multi_query = False
-    if not score_path and run_cfg.query.aggregation == "none":
+    scores = None
+    builds_bank_without_scores = (
+        not score_path
+        and not isinstance(run_cfg, MagicConfig)
+        and isinstance(run_cfg, ValidationConfig)
+        and isinstance(run_cfg.method, LDSConfig)
+        and run_cfg.method.subsets == "retrain"
+        and not run_cfg.exclude_zero_scores
+    )
+    if builds_bank_without_scores:
+        print(
+            f"No --scores given: building {run_cfg.run_path} as an unscored "
+            "LDS retrain bank (doc count only, exclude_zero_scores=False)."
+        )
+    elif not score_path and run_cfg.query.aggregation == "none":
         # Per-query MAGIC: one backward per query, sharing the forward. Yields
         # the unit for a per-query LDS.
         if not isinstance(run_cfg, MagicConfig):
@@ -741,6 +756,7 @@ def worker(
         num_query_docs=num_query_docs,
         query_padding=query_padding,
         padding=padding,
+        num_train_docs=num_real_train_docs,
     )
 
 
