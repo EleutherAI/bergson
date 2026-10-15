@@ -21,6 +21,10 @@ class MagicConfig(ValidationConfig):
     """Set to False to run a leave-k-out retraining validation loop in the
     same job."""
 
+    use_modula: bool = False
+    """Normalize weight updates in the modular norm (modula package).
+    Improves metasmoothness of the training trajectory for better attribution."""
+
     # TODO(Lucia Quirke, December 2026): remove per_token backward compatibility.
     per_token: bool = False
 

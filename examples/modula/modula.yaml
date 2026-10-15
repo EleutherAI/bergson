@@ -1,0 +1,44 @@
+# MAGIC attribution on GPT-2 / WikiText-2 with modular norm normalization.
+# Run with `bergson examples/modula/modula.yaml`
+
+steps:
+  - magic:
+      run_path: runs/modula_experiment/modula
+      model: gpt2
+      overwrite: true
+
+      data:
+        dataset: Salesforce/wikitext
+        subset: wikitext-2-raw-v1
+        split: "train[:4608]"
+        chunk_length: 512
+
+      query:
+        dataset: Salesforce/wikitext
+        subset: wikitext-2-raw-v1
+        split: "train[:4608]"
+        chunk_length: 512
+
+      # Reduce query gradients to one aggregate query before the backward.
+      query_method: mean
+
+      distributed:
+        nproc_per_node: 4
+        nnode: 1
+
+      batch_size: 64
+      num_epochs: 4
+
+      lr_schedule:
+        lr_scheduler_type: polynomial
+        lr: 0.0008
+        lr_start: 1e-6
+        lr_end: 0.00008
+        warmup_steps: 0.25
+
+      # Only difference from baseline: normalize weight updates in the modular norm.
+      use_modula: true
+
+      wandb_project: magic
+
+      skip_validation: false
