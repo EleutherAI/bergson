@@ -745,6 +745,7 @@ def validate_scores(
         pool_size = num_train_docs
 
     if isinstance(run_cfg.method, FilterConfig):
+        assert flat_scores is not None
         tail_filter_retrain(
             run_cfg,
             flat_scores,
@@ -764,6 +765,7 @@ def validate_scores(
         return
 
     if isinstance(run_cfg.method, WeightStepConfig):
+        assert flat_scores is not None
         # Gradient step on the data weights: retrain with w = 1 - lr * score
         # for each lr and compare the query loss change to the first-order
         # prediction lr * <s_q, s_step>.
@@ -836,8 +838,10 @@ def validate_scores(
         return
 
     if run_cfg.exclude_zero_scores:
+        assert flat_scores is not None
         valid_indices = torch.nonzero((flat_scores != 0).any(dim=1), as_tuple=True)[0]
     else:
+        assert pool_size is not None
         valid_indices = torch.arange(pool_size)
 
     method = run_cfg.method
@@ -940,6 +944,7 @@ def validate_scores(
                 retrained_tokenizer.save_pretrained(out_dir)
 
         if multi_query:
+            assert flat_scores is not None
             with fwd_state.activate(model):
                 per_doc = per_doc_query_losses(
                     model,
