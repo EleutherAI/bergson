@@ -4,7 +4,8 @@ The scores can come from any attribution method (MAGIC, EK-FAC, TrackStar,
 SOURCE, ...): each leave-k-out subset is retrained (``validate_scores``) or
 read from a pre-saved model bank (``evaluate_retrained``), and the query
 loss increase is correlated against the summed attribution scores of the
-left-out documents.
+left-out documents. An unscored retrain bank can also be built without scores
+(``scores=None``) for later reuse by LDS or filtering.
 """
 
 import csv
@@ -672,7 +673,7 @@ def tail_filter_retrain(
 
 def validate_scores(
     run_cfg: ValidationConfig,
-    scores: torch.Tensor,
+    scores: torch.Tensor | None,
     multi_query: bool,
     *,
     global_rank: int,
@@ -687,6 +688,7 @@ def validate_scores(
     num_query_docs: int,
     query_padding: Padding,
     padding: Padding,
+    num_train_docs: int | None = None,
 ):
     """Validate attribution scores via leave-subset-out retraining.
 
@@ -696,32 +698,51 @@ def validate_scores(
     must still hold the fully-trained (no leave-out) weights on entry; they
     are used for the multi-query per-document baseline.
     """
+    if scores is None:
+        method = run_cfg.method
+        if not (isinstance(method, LDSConfig) and method.subsets == "retrain"):
+            raise ValueError(
+                "scores are required unless method is 'lds' with subsets='retrain'"
+            )
+        if run_cfg.exclude_zero_scores:
+            raise ValueError("exclude_zero_scores requires precomputed scores")
+        if multi_query:
+            raise ValueError("scores are required for multi-query validation")
+        if num_train_docs is None:
+            raise ValueError("num_train_docs is required when scores is None")
+
     diffs = []
     score_sums = []
 
     num_real_query_docs = num_query_docs - query_padding.num_docs
     baseline_per_doc = torch.zeros(num_real_query_docs)
-    if multi_query:
-        if scores.shape[-1] != num_real_query_docs:
-            raise ValueError(
-                f"scores has {scores.shape[-1]} query columns but the query "
-                f"dataset has {num_real_query_docs} documents; multi-query "
-                "validation requires one score column per query document"
-            )
-        with fwd_state.activate(model):
-            baseline_per_doc = per_doc_query_losses(
-                model, query_stream, num_query_docs, run_cfg.grad_accum_steps
-            )[:num_real_query_docs].cpu()
-    elif scores.ndim == 2 and scores.shape[1] > 1:
-        pass  # Per-token [docs, seq_len]; kept 2-D.
-    else:
-        assert scores.ndim == 1 or scores.shape[1] == 1
-        scores = scores.flatten()
+    flat_scores = None
+    if scores is not None:
+        if multi_query:
+            if scores.shape[-1] != num_real_query_docs:
+                raise ValueError(
+                    f"scores has {scores.shape[-1]} query columns but the query "
+                    f"dataset has {num_real_query_docs} documents; multi-query "
+                    "validation requires one score column per query document"
+                )
+            with fwd_state.activate(model):
+                baseline_per_doc = per_doc_query_losses(
+                    model, query_stream, num_query_docs, run_cfg.grad_accum_steps
+                )[:num_real_query_docs].cpu()
+        elif scores.ndim == 2 and scores.shape[1] > 1:
+            pass  # Per-token [docs, seq_len]; kept 2-D.
+        else:
+            assert scores.ndim == 1 or scores.shape[1] == 1
+            scores = scores.flatten()
 
-    # flat_scores rows are the leave-out units: documents, or
-    # doc * seq_len + token positions for per-token scores.
-    num_queries = scores.shape[-1] if multi_query else 1
-    flat_scores = scores.reshape(-1, num_queries)
+        # flat_scores rows are the leave-out units: documents, or
+        # doc * seq_len + token positions for per-token scores.
+        num_queries = scores.shape[-1] if multi_query else 1
+        flat_scores = scores.reshape(-1, num_queries)
+        pool_size = flat_scores.shape[0]
+    else:
+        num_queries = 1
+        pool_size = num_train_docs
 
     if isinstance(run_cfg.method, FilterConfig):
         tail_filter_retrain(
@@ -817,7 +838,7 @@ def validate_scores(
     if run_cfg.exclude_zero_scores:
         valid_indices = torch.nonzero((flat_scores != 0).any(dim=1), as_tuple=True)[0]
     else:
-        valid_indices = torch.arange(flat_scores.shape[0])
+        valid_indices = torch.arange(pool_size)
 
     method = run_cfg.method
     assert isinstance(method, LDSConfig)
@@ -858,13 +879,18 @@ def validate_scores(
 
     csv_name = f"validation_{start}_{stop}.csv" if sliced else "validation.csv"
     csv_path = os.path.join(run_cfg.run_path, csv_name)
-    val_csv_writer = CSVWriter(
-        csv_path,
-        columns=(
+    columns = (
+        (
             ["subset", "query", "diff", "score_sum"]
             if multi_query
             else ["subset", "diff", "score_sum"]
-        ),
+        )
+        if flat_scores is not None
+        else ["subset", "diff"]
+    )
+    val_csv_writer = CSVWriter(
+        csv_path,
+        columns=columns,
         enabled=global_rank == 0,
     )
 
@@ -951,19 +977,25 @@ def validate_scores(
             )
 
         diff = baseline - loss.item()
-        score_sum = flat_scores[subset].sum().item()
-        val_csv_writer.writerow(i, diff, score_sum)
+        if flat_scores is not None:
+            score_sum = flat_scores[subset].sum().item()
+            val_csv_writer.writerow(i, diff, score_sum)
+        else:
+            score_sum = None
+            val_csv_writer.writerow(i, diff)
 
         if global_rank == 0:
             diffs.append(diff)
-            score_sums.append(score_sum)
-
-            if len(diffs) >= 2:
-                sp = spearmanr(diffs, score_sums)
-                pe = pearsonr(diffs, score_sums)
-                pbar.set_postfix({"rho": sp.statistic, "r": pe.statistic})
+            if score_sum is not None:
+                score_sums.append(score_sum)
+                if len(diffs) >= 2:
+                    sp = spearmanr(diffs, score_sums)
+                    pe = pearsonr(diffs, score_sums)
+                    pbar.set_postfix({"rho": sp.statistic, "r": pe.statistic})
+                else:
+                    pbar.set_postfix({"rho": "n/a", "r": "n/a"})
             else:
-                pbar.set_postfix({"rho": "n/a", "r": "n/a"})
+                pbar.set_postfix({"diff": diff})
 
     val_csv_writer.close()
     if global_rank == 0:
@@ -979,11 +1011,21 @@ def validate_scores(
             print(f"Saved validation data to {csv_path}")
             return
 
+        print(f"Saved validation data to {csv_path}")
+        if flat_scores is None:
+            print(
+                f"No scores were given, so {run_cfg.run_path} is an unscored "
+                "retrain bank: re-run with --scores once scores are ready "
+                "(method.subsets: bank) to correlate, or point a filter's "
+                f"controls at it (controls: {{kind: bank, "
+                f"paths: [{run_cfg.run_path}]}})."
+            )
+            return
+
         sp = spearmanr(diffs, score_sums)
         pe = pearsonr(diffs, score_sums)
         print(f"Final Spearman correlation: {sp.statistic:.4f} (p={sp.pvalue:.2e})")
         print(f"Final Pearson correlation:  {pe.statistic:.4f} (p={pe.pvalue:.2e})")
-        print(f"Saved validation data to {csv_path}")
 
         summary_csv_writer = CSVWriter(
             os.path.join(run_cfg.run_path, "summary.csv"),

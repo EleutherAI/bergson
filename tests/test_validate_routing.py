@@ -100,3 +100,186 @@ def test_validation_needs_a_validation_config(tmp_path):
     cfg = TrainingConfig(run_path=str(tmp_path), model=MODEL)
     with pytest.raises(TypeError, match="ValidationConfig"):
         run_magic(cfg, validate=True)
+
+
+def test_lds_retrain_bank_can_be_built_without_scores(tmp_path):
+    bank = tmp_path / "bank"
+    data = {k: v for k, v in _datasets(tmp_path).items() if k != "num_subsets"}
+    Validate.from_dict(
+        data
+        | {
+            "run_path": str(bank),
+            "save_models": True,
+            "method": {"kind": "lds", "subsets": "retrain", "count": 2},
+        }
+    ).execute()
+
+    assert (bank / "retrained" / "base").exists()
+    assert (bank / "retrained" / "subset_0").exists()
+    assert (bank / "retrained" / "subset_1").exists()
+    assert (bank / "subsets.json").exists()
+    assert (bank / "validation.csv").exists()
+    assert not (bank / "summary.csv").exists()
+
+    with open(bank / "validation.csv") as f:
+        reader = csv.DictReader(f)
+        assert reader.fieldnames == ["subset", "diff"]
+        rows = list(reader)
+        assert len(rows) == 2
+        assert {r["subset"] for r in rows} == {"0", "1"}
+
+
+def test_filter_method_still_requires_scores(tmp_path):
+    data = {k: v for k, v in _datasets(tmp_path).items() if k != "num_subsets"}
+    with pytest.raises(
+        AssertionError, match="Path to attribution scores must be provided"
+    ):
+        Validate.from_dict(
+            data
+            | {
+                "run_path": str(tmp_path / "filter"),
+                "method": {
+                    "kind": "filter",
+                    "direction": "proponents",
+                    "fraction": 0.25,
+                },
+            }
+        ).execute()
+
+
+def test_exclude_zero_scores_still_requires_scores(tmp_path):
+    with pytest.raises(
+        AssertionError, match="Path to attribution scores must be provided"
+    ):
+        Validate.from_dict(
+            _datasets(tmp_path)
+            | {
+                "run_path": str(tmp_path / "bank"),
+                "exclude_zero_scores": True,
+                "save_models": True,
+            }
+        ).execute()
+
+
+def test_lds_bank_subsets_still_requires_scores(tmp_path):
+    data = {k: v for k, v in _datasets(tmp_path).items() if k != "num_subsets"}
+    with pytest.raises(
+        AssertionError, match="Path to attribution scores must be provided"
+    ):
+        Validate.from_dict(
+            data
+            | {
+                "run_path": str(tmp_path / "eval"),
+                "method": {
+                    "kind": "lds",
+                    "subsets": "bank",
+                    "paths": [str(tmp_path / "bank")],
+                },
+            }
+        ).execute()
+
+
+def test_validate_scores_guards():
+    from bergson.config.config import ValidationConfig
+    from bergson.config.validation import FilterConfig, LDSConfig
+    from bergson.validate import validate_scores
+
+    # 1. Non-LDS method without scores
+    filter_cfg = ValidationConfig(
+        run_path="test", model=MODEL, method=FilterConfig(direction="proponents")
+    )
+    with pytest.raises(ValueError, match="scores are required unless method is 'lds'"):
+        validate_scores(
+            filter_cfg,
+            scores=None,
+            multi_query=False,
+            global_rank=0,
+            rank=0,
+            schedule=lambda _: 1.0,
+            stream=None,
+            query_stream=None,
+            fwd_state=None,
+            model=None,
+            baseline=0.0,
+            num_query_docs=1,
+            query_padding=None,
+            padding=None,
+            num_train_docs=8,
+        )
+
+    # 2. exclude_zero_scores without scores
+    zero_cfg = ValidationConfig(
+        run_path="test",
+        model=MODEL,
+        exclude_zero_scores=True,
+        method=LDSConfig(subsets="retrain"),
+    )
+    with pytest.raises(
+        ValueError, match="exclude_zero_scores requires precomputed scores"
+    ):
+        validate_scores(
+            zero_cfg,
+            scores=None,
+            multi_query=False,
+            global_rank=0,
+            rank=0,
+            schedule=lambda _: 1.0,
+            stream=None,
+            query_stream=None,
+            fwd_state=None,
+            model=None,
+            baseline=0.0,
+            num_query_docs=1,
+            query_padding=None,
+            padding=None,
+            num_train_docs=8,
+        )
+
+    # 3. multi_query without scores
+    lds_cfg = ValidationConfig(
+        run_path="test",
+        model=MODEL,
+        method=LDSConfig(subsets="retrain"),
+    )
+    with pytest.raises(
+        ValueError, match="scores are required for multi-query validation"
+    ):
+        validate_scores(
+            lds_cfg,
+            scores=None,
+            multi_query=True,
+            global_rank=0,
+            rank=0,
+            schedule=lambda _: 1.0,
+            stream=None,
+            query_stream=None,
+            fwd_state=None,
+            model=None,
+            baseline=0.0,
+            num_query_docs=1,
+            query_padding=None,
+            padding=None,
+            num_train_docs=8,
+        )
+
+    # 4. num_train_docs is None when scores is None
+    with pytest.raises(
+        ValueError, match="num_train_docs is required when scores is None"
+    ):
+        validate_scores(
+            lds_cfg,
+            scores=None,
+            multi_query=False,
+            global_rank=0,
+            rank=0,
+            schedule=lambda _: 1.0,
+            stream=None,
+            query_stream=None,
+            fwd_state=None,
+            model=None,
+            baseline=0.0,
+            num_query_docs=1,
+            query_padding=None,
+            padding=None,
+            num_train_docs=None,
+        )
