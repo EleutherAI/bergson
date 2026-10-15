@@ -1014,6 +1014,10 @@ class AstraConfig(Serializable):
     seed: int = 0
     """Seeds the training batches, which are drawn separately for each query."""
 
+    checkpoint_interval: int = 0
+    """Checkpoint the fit's accumulator state every N batches, so it can
+    resume if interrupted. 0 disables it. Only honored by the kfac method."""
+
 
 @dataclass
 class HessianPipelineConfig:
