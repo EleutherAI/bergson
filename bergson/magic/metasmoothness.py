@@ -20,6 +20,7 @@ from pathlib import Path
 
 import torch
 import torch.distributed as dist
+from torch.distributed.tensor import DTensor
 from transformers import AutoTokenizer
 
 from ..config.config import MetasmoothnessConfig
@@ -32,21 +33,42 @@ from .trainer import prepare_trainer
 
 
 def metasmoothness_score(
-    theta0: torch.Tensor, theta_h: torch.Tensor, theta_2h: torch.Tensor
+    theta0: torch.Tensor,
+    theta_h: torch.Tensor,
+    theta_2h: torch.Tensor,
+    *,
+    reduce: bool = False,
 ) -> float:
     """Movement-weighted sign agreement of consecutive finite differences.
 
     ``sign(theta_2h - theta_h) . diag(d / |d|_1) . sign(theta_h - theta0)``
     with ``d = |theta_2h - theta0|`` (Def. 2 of arXiv 2503.13751; the ``/h``
     factors cancel inside ``sign``).
+
+    The weighted sum and ``|d|_1`` are both plain sums over coordinates, so
+    with ``reduce`` the arguments may be one rank's disjoint shard and the
+    all-reduce returns exactly the value the unsharded vectors would give.
     """
     d = (theta_2h - theta0).abs()
-    total = d.sum()
-    if total == 0:
-        return 1.0
     s1 = torch.sign(theta_h - theta0)
     s2 = torch.sign(theta_2h - theta_h)
-    return float((d / total * s1 * s2).sum())
+    packed = torch.stack([(d * s1 * s2).sum(), d.sum()])
+    if reduce:
+        dist.all_reduce(packed)
+    weighted, total = packed[0], packed[1]
+    if total == 0:
+        return 1.0
+    return float(weighted / total)
+
+
+def total_movement_l1(
+    theta0: torch.Tensor, theta_2h: torch.Tensor, *, reduce: bool = False
+) -> float:
+    """``|theta_2h - theta0|_1``, summed across shards when ``reduce``."""
+    moved = (theta_2h - theta0).abs().sum()
+    if reduce:
+        dist.all_reduce(moved)
+    return float(moved)
 
 
 def metasmoothness_worker(
@@ -73,8 +95,14 @@ def metasmoothness_worker(
             world_size=world_size,
         )
 
-    assert not run_cfg.fsdp, "metasmoothness does not support FSDP parameters"
     assert not getattr(run_cfg, "per_token", False)
+
+    if run_cfg.fsdp and run_cfg.save_models:
+        raise ValueError(
+            "metasmoothness save_models is not supported with fsdp: the "
+            "parameters are sharded DTensors and each rank would write its "
+            "own slice as if it were the whole adapter."
+        )
 
     assert run_cfg.batch_size % world_size == 0
 
@@ -97,6 +125,7 @@ def metasmoothness_worker(
     padding.zero_weights(v)
 
     thetas: list[torch.Tensor] = []
+    sharded = False
     for k in range(3):
         weights = 1.0 + run_cfg.fd_step * k * v
         padding.zero_weights(weights)
@@ -116,11 +145,22 @@ def metasmoothness_worker(
             grad_accum_steps=run_cfg.grad_accum_steps,
         )
 
+        # Every rank keeps its own parameters. Under fsdp those are disjoint
+        # shards, and the score reduces across them, so all ranks take part.
+        sharded = any(isinstance(p, DTensor) for p in fwd_state.params.values())
+        theta = torch.cat(
+            [
+                (p.to_local() if isinstance(p, DTensor) else p)
+                .detach()
+                .float()
+                .flatten()
+                for p in fwd_state.params.values()
+            ]
+        )
+        # Shards are small; a replicated vector does not need to sit in VRAM.
+        thetas.append(theta if sharded else theta.cpu())
+
         if global_rank == 0:
-            theta = torch.cat(
-                [p.detach().float().cpu().flatten() for p in fwd_state.params.values()]
-            )
-            thetas.append(theta)
             print(f"[metasmoothness] finished training {k + 1}/3 (w = 1 + {k}*h*v)")
 
         if k == 0 and run_cfg.save_models and global_rank == 0:
@@ -133,9 +173,11 @@ def metasmoothness_worker(
             ).save_pretrained(out_dir)
         del trainer, fwd_state, model
 
+    # Both reductions are collectives, so they run on every rank.
+    score = metasmoothness_score(*thetas, reduce=sharded)
+    movement = total_movement_l1(thetas[0], thetas[2], reduce=sharded)
+
     if global_rank == 0:
-        score = metasmoothness_score(*thetas)
-        movement = float((thetas[2] - thetas[0]).abs().sum())
         result = {
             "score": score,
             "fd_step": run_cfg.fd_step,
