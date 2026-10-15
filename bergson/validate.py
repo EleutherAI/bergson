@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import random
+import shutil
 from pathlib import Path
 from typing import Callable
 
@@ -50,6 +51,44 @@ from .magic.trainer import TrainerState, prepare_trainer
 from .utils.csv_writer import CSVWriter
 from .utils.utils import get_device, simple_parse_kwargs_string
 from .utils.worker_utils import apply_logit_scale, setup_data_pipeline
+
+
+def _retrain_dir(run_cfg, name: str) -> str:
+    return os.path.join(run_cfg.run_path, "retrain_checkpoints", name)
+
+
+def run_retrain(trainer, state, stream, run_cfg, name: str):
+    """Run one leave-k-out retrain, checkpointing every ``retrain_save_interval``."""
+    step_kwargs = dict(
+        fsdp=run_cfg.fsdp,
+        max_grad_norm=run_cfg.max_grad_norm,
+        grad_accum_steps=run_cfg.grad_accum_steps,
+    )
+    if run_cfg.retrain_save_interval <= 0:
+        for x in stream:
+            state = trainer.step(state, x, inplace=True, **step_kwargs)
+        return state
+    return trainer.train(
+        state,
+        stream,
+        inplace=True,
+        save_dir=_retrain_dir(run_cfg, name),
+        save_mode="interval",
+        save_interval=run_cfg.retrain_save_interval,
+        resume=run_cfg.resume,
+        keep_last=1,
+        **step_kwargs,
+    )
+
+
+def drop_retrain_checkpoints(run_cfg, name: str) -> None:
+    """Delete a finished retrain's checkpoints."""
+    if run_cfg.retrain_save_interval <= 0:
+        return
+    if dist.is_initialized():
+        dist.barrier()
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        shutil.rmtree(_retrain_dir(run_cfg, name), ignore_errors=True)
 
 
 def bank_loss_cache_key(
@@ -514,7 +553,7 @@ def tail_filter_retrain(
         )
         return loss.reshape(1).cpu()
 
-    def retrain_and_eval(removed: torch.Tensor) -> torch.Tensor:
+    def retrain_and_eval(removed: torch.Tensor, name: str) -> torch.Tensor:
         """Query losses after retraining with ``removed`` down-weighted."""
         trainer, fwd_state, model = prepare_trainer(run_cfg, rank, schedule)
         fwd_state.detach_()
@@ -523,15 +562,7 @@ def tail_filter_retrain(
         padding.zero_weights(stream.weights.data)
         stream.weights.view(-1)[removed] = run_cfg.subset_weight
 
-        for x in stream:
-            fwd_state = trainer.step(
-                fwd_state,
-                x,
-                inplace=True,
-                fsdp=run_cfg.fsdp,
-                max_grad_norm=run_cfg.max_grad_norm,
-                grad_accum_steps=run_cfg.grad_accum_steps,
-            )
+        fwd_state = run_retrain(trainer, fwd_state, stream, run_cfg, name)
 
         with fwd_state.activate(model):
             return eval_losses(model)
@@ -576,7 +607,7 @@ def tail_filter_retrain(
         removed = _select_filter_slice(
             flat_scores, valid_indices, q, num_filtered, method.name
         )
-        losses = retrain_and_eval(removed)
+        losses = retrain_and_eval(removed, f"query_{q}")
 
         base_loss = baseline_vec[q].item()
         filtered_loss = losses[q].item()
@@ -584,6 +615,7 @@ def tail_filter_retrain(
         filter_csv.writerow(
             q, len(removed), base_loss, filtered_loss, filter_changes[q].item()
         )
+        drop_retrain_checkpoints(run_cfg, f"query_{q}")
         if global_rank == 0:
             pbar.set_postfix(
                 {"mean_loss_change": filter_changes[: q + 1].mean().item()}
@@ -623,10 +655,14 @@ def tail_filter_retrain(
         random_baseline = baseline_vec
         random_losses = torch.stack(
             [
-                retrain_and_eval(x)
-                for x in tqdm(subsets, desc="random", disable=global_rank != 0)
+                retrain_and_eval(x, f"random_{j}")
+                for j, x in enumerate(
+                    tqdm(subsets, desc="random", disable=global_rank != 0)
+                )
             ]
         )
+        for j in range(len(subsets)):
+            drop_retrain_checkpoints(run_cfg, f"random_{j}")
         source = "retrained here"
     else:
         if global_rank == 0:
@@ -768,15 +804,7 @@ def validate_scores(
             flat_w = stream.weights.view(-1)
             flat_w[: len(step_scores)] -= lr * step_scores.to(flat_w)
 
-            for x in stream:
-                fwd_state = trainer.step(
-                    fwd_state,
-                    x,
-                    inplace=True,
-                    fsdp=run_cfg.fsdp,
-                    max_grad_norm=run_cfg.max_grad_norm,
-                    grad_accum_steps=run_cfg.grad_accum_steps,
-                )
+            fwd_state = run_retrain(trainer, fwd_state, stream, run_cfg, f"lr_{lr:g}")
 
             if multi_query:
                 with fwd_state.activate(model):
@@ -791,6 +819,7 @@ def validate_scores(
                     csv_writer.writerow(
                         lr, q, diff_vec[q].item(), lr * predicted[q].item()
                     )
+                drop_retrain_checkpoints(run_cfg, f"lr_{lr:g}")
                 if global_rank == 0:
                     print(
                         f"lr {lr:g}: mean diff {diff_vec.mean():.6f} "
@@ -803,6 +832,7 @@ def validate_scores(
                     )
                 diff = baseline - loss.item()
                 csv_writer.writerow(lr, diff, lr * predicted.mean().item())
+                drop_retrain_checkpoints(run_cfg, f"lr_{lr:g}")
                 if global_rank == 0:
                     print(
                         f"lr {lr:g}: diff {diff:.6f} "
@@ -883,8 +913,11 @@ def validate_scores(
         # evaluate_retrained needs this to reuse the models. The first
         # process owns the shared files.
         if start == 0:
-            with open(os.path.join(run_cfg.run_path, "subsets.json"), "w") as f:
+            # Write then rename: a filter can read this file while the bank resumes.
+            path = os.path.join(run_cfg.run_path, "subsets.json")
+            with open(path + ".tmp", "w") as f:
                 json.dump([s.tolist() for s in subsets], f)
+            os.replace(path + ".tmp", path)
 
     pbar = tqdm(subsets[start:stop], desc="Validating", disable=global_rank != 0)
     for i, subset in enumerate(pbar, start=start):
@@ -895,15 +928,7 @@ def validate_scores(
         padding.zero_weights(stream.weights.data)
         stream.weights.view(-1)[subset] = run_cfg.subset_weight
 
-        for x in stream:
-            fwd_state = trainer.step(
-                fwd_state,
-                x,
-                inplace=True,
-                fsdp=run_cfg.fsdp,
-                max_grad_norm=run_cfg.max_grad_norm,
-                grad_accum_steps=run_cfg.grad_accum_steps,
-            )
+        fwd_state = run_retrain(trainer, fwd_state, stream, run_cfg, f"subset_{i}")
 
         if save_models and global_rank == 0:
             out_dir = os.path.join(run_cfg.run_path, "retrained", f"subset_{i}")
@@ -927,6 +952,7 @@ def validate_scores(
                 val_csv_writer.writerow(
                     i, q, diff_vec[q].item(), score_sum_vec[q].item()
                 )
+            drop_retrain_checkpoints(run_cfg, f"subset_{i}")
 
             if global_rank == 0:
                 diffs.append(diff_vec.tolist())
@@ -953,6 +979,7 @@ def validate_scores(
         diff = baseline - loss.item()
         score_sum = flat_scores[subset].sum().item()
         val_csv_writer.writerow(i, diff, score_sum)
+        drop_retrain_checkpoints(run_cfg, f"subset_{i}")
 
         if global_rank == 0:
             diffs.append(diff)
