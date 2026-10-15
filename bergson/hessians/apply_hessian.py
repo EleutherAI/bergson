@@ -50,6 +50,10 @@ class EkfacConfig:
     projection_scale: Literal["jl", "row_norm"] = "jl"
     projection_seed: int | None = None
     """Must match the index being scored. See ``IndexConfig``."""
+    project_factors: bool = False
+    """Invert in the projected space: ``gradient_path`` holds gradients already
+    compressed to ``[p, p]`` per module, and the inverse of the Kronecker
+    factors projected by the same matrices is applied to them."""
     preconditioner_path: str = ""
     """Safetensors of a diagonal optimizer preconditioner (module name ->
     [out, in] grid), for the Adam SOURCE variant."""
@@ -97,6 +101,26 @@ class EkfacApplicator:
                 "projection_dim=0."
             )
 
+        if cfg.project_factors:
+            if cfg.projection_dim == 0 or self.global_projection:
+                raise ValueError(
+                    "project_factors needs projection_dim > 0 and "
+                    "projection_target='per_module'."
+                )
+            if apply_fn is not None or cfg.preconditioner_path:
+                raise ValueError(
+                    "project_factors is not supported with apply_fn or "
+                    "preconditioner_path."
+                )
+            if (
+                inversion_cfg is not None
+                and inversion_cfg.inversion == "absolute_damped_inverse"
+            ):
+                raise ValueError(
+                    "project_factors changes the scale of the eigenvalues, so it "
+                    "is not supported with absolute_damped_inverse."
+                )
+
         self.cfg = cfg
         self.path = cfg.hessian_method_path
         self.gradient_path = cfg.gradient_path
@@ -126,9 +150,43 @@ class EkfacApplicator:
             o_dims = {n: f.get_slice(n).get_shape()[1] for n in names}
         return names, o_dims, i_dims
 
+    def _projection(
+        self,
+        name: str,
+        role: Literal["left", "right"],
+        n: int,
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> torch.Tensor:
+        """Module ``name``'s ``[p, n]`` ``role`` projection matrix."""
+        return create_module_projection_matrix(
+            name,
+            role,
+            self.cfg.projection_dim,
+            n,
+            dtype,
+            device,
+            self.cfg.projection_type,
+            self.cfg.projection_scale,
+            self.cfg.projection_seed,
+        )
+
     def _build_preconditioner(self, modules: list[str] | None):
         """The preconditioner chain for ``modules`` (all when ``None``)."""
         chain: list = []
+        if self.cfg.project_factors:
+
+            def projection(name, role, n):
+                return self._projection(
+                    name, role, n, torch.float32, torch.device(self.device)
+                )
+
+            return chain, FactoredPreconditioner.from_projected_path(
+                self.path,
+                projection,
+                inversion_cfg=self.inversion_cfg,
+                device=self.device,
+            )
         if self.cfg.preconditioner_path:
             diagonal = DiagonalFactoredPreconditioner.from_shards(
                 self.path,
@@ -203,6 +261,9 @@ class EkfacApplicator:
                     f"Hessian factors: {missing[:5]}"
                 )
 
+        if self.cfg.project_factors:
+            self._processor().check_saved_projection(self.gradient_path, "The query")
+
         num_queries = mmap.shape[0]
         grad_buffer = create_index(
             Path(self.cfg.run_path),
@@ -215,7 +276,9 @@ class EkfacApplicator:
             f"Loaded gradients for {num_queries} queries and computing IVHP..."
         )
 
-        groups = partition_modules(names, self.cfg.module_partitions)
+        # The projected factors of every module fit on the device together.
+        partitions = 1 if self.cfg.project_factors else self.cfg.module_partitions
+        groups = partition_modules(names, partitions)
         for group in groups:
             chain, preconditioner = self._build_preconditioner(
                 group if len(groups) > 1 else None
@@ -237,13 +300,14 @@ class EkfacApplicator:
 
         grad_buffer.flush()
         if self.rank == 0:
-            self._save_projection_settings()
+            # Record how the output was projected, so scoring can check it
+            # matches the index.
+            self._processor().save(Path(self.cfg.run_path))
 
         self.logger.info(f"Saved IVHP gradients to {self.cfg.run_path}")
 
-    def _save_projection_settings(self):
-        """Record how the output was projected, so scoring can check it matches
-        the index."""
+    def _processor(self) -> GradientProcessor:
+        """The projection settings of the output."""
         # The factors include a bias column exactly when the query gradients do,
         # which widens the right projection like the collector's include_bias.
         query_cfg = Path(self.gradient_path, "processor_config.yaml")
@@ -251,14 +315,14 @@ class EkfacApplicator:
             query_cfg.exists()
             and GradientProcessor.load_config(self.gradient_path).include_bias
         )
-        GradientProcessor(
+        return GradientProcessor(
             projection_dim=self.cfg.projection_dim or None,
             projection_type=self.cfg.projection_type,
             projection_scale=self.cfg.projection_scale,
             projection_seed=self.cfg.projection_seed,
             projection_target=self.cfg.projection_target,
             include_bias=include_bias,
-        ).save(Path(self.cfg.run_path))
+        )
 
     def _apply_group(
         self,
@@ -309,29 +373,13 @@ class EkfacApplicator:
                         self.cfg.projection_type,
                         self.cfg.projection_scale,
                     )
-                elif p > 0:
+                elif p > 0 and not self.cfg.project_factors:
                     g = transformed.view(-1, o_dims[name], i_dims[name])
-                    P_l = create_module_projection_matrix(
-                        name,
-                        "left",
-                        p,
-                        o_dims[name],
-                        g.dtype,
-                        g.device,
-                        self.cfg.projection_type,
-                        self.cfg.projection_scale,
-                        self.cfg.projection_seed,
+                    P_l = self._projection(
+                        name, "left", o_dims[name], g.dtype, g.device
                     )
-                    P_r = create_module_projection_matrix(
-                        name,
-                        "right",
-                        p,
-                        i_dims[name],
-                        g.dtype,
-                        g.device,
-                        self.cfg.projection_type,
-                        self.cfg.projection_scale,
-                        self.cfg.projection_seed,
+                    P_r = self._projection(
+                        name, "right", i_dims[name], g.dtype, g.device
                     )
                     transformed = torch.einsum("ps,nsa,ra->npr", P_l, g, P_r)
 
