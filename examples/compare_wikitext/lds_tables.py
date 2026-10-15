@@ -18,6 +18,7 @@ LABELS = {
     "magic": "MAGIC (per-query)",
     "magic_seed43": "MAGIC (cross-seed)",
     "ekfac": "EK-FAC",
+    "ekfac_ridge": "EK-FAC + band ridge (fitted to MAGIC)",
     "kfac": "KFAC",
     "kfac_p64": "KFAC (projection 64)",
     "gradient_dot": "Gradient dot product",
