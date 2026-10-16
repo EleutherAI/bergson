@@ -42,6 +42,7 @@ from ..utils.load_from_optimizer import (
     save_second_moments_as_optimizer_pt,
 )
 from ..utils.logging import wandb_log_fn
+from ..utils.neuron import neuron_query
 from ..utils.utils import (
     current_device,
     dist_backend,
@@ -72,13 +73,15 @@ def compute_query_gradients(
     grad_accum_steps: int = 1,
     ckpts_path: str | None = None,
     ckpt_avg_k: int = 1,
+    neuron: str = "",
 ) -> tuple[dict[str, torch.Tensor], float]:
     """Compute reduced query gradients over the query dataset.
 
     Iterates over the query stream, computing per-batch parameter gradients
     and reducing them into a single gradient dict. If ``ckpt_avg_k > 1``, the
     result is averaged over the last ``ckpt_avg_k`` checkpoints in
-    ``ckpts_path``.
+    ``ckpts_path``. A ``neuron`` spec replaces the loss with the neuron's
+    negative mean activation.
     """
     if ckpt_avg_k > 1:
         assert ckpts_path is not None
@@ -95,7 +98,13 @@ def compute_query_gradients(
             for path in paths:
                 fwd_state.load(path)
                 g, l = compute_query_gradients(
-                    fwd_state, model, query_stream, method, fsdp, grad_accum_steps
+                    fwd_state,
+                    model,
+                    query_stream,
+                    method,
+                    fsdp,
+                    grad_accum_steps,
+                    neuron=neuron,
                 )
                 grads = {k: grads[k] + v for k, v in g.items()} if grads else g
                 loss += l
@@ -110,7 +119,7 @@ def compute_query_gradients(
 
     main = not dist.is_initialized() or dist.get_rank() == 0
 
-    with fwd_state.activate(model) as params:
+    with fwd_state.activate(model) as params, neuron_query(model, neuron):
         for batch in tqdm(query_stream, desc="Query", disable=not main):
             batch, n_tokens = mask_padded_rows(batch)
             denom += n_tokens
@@ -123,11 +132,16 @@ def compute_query_gradients(
                 loss_scale=n_tokens,
             )
 
+            # Parameters downstream of a neuron get no gradient.
             if grad_accum is None:
-                grad_accum = {k: g.detach().clone() for k, g in grads.items()}
+                grad_accum = {
+                    k: torch.zeros_like(params[k]) if g is None else g.detach().clone()
+                    for k, g in grads.items()
+                }
             else:
                 for k, g in grads.items():
-                    grad_accum[k] += g.detach()
+                    if g is not None:
+                        grad_accum[k] += g.detach()
 
             loss_accum += loss * n_tokens
 
@@ -260,7 +274,13 @@ def compute_per_query_magic_scores(
         one_padding.zero_weights(qstream.weights.data)
         assert_ckpts_exist()
         qgrads, _ = compute_query_gradients(
-            fwd_state, model, qstream, "mean", run_cfg.fsdp, run_cfg.grad_accum_steps
+            fwd_state,
+            model,
+            qstream,
+            "mean",
+            run_cfg.fsdp,
+            run_cfg.grad_accum_steps,
+            neuron=run_cfg.query.neuron,
         )
 
         fwd_state.detach_()  # clear requires_grad set by the activation above
@@ -611,6 +631,7 @@ def worker(
         run_cfg.grad_accum_steps,
         ckpts_path,
         run_cfg.ckpt_avg_k,
+        run_cfg.query.neuron,
     )
 
     # A contrast set turns the query into ``loss(query) - loss(contrast)``:
@@ -626,6 +647,7 @@ def worker(
             run_cfg.grad_accum_steps,
             ckpts_path,
             run_cfg.ckpt_avg_k,
+            run_cfg.query.neuron,
         )
         query_grads = {k: g - contrast_grads[k] for k, g in query_grads.items()}
         baseline = baseline - contrast_baseline
