@@ -1,5 +1,6 @@
 """Correlate each neuron's MAGIC scores with its activation on the training
-chunks under the final model.
+chunks under the final model, and with the change in that activation from the
+pretrained model.
 
 python examples/compare_wikitext/neuron_activations.py \
     --config examples/compare_wikitext/neurons.yaml \
@@ -31,9 +32,14 @@ def chunk_activations(model, tokenizer, texts, neurons, device):
             ids = tokenizer(text, return_tensors="pt").input_ids.to(device)
             model(input_ids=ids)
             for j, a in enumerate(acts):
-                x = a.pop()[0].float()
+                x = a.pop()[0].float().cpu()
                 stats[:, j, i] = [x.mean(), x.max(), (x > 0).float().mean()]
     return stats
+
+
+def load(path, device):
+    model = AutoModelForCausalLM.from_pretrained(path, dtype=torch.float32)
+    return model.to(device).eval()
 
 
 def lds(run_path: Path) -> float:
@@ -50,19 +56,27 @@ def main():
     parser.add_argument(
         "--model", default="runs/compare_wikitext/random/retrained/base"
     )
+    parser.add_argument("--pretrained", default="gpt2")
+    parser.add_argument(
+        "--device", default="cuda" if torch.cuda.is_available() else "cpu"
+    )
     parser.add_argument("--out", default="runs/compare_wikitext/neurons/summary.csv")
     args = parser.parse_args()
 
     steps = [s["magic"] for s in read_config(args.config)["steps"]]
     neurons = [s["query"]["neuron"] for s in steps]
-    data = steps[0]["data"]
+    data, query = steps[0]["data"], steps[0]["query"]
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
     tokenizer = AutoTokenizer.from_pretrained(args.model)
-    model = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.float32)
-    model = model.to(device).eval()
     texts = load_dataset(data["dataset"], split=data["split"])["text"]
-    stats = chunk_activations(model, tokenizer, texts, neurons, device)
+    queries = load_dataset(query["dataset"], split=query["split"])["text"]
+    stats, query_acts = {}, {}
+    for name, path in [("final", args.model), ("pretrained", args.pretrained)]:
+        model = load(path, args.device)
+        stats[name] = chunk_activations(model, tokenizer, texts, neurons, args.device)
+        query_acts[name] = chunk_activations(
+            model, tokenizer, queries, neurons, args.device
+        )[0].mean(1)
 
     k = round(0.01 * len(texts))
     header = [
@@ -71,8 +85,13 @@ def main():
         "spearman_mean",
         "spearman_max",
         "spearman_frac",
+        "spearman_abs_mean",
+        "spearman_delta_mean",
+        "spearman_pre_final",
         "top1pct_mean_act",
         "all_mean_act",
+        "query_act_pre",
+        "query_act_final",
     ]
     rows = []
     for j, (step, neuron) in enumerate(zip(steps, neurons)):
@@ -80,7 +99,8 @@ def main():
         scores, _ = load_scores_loss_signed(str(run_path / "scores"))
         # Loss-signed: the most negative scores raise the activation most.
         influence = -scores.double().reshape(-1).numpy()
-        mean, peak, frac = stats[:, j]
+        mean, peak, frac = stats["final"][:, j]
+        pre = stats["pretrained"][0, j]
         top = np.argsort(-influence)[:k]
         rows.append(
             [
@@ -89,8 +109,13 @@ def main():
                 spearmanr(influence, mean).statistic,
                 spearmanr(influence, peak).statistic,
                 spearmanr(influence, frac).statistic,
+                spearmanr(np.abs(influence), mean).statistic,
+                spearmanr(influence, mean - pre).statistic,
+                spearmanr(pre, mean).statistic,
                 mean[top].mean(),
                 mean.mean(),
+                query_acts["pretrained"][j],
+                query_acts["final"][j],
             ]
         )
 
@@ -99,13 +124,14 @@ def main():
         writer = csv.writer(f)
         writer.writerow(header)
         writer.writerows(rows)
-    np.save(Path(args.out).with_name("activations.npy"), stats)
+    for name, s in stats.items():
+        np.save(Path(args.out).with_name(f"activations_{name}.npy"), s)
 
-    print(" ".join(f"{h:>16}" for h in header))
+    print(" ".join(f"{h:>19}" for h in header))
     for row in rows:
-        print(f"{row[0]:>16} " + " ".join(f"{v:16.4f}" for v in row[1:]))
+        print(f"{row[0]:>19} " + " ".join(f"{v:19.4f}" for v in row[1:]))
     means = np.array([r[1:] for r in rows]).mean(0)
-    print(f"{'mean':>16} " + " ".join(f"{v:16.4f}" for v in means))
+    print(f"{'mean':>19} " + " ".join(f"{v:19.4f}" for v in means))
 
 
 if __name__ == "__main__":
