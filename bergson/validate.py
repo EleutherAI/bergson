@@ -48,6 +48,7 @@ from .magic.data_stream import (
 from .magic.grad_accum import loss_denom, split_batch
 from .magic.trainer import TrainerState, prepare_trainer
 from .utils.csv_writer import CSVWriter
+from .utils.neuron import neuron_activations, neuron_query, neuron_token_loss
 from .utils.utils import get_device, simple_parse_kwargs_string
 from .utils.worker_utils import apply_logit_scale, setup_data_pipeline
 
@@ -74,6 +75,7 @@ def bank_loss_cache_key(
         "query_format_template": q.format_template,
         "query_data_kwargs": q.data_kwargs,
         "query_chunk_length": q.chunk_length,
+        "query_neuron": q.neuron,
         "query_contrast": (
             None if run_cfg.query.contrast is None else run_cfg.query.contrast.to_dict()
         ),
@@ -107,8 +109,10 @@ def per_doc_query_losses(
     query_stream: DataStream,
     num_docs: int,
     grad_accum_steps: int = 1,
+    neuron: str = "",
 ) -> torch.Tensor:
-    """Compute the mean cross-entropy loss of each query document.
+    """Compute the mean cross-entropy loss of each query document, or the
+    neuron's negative mean activation when ``neuron`` is set.
 
     Iterates over the query stream (sharded across ranks the same way training
     batches are), scatter-adds per-token losses into per-document sums via
@@ -136,14 +140,19 @@ def per_doc_query_losses(
 
             inputs = {"input_ids": x, "labels": y, "doc_ids": doc_ids}
             for micro in split_batch(inputs, grad_accum_steps):
-                logits = model(input_ids=micro["input_ids"]).logits
                 shifted_labels = micro["labels"][:, 1:]
-                token_loss = F.cross_entropy(
-                    logits[:, :-1].flatten(0, 1).float(),
-                    shifted_labels.flatten(),
-                    reduction="none",
-                    ignore_index=-100,
-                ).view_as(shifted_labels)
+                if neuron:
+                    with neuron_activations(model, neuron) as acts:
+                        model(input_ids=micro["input_ids"])
+                    token_loss = neuron_token_loss(acts[0].float(), micro["labels"])
+                else:
+                    logits = model(input_ids=micro["input_ids"]).logits
+                    token_loss = F.cross_entropy(
+                        logits[:, :-1].flatten(0, 1).float(),
+                        shifted_labels.flatten(),
+                        reduction="none",
+                        ignore_index=-100,
+                    ).view_as(shifted_labels)
 
                 # A token's loss belongs to the document of the label token,
                 # so packed rows attribute boundary positions to the next doc.
@@ -166,16 +175,18 @@ def mean_query_loss(
     query_stream: DataStream,
     grad_accum_steps: int = 1,
     contrast_stream: DataStream | None = None,
+    neuron: str = "",
 ) -> torch.Tensor:
     """Mean loss over the query stream, reduced across ranks, minus the mean
-    loss over the contrast stream when one is given."""
+    loss over the contrast stream when one is given. A ``neuron`` spec replaces
+    the loss with the neuron's negative mean activation."""
     if contrast_stream is not None:
-        return mean_query_loss(model, query_stream, grad_accum_steps) - mean_query_loss(
-            model, contrast_stream, grad_accum_steps
-        )
+        return mean_query_loss(
+            model, query_stream, grad_accum_steps, neuron=neuron
+        ) - mean_query_loss(model, contrast_stream, grad_accum_steps, neuron=neuron)
     total = torch.zeros((), device=query_stream.device)
     tokens = torch.zeros((), device=query_stream.device)
-    with torch.no_grad():
+    with torch.no_grad(), neuron_query(model, neuron):
         for batch in query_stream:
             batch, n_tokens = mask_padded_rows(batch)
             tokens += n_tokens
@@ -505,12 +516,20 @@ def tail_filter_retrain(
         """Query losses of an activated model, ``[num_queries]`` on the CPU."""
         if multi_query:
             per_doc = per_doc_query_losses(
-                model, query_stream, num_query_docs, run_cfg.grad_accum_steps
+                model,
+                query_stream,
+                num_query_docs,
+                run_cfg.grad_accum_steps,
+                neuron=run_cfg.query.neuron,
             )
             return per_doc[:num_queries].cpu()
 
         loss = mean_query_loss(
-            model, query_stream, run_cfg.grad_accum_steps, contrast_stream
+            model,
+            query_stream,
+            run_cfg.grad_accum_steps,
+            contrast_stream,
+            neuron=run_cfg.query.neuron,
         )
         return loss.reshape(1).cpu()
 
@@ -710,7 +729,11 @@ def validate_scores(
             )
         with fwd_state.activate(model):
             baseline_per_doc = per_doc_query_losses(
-                model, query_stream, num_query_docs, run_cfg.grad_accum_steps
+                model,
+                query_stream,
+                num_query_docs,
+                run_cfg.grad_accum_steps,
+                neuron=run_cfg.query.neuron,
             )[:num_real_query_docs].cpu()
     elif scores.ndim == 2 and scores.shape[1] > 1:
         pass  # Per-token [docs, seq_len]; kept 2-D.
@@ -785,6 +808,7 @@ def validate_scores(
                         query_stream,
                         num_query_docs,
                         run_cfg.grad_accum_steps,
+                        neuron=run_cfg.query.neuron,
                     )
                 diff_vec = baseline_per_doc - per_doc[:num_real_query_docs].cpu()
                 for q in range(num_real_query_docs):
@@ -799,7 +823,11 @@ def validate_scores(
             else:
                 with fwd_state.activate(model):
                     loss = mean_query_loss(
-                        model, query_stream, run_cfg.grad_accum_steps, contrast_stream
+                        model,
+                        query_stream,
+                        run_cfg.grad_accum_steps,
+                        contrast_stream,
+                        neuron=run_cfg.query.neuron,
                     )
                 diff = baseline - loss.item()
                 csv_writer.writerow(lr, diff, lr * predicted.mean().item())
@@ -920,6 +948,7 @@ def validate_scores(
                     query_stream,
                     num_query_docs,
                     run_cfg.grad_accum_steps,
+                    neuron=run_cfg.query.neuron,
                 )
             diff_vec = baseline_per_doc - per_doc[:num_real_query_docs].cpu()
             score_sum_vec = flat_scores[subset].sum(dim=0)
@@ -947,7 +976,11 @@ def validate_scores(
 
         with fwd_state.activate(model):
             loss = mean_query_loss(
-                model, query_stream, run_cfg.grad_accum_steps, contrast_stream
+                model,
+                query_stream,
+                run_cfg.grad_accum_steps,
+                contrast_stream,
+                neuron=run_cfg.query.neuron,
             )
 
         diff = baseline - loss.item()
@@ -1091,7 +1124,11 @@ def evaluate_retrained(
         model.eval()
         return float(
             mean_query_loss(
-                model, query_stream, run_cfg.grad_accum_steps, contrast_stream
+                model,
+                query_stream,
+                run_cfg.grad_accum_steps,
+                contrast_stream,
+                neuron=run_cfg.query.neuron,
             )
         )
 
@@ -1099,7 +1136,11 @@ def evaluate_retrained(
         """Per-document query losses for an already-loaded model."""
         model.eval()
         return per_doc_query_losses(
-            model, query_stream, query_n, run_cfg.grad_accum_steps
+            model,
+            query_stream,
+            query_n,
+            run_cfg.grad_accum_steps,
+            neuron=run_cfg.query.neuron,
         )[:num_real_query_docs].cpu()
 
     baseline, baseline_per_doc, per_subset_losses = load_bank_losses(

@@ -9,6 +9,7 @@ import torch
 from simple_parsing import Serializable, field
 
 from ..hessians.inversion import Inversion
+from ..utils.neuron import parse_neuron
 from .validation import (
     FilterConfig,
     LDSConfig,
@@ -104,6 +105,16 @@ class QuerySetConfig(DataConfig):
     path: str = ""
     """Existing query index to use instead of building one from the dataset
     fields."""
+
+    neuron: str = ""
+    """Neuron to attribute, as ``<module>:<index>`` (e.g.
+    ``transformer.h.6.mlp.act:42``). The query loss becomes its negative mean
+    activation over the query tokens. Used by MAGIC and validation."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        if self.neuron:
+            parse_neuron(self.neuron)
 
     @classmethod
     def from_data(cls, data: DataConfig, **kwargs) -> "QuerySetConfig":

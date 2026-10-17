@@ -34,6 +34,14 @@ When ``--contrast.dataset`` is set the aggregated query loss minus the
 aggregated control loss is attributed. Requires an aggregated query. See
 ``examples/powerseeking_contrastive_query`` for an example.
 
+Neuron queries
+--------------
+
+``--query.neuron <module>:<index>`` attributes one neuron's negative mean
+activation over the query tokens, e.g. ``transformer.h.6.mlp.act:42`` for a
+GPT-2 MLP neuron. Validation measures the same quantity on the retrained
+models. See ``examples/compare_wikitext/neurons.yaml`` for an example.
+
 Output files
 ------------
 

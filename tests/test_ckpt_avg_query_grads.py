@@ -28,7 +28,7 @@ def test_averages_last_k_and_restores_state(tmp_path, monkeypatch):
     compute = cli.compute_query_gradients
     steps = []
 
-    def fake(fwd_state, *args):
+    def fake(fwd_state, *args, **kwargs):
         steps.append(fwd_state.step)
         return {"w": len(steps)}, float(len(steps))
 

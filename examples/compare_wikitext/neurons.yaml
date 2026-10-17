@@ -1,0 +1,108 @@
+# MAGIC scores for 16 neurons of GPT-2's layer 6 MLP (sampled with
+# random.Random(0).sample(range(3072), 16)) on the 1_magic.yaml trajectory. Each
+# query loss is the neuron's negative mean activation over test[0:50]; LDS uses
+# the retrain bank from 1_magic.yaml.
+
+# Run with `bergson examples/compare_wikitext/neurons.yaml` after 1_magic.yaml
+
+steps:
+  - magic: &magic
+      run_path: runs/compare_wikitext/neurons/h6_165
+      model: gpt2
+      resume: true
+
+      data:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "train"
+        chunk_length: 0
+
+      query: &query
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "test[0:50]"
+        chunk_length: 0
+        aggregation: mean
+        neuron: "transformer.h.6.mlp.act:165"
+
+      distributed:
+        nproc_per_node: 8
+        nnode: 1
+
+      batch_size: 256
+      grad_accum_steps: 2
+      double_backward_batch_size: 8
+      num_epochs: 4
+      lr_schedule:
+        lr_scheduler_type: polynomial
+        lr: 0.0004
+        lr_start: 1e-6
+        lr_end: 0.00004
+        warmup_steps: 0.25
+      adam_beta1: 0.9
+      adam_beta2: 0.999
+      eps_root: 1.0e-17
+
+      skip_validation: false
+      method:
+        kind: lds
+        subsets: bank
+        paths: [runs/compare_wikitext/random]
+  - magic:
+      <<: *magic
+      run_path: runs/compare_wikitext/neurons/h6_570
+      query: {<<: *query, neuron: "transformer.h.6.mlp.act:570"}
+  - magic:
+      <<: *magic
+      run_path: runs/compare_wikitext/neurons/h6_572
+      query: {<<: *query, neuron: "transformer.h.6.mlp.act:572"}
+  - magic:
+      <<: *magic
+      run_path: runs/compare_wikitext/neurons/h6_894
+      query: {<<: *query, neuron: "transformer.h.6.mlp.act:894"}
+  - magic:
+      <<: *magic
+      run_path: runs/compare_wikitext/neurons/h6_1060
+      query: {<<: *query, neuron: "transformer.h.6.mlp.act:1060"}
+  - magic:
+      <<: *magic
+      run_path: runs/compare_wikitext/neurons/h6_1154
+      query: {<<: *query, neuron: "transformer.h.6.mlp.act:1154"}
+  - magic:
+      <<: *magic
+      run_path: runs/compare_wikitext/neurons/h6_1242
+      query: {<<: *query, neuron: "transformer.h.6.mlp.act:1242"}
+  - magic:
+      <<: *magic
+      run_path: runs/compare_wikitext/neurons/h6_1466
+      query: {<<: *query, neuron: "transformer.h.6.mlp.act:1466"}
+  - magic:
+      <<: *magic
+      run_path: runs/compare_wikitext/neurons/h6_1577
+      query: {<<: *query, neuron: "transformer.h.6.mlp.act:1577"}
+  - magic:
+      <<: *magic
+      run_path: runs/compare_wikitext/neurons/h6_1658
+      query: {<<: *query, neuron: "transformer.h.6.mlp.act:1658"}
+  - magic:
+      <<: *magic
+      run_path: runs/compare_wikitext/neurons/h6_1722
+      query: {<<: *query, neuron: "transformer.h.6.mlp.act:1722"}
+  - magic:
+      <<: *magic
+      run_path: runs/compare_wikitext/neurons/h6_1952
+      query: {<<: *query, neuron: "transformer.h.6.mlp.act:1952"}
+  - magic:
+      <<: *magic
+      run_path: runs/compare_wikitext/neurons/h6_1990
+      query: {<<: *query, neuron: "transformer.h.6.mlp.act:1990"}
+  - magic:
+      <<: *magic
+      run_path: runs/compare_wikitext/neurons/h6_2067
+      query: {<<: *query, neuron: "transformer.h.6.mlp.act:2067"}
+  - magic:
+      <<: *magic
+      run_path: runs/compare_wikitext/neurons/h6_2094
+      query: {<<: *query, neuron: "transformer.h.6.mlp.act:2094"}
+  - magic:
+      <<: *magic
+      run_path: runs/compare_wikitext/neurons/h6_2389
+      query: {<<: *query, neuron: "transformer.h.6.mlp.act:2389"}
