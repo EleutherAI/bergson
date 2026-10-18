@@ -85,7 +85,7 @@ Indicative performance of data attribution methods in the finetuning regime.
      - 0.055 [0.043, 0.069]
      - 0.157 [0.120, 0.192]
    * - Activation similarity
-     - 0.000 [-0.000, 0.001]
+     - 0.049 [0.037, 0.063]
      - 0.110 [0.070, 0.149]
 
 Results for GPT-2 finetuned on 4 epochs of the WikiText corpus. Held-out loss dropped from 3.545 to 3.111 over training. Every row scores the same model and query set; per-query statistics, run configs and reproduction steps are in `examples/compare_wikitext <https://github.com/EleutherAI/bergson/tree/main/examples/compare_wikitext>`_.
