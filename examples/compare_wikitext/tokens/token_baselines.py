@@ -1,7 +1,8 @@
 """Per-token scores for the gradient-free baselines.
 
     python examples/compare_wikitext/tokens/token_baselines.py \
-        {activation,bm25,qwen3} <out> [--shard i --num_shards n] [--merge]
+        {activation,activation_ekfac,bm25,qwen3} <out> [--shard i --num_shards n]
+        [--merge]
 
 Row ``t`` of a chunk scores the loss on token ``t + 1``, as in the forward-mode
 rows of the gradient methods, and a chunk's rows add up to its document score
@@ -10,6 +11,8 @@ rows of the gradient methods, and a chunk's rows add up to its document score
 - activation: a document's pooled input activation to each attributed module is a
   mean over positions, so position ``t``'s share of the cosine goes to row ``t``,
   the loss position ``t`` predicts.
+- activation_ekfac: the same with each position's activations whitened by the
+  module's EK-FAC activation factor, as ``activation_baseline.py --hessian``.
 - bm25: a query term's weight in a chunk is split evenly over the term's
   occurrences and each occurrence's share over the GPT-2 tokens it spans; token
   ``j``'s share goes to row ``j - 1``, the loss on token ``j``.
@@ -55,7 +58,7 @@ def spread(rows, spans, lo, hi, value):
         rows[j - 1] += value / len(hit)
 
 
-def activation_rows(queries, shard):
+def activation_rows(queries, shard, hessian=None):
     from transformers import AutoModelForCausalLM
 
     from examples.gradient_free_baselines import activation_baseline as ab
@@ -69,7 +72,8 @@ def activation_rows(queries, shard):
     )
     model = model.cuda().eval()
     names = ab.target_module_names(model)
-    q = ab.embed(queries, model, tok, names, "cuda", 1024, 32)
+    transforms = ab.module_transforms(model, names, hessian, 0.1, 0, "cuda")
+    q = ab.embed(queries, model, tok, names, "cuda", 1024, 32, transforms)
     q = torch.tensor(q / np.linalg.norm(q, axis=1, keepdims=True), device="cuda")
     # Conv1D weights are [in, out]; each module's block of q is its input width.
     qs = torch.split(q, [model.get_submodule(n).weight.shape[0] for n in names], 1)
@@ -92,6 +96,8 @@ def activation_rows(queries, shard):
         share = torch.zeros(T, len(queries), device="cuda", dtype=torch.float64)
         for n, qm in zip(names, qs):
             a = cap[n]
+            if n in transforms:
+                a = a @ transforms[n].T
             share += (a @ qm.T).double() / (T * a.mean(0).norm())
         out.append((-share / np.sqrt(len(names))).cpu().numpy())
     return out
@@ -189,7 +195,9 @@ def merge(args, train, queries):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("method", choices=["activation", "bm25", "qwen3"])
+    p.add_argument(
+        "method", choices=["activation", "activation_ekfac", "bm25", "qwen3"]
+    )
     p.add_argument("out", type=Path)
     p.add_argument("--shard", type=int, default=0)
     p.add_argument("--num_shards", type=int, default=1)
@@ -205,6 +213,8 @@ def main():
     shard = [train[d] for d in idx]
     if args.method == "activation":
         rows = activation_rows(queries, shard)
+    elif args.method == "activation_ekfac":
+        rows = activation_rows(queries, shard, RUNS / "ekfac" / "hessian" / "kfac")
     elif args.method == "bm25":
         rows = bm25_rows(train, queries, idx)
     else:

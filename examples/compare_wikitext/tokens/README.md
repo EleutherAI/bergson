@@ -12,6 +12,7 @@ Per-token attribution on the WikiText leaderboard model (the `1_magic.yaml` run 
 | TrackStar (no optimizer correction, projection 64) | 0.492 | [0.467, 0.517] | 0.491 | 0.339 | 0.738 | 0.0012 | 50/50 |
 | Gradient cosine similarity | 0.217 | [0.206, 0.229] | 0.212 | 0.148 | 0.342 | 0.0009 | 50/50 |
 | TRAK (8-model ensemble) | 0.119 | [0.112, 0.125] | 0.116 | 0.072 | 0.191 | 0.0004 | 50/50 |
+| Activation similarity (activation covariance preconditioner) | 0.073 | [0.056, 0.092] | 0.054 | -0.007 | 0.269 | 0.0004 | 49/50 |
 | Activation similarity | 0.028 | [0.018, 0.039] | 0.012 | -0.005 | 0.163 | 0.0004 | 47/50 |
 | Qwen3-Embedding-8B semantic search | 0.008 | [0.006, 0.010] | 0.008 | -0.001 | 0.029 | 0.0004 | 44/50 |
 
@@ -25,7 +26,7 @@ Every other method's rows are the forward-mode equivalent of its document score:
 - Eigenvalue-corrected Shampoo (`shampoo_tokens.yaml`) preconditions the query gradients of `../kfac.yaml` with the Shampoo factors of `../shampoo.yaml`.
 - SOURCE (`source_adam_tokens.yaml`) runs one pass per interval checkpoint along its segment's query (`query_grad_segment` of the `source_adam` run in `../source.yaml`), which `combine_tokens.py source` combines as SOURCE does.
 - Gradient cosine similarity, TrackStar and TRAK score along the full-parameter direction `direction_store.py` rebuilds from the doc-level run: the query preconditioned and normalized as its scorer does, mapped back through the random projection (per module for TrackStar, global for TRAK). `combine_tokens.py rescale` gives each chunk its doc-level normalization (the inverse norm of its training gradient); `combine_tokens.py trak` averages the eight members' log-odds passes as bergson averages members.
-- The gradient-free baselines split their document scores exactly (`token_baselines.py`): activation similarity by position, since its pooled activations are means over positions; BM25 by term occurrence, over the GPT-2 tokens an occurrence spans; Qwen3-Embedding, which pools a causal model's last token, by each token's change in the prefix embedding's cosine. Tokens with no lexical or embedding overlap score exactly zero, which the filter's `exclude_zero_scores` would drop from its pool, so `full_pool.py` gives them `+1e-30` and every method removes 1% of all training tokens.
+- The gradient-free baselines split their document scores exactly (`token_baselines.py`): activation similarity by position, since its pooled activations are means over positions, with each position whitened by the EK-FAC activation factor for the preconditioned row; BM25 by term occurrence, over the GPT-2 tokens an occurrence spans; Qwen3-Embedding, which pools a causal model's last token, by each token's change in the prefix embedding's cosine. Tokens with no lexical or embedding overlap score exactly zero, which the filter's `exclude_zero_scores` would drop from its pool, so `full_pool.py` gives them `+1e-30` and every method removes 1% of all training tokens.
 
 Reproduce (after `../1_magic.yaml`, `../2_interval.yaml`, the checkpoint export, `../ekfac.yaml` and `../ekfac_astra.yaml`):
 
@@ -59,11 +60,11 @@ python $T/combine_tokens.py rescale $R/tokens/trackstar_pass $R/trackstar_p64/sc
 for i in 0 1 2 3 4 5 6 7; do python $T/direction_store.py $R/trak/checkpoint_$i/scores $R/tokens/trak_direction_$i; done
 bergson $T/trak_tokens.yaml
 python $T/combine_tokens.py trak $R/trak $R/tokens $R/tokens/trak_tokens/scores
-for b in activation bm25 qwen3; do
+for b in activation activation_ekfac bm25 qwen3; do
   python $T/token_baselines.py $b $R/tokens/${b}_tokens && python $T/token_baselines.py $b $R/tokens/${b}_tokens --merge
 done
 for b in bm25 qwen3; do python $T/full_pool.py $R/tokens/${b}_tokens/scores $R/tokens/${b}_tokens/full; done
-for f in kfac shampoo source_adam gradient_cosine trackstar trak bm25 qwen3 activation; do
+for f in kfac shampoo source_adam gradient_cosine trackstar trak bm25 qwen3 activation activation_ekfac; do
   bergson $T/filter_${f}_tokens.yaml
 done
 python examples/compare_wikitext/qld_from_filters.py runs/compare_wikitext/tokens

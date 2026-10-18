@@ -121,6 +121,8 @@ Per-token attribution scores, which attribute each training token's loss term, e
      - 0.217 [0.206, 0.229]
    * - TRAK (8-model ensemble)
      - 0.119 [0.112, 0.125]
+   * - Activation similarity (activation covariance preconditioner)
+     - 0.073 [0.056, 0.092]
    * - Activation similarity
      - 0.028 [0.018, 0.039]
    * - Qwen3-Embedding-8B semantic search

@@ -35,7 +35,7 @@ Indicative performance of data attribution methods in the finetuning regime - se
 | SOURCE (Adam, EK-FAC) | 0.071 [0.060, 0.084] | 0.473 [0.446, 0.498] | 0.908 [0.877, 0.942] |
 | EKFAC | 0.070 [0.058, 0.082] | 0.454 [0.426, 0.479] | 0.863 [0.833, 0.894] |
 | BM25 | 0.062 [0.048, 0.076] | 0.220 [0.185, 0.252] | 0.677 [0.650, 0.704] |
-| Activation similarity (activation covariance preconditioner) | 0.055 [0.043, 0.069] | 0.157 [0.120, 0.192] | — |
+| Activation similarity (activation covariance preconditioner) | 0.055 [0.043, 0.069] | 0.157 [0.120, 0.192] | 0.073 [0.056, 0.092] |
 | Semantic search ([Qwen3 8B](https://huggingface.co/Qwen/Qwen3-Embedding-8B)) | 0.049 [0.038, 0.061] | 0.132 [0.093, 0.169] | 0.008 [0.006, 0.010] |
 | TrackStar (no optimizer) | 0.045 [0.036, 0.055] | 0.276 [0.252, 0.299] | 0.492 [0.467, 0.517] |
 | TRAK (8-model ensemble) | 0.032 [0.024, 0.040] | 0.138 [0.111, 0.165] | 0.119 [0.112, 0.125] |
