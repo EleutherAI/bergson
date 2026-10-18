@@ -11,8 +11,7 @@ rows of the gradient methods, and a chunk's rows add up to its document score
 - activation: a document's pooled input activation to each attributed module is a
   mean over positions, so position ``t``'s share of the cosine goes to row ``t``,
   the loss position ``t`` predicts.
-- activation_ekfac: the same with each position's activations whitened by the
-  module's EK-FAC activation factor, as ``activation_baseline.py --hessian``.
+- activation_ekfac: the same with the activation covariance preconditioner.
 - bm25: a query term's weight in a chunk is split evenly over the term's
   occurrences and each occurrence's share over the GPT-2 tokens it spans; token
   ``j``'s share goes to row ``j - 1``, the loss on token ``j``.
