@@ -46,7 +46,7 @@ steps:
       score_cfg:
         candidates:
           scores: runs/trackstar_then_shampoo/trackstar/scores
-          fraction: 0.05
+          top_k: 0.05
       preprocess_cfg: {}
       hessian_pipeline_cfg:
         query:

@@ -57,16 +57,6 @@ def test_candidate_count():
         candidate_count(CandidateConfig(top_k=1.5), 10)
 
 
-def test_candidate_config_legacy_fraction():
-    with pytest.warns(FutureWarning, match="fraction"):
-        cfg = ScoreConfig.from_dict({"candidates": {"fraction": 0.1}})
-    assert cfg.candidates.top_k == 0.1
-    saved = {"candidates": {"top_k": 68359, "fraction": 0.0}}
-    assert ScoreConfig.from_dict(saved).candidates.top_k == 68359
-    with pytest.raises(ValueError, match="top_k only"):
-        CandidateConfig.from_dict({"top_k": 2, "fraction": 0.5})
-
-
 def test_select_candidates_unions_each_column(tmp_path: Path):
     scores = np.array(
         [
