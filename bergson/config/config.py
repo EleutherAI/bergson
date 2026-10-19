@@ -1,5 +1,6 @@
 import math
 import os
+import warnings
 from abc import ABC
 from dataclasses import dataclass, fields
 from pathlib import Path
@@ -840,16 +841,29 @@ class CandidateConfig(Serializable):
 
     top_k: float = 0
     """Rows kept per query column, or per recorded query. Below 1, the fraction of
-    rows kept per query column."""
-
-    fraction: float = 0.0
-    """Fraction of rows kept per query column, the same as a ``top_k`` below 1."""
+    rows kept per query column: 0.01 keeps the top 1%, 10000 the top 10,000."""
 
     direction: Literal["proponents", "detractors"] = "proponents"
     """Which end of the earlier run's ranking to keep."""
 
     higher_is_better: bool | None = None
     """Orientation of the earlier run's scores. ``None`` reads its saved config."""
+
+    @classmethod
+    def from_dict(cls, obj, drop_extra_fields=None):
+        # TODO Lucia Quirke delete 12/2026
+        obj = dict(obj)
+        fraction = obj.pop("fraction", 0.0) or 0.0
+        if fraction:
+            if obj.get("top_k"):
+                raise ValueError("Set candidates.top_k only; it takes the fraction.")
+            warnings.warn(
+                "candidates.fraction is deprecated; set candidates.top_k below 1",
+                FutureWarning,
+                stacklevel=2,
+            )
+            obj["top_k"] = fraction
+        return super().from_dict(obj, drop_extra_fields=drop_extra_fields)
 
 
 @dataclass

@@ -44,29 +44,27 @@ def _write_earlier(path: Path, scores: np.ndarray, higher_is_better: bool) -> st
 def test_candidate_count():
     assert candidate_count(CandidateConfig(top_k=3), 10) == 3
     assert candidate_count(CandidateConfig(top_k=30), 10) == 10
-    assert candidate_count(CandidateConfig(fraction=0.25), 10) == 2
-    assert candidate_count(CandidateConfig(fraction=0.01), 10) == 1
-
-    with pytest.raises(ValueError, match="exactly one"):
-        candidate_count(CandidateConfig(), 10)
-    with pytest.raises(ValueError, match="exactly one"):
-        candidate_count(CandidateConfig(top_k=2, fraction=0.5), 10)
-    with pytest.raises(ValueError, match="fraction"):
-        candidate_count(CandidateConfig(fraction=1.5), 10)
-
-
-def test_candidate_count_fractional_top_k():
+    assert candidate_count(CandidateConfig(top_k=10_000), 50_000) == 10_000
+    assert candidate_count(CandidateConfig(top_k=10_000.0), 50_000) == 10_000
+    assert candidate_count(CandidateConfig(top_k=1), 10) == 1
     assert candidate_count(CandidateConfig(top_k=0.01), 50_000) == 500
     assert candidate_count(CandidateConfig(top_k=0.25), 10) == 2
     assert candidate_count(CandidateConfig(top_k=0.001), 10) == 1
-    assert candidate_count(CandidateConfig(top_k=10_000), 50_000) == 10_000
-    assert candidate_count(CandidateConfig(top_k=10_000.0), 50_000) == 10_000
-    assert candidate_count(CandidateConfig(top_k=10_000), 5_000) == 5_000
-    assert candidate_count(CandidateConfig(top_k=1), 10) == 1
+
+    with pytest.raises(ValueError, match="positive"):
+        candidate_count(CandidateConfig(), 10)
     with pytest.raises(ValueError, match="whole number"):
         candidate_count(CandidateConfig(top_k=1.5), 10)
-    with pytest.raises(ValueError, match="exactly one"):
-        candidate_count(CandidateConfig(top_k=0.5, fraction=0.5), 10)
+
+
+def test_candidate_config_legacy_fraction():
+    with pytest.warns(FutureWarning, match="fraction"):
+        cfg = ScoreConfig.from_dict({"candidates": {"fraction": 0.1}})
+    assert cfg.candidates.top_k == 0.1
+    saved = {"candidates": {"top_k": 68359, "fraction": 0.0}}
+    assert ScoreConfig.from_dict(saved).candidates.top_k == 68359
+    with pytest.raises(ValueError, match="top_k only"):
+        CandidateConfig.from_dict({"top_k": 2, "fraction": 0.5})
 
 
 def test_select_candidates_unions_each_column(tmp_path: Path):
@@ -122,11 +120,8 @@ def test_select_candidates_from_query_record(tmp_path: Path):
 
     with pytest.raises(ValueError, match="rows"):
         select_candidates(cfg, 8)
-    cfg.fraction = 0.5
-    with pytest.raises(ValueError, match="fraction"):
-        select_candidates(cfg, 10)
-    cfg.fraction, cfg.top_k = 0.0, 0.5
-    with pytest.raises(ValueError, match="fraction"):
+    cfg.top_k = 0.5
+    with pytest.raises(ValueError, match="fractional"):
         select_candidates(cfg, 10)
     cfg.top_k = 1.5
     with pytest.raises(ValueError, match="whole number"):
