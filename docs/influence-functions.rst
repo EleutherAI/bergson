@@ -56,7 +56,7 @@ Reranking candidates
              top_k: 1000
          ...
 
-The candidates are the union over the earlier run's query columns of each column's ``top_k`` rows (or ``fraction``) at the ``direction`` end. ``scores`` may also be the CSV written by ``bergson query --record``, whose ``Top`` (or ``Bottom``) rows per query are the candidates, the first ``top_k`` of each when set. The Hessian is still fitted on the whole training set. The store has one row per candidate in training order; ``candidates.npy`` beside it holds their training rows, which ``load_scores`` returns as ``candidates``.
+The candidates are the union over the earlier run's query columns of each column's ``top_k`` rows (or ``fraction``) at the ``direction`` end. ``scores`` may also be the CSV written by ``bergson query --record``, whose ``Top`` (or ``Bottom``) rows per query are the candidates, the first ``top_k`` of each when set. The Hessian is still fitted on the whole training set. The store has one row per candidate in training order; ``candidates.npy`` beside it holds their training rows, which ``load_scores`` returns as ``candidates``. With ``data.span_column``, each candidate gets its block of span rows.
 
 See ``examples/pipelines/trackstar_then_shampoo.yaml``.
 
@@ -128,7 +128,7 @@ The unit carries into a dense (``autocorrelation``) Hessian fitted with the same
 
 ``load_scores`` marks a span store with ``info["attribute_spans"]``, and ``Scores.to_grid`` lays each span's score back over the token positions it covers. Leave-out validation and the filters therefore rank token rows as they always have, and removing a tail of them removes whole spans.
 
-Span attribution needs a pre-tokenized dataset, since the positions index ``input_ids``. It is incompatible with ``attribute_tokens`` and ``chunk_length``, which set or re-cut the same unit, and with ``score_cfg.candidates``, fused MoE experts, and MAGIC -- for MAGIC, attribute tokens and sum each span's rows.
+Span attribution needs a pre-tokenized dataset, since the positions index ``input_ids``. It is incompatible with ``attribute_tokens`` and ``chunk_length``, which set or re-cut the same unit, and with fused MoE experts and MAGIC -- for MAGIC, attribute tokens and sum each span's rows.
 
 Compressing the gradients
 -------------------------

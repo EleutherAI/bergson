@@ -14,7 +14,7 @@ from bergson import (
     collect_gradients,
 )
 from bergson.collector.gradient_collectors import GradientCollector
-from bergson.config import IndexConfig, PreprocessConfig, ScoreConfig
+from bergson.config import CandidateConfig, IndexConfig, PreprocessConfig, ScoreConfig
 from bergson.config.config import DataConfig
 from bergson.data import load_scores, span_rows
 from bergson.score.score import score_dataset
@@ -23,6 +23,7 @@ from bergson.score.scorer import Scorer
 from bergson.spans import span_row_bounds
 from bergson.utils.utils import get_gradient_dtype
 
+from .test_candidates import _write_earlier
 from .test_output_influence import MODEL, _query
 
 SPANS = [[0, 3, 7], [0, 4]]
@@ -309,14 +310,73 @@ def test_span_store_matches_token_store_end_to_end(tmp_path: Path, token_influen
             )
 
 
-def _score_dataset(tmp_path, name, dataset, query_path, token_influence, **kwargs):
+@pytest.mark.parametrize("token_influence", ["gradient", "output"])
+def test_span_candidates_match_full_store(tmp_path: Path, token_influence):
+    """Each candidate's span rows and row bounds equal its rows in the store
+    scored over every document."""
+    model = AutoModelForCausalLM.from_pretrained(MODEL, dtype=torch.float32)
+    dataset = _disk_dataset(tmp_path)
+    query_path = _query(tmp_path, model, dataset, num_queries=2)
+    earlier = np.array([[0.0, 0.0], [5.0, 0.0], [0.0, 0.0], [0.0, 5.0]])
+    earlier_path = _write_earlier(tmp_path / "earlier", earlier, True)
+
+    full = _score_dataset(
+        tmp_path,
+        "full",
+        dataset,
+        query_path,
+        token_influence,
+        data=DataConfig(dataset=dataset, span_column="span_starts"),
+    )
+    picked = _score_dataset(
+        tmp_path,
+        "picked",
+        dataset,
+        query_path,
+        token_influence,
+        candidates=CandidateConfig(scores=earlier_path, top_k=1),
+        data=DataConfig(dataset=dataset, span_column="span_starts"),
+    )
+
+    assert picked.candidates is not None
+    np.testing.assert_array_equal(picked.candidates, [1, 3])
+    assert picked.info["attribute_spans"] and picked.is_written()
+    assert picked.spans is not None and full.spans is not None
+    assert picked.offsets is not None and full.offsets is not None
+    assert len(picked) == 2
+    for i, doc in enumerate(picked.candidates):
+        lo, hi = picked.offsets[i], picked.offsets[i + 1]
+        full_lo, full_hi = full.offsets[doc], full.offsets[doc + 1]
+        np.testing.assert_array_equal(picked.spans[lo:hi], full.spans[full_lo:full_hi])
+        np.testing.assert_allclose(
+            picked[lo:hi], full[full_lo:full_hi], rtol=1e-5, atol=1e-6
+        )
+
+
+def test_span_candidates_reject_attribute_tokens(tmp_path: Path):
+    cfg = IndexConfig(run_path=str(tmp_path / "scores"), attribute_tokens=True)
+    score_cfg = ScoreConfig(
+        query_path="unused", candidates=CandidateConfig(scores="unused", top_k=1)
+    )
+    with pytest.raises(ValueError, match="attribute_tokens"):
+        score_dataset(cfg, score_cfg, PreprocessConfig())
+
+
+def _score_dataset(
+    tmp_path,
+    name,
+    dataset,
+    query_path,
+    token_influence,
+    candidates: CandidateConfig | None = None,
+    **kwargs,
+):
     """Run the score command over ``dataset`` and load the store it writes."""
     cfg = IndexConfig(run_path=str(tmp_path / name), model=MODEL, **kwargs)
     cfg.data.dataset = dataset
     cfg.distributed.nproc_per_node = 1
-    score_dataset(
-        cfg,
-        ScoreConfig(query_path=str(query_path), token_influence=token_influence),
-        PreprocessConfig(),
-    )
+    score_cfg = ScoreConfig(query_path=str(query_path), token_influence=token_influence)
+    if candidates is not None:
+        score_cfg.candidates = candidates
+    score_dataset(cfg, score_cfg, PreprocessConfig())
     return load_scores(tmp_path / name)
