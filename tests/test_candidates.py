@@ -55,6 +55,20 @@ def test_candidate_count():
         candidate_count(CandidateConfig(fraction=1.5), 10)
 
 
+def test_candidate_count_fractional_top_k():
+    assert candidate_count(CandidateConfig(top_k=0.01), 50_000) == 500
+    assert candidate_count(CandidateConfig(top_k=0.25), 10) == 2
+    assert candidate_count(CandidateConfig(top_k=0.001), 10) == 1
+    assert candidate_count(CandidateConfig(top_k=10_000), 50_000) == 10_000
+    assert candidate_count(CandidateConfig(top_k=10_000.0), 50_000) == 10_000
+    assert candidate_count(CandidateConfig(top_k=10_000), 5_000) == 5_000
+    assert candidate_count(CandidateConfig(top_k=1), 10) == 1
+    with pytest.raises(ValueError, match="whole number"):
+        candidate_count(CandidateConfig(top_k=1.5), 10)
+    with pytest.raises(ValueError, match="exactly one"):
+        candidate_count(CandidateConfig(top_k=0.5, fraction=0.5), 10)
+
+
 def test_select_candidates_unions_each_column(tmp_path: Path):
     scores = np.array(
         [
@@ -110,6 +124,12 @@ def test_select_candidates_from_query_record(tmp_path: Path):
         select_candidates(cfg, 8)
     cfg.fraction = 0.5
     with pytest.raises(ValueError, match="fraction"):
+        select_candidates(cfg, 10)
+    cfg.fraction, cfg.top_k = 0.0, 0.5
+    with pytest.raises(ValueError, match="fraction"):
+        select_candidates(cfg, 10)
+    cfg.top_k = 1.5
+    with pytest.raises(ValueError, match="whole number"):
         select_candidates(cfg, 10)
 
 

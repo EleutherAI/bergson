@@ -56,7 +56,7 @@ Reranking candidates
              top_k: 1000
          ...
 
-The candidates are the union over the earlier run's query columns of each column's ``top_k`` rows (or ``fraction``) at the ``direction`` end. ``scores`` may also be the CSV written by ``bergson query --record``, whose ``Top`` (or ``Bottom``) rows per query are the candidates, the first ``top_k`` of each when set. The Hessian is still fitted on the whole training set. The store has one row per candidate in training order; ``candidates.npy`` beside it holds their training rows, which ``load_scores`` returns as ``candidates``.
+The candidates are the union over the earlier run's query columns of each column's ``top_k`` rows at the ``direction`` end (a ``top_k`` below 1 keeps that fraction of the rows, so 0.01 is the top 1% and 10000 the top 10,000). ``scores`` may also be the CSV written by ``bergson query --record``, whose ``Top`` (or ``Bottom``) rows per query are the candidates, the first ``top_k`` of each when set. The Hessian is still fitted on the whole training set. The store has one row per candidate in training order; ``candidates.npy`` beside it holds their training rows, which ``load_scores`` returns as ``candidates``.
 
 See ``examples/pipelines/trackstar_then_shampoo.yaml``.
 

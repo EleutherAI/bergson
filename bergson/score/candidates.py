@@ -15,11 +15,19 @@ def candidate_count(cfg: CandidateConfig, num_rows: int) -> int:
     """Rows kept per query column."""
     if (cfg.top_k > 0) == (cfg.fraction > 0):
         raise ValueError("Set exactly one of candidates.top_k and candidates.fraction.")
-    if cfg.top_k > 0:
-        return min(cfg.top_k, num_rows)
-    if not 0.0 < cfg.fraction <= 1.0:
-        raise ValueError(f"candidates.fraction must be in (0, 1]; got {cfg.fraction}.")
-    return max(1, round(cfg.fraction * num_rows))
+    if cfg.fraction > 0:
+        if cfg.fraction > 1.0:
+            raise ValueError(
+                f"candidates.fraction must be in (0, 1]; got {cfg.fraction}."
+            )
+        return max(1, round(cfg.fraction * num_rows))
+    if cfg.top_k < 1:
+        return max(1, round(cfg.top_k * num_rows))
+    if cfg.top_k != int(cfg.top_k):
+        raise ValueError(
+            f"candidates.top_k must be below 1 or a whole number; got {cfg.top_k}."
+        )
+    return min(int(cfg.top_k), num_rows)
 
 
 def earlier_higher_is_better(cfg: CandidateConfig) -> bool:
@@ -50,8 +58,10 @@ def load_earlier_scores(cfg: CandidateConfig, num_rows: int) -> np.ndarray:
 def select_from_query_record(cfg: CandidateConfig, num_rows: int) -> np.ndarray:
     """Sorted union over the queries a ``query --record`` CSV holds of each
     query's kept rows."""
-    if cfg.fraction > 0:
-        raise ValueError("candidates.fraction does not apply to a query record.")
+    if cfg.fraction > 0 or 0 < cfg.top_k < 1:
+        raise ValueError("A fraction of rows does not apply to a query record.")
+    if cfg.top_k != int(cfg.top_k):
+        raise ValueError(f"candidates.top_k must be a whole number; got {cfg.top_k}.")
     direction = "Top" if cfg.direction == "proponents" else "Bottom"
 
     kept: dict[str, list[int]] = defaultdict(list)
@@ -62,7 +72,8 @@ def select_from_query_record(cfg: CandidateConfig, num_rows: int) -> np.ndarray:
     if not kept:
         raise ValueError(f"{cfg.scores} has no {direction} rows.")
 
-    rows = [i for per_query in kept.values() for i in per_query[: cfg.top_k or None]]
+    k = int(cfg.top_k) or None
+    rows = [i for per_query in kept.values() for i in per_query[:k]]
     candidates = np.unique(np.asarray(rows, dtype=np.int64))
     if candidates[-1] >= num_rows:
         raise ValueError(

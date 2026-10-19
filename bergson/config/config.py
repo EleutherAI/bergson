@@ -838,11 +838,12 @@ class CandidateConfig(Serializable):
     scores: str = ""
     """Score directory of the earlier run, or the CSV from ``query --record``."""
 
-    top_k: int = 0
-    """Rows kept per query column, or per recorded query."""
+    top_k: float = 0
+    """Rows kept per query column, or per recorded query. Below 1, the fraction of
+    rows kept per query column."""
 
     fraction: float = 0.0
-    """Fraction of rows kept per query column. Set this or ``top_k``."""
+    """Fraction of rows kept per query column, the same as a ``top_k`` below 1."""
 
     direction: Literal["proponents", "detractors"] = "proponents"
     """Which end of the earlier run's ranking to keep."""
