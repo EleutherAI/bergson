@@ -535,13 +535,8 @@ def score_dataset(
             f"(autocorrelation) hessian."
         )
 
-    if score_cfg.candidates.scores and (
-        index_cfg.attribute_tokens or index_cfg.data.span_column
-    ):
-        raise ValueError(
-            "score_cfg.candidates does not support attribute_tokens or "
-            "data.span_column."
-        )
+    if score_cfg.candidates.scores and index_cfg.attribute_tokens:
+        raise ValueError("score_cfg.candidates does not support attribute_tokens.")
 
     if score_cfg.token_influence == "output":
         check_output_influence_supported(index_cfg, preprocess_cfg)
