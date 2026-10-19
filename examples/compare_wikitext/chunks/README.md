@@ -1,6 +1,6 @@
-Per-chunk attribution on the WikiText leaderboard model. 
+Per-chunk attribution on the WikiText leaderboard model.
 
-`chunk_scores.py` sums a per-token score store over chunks of each 512-token training chunk and writes the sum back to every row of the chunk, so the per-token proponent filter masks whole chunks. 
+`chunk_scores.py` sums a per-token score store over chunks of each 512-token training chunk and writes the sum back to every row of the chunk, so the per-token proponent filter masks whole chunks.
 
 Two chunking strategies:
 - `fixed64`: 64-token windows, 36,864 chunks (8 per training chunk).
