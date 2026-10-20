@@ -1,6 +1,20 @@
 # CHANGELOG
 
 
+## v2.3.0 (2026-10-20)
+
+### Bug Fixes
+
+- Forward trust_remote_code when reading the model's max length
+  ([#562](https://github.com/EleutherAI/bergson/pull/562),
+  [`a20a28e`](https://github.com/EleutherAI/bergson/commit/a20a28e40d2caafe93e0da1b1c1883a3dc93ce5f))
+
+### Features
+
+- Add advantage_column for GRPO rollouts ([#563](https://github.com/EleutherAI/bergson/pull/563),
+  [`ddc9cb7`](https://github.com/EleutherAI/bergson/commit/ddc9cb7d5d90a539a509d643ab5846a0c9e499dc))
+
+
 ## v2.2.4 (2026-10-20)
 
 ### Bug Fixes
