@@ -18,6 +18,7 @@ from datasets import (
     Dataset,
     DatasetDict,
     IterableDatasetDict,
+    ReadInstruction,
     concatenate_datasets,
     load_dataset,
     load_from_disk,
@@ -452,6 +453,7 @@ def load_data_string(
     data_kwargs: str = "",
 ) -> Dataset:
     """Load a dataset from a string identifier or path."""
+    from_disk = False
     if data_str.endswith(".csv"):
         ds = load_dataset("csv", data_files=data_str, split=split)
     elif data_str.endswith(".json") or data_str.endswith(".jsonl"):
@@ -461,6 +463,7 @@ def load_data_string(
         or (Path(data_str) / "dataset_dict.json").exists()
     ):
         ds = load_from_disk(data_str, keep_in_memory=False)
+        from_disk = True
     else:
         try:
             kwargs = simple_parse_kwargs_string(data_kwargs)
@@ -474,19 +477,38 @@ def load_data_string(
             # Automatically use load_from_disk if appropriate
             if "load_from_disk" in str(e):
                 ds = load_from_disk(data_str, keep_in_memory=False)
+                from_disk = True
             else:
                 raise e
 
-    if isinstance(ds, DatasetDict):
-        if "[" in split or "+" in split:
-            raise NotImplementedError(
-                f"Split slicing/concatenation expressions are not supported "
-                f"for load_from_disk paths: {split!r}"
-            )
-        ds = ds[split]
+    if from_disk:
+        ds = select_split(ds, split)
 
     ds = assert_type(Dataset, ds)
     return ds
+
+
+def select_split(ds: Dataset | DatasetDict, split: str) -> Dataset:
+    """The rows ``split`` names, in ``load_dataset``'s split syntax (such as
+    ``train[:100]`` or ``train[:10%]+test``), of a dataset from ``load_from_disk``.
+
+    A single saved dataset has no split names, so each part of ``split`` slices
+    the whole of it.
+    """
+    if "[" not in split and "+" not in split:
+        return ds[split] if isinstance(ds, DatasetDict) else ds
+
+    names = [part.split("[")[0].strip() for part in split.split("+")]
+    lengths = {
+        name: len(ds[name] if isinstance(ds, DatasetDict) else ds) for name in names
+    }
+    parts = [
+        (ds[i.splitname] if isinstance(ds, DatasetDict) else ds).select(
+            range(i.from_, i.to)
+        )
+        for i in ReadInstruction.from_spec(split).to_absolute(lengths)
+    ]
+    return parts[0] if len(parts) == 1 else concatenate_datasets(parts)
 
 
 def load_gradients(root_dir: Path | str) -> np.memmap:
