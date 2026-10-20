@@ -30,10 +30,10 @@ Pre-tokenized datasets
 
 A dataset that already has an ``input_ids`` column is used as-is; the tokenizer is skipped. A ``length`` column is derived from ``input_ids`` when absent. An optional ``labels`` column restricts the loss to specific positions, e.g. assistant turns, with ``-100`` marking unsupervised positions. ``--chunk_length`` applies to raw text and should stay at its default of 0.
 
-Rewards
--------
+Advantages
+----------
 
-``--reward_column`` selects a per-example scalar reward. Gradients are then computed with the Dr. GRPO policy gradient loss (https://arxiv.org/abs/2503.20783), using advantages estimated from the rewards. Rows with NaN rewards raise an error; pass ``--skip_nan_rewards`` to filter them out instead.
+Specify ``--advantage_column`` when per-example advantages are available, e.g. those logged by a GRPO trainer. Gradients are then computed with the Dr. GRPO policy gradient loss (https://arxiv.org/abs/2503.20783): each example's loss is weighted by its advantage. Rows with NaN advantages raise an error; pass ``--skip_nan_rewards`` to filter them out instead.
 
 Output columns
 --------------

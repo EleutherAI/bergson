@@ -129,11 +129,11 @@ By default Bergson collects gradients for named parameter matrices, but per-atte
 Collect GRPO Loss Gradients
 ---------------------------
 
-Where a reward signal is available we compute gradients using a weighted advantage estimate based on Dr. GRPO:
+For RL rollouts, include advantages for a Dr. GRPO policy gradient, e.g. as logged by a GRPO trainer, as a dataset column and specify the column name with ``--advantage_column``:
 
 .. code-block:: bash
 
-   bergson build <output_path> --model <model_name> --dataset <dataset_name> --reward_column <reward_column_name>
+   bergson build <output_path> --model <model_name> --dataset <dataset_name> --advantage_column <advantage_column_name>
 
 Mixture-of-Experts Models
 -------------------------
