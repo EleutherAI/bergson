@@ -84,11 +84,19 @@ def build_worker(
     model, target_modules = setup_model_and_peft(index_cfg)
     processor = create_processor(model, index_cfg, target_modules)
 
-    maybe_auto_batch_size(index_cfg, model, ds, processor, target_modules, rank)
-
     attention_cfgs = {
         module: index_cfg.attention for module in index_cfg.split_attention_modules
     }
+
+    maybe_auto_batch_size(
+        index_cfg,
+        model,
+        ds,
+        processor,
+        target_modules,
+        attention_cfgs,
+        preprocess_cfg,
+    )
 
     kwargs = {
         "model": model,
