@@ -1,5 +1,6 @@
 import json
 
+import pytest
 from datasets import Dataset
 
 from bergson.config import DataConfig, IndexConfig
@@ -83,3 +84,57 @@ def test_advantages_computed_with_drop_columns(tmp_path):
     # "foo bar" group mean = 15.0: advantages = [-5.0, 5.0]
     assert abs(advantages[2] - (-5.0)) < 1e-9
     assert abs(advantages[3] - 5.0) < 1e-9
+
+
+def _pipeline_advantages(tmp_path, rows, **data_kwargs):
+    path = tmp_path / "rows.json"
+    path.write_text("\n".join(json.dumps(r) for r in rows))
+    cfg = IndexConfig(
+        run_path=str(tmp_path / "run"),
+        model="EleutherAI/pythia-14m",
+        token_batch_size=2048,
+        data=DataConfig(dataset=str(path), **data_kwargs),
+    )
+    ds, _ = setup_data_pipeline(cfg)
+    return ds["advantage"]
+
+
+def test_advantage_column_used_as_given(tmp_path):
+    rows = [
+        {"text": "hello world", "adv": 0.5},
+        {"text": "hello world", "adv": 2.0},
+        {"text": "foo bar", "adv": -1.5},
+    ]
+    assert _pipeline_advantages(tmp_path, rows, advantage_column="adv") == [
+        0.5,
+        2.0,
+        -1.5,
+    ]
+
+
+def test_existing_advantage_column(tmp_path):
+    """A dataset column named "advantage" can be the advantage column, and is
+    replaced by the estimate when rewards are given."""
+    rows = [
+        {"text": "hello world", "advantage": 0.5, "reward": 1.0},
+        {"text": "hello world", "advantage": 2.0, "reward": 3.0},
+    ]
+    assert _pipeline_advantages(tmp_path, rows, advantage_column="advantage") == [
+        0.5,
+        2.0,
+    ]
+    assert _pipeline_advantages(tmp_path, rows, reward_column="reward") == [-1.0, 1.0]
+
+
+def test_nan_advantages(tmp_path):
+    rows = [{"text": "hello world", "adv": 1.0}, {"text": "foo bar", "adv": None}]
+    with pytest.raises(ValueError, match="Column 'adv' contains NaN"):
+        _pipeline_advantages(tmp_path, rows, advantage_column="adv")
+    assert _pipeline_advantages(
+        tmp_path, rows, advantage_column="adv", skip_nan_rewards=True
+    ) == [1.0]
+
+
+def test_conflicting_advantage_config():
+    with pytest.raises(ValueError, match="cannot both be specified"):
+        DataConfig(reward_column="reward", advantage_column="adv")

@@ -52,8 +52,13 @@ class DataConfig(Serializable):
     When specified, gradients are calculated using the policy
     gradient loss from Dr. GRPO. https://arxiv.org/abs/2503.20783"""
 
+    advantage_column: str = ""
+    """Optional column in the dataset that contains per-example advantages, e.g.
+    those logged by a GRPO trainer. When specified, gradients are calculated using
+    the Dr. GRPO policy gradient loss."""
+
     skip_nan_rewards: bool = False
-    """Whether to skip examples with NaN rewards."""
+    """Whether to skip examples with NaN rewards or advantages."""
 
     truncation: bool = False
     """Whether to truncate long documents to fit the token budget."""
@@ -73,6 +78,10 @@ class DataConfig(Serializable):
     sequences of this length. Incompatible with truncation and format_template."""
 
     def __post_init__(self):
+        if self.reward_column and self.advantage_column:
+            raise ValueError(
+                "reward_column and advantage_column cannot both be specified"
+            )
         if self.chunk_length > 0:
             if self.truncation:
                 raise ValueError("chunk_length and truncation cannot both be True")

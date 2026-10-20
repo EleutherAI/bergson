@@ -449,23 +449,28 @@ def setup_data_pipeline(
                 f"Consider increasing --token_batch_size or using --truncation."
             )
 
-    if data_cfg.reward_column:
+    value_column = data_cfg.reward_column or data_cfg.advantage_column
+    if value_column:
         assert isinstance(ds, Dataset), "Dataset required for advantage estimation"
 
-        rewards = np.array(ds[data_cfg.reward_column], dtype=np.float64)
-        nan_mask = np.isnan(rewards)
+        values = np.array(ds[value_column], dtype=np.float64)
+        nan_mask = np.isnan(values)
         if nan_mask.any():
             if data_cfg.skip_nan_rewards:
-                print(f"Warning: Filtering out {nan_mask.sum()} rows with NaN rewards")
+                print(f"Warning: Filtering out {nan_mask.sum()} rows with NaN values")
                 ds = ds.filter(lambda _, idx: not nan_mask[idx], with_indices=True)
             else:
-                raise ValueError(
-                    f"Reward column '{data_cfg.reward_column}' contains NaN values"
-                )
+                raise ValueError(f"Column '{value_column}' contains NaN values")
 
+        if data_cfg.reward_column:
+            advantages = estimate_advantage(ds, data_cfg)
+        else:
+            advantages = ds[data_cfg.advantage_column][:]
+        if "advantage" in ds.column_names:
+            ds = ds.remove_columns("advantage")
         ds = ds.add_column(
             "advantage",
-            estimate_advantage(ds, data_cfg),
+            advantages,
             new_fingerprint="advantage",  # type: ignore
         )
 
@@ -475,6 +480,8 @@ def setup_data_pipeline(
 
     # Remove extraneous columns
     keep = {"length", "input_ids", "labels"}
+    if value_column:
+        keep.add("advantage")
     remove_columns -= keep
     remove_columns &= set(ds.column_names)
     if remove_columns:
