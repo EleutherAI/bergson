@@ -39,9 +39,15 @@ Indicative performance of data attribution methods in the finetuning regime.
    * - BM25
      - 0.062 [0.048, 0.076]
      - 0.220 [0.185, 0.252]
+   * - Activation similarity (activation covariance preconditioner)
+     - 0.055 [0.043, 0.069]
+     - 0.157 [0.120, 0.192]
    * - `Qwen3-Embedding-8B <https://huggingface.co/spaces/mteb/leaderboard>`_ semantic search
      - 0.049 [0.038, 0.061]
      - 0.132 [0.093, 0.169]
+   * - Activation similarity
+     - 0.049 [0.037, 0.063]
+     - 0.110 [0.070, 0.149]
    * - Jina v5 semantic search
      - 0.046 [0.035, 0.059]
      - 0.124 [0.087, 0.160]
@@ -81,12 +87,6 @@ Indicative performance of data attribution methods in the finetuning regime.
    * - Projected gradient cosine similarity
      - 0.016 [0.012, 0.020]
      - 0.132 [0.103, 0.159]
-   * - Activation similarity (activation covariance preconditioner)
-     - 0.055 [0.043, 0.069]
-     - 0.157 [0.120, 0.192]
-   * - Activation similarity
-     - 0.049 [0.037, 0.063]
-     - 0.110 [0.070, 0.149]
 
 Results for GPT-2 finetuned on 4 epochs of the WikiText corpus. Held-out loss dropped from 3.545 to 3.111 over training. Every row scores the same model and query set; per-query statistics, run configs and reproduction steps are in `examples/compare_wikitext <https://github.com/EleutherAI/bergson/tree/main/examples/compare_wikitext>`_.
 
