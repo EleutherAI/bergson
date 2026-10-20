@@ -1,6 +1,15 @@
 # CHANGELOG
 
 
+## v2.2.4 (2026-10-20)
+
+### Bug Fixes
+
+- Probe auto_batch_size with the run's own batches
+  ([#561](https://github.com/EleutherAI/bergson/pull/561),
+  [`aa76118`](https://github.com/EleutherAI/bergson/commit/aa76118993219386a3cd40526920871381fe7f2a))
+
+
 ## v2.2.3 (2026-10-06)
 
 ### Bug Fixes
