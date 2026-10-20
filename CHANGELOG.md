@@ -1,6 +1,15 @@
 # CHANGELOG
 
 
+## v2.3.1 (2026-10-20)
+
+### Bug Fixes
+
+- Slice saved datasets by split and promote rerun EK-FAC outputs
+  ([#564](https://github.com/EleutherAI/bergson/pull/564),
+  [`30882a6`](https://github.com/EleutherAI/bergson/commit/30882a65eb59e0fe48665fc571ba95aec4277343))
+
+
 ## v2.3.0 (2026-10-20)
 
 ### Bug Fixes
