@@ -347,7 +347,9 @@ def filter_by_max_tokens(ds: Dataset, cfg: AttributionConfig) -> Dataset:
     return ds
 
 
-def max_tokens_for_model(tokenizer, model_str: str, revision: str | None) -> int:
+def max_tokens_for_model(
+    tokenizer, model_str: str, revision: str | None, trust_remote_code: bool = False
+) -> int:
     # You might think model_max_length should always be the same as
     # max_position_embeddings, but some models (e.g. Pythia!) have a smaller
     # max_position_embeddings than model_max_length, so we need to check both.
@@ -360,7 +362,9 @@ def max_tokens_for_model(tokenizer, model_str: str, revision: str | None) -> int
     except ValueError:
         pass
 
-    model_cfg = AutoConfig.from_pretrained(model_str, revision=revision)
+    model_cfg = AutoConfig.from_pretrained(
+        model_str, revision=revision, trust_remote_code=trust_remote_code
+    )
     model_max_length = getattr(tokenizer, "model_max_length", BIG_NUM)
     max_pos_emb = getattr(model_cfg, "max_position_embeddings", BIG_NUM)
     return min(model_max_length, max_pos_emb)
@@ -377,7 +381,12 @@ def setup_data_pipeline(
         data_cfg.dataset, data_cfg.split, data_cfg.subset, data_cfg.data_kwargs
     )
     tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer or cfg.model)
-    max_model_length = max_tokens_for_model(tokenizer, cfg.model, cfg.revision)
+    trust_remote_code = bool(
+        simple_parse_kwargs_string(cfg.model_kwargs).get("trust_remote_code", False)
+    )
+    max_model_length = max_tokens_for_model(
+        tokenizer, cfg.model, cfg.revision, trust_remote_code
+    )
 
     if data_cfg.chunk_length > 0:
         # Sanity check
