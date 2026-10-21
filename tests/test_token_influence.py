@@ -12,6 +12,7 @@ from transformers import AutoModelForCausalLM
 from bergson.collector.gradient_collectors import GradientCollector
 from bergson.config import IndexConfig, PreprocessConfig, ScoreConfig
 from bergson.data import load_scores
+from bergson.gradients import LayerAdapter
 from bergson.score.score import score_dataset
 
 from .test_score import _write_query_index
@@ -57,7 +58,7 @@ def _score(
     name,
     dataset,
     query_path,
-    token_influence: Literal["gradient", "output"],
+    token_influence: Literal["gradient", "output", "input"],
     model=MODEL,
     **kwargs,
 ):
@@ -178,14 +179,91 @@ def test_output_influence_token_rows_are_single_loss_terms(tmp_path: Path):
 
 
 @pytest.mark.parametrize(
-    "setting, match",
-    [({"projection_dim": 16}, "projection_dim"), ({"precision": "int8"}, "int8")],
+    "loss_reduction, model_name",
+    [("sum", MODEL), ("mean", CONV1D_MODEL)],
 )
-def test_output_influence_rejects_unsupported(tmp_path: Path, setting, match):
+def test_input_influence_token_rows_are_embedding_scale_derivatives(
+    tmp_path: Path, loss_reduction, model_name
+):
+    """Row t is the derivative of the query's dot product with the document's
+    gradient with respect to scaling token t's embedding, found here by
+    differentiating the gradient a second time. GPT-2 uses F.layer_norm and ties
+    its output layer to the embeddings that bergson leaves trainable."""
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name, dtype=torch.float32, attn_implementation="eager"
+    )
+    dataset = _dataset(tmp_path)
+    query_path = _query(tmp_path, model, dataset, num_queries=2)
+    tokens = _score(
+        tmp_path,
+        "input_tokens",
+        dataset,
+        query_path,
+        token_influence="input",
+        attribute_tokens=True,
+        loss_reduction=loss_reduction,
+        model=model_name,
+        # The tiny GPT-2's context is 512 tokens.
+        token_batch_size=512,
+    )
+
+    assert tokens.offsets is not None
+    data = Dataset.load_from_disk(dataset)
+    query = torch.from_numpy(
+        np.fromfile(query_path / "gradients.bin", "<f4").reshape(2, -1)
+    )
+    modules = GradientCollector(
+        model.base_model, data=data, cfg=IndexConfig(run_path=str(tmp_path))
+    ).shapes()
+    layers = [model.base_model.get_submodule(m) for m in modules]
+    weights = [layer.weight for layer in layers]
+
+    for doc in (1, 2):
+        x = torch.tensor([data[doc]["input_ids"]])
+        labels = torch.tensor(data[doc]["labels"][1:])
+        scale = torch.zeros(x.shape[1], requires_grad=True)
+        embeds = model.get_input_embeddings()(x).detach() * (1 + scale)[:, None]
+        losses = F.cross_entropy(
+            model(inputs_embeds=embeds).logits[0, :-1], labels, reduction="none"
+        )
+        loss = losses.sum() * data[doc]["advantage"]
+        if loss_reduction == "mean":
+            loss = loss / (labels != -100).sum()
+        grads = torch.autograd.grad(loss, weights, create_graph=True)
+        # Query blocks are laid out [out, in] whatever the layer stores.
+        flat = torch.cat(
+            [
+                (g.T if LayerAdapter.weight_transposed(layer) else g).flatten()
+                for g, layer in zip(grads, layers)
+            ]
+        )
+
+        rows = tokens[tokens.offsets[doc] : tokens.offsets[doc + 1]]
+        assert len(rows) == x.shape[1] - 1
+        for q in range(2):
+            (expected,) = torch.autograd.grad(flat @ query[q], scale, retain_graph=True)
+            # The last token predicts no label.
+            assert expected[-1] == 0
+            np.testing.assert_allclose(
+                rows[:, q], expected[:-1].numpy(), rtol=1e-4, atol=1e-5
+            )
+
+
+@pytest.mark.parametrize(
+    "token_influence, setting, match",
+    [
+        ("output", {"projection_dim": 16}, "projection_dim"),
+        ("output", {"precision": "int8"}, "int8"),
+        ("input", {"attribute_tokens": False}, "attribute_tokens"),
+    ],
+)
+def test_token_influence_rejects_unsupported(
+    tmp_path: Path, token_influence, setting, match
+):
     cfg = IndexConfig(run_path=str(tmp_path / "scores"), **setting)
     with pytest.raises(ValueError, match=match):
         score_dataset(
             cfg,
-            ScoreConfig(query_path="unused", token_influence="output"),
+            ScoreConfig(query_path="unused", token_influence=token_influence),
             PreprocessConfig(),
         )

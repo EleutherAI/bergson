@@ -60,17 +60,20 @@ The candidates are the union over the earlier run's query columns of each column
 
 See ``examples/pipelines/trackstar_then_shampoo.yaml``.
 
-Output token influence
-----------------------
+Output and input token influence
+--------------------------------
 
-With ``attribute_tokens``, ``score_cfg.token_influence`` on ``score`` or ``ekfac`` chooses what each per-token row scores. Both kinds of row sum to the per-example score.
+With ``attribute_tokens``, ``score_cfg.token_influence`` on ``score`` or ``ekfac`` chooses what each per-token row scores. ``gradient`` and ``output`` rows sum to the per-example score.
 
 * ``gradient`` (the default) scores row ``t`` by the per-token gradient at position ``t``. This is the simpler tokenwise attribution of `Studying Large Language Model Generalization with Influence Functions <https://arxiv.org/abs/2308.03296>`_ (Grosse et al., 2023, Eq. 31). Row ``t`` is position ``t``'s effect on the loss of every later token, since later tokens attend to it, so it isn't the influence of any one token.
 * ``output`` scores row ``t`` by the loss on token ``t + 1`` alone, which is the term that loss masking removes. This is the paper's output token influence (Appendix B.1, Eq. 36). Rows without a label are zero.
+* ``input`` scores row ``t`` by token ``t`` as an input: how fast the per-example score changes as token ``t``'s embedding is scaled up. This is the paper's input token influence (Appendix B.1, Eq. 38). A prompt token has an input influence but no loss term, so ``input`` can rank prompt tokens that ``output`` scores zero. Its rows don't sum to the per-example score, so it needs ``attribute_tokens``. A document's last token feeds no label, so its always-zero row is left out.
 
-The paper estimates output token influence by moving the weights a small step along the query and comparing each token's loss before and after. Bergson computes the rate of change exactly instead, with one forward-mode pass (a Jacobian-vector product) per query column that covers every token in the batch, so aggregate the query when you can. Without ``attribute_tokens``, ``output`` gives the same per-example scores as ``gradient`` by a different computation.
+The paper estimates output token influence by moving the weights a small step along the query and comparing each token's loss before and after. Bergson computes the rate of change exactly instead, with one forward-mode pass (a Jacobian-vector product) per query column that covers every token in the batch, so aggregate the query when you can. Without ``attribute_tokens``, ``output`` gives the same per-example scores as ``gradient`` by a different computation. For ``input``, the paper compares the derivatives with respect to each embedding scale at the original and moved weights; Bergson takes those derivatives in one backward pass and finds their rate of change along the query in forward mode, again once per query column. This needs about three times the memory of a gradient pass, so ``input`` may need a smaller ``token_batch_size``.
 
-``output`` needs an unprojected query (``projection_dim: 0``) and dot-product scoring, and doesn't support ``loss_fn: kl``, ``optimizer_state``, ``split_attention_modules``, quantized models, FSDP, or fused MoE experts. The fused attention kernels don't implement forward-mode derivatives, so the model is loaded with eager attention. The run saves ``data.hf`` with each example's loss, as the gradient path does, but not ``total_processed.pt``, which only Hessian fitting reads.
+``input`` rows are second derivatives, so rounding matters more than for the other modes. On SmolLM2-135M, fp32 rows match an fp64 computation closely but bf16 rows are off by about 10%; on Pythia models, even fp32 rows can be mostly rounding error.
+
+``output`` and ``input`` need an unprojected query (``projection_dim: 0``) and dot-product scoring, and don't support ``loss_fn: kl``, ``optimizer_state``, ``split_attention_modules``, quantized models, FSDP, or fused MoE experts. The fused attention kernels don't implement forward-mode derivatives, so the model is loaded with eager attention. The run saves ``data.hf`` with each example's loss, as the gradient path does, but not ``total_processed.pt``, which only Hessian fitting reads.
 
 Compressing the gradients
 -------------------------
