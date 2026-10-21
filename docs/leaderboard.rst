@@ -145,7 +145,7 @@ MAGIC
    This method backpropagates through the training process once per query and doesn't support query batching. It works well in FP32 or TF32 but may significantly degrade when used to attribute BF16 training runs, or training runs with low batch sizes.
 
 ASTRA
-   ASTRA improves any existing Kronecker-factored Hessian approximation during each query's application stage, so it adds a constant amount of compute to each query on top of a basic influence function like EK-FAC. The ASTRA Hessian is 1/511 the scale of the EK-FAC Hessian in EK-FAC + ASTRA (paper scaling) and the same scale in EK-FAC + ASTRA (consistent scaling) and EK-FAC + ASTRA (CG).
+   ASTRA improves any existing Kronecker-factored Hessian approximation during each query's application stage, so it adds a constant amount of compute to each query on top of a basic influence function like EK-FAC. The ASTRA Hessian is 1/511 the scale of the EK-FAC Hessian in EK-FAC + ASTRA (paper replication settings) and the same scale in EK-FAC + ASTRA (consistent scaling) and EK-FAC + ASTRA (CG).
 
 EK-FAC
    This is a classic influence function in the form $g_t H^{-1} g_q$ using the EK-FAC Hessian approximation for H. The H can be swapped out for other matrices including KFAC, Shampoo, and MAC.
