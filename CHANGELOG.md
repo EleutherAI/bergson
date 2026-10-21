@@ -1,6 +1,15 @@
 # CHANGELOG
 
 
+## v2.4.0 (2026-10-21)
+
+### Features
+
+- ASTRA conjugate-gradient solver; leaderboard rows for paper, consistent and CG ASTRA
+  ([#544](https://github.com/EleutherAI/bergson/pull/544),
+  [`a11aa35`](https://github.com/EleutherAI/bergson/commit/a11aa35ece86d1d2836da968e2073f2b668be1e0))
+
+
 ## v2.3.1 (2026-10-20)
 
 ### Bug Fixes
