@@ -1,11 +1,13 @@
 import pytest
 import torch
 from datasets import Dataset
+from torch import Tensor
 from torch.func import functional_call, jacrev
 from transformers import GPT2Config, GPT2LMHeadModel
 
-from bergson.config import IndexConfig
-from bergson.hessians.astra import GaussNewtonProduct
+from bergson.config import AstraConfig, IndexConfig
+from bergson.hessians.astra import Astra, GaussNewtonProduct
+from bergson.utils.logger import get_logger
 
 
 @pytest.mark.parametrize("loss_reduction", [None, "mean"])
@@ -61,3 +63,55 @@ def test_gauss_newton_product_matches_explicit_jacobian(loss_reduction):
     product.micro_batch_size = 1
     chunked = product(v, indices)
     torch.testing.assert_close(torch.cat([chunked[n] for n in names]), expected)
+
+
+class _Identity:
+    def apply(self, r):
+        return r
+
+
+def test_cg_reaches_the_damped_solution():
+    """On the full batch, ``cg`` converges to ``(H + D)^-1 q``."""
+    torch.manual_seed(0)
+    model = GPT2LMHeadModel(
+        GPT2Config(
+            vocab_size=11,
+            n_positions=8,
+            n_embd=8,
+            n_layer=1,
+            n_head=2,
+            attn_implementation="eager",
+        )
+    ).double()
+    model.eval().requires_grad_(False)
+    data = Dataset.from_dict({"input_ids": torch.randint(11, (6, 5)).tolist()})
+    names = ["h.0.attn.c_proj", "h.0.mlp.c_fc"]
+    sizes = {"h.0.attn.c_proj": 8 * 8, "h.0.mlp.c_fc": 32 * 8}
+    hvp = GaussNewtonProduct(model, data, IndexConfig(run_path=""), names)
+    docs = list(range(len(data)))
+
+    def dense(v: Tensor) -> dict[str, Tensor]:
+        out, start = {}, 0
+        for n in names:
+            out[n] = v[start : start + sizes[n]]
+            start += sizes[n]
+        return out
+
+    dim = sum(sizes.values())
+    h = torch.stack(
+        [torch.cat(list(hvp(dense(e), docs).values())) for e in torch.eye(dim).double()]
+    )
+    damping = h.diagonal().mean().item()
+
+    astra = Astra.__new__(Astra)
+    astra.cfg = AstraConfig(num_steps=60, batch_size=len(data), solver="cg")
+    astra.names, astra.hvp, astra.num_docs = names, hvp, len(data)
+    astra.damping = {n: damping for n in names}
+    astra.preconditioner = _Identity()
+    astra.logger = get_logger("Astra")
+
+    q = torch.randn(dim, dtype=torch.float64)
+    expected = torch.linalg.solve(h + damping * torch.eye(dim), q)
+    x = astra.refine(dense(q), dense(torch.zeros(dim, dtype=torch.float64)), 0)
+    actual = torch.cat([x[n] for n in names])
+    assert (actual - expected).norm() / expected.norm() < 1e-6

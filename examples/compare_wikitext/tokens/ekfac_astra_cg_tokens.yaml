@@ -1,12 +1,13 @@
-# Per-token EK-FAC + ASTRA: the ASTRA-refined queries of ekfac_astra.yaml, scored token by token.
+# Per-token EK-FAC + ASTRA (CG): the ASTRA-refined queries of ekfac_astra_cg.yaml,
+# scored token by token.
 # Row t of a chunk scores the loss on token t + 1 (token_influence: output).
-# Run with `bergson examples/compare_wikitext/tokens/ekfac_astra_tokens.yaml`
+# Run with `bergson examples/compare_wikitext/tokens/ekfac_astra_cg_tokens.yaml`
 
-run_path: runs/compare_wikitext/tokens/ekfac_astra_tokens
+run_path: runs/compare_wikitext/tokens/ekfac_astra_cg_tokens
 steps:
   - score:
       index_cfg:
-        run_path: runs/compare_wikitext/tokens/ekfac_astra_tokens
+        run_path: runs/compare_wikitext/tokens/ekfac_astra_cg_tokens
         model: runs/compare_wikitext/interval/exported/checkpoint-72
         overwrite: false
         token_batch_size: 1024
@@ -21,7 +22,7 @@ steps:
           split: "train"
           chunk_length: 0
       score_cfg:
-        query_path: runs/compare_wikitext/ekfac_astra/astra_query
+        query_path: runs/compare_wikitext/ekfac_astra_cg/astra_query
         token_influence: output
         batch_size: 1024
         query_batch_size: 64
