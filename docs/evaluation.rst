@@ -84,6 +84,21 @@ data:
 To evaluate using an existing bank of retrained models, set ``subsets: bank``
 and ``paths: [runs/bank]`` in the LDS method config.
 
+To build the bank of retrained models in ``runs/bank`` without precomputed scores:
+
+.. code-block:: bash
+
+   bergson validate runs/bank --method lds --fraction 0.05 --count 100 \
+       --save_models true
+
+When building a retrain bank with ``method: lds``, ``subsets: retrain``, and
+``exclude_zero_scores: false``, ``--scores`` is optional. This allows the bank
+to be trained concurrently with a long-running attribution pass. In this
+unscored mode, ``validation.csv`` only records subset loss differences
+(``subset, diff``) rather than per-query rows. To compute per-query metrics
+or correlate against attribution scores, re-run with ``subsets: bank`` and
+``--scores`` once scoring finishes.
+
 Weight steps
 ~~~~~~~~~~~~
 
