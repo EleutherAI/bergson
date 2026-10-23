@@ -367,6 +367,17 @@ def _eigh(
     return eigenvalues.to(dtype), eigenvectors.to(dtype).contiguous()
 
 
+def _module_count(
+    key: str, total_processed: Tensor, num_positions: dict[str, int] | None
+) -> Tensor:
+    """The number of positions ``key``'s covariances summed, on
+    ``total_processed``'s device. An expert no position was routed to has zero
+    covariances, so its count is clamped to one rather than dividing by zero."""
+    if num_positions is None:
+        return total_processed
+    return torch.tensor(max(num_positions[key], 1), device=total_processed.device)
+
+
 def eigendecompose_owned(
     covariances: dict[str, Tensor],
     shapes: dict[str, tuple[int, ...]],
@@ -374,6 +385,7 @@ def eigendecompose_owned(
     total_processed: int | Tensor,
     output_path: str,
     dtype: torch.dtype,
+    num_positions: dict[str, int] | None = None,
 ) -> tuple[dict[str, Tensor], dict[str, Tensor]]:
     """Eigendecompose the covariances this rank owns, in full, from memory.
 
@@ -381,6 +393,10 @@ def eigendecompose_owned(
     single process. Saves this rank's row shard of every module's eigenvectors
     to ``output_path`` in ``dtype``, the layout :func:`compute_eigendecomposition`
     writes.
+
+    Each covariance is divided by its module's entry in ``num_positions``, the
+    positions it summed, when given, else by ``total_processed``. The two differ
+    for an MoE expert, which only sums the positions routed to it.
 
     Returns the eigenvectors of the modules this rank owns, in full, on this
     rank's device, and this rank's row shard of every module's eigenvalues on
@@ -399,7 +415,8 @@ def eigendecompose_owned(
         position=rank,
         leave=False,
     ):
-        values, vectors = _eigh(key, covariances.pop(key), total_processed, dtype)
+        count = _module_count(key, total_processed, num_positions)
+        values, vectors = _eigh(key, covariances.pop(key), count, dtype)
         eigenvectors[key] = vectors
         eigenvalues[key] = values
 
@@ -530,6 +547,7 @@ def save_uncorrected_eigenvalues(
     rank: int,
     world_size: int,
     num_documents: int = 1,
+    num_positions: dict[str, int] | None = None,
 ) -> None:
     """Take sharded eigenvalues_a and eigenvalues_g. Computes the sharded
     outer product by keeping eigenvalues_g in its sharded form and gathering
@@ -537,7 +555,9 @@ def save_uncorrected_eigenvalues(
 
     The factor covariances are averaged over the dataset's tokens, so we scale up
     by ``total_processed`` to a sum over all tokens, then divide by
-    ``num_documents`` to get the average document value.
+    ``num_documents`` to get the average document value. When ``num_positions``
+    is given, each module's own position count, which the eigendecomposition
+    averaged over, replaces ``total_processed``.
     """
     out_dir = os.path.join(str(partial_run_path), "eigenvalue_sharded")
     os.makedirs(out_dir, exist_ok=True)
@@ -594,7 +614,8 @@ def save_uncorrected_eigenvalues(
         else:
             eigenvalue_a_full = eigenvalue_a_shard
 
-        per_document = total_processed / num_documents
+        count = _module_count(key, total_processed, num_positions)
+        per_document = count / num_documents
         outer = torch.outer(eigenvalue_g_shard, eigenvalue_a_full) * per_document
         outer_product_sharded[key] = outer.to(device="cpu").contiguous()
 

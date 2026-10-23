@@ -339,7 +339,9 @@ def fit_factored_hessians(
     )
 
     eigenvectors = None
+    num_positions = None
     if isinstance(collector, CovarianceCollector):
+        num_positions = collector.num_positions
         # Each rank still holds the covariances it owns, so skip the files.
         eigenvectors_a, eigenvalues_a = eigendecompose_owned(
             collector.A_cov_dict,
@@ -348,6 +350,7 @@ def fit_factored_hessians(
             total_processed,
             os.path.join(path, "eigen_activation_sharded"),
             collector.dtype,
+            num_positions=num_positions,
         )
         eigenvectors_g, eigenvalues_g = eigendecompose_owned(
             collector.S_cov_dict,
@@ -356,6 +359,7 @@ def fit_factored_hessians(
             total_processed,
             os.path.join(path, "eigen_gradient_sharded"),
             collector.dtype,
+            num_positions=num_positions,
         )
         eigenvectors = (eigenvectors_a, eigenvectors_g)
     else:
@@ -378,6 +382,7 @@ def fit_factored_hessians(
         rank=rank,
         world_size=world_size,
         num_documents=len(data),
+        num_positions=num_positions,
     )
 
     if hessian_cfg.ev_correction:
