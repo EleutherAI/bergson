@@ -93,7 +93,11 @@ To build the bank of retrained models in ``runs/bank`` without precomputed score
 
 When building a retrain bank with ``method: lds``, ``subsets: retrain``, and
 ``exclude_zero_scores: false``, ``--scores`` is optional. This allows the bank
-to be trained concurrently with a long-running attribution pass.
+to be trained concurrently with a long-running attribution pass. In this
+unscored mode, ``validation.csv`` only records subset loss differences
+(``subset, diff``) rather than per-query rows. To compute per-query metrics
+or correlate against attribution scores, re-run with ``subsets: bank`` and
+``--scores`` once scoring finishes.
 
 Weight steps
 ~~~~~~~~~~~~
