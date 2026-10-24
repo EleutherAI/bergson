@@ -26,7 +26,8 @@ def check_output_influence_supported(
     found = [name for name, bad in unsupported.items() if bad]
     if found:
         raise ValueError(
-            f"token_influence='output' doesn't support {', '.join(found)}."
+            f"token_influence='output' doesn't support {', '.join(found)}. Set "
+            "score_cfg.token_influence='gradient' to score per-token gradients."
         )
 
 
