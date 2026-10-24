@@ -36,6 +36,9 @@ Indicative performance of data attribution methods in the finetuning regime.
    * - KFAC
      - 0.067 [0.056, 0.080]
      - 0.420 [0.391, 0.446]
+   * - LiSSA (Gauss-Newton Hessian)
+     - 0.065 [0.054, 0.076]
+     - 0.572 [0.549, 0.592]
    * - BM25
      - 0.062 [0.048, 0.076]
      - 0.220 [0.185, 0.252]
@@ -109,6 +112,8 @@ Per-token attribution scores, which attribute each training token's loss term, e
      - 0.922 [0.887, 0.957]
    * - SOURCE (Adam, EK-FAC)
      - 0.908 [0.877, 0.942]
+   * - LiSSA (Gauss-Newton Hessian)
+     - 0.880 [0.850, 0.912]
    * - EK-FAC
      - 0.863 [0.833, 0.894]
    * - KFAC
@@ -143,6 +148,9 @@ ASTRA
 
 EK-FAC
    This is a classic influence function in the form $g_t H^{-1} g_q$ using the EK-FAC Hessian approximation for H. The H can be swapped out for other matrices including KFAC, Shampoo, and MAC.
+
+LiSSA
+   The influence function of `Bae et al. <https://arxiv.org/abs/2209.05364>`_: the damped Gauss-Newton Hessian inverse applied to each query by LiSSA with the paper's Transformer settings (damping 0.01, 5,000 terms, 5 repeats). It needs no Kronecker factors but costs 25,000 Hessian-vector products per query, about 4 A40-hours per query here.
 
 KFAC
    KFAC supports gradient compression with ``projection_dim``. This produces a highly efficient variant based on a reusable gradient store, suitable for the retrieval stage of a data attribution pipeline, at the cost of some LDS/QLD.

@@ -6,6 +6,7 @@ Per-token attribution on the WikiText leaderboard model (the `1_magic.yaml` run 
 | EK-FAC + ASTRA | 1.082 | [1.047, 1.116] | 1.082 | 0.818 | 1.369 | 0.0007 | 50/50 |
 | Eigenvalue-corrected Shampoo | 0.922 | [0.887, 0.957] | 0.922 | 0.671 | 1.270 | 0.0011 | 50/50 |
 | SOURCE (Adam, EK-FAC) | 0.908 | [0.877, 0.942] | 0.903 | 0.686 | 1.266 | 0.0004 | 50/50 |
+| LiSSA (Gauss-Newton Hessian) | 0.880 | [0.850, 0.912] | 0.874 | 0.641 | 1.130 | 0.0005 | 50/50 |
 | EK-FAC | 0.863 | [0.833, 0.894] | 0.860 | 0.648 | 1.175 | 0.0006 | 50/50 |
 | KFAC | 0.786 | [0.758, 0.815] | 0.784 | 0.584 | 1.058 | 0.0008 | 50/50 |
 | BM25 | 0.677 | [0.650, 0.704] | 0.678 | 0.462 | 0.926 | 0.0004 | 50/50 |
@@ -22,6 +23,7 @@ Paired over queries, MAGIC exceeds EK-FAC + ASTRA by 0.293 [0.269, 0.317] and EK
 
 Every other method's rows are the forward-mode equivalent of its document score: row `t` is the method's share of the chunk's score from the loss on token `t + 1`, and a chunk's rows add up to its score.
 
+- LiSSA (`lissa_tokens.yaml`) scores the LiSSA solutions of `../lissa.yaml` like EK-FAC, with the same mean-over-tokens loss.
 - KFAC (`kfac_tokens.yaml`) scores the preconditioned queries of `../kfac.yaml` like EK-FAC.
 - Eigenvalue-corrected Shampoo (`shampoo_tokens.yaml`) preconditions the query gradients of `../kfac.yaml` with the Shampoo factors of `../shampoo.yaml`.
 - SOURCE (`source_adam_tokens.yaml`) runs one pass per interval checkpoint along its segment's query (`query_grad_segment` of the `source_adam` run in `../source.yaml`), which `combine_tokens.py source` combines as SOURCE does.
@@ -42,12 +44,13 @@ done
 python examples/compare_wikitext/qld_from_filters.py runs/compare_wikitext/tokens
 ```
 
-The other rows (after `../kfac.yaml`, `../shampoo.yaml`, `../source.yaml`, `../gradient_cosine.yaml`, `../trackstar.yaml`, `../trak.yaml` and the gradient-free baselines written to `runs/compare_wikitext/baselines`):
+The other rows (after `../kfac.yaml`, `../lissa.yaml`, `../shampoo.yaml`, `../source.yaml`, `../gradient_cosine.yaml`, `../trackstar.yaml`, `../trak.yaml` and the gradient-free baselines written to `runs/compare_wikitext/baselines`):
 
 ```bash
 T=examples/compare_wikitext/tokens; R=runs/compare_wikitext
 python -c "from bergson.utils.trainer_export import export_checkpoints; export_checkpoints('$R/interval', steps=[12, 24, 36, 48, 60, 72])"
 bergson $T/kfac_tokens.yaml
+bergson $T/lissa_tokens.yaml
 bergson $T/shampoo_tokens.yaml
 bergson $T/source_adam_tokens.yaml
 python $T/combine_tokens.py source $R/source_adam $R/tokens $R/tokens/source_adam_tokens/scores
@@ -64,7 +67,7 @@ for b in activation activation_ekfac bm25 qwen3; do
   python $T/token_baselines.py $b $R/tokens/${b}_tokens && python $T/token_baselines.py $b $R/tokens/${b}_tokens --merge
 done
 for b in bm25 qwen3; do python $T/full_pool.py $R/tokens/${b}_tokens/scores $R/tokens/${b}_tokens/full; done
-for f in kfac shampoo source_adam gradient_cosine trackstar trak bm25 qwen3 activation activation_ekfac; do
+for f in kfac lissa shampoo source_adam gradient_cosine trackstar trak bm25 qwen3 activation activation_ekfac; do
   bergson $T/filter_${f}_tokens.yaml
 done
 python examples/compare_wikitext/qld_from_filters.py runs/compare_wikitext/tokens
