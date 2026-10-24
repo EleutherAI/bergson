@@ -4,7 +4,8 @@ GPT-2 fine-tuned on WikiText (`EleutherAI/bergson-wikitext-512-chunks`, 4,608 tr
 |---|---|---|---|---|---|---|---|---|
 | MAGIC (per-query) | 0.100 | [0.090, 0.112] | 0.931 | [0.925, 0.936] | 0.933 | 0.804 | 0.970 | 50/50 |
 | MAGIC (cross-seed) | 0.098 | [0.087, 0.110] | 0.829 | [0.815, 0.840] | 0.836 | 0.658 | 0.932 | 50/50 |
-| EK-FAC + ASTRA (CG) | 0.077 | [0.066, 0.089] | 0.685 | [0.664, 0.702] | 0.699 | 0.457 | 0.805 | 50/50 |
+| EK-FAC + CG | 0.077 | [0.066, 0.089] | 0.685 | [0.664, 0.702] | 0.699 | 0.457 | 0.805 | 50/50 |
+| EK-FAC + ASTRA | 0.074 | [0.063, 0.087] | 0.643 | [0.624, 0.660] | 0.663 | 0.302 | 0.804 | 50/50 |
 | Eigenvalue-corrected Shampoo + ASTRA | 0.072 | [0.061, 0.085] | 0.625 | [0.604, 0.643] | 0.644 | 0.095 | 0.805 | 49/50 |
 | EK-FAC + ASTRA (paper scaling) | 0.071 | [0.060, 0.084] | 0.629 | [0.607, 0.647] | 0.646 | 0.435 | 0.786 | 50/50 |
 | Eigenvalue-corrected Shampoo | 0.071 | [0.060, 0.082] | 0.517 | [0.491, 0.539] | 0.532 | 0.294 | 0.703 | 50/50 |
@@ -40,6 +41,7 @@ bergson examples/compare_wikitext/2_interval.yaml    # evenly spaced checkpoints
 python -c "from bergson.utils.trainer_export import export_checkpoints; export_checkpoints('runs/compare_wikitext/interval', steps=[72])"
 bergson examples/compare_wikitext/ekfac.yaml
 bergson examples/compare_wikitext/ekfac_astra_cg.yaml
+bergson examples/compare_wikitext/ekfac_astra.yaml
 bergson examples/compare_wikitext/ekfac_astra_paper.yaml
 bergson examples/compare_wikitext/ekfac_astra_consistent.yaml
 bergson examples/compare_wikitext/shampoo_astra.yaml
@@ -58,12 +60,12 @@ bergson examples/compare_wikitext/metasmoothness.yaml
 for b in bm25 semantic qwen3 activation; do   # writes baselines/${b}_scores/scores
   python -m examples.gradient_free_baselines.${b}_baseline --bank runs/compare_wikitext/random --query_split "test[0:50]" --out runs/compare_wikitext/baselines
 done
-for f in magic magic_seed43 ekfac ekfac_astra_cg ekfac_astra_paper ekfac_astra_consistent kfac kfac_p64 shampoo trak_ens gradient_dot trackstar trackstar_adam source gradient_cosine bm25 semantic qwen3 activation; do
+for f in magic magic_seed43 ekfac ekfac_astra_cg ekfac_astra ekfac_astra_paper ekfac_astra_consistent kfac kfac_p64 shampoo trak_ens gradient_dot trackstar trackstar_adam source gradient_cosine bm25 semantic qwen3 activation; do
   bergson examples/compare_wikitext/filters/filter_$f.yaml
 done
 python examples/compare_wikitext/lds_from_bank.py --validation runs/compare_wikitext/random/validation.csv --out runs/compare_wikitext/lds_magic.json
 python examples/compare_wikitext/lds_from_bank.py --validation runs/compare_wikitext/magic_seed43/validation.csv --out runs/compare_wikitext/lds_magic_seed43.json
-for m in ekfac ekfac_astra_cg ekfac_astra_paper ekfac_astra_consistent kfac kfac_p64 shampoo trackstar_p16 trackstar_p32 trackstar_p64 trackstar_adam_p16 trackstar_adam_p32 trackstar_adam_p64 gradient_cosine gradient_cosine_projected gradient_dot; do python examples/compare_wikitext/lds_from_bank.py --sign grad --scores runs/compare_wikitext/$m/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_$m.json; done
+for m in ekfac ekfac_astra_cg ekfac_astra ekfac_astra_paper ekfac_astra_consistent kfac kfac_p64 shampoo trackstar_p16 trackstar_p32 trackstar_p64 trackstar_adam_p16 trackstar_adam_p32 trackstar_adam_p64 gradient_cosine gradient_cosine_projected gradient_dot; do python examples/compare_wikitext/lds_from_bank.py --sign grad --scores runs/compare_wikitext/$m/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_$m.json; done
 python examples/compare_wikitext/lds_from_bank.py --sign grad --scores runs/compare_wikitext/trak/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_trak_ens.json
 for b in bm25 semantic qwen3 activation; do python examples/compare_wikitext/lds_from_bank.py --sign loss --scores runs/compare_wikitext/baselines/${b}_scores/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_$b.json; done
 for m in source source_adam; do python examples/compare_wikitext/lds_from_bank.py --sign loss --scores runs/compare_wikitext/$m/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_$m.json; done

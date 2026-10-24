@@ -3,7 +3,8 @@ Per-token attribution on the WikiText leaderboard model (the `1_magic.yaml` run 
 | method | proponent QLD | 95% CI | median | min | max | random 1% | queries above random |
 |---|---|---|---|---|---|---|---|
 | MAGIC | 1.375 | [1.348, 1.403] | 1.368 | 1.175 | 1.592 | 0.0004 | 50/50 |
-| EK-FAC + ASTRA (CG) | 1.014 | [0.986, 1.043] | 1.010 | 0.821 | 1.252 | 0.0007 | 50/50 |
+| EK-FAC + ASTRA | 1.082 | [1.047, 1.116] | 1.082 | 0.818 | 1.369 | 0.0007 | 50/50 |
+| EK-FAC + CG | 1.014 | [0.986, 1.043] | 1.010 | 0.821 | 1.252 | 0.0007 | 50/50 |
 | Eigenvalue-corrected Shampoo | 0.922 | [0.887, 0.957] | 0.922 | 0.671 | 1.270 | 0.0011 | 50/50 |
 | SOURCE (Adam, EK-FAC) | 0.908 | [0.877, 0.942] | 0.903 | 0.686 | 1.266 | 0.0004 | 50/50 |
 | EK-FAC | 0.863 | [0.833, 0.894] | 0.860 | 0.648 | 1.175 | 0.0006 | 50/50 |
@@ -16,7 +17,7 @@ Per-token attribution on the WikiText leaderboard model (the `1_magic.yaml` run 
 | Activation similarity | 0.028 | [0.018, 0.039] | 0.012 | -0.005 | 0.163 | 0.0004 | 47/50 |
 | Qwen3-Embedding-8B semantic search | 0.008 | [0.006, 0.010] | 0.008 | -0.001 | 0.029 | 0.0004 | 44/50 |
 
-Paired over queries, MAGIC exceeds EK-FAC + ASTRA (CG) by 0.361 [0.342, 0.379] and EK-FAC + ASTRA (CG) exceeds EK-FAC by 0.151 [0.138, 0.165], each on 50 of 50 queries (95% CI from the per-query differences). The 95% CIs in the table are a 10k bootstrap over queries.
+Paired over queries, MAGIC exceeds EK-FAC + CG by 0.361 [0.342, 0.379] and EK-FAC + CG exceeds EK-FAC by 0.151 [0.138, 0.165], each on 50 of 50 queries (95% CI from the per-query differences). The 95% CIs in the table are a 10k bootstrap over queries.
 
 `ekfac_tokens.yaml` and `ekfac_astra_cg_tokens.yaml` score the published EK-FAC and ASTRA query directions (`../ekfac.yaml`, `../ekfac_astra_cg.yaml`) token by token with `token_influence: output`; `magic_tokens.yaml` resumes the leaderboard trajectory with `attribute_tokens: true`, so its scores are the per-token MAGIC gradient with the four epochs summed onto each chunk. The `filter_*_tokens.yaml` configs are `validate` runs with `method.kind: filter` over the per-token score stores; `exclude_zero_scores` skips the final position of each chunk, which carries no loss.
 
@@ -33,10 +34,11 @@ Reproduce (after `../1_magic.yaml`, `../2_interval.yaml`, the checkpoint export,
 ```bash
 bergson examples/compare_wikitext/tokens/ekfac_tokens.yaml
 bergson examples/compare_wikitext/tokens/ekfac_astra_cg_tokens.yaml
+bergson examples/compare_wikitext/tokens/ekfac_astra_tokens.yaml
 mkdir -p runs/compare_wikitext/tokens/magic_tokens
 cp -r runs/compare_wikitext/random/checkpoints runs/compare_wikitext/random/optimizer.pt runs/compare_wikitext/tokens/magic_tokens/
 bergson examples/compare_wikitext/tokens/magic_tokens.yaml
-for f in ekfac ekfac_astra_cg magic; do
+for f in ekfac ekfac_astra_cg ekfac_astra magic; do
   bergson examples/compare_wikitext/tokens/filter_${f}_tokens.yaml
 done
 python examples/compare_wikitext/qld_from_filters.py runs/compare_wikitext/tokens
