@@ -21,6 +21,9 @@ Indicative performance of data attribution methods in the finetuning regime.
    * - EK-FAC + ASTRA (CG)
      - 0.077 [0.066, 0.089]
      - 0.685 [0.664, 0.702]
+   * - EK-FAC + ASTRA (summed factors)
+     - 0.074 [0.063, 0.087]
+     - 0.643 [0.624, 0.660]
    * - Eigenvalue-corrected Shampoo + ASTRA
      - 0.072 [0.061, 0.085]
      - 0.625 [0.604, 0.643]
@@ -109,6 +112,8 @@ Per-token attribution scores, which attribute each training token's loss term, e
      - Proponent QLD [95% CI]
    * - MAGIC
      - 1.375 [1.348, 1.403]
+   * - EK-FAC + ASTRA (summed factors)
+     - 1.082 [1.047, 1.116]
    * - EK-FAC + ASTRA (CG)
      - 1.014 [0.986, 1.043]
    * - Eigenvalue-corrected Shampoo
@@ -145,7 +150,7 @@ MAGIC
    This method backpropagates through the training process once per query and doesn't support query batching. It works well in FP32 or TF32 but may significantly degrade when used to attribute BF16 training runs, or training runs with low batch sizes.
 
 ASTRA
-   ASTRA improves any existing Kronecker-factored Hessian approximation during each query's application stage, so it adds a constant amount of compute to each query on top of a basic influence function like EK-FAC. The ASTRA Hessian is 1/511 the scale of the EK-FAC Hessian in EK-FAC + ASTRA (paper replication settings) and the same scale in EK-FAC + ASTRA (consistent scaling) and EK-FAC + ASTRA (CG).
+   ASTRA improves any existing Kronecker-factored Hessian approximation during each query's application stage, so it adds a constant amount of compute to each query on top of a basic influence function like EK-FAC. The ASTRA Hessian is 1/511 the scale of the EK-FAC Hessian in EK-FAC + ASTRA (paper replication settings), 1/4,608 in EK-FAC + ASTRA (summed factors), and the same scale in EK-FAC + ASTRA (consistent scaling) and EK-FAC + ASTRA (CG).
 
 EK-FAC
    This is a classic influence function in the form $g_t H^{-1} g_q$ using the EK-FAC Hessian approximation for H. The H can be swapped out for other matrices including KFAC, Shampoo, and MAC.
