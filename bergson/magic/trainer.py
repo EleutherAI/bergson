@@ -51,11 +51,17 @@ def write_lr_history(
     save_dir: str | Path, schedule: Callable[[int], float], num_steps: int
 ) -> Path:
     """Record per-step LRs beside the checkpoints, from the ``schedule`` the
-    optimizer was built with."""
+    optimizer was built with.
+
+    As in HF's ``log_history``, entry ``step`` holds the LR of the ``step``-th
+    update counting from one, so update ``i`` (``schedule(i)``, taking
+    ``step_i`` to ``step_{i + 1}``) is recorded at ``step = i + 1``. SOURCE
+    sums steps ``(a, b]`` for the updates between checkpoints ``step_a`` and
+    ``step_b``."""
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
     history = [
-        {"step": step, "learning_rate": float(schedule(step))}
+        {"step": step + 1, "learning_rate": float(schedule(step))}
         for step in range(num_steps)
     ]
     path = save_dir / LR_HISTORY_FILENAME
