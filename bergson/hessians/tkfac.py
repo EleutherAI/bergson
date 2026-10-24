@@ -15,14 +15,20 @@ from bergson.utils.utils import assert_type
 @dataclass(kw_only=True)
 class TraceCovarianceCollector(HookCollectorBase):
     """
-    Collects activation and gradient covariances for TKFAC.
+    Collects activation and gradient covariances for TKFAC (Gao et al. 2021).
 
-    Computes:
-        A_tcov = sum over batches of (X^T @ X)  for activations * trace(S_cov)
-        S_tcov = sum over batches of (G^T @ G)  for gradients * trace(A_cov)
-        trace= sum over batches of trace(X^T @ X) * trace(G^T @ G)
+    TKFAC approximates the Fisher ``F = E[a aᵀ ⊗ g gᵀ]`` by ``δ Φ ⊗ Ψ`` with,
+    over gradient-carrying positions t,
 
-    where X is input activations [N*S, I] and G is output gradients [N*S, O].
+        Φ = Σ_t a_t a_tᵀ |g_t|²,   Ψ = Σ_t g_t g_tᵀ |a_t|²,   δ = 1 / tr(F),
+
+    so that ``tr(δ Φ ⊗ Ψ) = tr(F)``, ``tr(F) = Σ_t |a_t|² |g_t|²``. The traces
+    weight each position by its own norms; a batch's traces would mix positions.
+
+    Teardown saves ``Φ / mean_t |g_t|²`` as the activation covariance and
+    ``Ψ · Σ_t |g_t|² / tr(F)`` as the gradient covariance, sums whose product
+    carries δ and which reduce to K-FAC's ``Σ a aᵀ`` and ``Σ g gᵀ`` when ``|a|``
+    and ``|g|`` are independent, so they are normalized like K-FAC's.
     """
 
     dtype: torch.dtype
@@ -32,8 +38,12 @@ class TraceCovarianceCollector(HookCollectorBase):
         """Initialize covariance storage dictionaries."""
         self.A_tcov_dict = {}
         self.S_tcov_dict = {}
-        self.trace_dict = {}
         self.shard_computer = ShardedMul()
+        # Per module: positions, Σ_t |g_t|² and tr(F) = Σ_t |a_t|² |g_t|².
+        self.stats = {
+            name: torch.zeros(3, device=self.shard_computer.device, dtype=torch.float64)
+            for name in self.target_info
+        }
         # Initialize sharded covariance matrices for ALL modules in target_info
         self.shard_computer._init_covariance_dict(
             activation_covariance_dict=self.A_tcov_dict,
@@ -72,16 +82,14 @@ class TraceCovarianceCollector(HookCollectorBase):
         a_bi = module._inputs.to(self.dtype)
         assert isinstance(a_bi, Tensor)
 
-        # Compute local covariances
-        local_update_oo = g_bo.mT @ g_bo
-        local_update_ii = a_bi.mT @ a_bi
-
-        # Compute traces
-        trace_oo = (local_update_oo.diagonal()).sum()
-        trace_ii = (local_update_ii.diagonal()).sum()
-
-        local_update_oo = local_update_oo * trace_ii
-        local_update_ii = local_update_ii * trace_oo
+        # Weight each position's outer products by the other factor's norm
+        a_sq = a_bi.pow(2).sum(dim=1)  # [num_valid]
+        g_sq = g_bo.pow(2).sum(dim=1)  # [num_valid]
+        local_update_oo = (g_bo * a_sq[:, None]).mT @ g_bo
+        local_update_ii = (a_bi * g_sq[:, None]).mT @ a_bi
+        self.stats[name] += torch.stack(
+            [a_sq.new_tensor(len(a_sq)), g_sq.sum(), (a_sq * g_sq).sum()]
+        ).to(self.stats[name])
 
         # All-reduce across ranks
         if dist.is_initialized():
@@ -118,6 +126,13 @@ class TraceCovarianceCollector(HookCollectorBase):
             f"Saving sharded covariance matrices to {activation_path} "
             f"and {gradient_path}"
         )
+        for name, stats in self.stats.items():
+            if dist.is_initialized():
+                dist.all_reduce(stats, op=dist.ReduceOp.SUM)
+            positions, g_sq, trace = stats.tolist()
+            if trace > 0:
+                self.A_tcov_dict[name].mul_(positions / g_sq)
+                self.S_tcov_dict[name].mul_(g_sq / trace)
         # Save sharded covariance matrices
         save_file(
             self.A_tcov_dict,
@@ -127,4 +142,3 @@ class TraceCovarianceCollector(HookCollectorBase):
             self.S_tcov_dict,
             os.path.join(gradient_path, f"shard_{self.rank}.safetensors"),
         )
-        # TODO: Multiply by trace and save trace_dict
