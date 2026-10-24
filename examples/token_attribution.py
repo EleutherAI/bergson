@@ -123,7 +123,6 @@ def main():
         writer=writer,
         device=torch.device("cuda"),
         dtype=torch.float32,
-        attribute_tokens=True,
     )
 
     # Step 3: Score training data per-token

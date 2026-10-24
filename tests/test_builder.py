@@ -7,6 +7,7 @@ import pytest
 import torch
 from datasets import Dataset
 
+from bergson.attribution_unit import AttributionUnit
 from bergson.builder import Builder
 from bergson.config import PreprocessConfig
 
@@ -278,7 +279,7 @@ def test_inmemory_token_noncontiguous_indices(small_dataset, grad_sizes):
         grad_sizes,
         torch.float32,
         cfg,
-        attribute_tokens=True,
+        unit=AttributionUnit("token"),
     )
 
     mod_grads = {name: torch.ones(8, dim) * 2.0 for name, dim in grad_sizes.items()}
@@ -326,7 +327,7 @@ def test_disk_token_writes_and_flushes(small_dataset, grad_sizes, tmp_path):
         grad_sizes,
         torch.float32,
         cfg,
-        attribute_tokens=True,
+        unit=AttributionUnit("token"),
         path=tmp_path,
     )
 

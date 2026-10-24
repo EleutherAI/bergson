@@ -16,6 +16,7 @@ from datasets import Dataset
 from safetensors.torch import load_file
 from transformers import AutoConfig, AutoModelForCausalLM
 
+from bergson.attribution_unit import AttributionUnit
 from bergson.collector.collector import CollectorComputer
 from bergson.config import HessianConfig, IndexConfig
 from bergson.gradients import GradientProcessor
@@ -116,8 +117,8 @@ class RawGramAutocorrelation(AutocorrelationCollector):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-@pytest.mark.parametrize("attribute_tokens", [False, True])
-def test_autocorrelation_normalized_by_row_count(tmp_path, attribute_tokens):
+@pytest.mark.parametrize("kind", ["document", "token"])
+def test_autocorrelation_normalized_by_row_count(tmp_path, kind):
     """The autocorrelation Gram is divided by the number of gradient rows it
     summed: documents for per-sequence gradients, gradient-carrying tokens
     for per-token gradients."""
@@ -125,7 +126,7 @@ def test_autocorrelation_normalized_by_row_count(tmp_path, attribute_tokens):
     data = Dataset.from_dict({"input_ids": INPUT_IDS, "labels": LABELS})
 
     expected_rows = (
-        sum(len(ids) - 1 for ids in INPUT_IDS) if attribute_tokens else len(INPUT_IDS)
+        sum(len(ids) - 1 for ids in INPUT_IDS) if kind == "token" else len(INPUT_IDS)
     )
 
     run_cfg = IndexConfig(run_path=str(tmp_path / "run"))
@@ -137,7 +138,7 @@ def test_autocorrelation_normalized_by_row_count(tmp_path, attribute_tokens):
         data=data,
         path=str(tmp_path / "processor"),
         processor=processor,
-        attribute_tokens=attribute_tokens,
+        unit=AttributionUnit(kind),
         target_modules={"layers.0.mlp.down_proj", "layers.1.self_attn.o_proj"},
     )
     computer = CollectorComputer(

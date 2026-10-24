@@ -27,40 +27,13 @@ from numpy.lib.recfunctions import structured_to_unstructured
 from numpy.typing import DTypeLike, NDArray
 from transformers import PreTrainedTokenizerFast, logging
 
+from .attribution_unit import AttributionUnit
 from .config.config import DataConfig, ScoreConfig
 from .config.config_io import CONFIG_FILENAME, load_subconfig, read_config
 from .utils.utils import (
     assert_type,
     simple_parse_kwargs_string,
 )
-
-
-def compute_num_token_grads(data: Dataset) -> np.ndarray:
-    """Number of per-token gradient rows stored per example.
-
-    Position ``t``'s row is ``g_t (x) a_t``. ``g_t`` is generally nonzero even
-    at prompt / masked positions, because the completion-token losses backprop
-    through them via causal attention -- masking is applied to the *loss*, not
-    to the gradient. Storing every position therefore makes the per-token rows
-    sum to the per-document gradient. Only the final position (which predicts
-    nothing after ``logits[:, :-1]``) and right-padding are excluded, so
-    ``num_token_grads = length - 1`` regardless of the label mask.
-
-    Documents shorter than 2 tokens contribute **zero** rows: they have no
-    valid next-token label, and :func:`_allocate_batches_world` drops them from
-    the forward pass. ``length - 1`` is clamped at 0 accordingly.
-
-    Returns
-    -------
-    np.ndarray of shape ``(len(data),)`` with dtype int64.
-    """
-    if "length" in data.column_names:
-        lengths = np.asarray(data["length"], dtype=np.int64)
-    elif "input_ids" in data.column_names:
-        lengths = np.asarray([len(x) for x in data["input_ids"]], dtype=np.int64)
-    else:
-        lengths = np.asarray([len(x) for x in data["labels"]], dtype=np.int64)
-    return np.maximum(lengths - 1, 0)
 
 
 def create_token_index(
@@ -116,7 +89,7 @@ def create_token_index(
         with (root / "info.json").open("w") as f:
             json.dump(
                 {
-                    "attribute_tokens": True,
+                    **AttributionUnit("token").to_info(),
                     "num_items": len(num_token_grads),
                     "num_grads": total_tokens,
                     "grad_sizes": grad_sizes,
@@ -424,7 +397,7 @@ def create_index(
         with (root / "info.json").open("w") as f:
             json.dump(
                 {
-                    "attribute_tokens": False,
+                    **AttributionUnit("document").to_info(),
                     "num_items": num_grads,
                     "num_grads": num_grads,
                     "grad_sizes": grad_sizes,
@@ -684,7 +657,8 @@ def load_scores(path: Path) -> Scores:
         mode="r",
         shape=(info["num_rows"],),
     )
-    offsets = np.load(path / "offsets.npy") if info.get("attribute_tokens") else None
+    ragged = AttributionUnit.from_info(info).ragged
+    offsets = np.load(path / "offsets.npy") if ragged else None
     candidates_path = path / "candidates.npy"
     candidates = np.load(candidates_path) if candidates_path.exists() else None
 
