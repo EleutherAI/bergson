@@ -5,8 +5,9 @@ import torch
 import torch.distributed as dist
 from datasets import Dataset
 
+from .attribution_unit import AttributionUnit
 from .config.config import PreprocessConfig
-from .data import compute_num_token_grads, create_index, create_token_index
+from .data import create_index, create_token_index
 from .hessians.preconditioner import Preconditioner, load_preconditioner
 from .process_grads import normalize_flat_grad
 from .utils.utils import convert_dtype_to_np, current_device, tensor_to_numpy
@@ -49,8 +50,8 @@ class Builder:
         Torch dtype for the gradients.
     preprocess_cfg : PreprocessConfig
         Preconditioning, normalization, and aggregation settings.
-    attribute_tokens : bool
-        Per-token gradients instead of per-example.
+    unit : AttributionUnit
+        What each gradient row attributes to.
     path : Path | None
         When given, write to a memory-mapped file on disk.
         When ``None``, store in a plain numpy array.
@@ -65,7 +66,7 @@ class Builder:
         dtype: torch.dtype,
         preprocess_cfg: PreprocessConfig,
         *,
-        attribute_tokens: bool = False,
+        unit: AttributionUnit = AttributionUnit("document"),
         path: Path | None = None,
     ):
         self.grad_sizes = grad_sizes
@@ -98,8 +99,8 @@ class Builder:
             self.in_memory_grad_buffer = None
 
         # ── Gradient buffer (disk or memory, sequence or token) ──────────
-        if attribute_tokens:
-            self.num_token_grads = compute_num_token_grads(data)
+        if unit.ragged:
+            self.num_token_grads = unit.row_counts(data)
             if path is not None:
                 self.grad_buffer, self.offsets = create_token_index(
                     path,

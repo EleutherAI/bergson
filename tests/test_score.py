@@ -10,6 +10,7 @@ from ml_dtypes import bfloat16
 from safetensors.torch import save_file
 from transformers import AutoConfig, AutoModelForCausalLM
 
+from bergson.attribution_unit import AttributionUnit, compute_num_token_grads
 from bergson.cli.commands import Build
 from bergson.collection import collect_gradients
 from bergson.collector.collector import CollectorComputer
@@ -24,7 +25,6 @@ from bergson.config import (
 from bergson.config.config_io import save_run_config
 from bergson.data import (
     column_offsets,
-    compute_num_token_grads,
     create_index,
     create_token_index,
     load_scores,
@@ -872,7 +872,7 @@ def test_score_nearest_token_writer(tmp_path: Path, dataset):
         preprocess_cfg=PreprocessConfig(),
         device=torch.device("cpu"),
         dtype=torch.float32,
-        attribute_tokens=True,
+        unit=AttributionUnit("token"),
     )
     assert scorer.writer.num_scores == 1
 

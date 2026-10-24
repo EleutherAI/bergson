@@ -9,6 +9,7 @@ from transformers import AutoConfig, AutoModelForCausalLM
 
 import bergson.collector.collector as collector_module
 from bergson import GradientProcessor, InMemoryCollector
+from bergson.attribution_unit import AttributionUnit
 from bergson.collector.collector import (
     CollectorComputer,
     HookCollectorBase,
@@ -102,7 +103,7 @@ def module_grads(request, tmp_path) -> dict[str, OuterProductGradients]:
     recorder = _Recorder(
         model=model.base_model,
         processor=processor,
-        attribute_tokens=attribute_tokens,
+        unit=AttributionUnit.from_cfg(cfg),
         attention_cfgs=ATTENTION_CFGS,
     )
     CollectorComputer(

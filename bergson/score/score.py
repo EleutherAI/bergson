@@ -9,6 +9,7 @@ import torch.distributed as dist
 from datasets import Dataset, Value
 from tqdm.auto import tqdm
 
+from bergson.attribution_unit import AttributionUnit
 from bergson.collection import collect_gradients
 from bergson.collector.gradient_collectors import GradientCollector
 from bergson.config.config import IndexConfig, PreprocessConfig, ScoreConfig
@@ -148,7 +149,7 @@ def create_scorer(
     device: torch.device,
     dtype: torch.dtype,
     *,
-    attribute_tokens: bool = False,
+    unit: AttributionUnit = AttributionUnit("document"),
     query_range: tuple[int, int] | None = None,
     num_queries_total: int | None = None,
 ) -> Scorer:
@@ -238,10 +239,10 @@ def create_scorer(
         num_scores = 1
     else:
         num_scores = num_queries_total if num_queries_total is not None else num_queries
-    if attribute_tokens:
-        writer = MemmapTokenScoreWriter.from_dataset(
+    if unit.ragged:
+        writer = MemmapTokenScoreWriter(
             path,
-            data,
+            unit.row_counts(data),
             num_scores,
             dtype=dtype,
         )
@@ -256,7 +257,6 @@ def create_scorer(
         dtype=dtype,
         unit_normalize=preprocess_cfg.unit_normalize,
         score_mode=score_cfg.score,
-        attribute_tokens=attribute_tokens,
         index_transform=index_transform,
         query_offset=query_range[0] if query_range is not None else 0,
     )
@@ -359,7 +359,7 @@ def score_worker(
             preprocess_cfg,
             device=score_device,
             dtype=score_dtype,
-            attribute_tokens=index_cfg.attribute_tokens,
+            unit=AttributionUnit.from_cfg(index_cfg),
             query_range=query_range,
             num_queries_total=num_queries,
         )
@@ -395,6 +395,7 @@ def output_influence_worker(
             world_size=world_size,
         )
 
+    unit = AttributionUnit.from_cfg(index_cfg)
     # The fused attention kernels don't implement forward-mode derivatives.
     model, target_modules = setup_model_and_peft(index_cfg, attn_implementation="eager")
     # Dropout would give each query column its own random model.
@@ -414,7 +415,7 @@ def output_influence_worker(
             if score_cfg.precision != "auto"
             else get_gradient_dtype(model)
         ),
-        attribute_tokens=index_cfg.attribute_tokens,
+        unit=unit,
     )
     directions = query_directions(
         model,
@@ -445,7 +446,7 @@ def output_influence_worker(
             model, x, y, directions, index_cfg, batch.get("advantage")
         )
         per_doc_losses[indices] = losses
-        if index_cfg.attribute_tokens:
+        if unit.kind == "token":
             # Row t of the token store is the loss on token t + 1.
             rates = torch.cat([rates, rates.new_zeros(rates[:, :1].shape)], dim=1)
             rates = rates[collection_mask]

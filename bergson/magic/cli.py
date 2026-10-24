@@ -28,11 +28,11 @@ from transformers.utils.logging import (
     set_verbosity_error as hf_set_verbosity_error,
 )
 
+from ..attribution_unit import AttributionUnit, compute_num_token_grads
 from ..config.config import TrainingConfig, ValidationConfig
 from ..config.config_io import save_run_config
 from ..config.validation import LDSConfig
 from ..data import (
-    compute_num_token_grads,
     load_scores_loss_signed,
     sorted_checkpoints,
 )
@@ -325,7 +325,7 @@ def scores_are_per_token(score_path: str) -> bool:
     if not os.path.isfile(info_path):
         return False
     with open(info_path) as f:
-        return bool(json.load(f).get("attribute_tokens", False))
+        return AttributionUnit.from_info(json.load(f)).ragged
 
 
 def attach_doc_ids_if_missing(dataset: Dataset) -> Dataset:

@@ -8,6 +8,7 @@ from datasets import Dataset, Value
 from jaxtyping import Float
 from torch import Tensor
 
+from bergson.attribution_unit import AttributionUnit
 from bergson.collector.collector import HookCollectorBase
 from bergson.config import IndexConfig
 from bergson.process_autocorrelation import process_autocorrelation_matrices
@@ -48,7 +49,7 @@ class GradientCollectorWithDistributedAutocorrelationMatrices(HookCollectorBase)
         assert isinstance(
             self.model.device, torch.device
         ), "Model device is not set correctly"
-        self.attribute_tokens = self.cfg.attribute_tokens
+        self.unit = AttributionUnit.from_cfg(self.cfg)
         self.owned_modules: set[str] = set()
         self.module_to_rank: dict[str, int] = {}
 

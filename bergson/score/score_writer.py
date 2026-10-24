@@ -9,7 +9,7 @@ import torch
 import torch.distributed as dist
 from datasets import Dataset
 
-from bergson.data import compute_num_token_grads
+from bergson.attribution_unit import AttributionUnit, compute_num_token_grads
 from bergson.utils.utils import convert_dtype_to_np, numpy_to_tensor, tensor_to_numpy
 
 
@@ -196,7 +196,7 @@ class MemmapTokenScoreWriter(ScoreWriter):
             with (path / "info.json").open("w") as f:
                 json.dump(
                     {
-                        "attribute_tokens": True,
+                        **AttributionUnit("token").to_info(),
                         "num_items": num_items,
                         "num_rows": total_tokens,
                         "num_scores": num_scores,
@@ -331,7 +331,7 @@ class MemmapSequenceScoreWriter(ScoreWriter):
             with (path / "info.json").open("w") as f:
                 json.dump(
                     {
-                        "attribute_tokens": False,
+                        **AttributionUnit("document").to_info(),
                         "num_items": num_items,
                         "num_rows": num_items,
                         "num_scores": num_scores,
