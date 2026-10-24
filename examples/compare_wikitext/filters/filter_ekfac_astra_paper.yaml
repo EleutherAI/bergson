@@ -1,4 +1,4 @@
-# Proponent-filter for EK-FAC + ASTRA (paper scaling). Uses the random retrain bank
+# Proponent-filter for EK-FAC + ASTRA (paper replication settings). Uses the random retrain bank
 # computed with `examples/compare_wikitext/1_magic.yaml`.
 
 # Run with `bergson examples/compare_wikitext/filters/filter_ekfac_astra_paper.yaml`
