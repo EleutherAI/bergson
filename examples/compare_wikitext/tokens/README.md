@@ -3,7 +3,7 @@ Per-token attribution on the WikiText leaderboard model (the `1_magic.yaml` run 
 | method | proponent QLD | 95% CI | median | min | max | random 1% | queries above random |
 |---|---|---|---|---|---|---|---|
 | MAGIC | 1.375 | [1.348, 1.403] | 1.368 | 1.175 | 1.592 | 0.0004 | 50/50 |
-| EK-FAC + ASTRA | 1.082 | [1.047, 1.116] | 1.082 | 0.818 | 1.369 | 0.0007 | 50/50 |
+| EK-FAC + ASTRA (inconsistent scaling) | 1.082 | [1.047, 1.116] | 1.082 | 0.818 | 1.369 | 0.0007 | 50/50 |
 | EK-FAC + CG | 1.014 | [0.986, 1.043] | 1.010 | 0.821 | 1.252 | 0.0007 | 50/50 |
 | Eigenvalue-corrected Shampoo | 0.922 | [0.887, 0.957] | 0.922 | 0.671 | 1.270 | 0.0011 | 50/50 |
 | SOURCE (Adam, EK-FAC) | 0.908 | [0.877, 0.942] | 0.903 | 0.686 | 1.266 | 0.0004 | 50/50 |

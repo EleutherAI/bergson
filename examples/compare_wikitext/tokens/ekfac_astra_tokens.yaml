@@ -1,4 +1,4 @@
-# Per-token EK-FAC + ASTRA: the ASTRA-refined queries of ekfac_astra.yaml, scored token by token.
+# Per-token EK-FAC + ASTRA (inconsistent scaling): the ASTRA-refined queries of ekfac_astra.yaml, scored token by token.
 # Row t of a chunk scores the loss on token t + 1 (token_influence: output).
 # Run with `bergson examples/compare_wikitext/tokens/ekfac_astra_tokens.yaml`
 
