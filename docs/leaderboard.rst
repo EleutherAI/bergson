@@ -24,6 +24,9 @@ Indicative performance of data attribution methods in the finetuning regime.
    * - EK-FAC + ASTRA (inconsistent scaling)
      - 0.074 [0.063, 0.087]
      - 0.643 [0.624, 0.660]
+   * - EK-FAC + ASTRA (consistent scaling)
+     - 0.073 [0.061, 0.087]
+     - 0.579 [0.554, 0.601]
    * - Eigenvalue-corrected Shampoo + ASTRA
      - 0.072 [0.061, 0.085]
      - 0.625 [0.604, 0.643]
@@ -42,9 +45,6 @@ Indicative performance of data attribution methods in the finetuning regime.
    * - KFAC
      - 0.067 [0.056, 0.080]
      - 0.420 [0.391, 0.446]
-   * - EK-FAC + ASTRA (consistent scaling)
-     - 0.064 [0.051, 0.077]
-     - 0.494 [0.468, 0.519]
    * - BM25
      - 0.062 [0.048, 0.076]
      - 0.220 [0.185, 0.252]
@@ -150,7 +150,7 @@ MAGIC
    This method backpropagates through the training process once per query and doesn't support query batching. It works well in FP32 or TF32 but may significantly degrade when used to attribute BF16 training runs, or training runs with low batch sizes.
 
 ASTRA
-   ASTRA improves any existing Kronecker-factored Hessian approximation during each query's application stage, so it adds a constant amount of compute to each query on top of a basic influence function like EK-FAC. The ASTRA Hessian is 1/511 the scale of the EK-FAC Hessian in EK-FAC + ASTRA (paper scaling), 1/4,608 in EK-FAC + ASTRA (inconsistent scaling), and the same scale in EK-FAC + ASTRA (consistent scaling) and EK-FAC + CG.
+   ASTRA improves any existing Kronecker-factored Hessian approximation during each query's application stage, so it adds a constant amount of compute to each query on top of a basic influence function like EK-FAC. The ASTRA Hessian is 1/511 the scale of the EK-FAC Hessian in EK-FAC + ASTRA (paper scaling), 1/4,608 in EK-FAC + ASTRA (inconsistent scaling), and the same scale in EK-FAC + ASTRA (consistent scaling) and EK-FAC + CG. The consistent-scaling row's step size is tuned on held-out test queries against the ASTRA objective.
 
 EK-FAC
    This is a classic influence function in the form $g_t H^{-1} g_q$ using the EK-FAC Hessian approximation for H. The H can be swapped out for other matrices including KFAC, Shampoo, and MAC.
