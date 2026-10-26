@@ -28,7 +28,9 @@ class TestGradientCollectorCallback:
     @pytest.fixture
     def model(self):
         """Create a small test model."""
-        config = AutoConfig.from_pretrained("trl-internal-testing/tiny-Phi3ForCausalLM-3")
+        config = AutoConfig.from_pretrained(
+            "trl-internal-testing/tiny-Phi3ForCausalLM-3"
+        )
         return AutoModelForCausalLM.from_config(config, torch_dtype=torch.float32)
 
     @pytest.fixture
