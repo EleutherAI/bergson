@@ -18,19 +18,16 @@ Indicative performance of data attribution methods in the finetuning regime.
    * - MAGIC (cross-seed)
      - 0.098 [0.087, 0.110]
      - 0.829 [0.815, 0.840]
-   * - EK-FAC + CG
+   * - EKFAC + CG
      - 0.077 [0.066, 0.089]
      - 0.685 [0.664, 0.702]
-   * - EK-FAC + ASTRA (inconsistent scaling)
-     - 0.074 [0.063, 0.087]
-     - 0.643 [0.624, 0.660]
-   * - EK-FAC + ASTRA (consistent scaling)
+   * - EKFAC + ASTRA (consistent scaling)
      - 0.073 [0.061, 0.087]
      - 0.579 [0.554, 0.601]
    * - Eigenvalue-corrected Shampoo + ASTRA
      - 0.072 [0.061, 0.085]
      - 0.625 [0.604, 0.643]
-   * - EK-FAC + ASTRA (paper scaling)
+   * - EKFAC + ASTRA (paper scaling)
      - 0.071 [0.060, 0.084]
      - 0.629 [0.607, 0.647]
    * - Eigenvalue-corrected Shampoo
@@ -39,7 +36,7 @@ Indicative performance of data attribution methods in the finetuning regime.
    * - SOURCE (Adam)
      - 0.071 [0.060, 0.084]
      - 0.473 [0.446, 0.498]
-   * - EK-FAC
+   * - EKFAC
      - 0.070 [0.058, 0.082]
      - 0.454 [0.426, 0.479]
    * - KFAC
@@ -112,15 +109,13 @@ Per-token attribution scores, which attribute each training token's loss term, e
      - Proponent QLD [95% CI]
    * - MAGIC
      - 1.375 [1.348, 1.403]
-   * - EK-FAC + ASTRA (inconsistent scaling)
-     - 1.082 [1.047, 1.116]
-   * - EK-FAC + CG
+   * - EKFAC + CG
      - 1.014 [0.986, 1.043]
    * - Eigenvalue-corrected Shampoo
      - 0.922 [0.887, 0.957]
-   * - SOURCE (Adam, EK-FAC)
+   * - SOURCE (Adam, EKFAC)
      - 0.908 [0.877, 0.942]
-   * - EK-FAC
+   * - EKFAC
      - 0.863 [0.833, 0.894]
    * - KFAC
      - 0.786 [0.758, 0.815]
@@ -150,16 +145,16 @@ MAGIC
    This method backpropagates through the training process once per query and doesn't support query batching. It works well in FP32 or TF32 but may significantly degrade when used to attribute BF16 training runs, or training runs with low batch sizes.
 
 ASTRA
-   ASTRA improves any existing Kronecker-factored Hessian approximation during each query's application stage, so it adds a constant amount of compute to each query on top of a basic influence function like EK-FAC. The ASTRA Hessian is 1/511 the scale of the EK-FAC Hessian in EK-FAC + ASTRA (paper scaling), 1/4,608 in EK-FAC + ASTRA (inconsistent scaling), and the same scale in EK-FAC + ASTRA (consistent scaling) and EK-FAC + CG. The consistent-scaling row's step size is tuned on held-out test queries against the ASTRA objective.
+   ASTRA improves any existing Kronecker-factored Hessian approximation during each query's application stage, so it adds a constant amount of compute to each query on top of a basic influence function like EKFAC. The ASTRA Hessian is 1/511 the scale of the EKFAC Hessian in EKFAC + ASTRA (paper scaling) and the same scale in EKFAC + ASTRA (consistent scaling) and EKFAC + CG. The consistent-scaling row's step size is tuned on held-out test queries against the ASTRA objective.
 
-EK-FAC
-   This is a classic influence function in the form $g_t H^{-1} g_q$ using the EK-FAC Hessian approximation for H. The H can be swapped out for other matrices including KFAC, Shampoo, and MAC.
+EKFAC
+   This is a classic influence function in the form $g_t H^{-1} g_q$ using the EKFAC Hessian approximation for H. The H can be swapped out for other matrices including KFAC, Shampoo, and MAC.
 
 KFAC
    KFAC supports gradient compression with ``projection_dim``. This produces a highly efficient variant based on a reusable gradient store, suitable for the retrieval stage of a data attribution pipeline, at the cost of some LDS/QLD.
 
 Eigenvalue-corrected Shampoo
-   This is a custom influence function in the form $g_t H^{-1} g_q$ using the Shampoo preconditioner as the H. Its mathematical relationship with the true Hessian is somewhere between "null" and "extremely tenuous", but it performs well anyway. It uses an eigenvalue-correction similar to EK-FAC's, and to the variant used in SOAP optimization.
+   This is a custom influence function in the form $g_t H^{-1} g_q$ using the Shampoo preconditioner as the H. Its mathematical relationship with the true Hessian is somewhere between "null" and "extremely tenuous", but it performs well anyway. It uses an eigenvalue-correction similar to EKFAC's, and to the variant used in SOAP optimization.
 
 SOURCE
    SOURCE uses a weighted combination of Hessian approximations fit on different segments of the training trajectory, so it may perform relatively better in longer or multi-phase training runs.

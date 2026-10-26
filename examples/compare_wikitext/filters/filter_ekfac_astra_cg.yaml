@@ -1,4 +1,4 @@
-# Proponent-filter for EK-FAC + CG. Uses the random retrain bank
+# Proponent-filter for EKFAC + CG. Uses the random retrain bank
 # computed with `examples/compare_wikitext/1_magic.yaml`.
 
 # Run with `bergson examples/compare_wikitext/filters/filter_ekfac_astra_cg.yaml`
