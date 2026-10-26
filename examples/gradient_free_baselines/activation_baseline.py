@@ -6,6 +6,10 @@ methods attribute through: all Conv1D/Linear except ``lm_head``). Each
 per-module pooled vector is L2-normalized, then concatenated, so cosine
 similarity between two docs equals the average per-module cosine similarity.
 
+``--hessian`` whitens each pooled vector by ``(A + damping * mean(eig A) I)^-1/2``,
+with ``A`` its module's EK-FAC activation factor; ``--projection_dim`` then
+applies bergson's per-module right-side projection.
+
 A training doc that is activation-similar to a query is predicted to be
 influential (removing it should raise query loss), so the loss-diff-convention
 score is ``-cosine`` -- larger => larger predicted loss reduction from keeping
@@ -21,8 +25,12 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from safetensors.torch import load_file
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers.pytorch_utils import Conv1D
+
+from bergson.collector.collector import create_module_projection_matrix
+from bergson.gradients import LayerAdapter
 
 from . import common
 
@@ -38,6 +46,59 @@ def target_module_names(model: torch.nn.Module) -> list[str]:
     return names
 
 
+def load_factor(hessian: Path, name: str) -> list[dict[str, torch.Tensor]]:
+    """Shards of one EK-FAC factor, in rank order."""
+    paths = sorted(
+        (hessian / name).glob("shard_*.safetensors"),
+        key=lambda p: int(p.stem.split("_")[1]),
+    )
+    return [load_file(p) for p in paths]
+
+
+def module_transforms(
+    model: torch.nn.Module,
+    module_names: list[str],
+    hessian: Path | None,
+    damping: float,
+    projection_dim: int,
+    device: str,
+) -> dict[str, torch.Tensor]:
+    """Per-module matrix applied to the pooled activations."""
+    modules = dict(model.named_modules())
+    prefix = f"{model.base_model_prefix}."
+    if hessian is not None:
+        vec_shards = load_factor(hessian, "eigen_activation_sharded")
+        eig_vals = load_factor(hessian, "factor_eig_a")[0]
+
+    out = {}
+    for mn in module_names:
+        # Factor keys and projection matrices are named relative to the base model.
+        key = mn.removeprefix(prefix)
+        transform = None
+        if hessian is not None:
+            q = torch.cat([s[key] for s in vec_shards]).to(device).float()
+            lam = eig_vals[key].to(device).float().clamp_min(0)
+            transform = (q * (lam + damping * lam.mean()).rsqrt()) @ q.T
+        if projection_dim:
+            module = modules[mn]
+            i = getattr(module, LayerAdapter.in_attr(module))
+            proj = create_module_projection_matrix(
+                key,
+                "right",
+                projection_dim,
+                i,
+                torch.float32,
+                torch.device(device),
+                "rademacher",
+                "jl",
+                None,
+            )
+            transform = proj if transform is None else proj @ transform
+        if transform is not None:
+            out[mn] = transform
+    return out
+
+
 @torch.no_grad()
 def embed(
     texts: list[str],
@@ -47,6 +108,7 @@ def embed(
     device: str,
     max_len: int,
     batch_size: int,
+    transforms: dict[str, torch.Tensor] | None = None,
 ) -> np.ndarray:
     """Per-module-normalized, concatenated mean-pooled activation embeddings."""
     modules = dict(model.named_modules())
@@ -79,6 +141,8 @@ def embed(
             for mn in module_names:
                 act = captured[mn].float()  # [B, T, d]
                 pooled = (act * mask).sum(dim=1) / denom  # [B, d]
+                if transforms and mn in transforms:
+                    pooled = pooled @ transforms[mn].T
                 pooled = torch.nn.functional.normalize(pooled, dim=-1)
                 per_module.append(pooled)
             emb = torch.cat(per_module, dim=-1)  # [B, sum_d]
@@ -104,6 +168,13 @@ def main():
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--max_len", type=int, default=1024)
     ap.add_argument("--batch_size", type=int, default=32)
+    ap.add_argument(
+        "--hessian",
+        default=None,
+        help="EK-FAC hessian dir whose activation factors whiten each module",
+    )
+    ap.add_argument("--damping", type=float, default=0.1)
+    ap.add_argument("--projection_dim", type=int, default=0)
     args = ap.parse_args()
 
     bank = common.ensure_bank(args.bank)
@@ -120,6 +191,15 @@ def main():
 
     module_names = target_module_names(model)
     print(f"Embedding over {len(module_names)} modules, e.g. {module_names[:3]} ...")
+    hessian = Path(args.hessian) if args.hessian else None
+    transforms = module_transforms(
+        model, module_names, hessian, args.damping, args.projection_dim, args.device
+    )
+    name = "activation"
+    if hessian is not None:
+        name += "_ekfac"
+    if args.projection_dim:
+        name += f"_p{args.projection_dim}"
 
     train_texts, query_texts = common.load_texts(spec, query_dataset, args.query_split)
     print(f"Embedding {len(train_texts)} train docs ...")
@@ -131,6 +211,7 @@ def main():
         args.device,
         args.max_len,
         args.batch_size,
+        transforms,
     )
     print(f"Embedding {len(query_texts)} query docs ...")
     query_emb = embed(
@@ -141,6 +222,7 @@ def main():
         args.device,
         args.max_len,
         args.batch_size,
+        transforms,
     )
 
     # Cosine similarity (rows already unit-norm per module; renormalize the
@@ -150,17 +232,17 @@ def main():
     cosine = tn @ qn.T  # [num_train, num_query]
 
     scores = -cosine  # loss-diff convention (similar => influential)
-    score_path = common.save_scores(scores, out_dir, "activation_scores")
+    score_path = common.save_scores(scores, out_dir, f"{name}_scores")
 
     rhos = common.evaluate_lds(
         bank,
         score_path,
-        out_dir / "activation_validate",
+        out_dir / f"{name}_validate",
         spec,
         query_dataset,
         args.query_split,
     )
-    common.report("activation similarity", rhos)
+    common.report(name, rhos)
 
 
 if __name__ == "__main__":

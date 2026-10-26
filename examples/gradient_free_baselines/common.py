@@ -21,7 +21,7 @@ import numpy as np
 import yaml
 from transformers import AutoTokenizer
 
-from bergson.config.config import DataConfig
+from bergson.config.config import QuerySetConfig
 from bergson.data import load_data_string
 from bergson.magic.config import MagicConfig
 from bergson.score.score_writer import save_sequence_scores
@@ -152,7 +152,7 @@ def evaluate_lds(
         model=spec.model,
         precision="fp32",
         batch_size=spec.batch_size,
-        query=DataConfig(
+        query=QuerySetConfig(
             dataset=query_dataset,
             split=query_split,
             prompt_column=spec.prompt_column,
