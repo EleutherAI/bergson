@@ -1,6 +1,6 @@
 # SOURCE (approximate unrolling) pipeline. Precomputes KFAC factors at three checkpoints.
 #
-# Run with `bergson examples/pipelines/approx_unrolling_pythia.yaml`
+# Run with `bergson examples/tiny_method_demonstrations/approx_unrolling_pythia.yaml`
 
 steps:
   - approxunrolling:

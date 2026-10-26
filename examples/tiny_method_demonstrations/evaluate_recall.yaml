@@ -13,7 +13,7 @@
 #      or data/finetune.py) and point `model:` below at the result. With an
 #      untrained base model the metrics are only a sanity floor.
 
-# Run with `bergson examples/pipelines/recall_synthetic.yaml`
+# Run with `bergson examples/tiny_method_demonstrations/evaluate_recall.yaml`
 
 # Outputs: runs/recall_synthetic/questions (query gradient index),
 # runs/recall_synthetic/scores/scores.bin (statements x questions score

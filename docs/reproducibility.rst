@@ -7,7 +7,7 @@ Every run writes a self-describing ``config.yaml`` into its output directory, en
 
    bergson <path_to_config.yaml>
 
-Each config contains ``steps:`` a list of ``- command: {...}`` entries plus a ``metadata:`` block (bergson version, timestamp, git SHA). Multi-step pipelines may optionally specify a ``run_path``. See ``examples/pipelines/hessian_then_build.yaml`` for an example of a multi-step run.
+Each config contains ``steps:`` a list of ``- command: {...}`` entries plus a ``metadata:`` block (bergson version, timestamp, git SHA). Multi-step pipelines may optionally specify a ``run_path``. See ``examples/tiny_method_demonstrations/trackstar_wmdp_steps.yaml`` for an example of a multi-step run.
 
 Note that replaying a config whose ``run_path`` already exists raises a ``FileExistsError``. Set ``overwrite: true`` or change the ``run_path`` if you are in the original working directory.
 

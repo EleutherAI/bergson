@@ -1,6 +1,6 @@
 # Step-by-step TrackStar example.
 
-# Run with `bergson examples/pipelines/trackstar_wmdp_steps.yaml`
+# Run with `bergson examples/tiny_method_demonstrations/trackstar_wmdp_steps.yaml`
 
 run_path: runs/trackstar_wmdp_pieces
 steps:

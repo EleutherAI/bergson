@@ -53,7 +53,7 @@ Reranking candidates
 
 The candidates are the union over the earlier run's query columns of each column's ``top_k`` rows (or ``fraction``) at the ``direction`` end. ``scores`` may also be the CSV written by ``bergson query --record``, whose ``Top`` (or ``Bottom``) rows per query are the candidates, the first ``top_k`` of each when set. The Hessian is still fitted on the whole training set. The store has one row per candidate in training order; ``candidates.npy`` beside it holds their training rows, which ``load_scores`` returns as ``candidates``.
 
-See ``examples/pipelines/trackstar_then_shampoo.yaml``.
+See ``examples/pretraining_scale_attribution/query_and_rerank.yaml``.
 
 Output token influence
 ----------------------

@@ -1,18 +1,18 @@
-# Build a compressed TrackStar index of the training set: an autocorrelation
-# Hessian of the projected training gradients, then a 16-dimensional random
-# projection of every training example's gradient. Query it any number of
-# times with query_and_rerank.yaml.
-#
+# Build everything the training set contributes to two-stage retrieval:
+# an autocorrelation Hessian of the projected training gradients, a compressed
+# TrackStar index, and the EK-FAC factors used in the rerank step.
+# Query them any number of times with query_and_rerank.yaml.
+
 # Run with `bergson examples/pretraining_scale_attribution/build.yaml`
-#
-# Outputs: runs/pretraining_scale_attribution/hessian and
-# runs/pretraining_scale_attribution/index.
+
+# Outputs under runs/pretraining_scale_attribution: hessian/autocorrelation,
+# hessian/kfac and index.
 
 run_path: runs/pretraining_scale_attribution/build
 steps:
   - hessian:
       index_cfg:
-        run_path: runs/pretraining_scale_attribution/hessian
+        run_path: runs/pretraining_scale_attribution/hessian/autocorrelation
         model: EleutherAI/pythia-14m
         overwrite: true
         token_batch_size: 1024
@@ -36,3 +36,19 @@ steps:
           split: train[:2000]
           truncation: true
       preprocess_cfg: {}
+
+  # The ekfac step of query_and_rerank.yaml reads its factors from
+  # {run_path}/hessian/kfac, so this path is fixed by its run_path.
+  - hessian:
+      index_cfg:
+        run_path: runs/pretraining_scale_attribution/hessian/kfac
+        model: EleutherAI/pythia-14m
+        overwrite: true
+        token_batch_size: 1024
+        data:
+          dataset: NeelNanda/pile-10k
+          split: train[:2000]
+          truncation: true
+      hessian_cfg:
+        method: kfac
+        ev_correction: true

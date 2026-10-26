@@ -6,7 +6,7 @@
 # The model is a 2-layer, 4-expert, top-2 gpt-oss with random weights, so the
 # scores are noise. The same pattern applies to openai/gpt-oss-20b.
 #
-# Run with `bergson examples/moe_experts.yaml`
+# Run with `bergson examples/tiny_method_demonstrations/moe_experts.yaml`
 #
 # Confirm the experts are tracked. Each gate_up_proj is [2*32, 8] = 512 and each
 # down_proj [8, 32] = 256, which covers every weight in the fused parameters:
@@ -42,7 +42,7 @@ steps:
       preprocess_cfg: {}
 
   # Step 2/2: score the same dataset against that index, so entry (i, j) is
-  # the gradient inner product <g_i, g_j>. See examples/self_influence.yaml.
+  # the gradient inner product <g_i, g_j>. See examples/tiny_method_demonstrations/self_influence.yaml.
   - score:
       score_cfg:
         query_path: runs/moe_experts/index

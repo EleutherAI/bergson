@@ -145,7 +145,7 @@ Method Pipelines
        --hessian_cfg.ev_correction true
 
 See ``examples/gpt2_wikitext_leaderboard/ekfac.yaml`` for a complete pipeline
-configuration, and ``examples/pipelines/trackstar_then_shampoo.yaml`` for a
+configuration, and ``examples/pretraining_scale_attribution/query_and_rerank.yaml`` for a
 two-step pipeline with efficient retrieval followed by precise reranking of top
 candidates.
 
@@ -169,7 +169,7 @@ candidates.
        --query.dataset NeelNanda/pile-10k \
        --query.split "train[:8]"
 
-See ``examples/pipelines/approx_unrolling_pythia.yaml`` for a complete pipeline
+See ``examples/tiny_method_demonstrations/approx_unrolling_pythia.yaml`` for a complete pipeline
 configuration.
 
 .. autoclass:: bergson.__main__.Magic
@@ -187,7 +187,7 @@ configuration.
        --query.dataset NeelNanda/pile-10k \
        --query.split "train[:8]"
 
-See ``examples/magic_gpt2_wikitext_tiny.yaml`` for a complete run
+See ``examples/tiny_method_demonstrations/magic_gpt2_wikitext_tiny.yaml`` for a complete run
 configuration.
 
 Training & Evaluation
@@ -252,7 +252,7 @@ trained on generated fact *statements* and queried with the matching
 and Recall@k against the gold (entailing) statements. Datasets are generated
 once per ``(num_people, seed)`` and cached (e.g.
 ``data/statements_1000p_seed0.hf``). See
-``examples/pipelines/recall_synthetic.yaml`` for the full pipeline.
+``examples/tiny_method_demonstrations/evaluate_recall.yaml`` for the full pipeline.
 
 **Example:**
 

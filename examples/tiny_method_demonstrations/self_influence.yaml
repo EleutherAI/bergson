@@ -9,7 +9,7 @@
 
 # No hessian is used, so this is a plain inner product.
 
-# Run with `bergson examples/self_influence.yaml`
+# Run with `bergson examples/tiny_method_demonstrations/self_influence.yaml`
 
 # Outputs runs/self_influence/index (the gradient index, reused as the query
 # set) and runs/self_influence/scores, a [4608, 4608] score matrix. Read it

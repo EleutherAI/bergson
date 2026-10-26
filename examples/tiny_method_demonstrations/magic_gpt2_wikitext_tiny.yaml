@@ -1,6 +1,6 @@
 # Single-step MAGIC attribution example (tiny GPT-2 / WikiText-2).
 
-# Run with `bergson examples/magic_gpt2_wikitext_tiny.yaml`
+# Run with `bergson examples/tiny_method_demonstrations/magic_gpt2_wikitext_tiny.yaml`
 
 steps:
   - magic:

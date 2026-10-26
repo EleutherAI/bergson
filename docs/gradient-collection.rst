@@ -145,7 +145,7 @@ Gradients for fused MoE modules, which do not use ``nn.Linear``, can be collecte
    bergson build <output_path> --model openai/gpt-oss-20b --dataset <dataset_name> \
        --moe_experts "model.layers.*.mlp.experts"
 
-The value is a comma-separated list of globs over ``model.named_modules()``. Collection runs on the base model, so the index names the new modules ``layers.0.mlp.experts.expert_3.gate_up_proj``, which ``filter_modules`` globs match like any other. See ``examples/moe_experts.yaml``.
+The value is a comma-separated list of globs over ``model.named_modules()``. Collection runs on the base model, so the index names the new modules ``layers.0.mlp.experts.expert_3.gate_up_proj``, which ``filter_modules`` globs match like any other. See ``examples/tiny_method_demonstrations/moe_experts.yaml``.
 
 When collecting MoE gradients a grouped-matmul kernel is disabled, reducing performance somewhat.
 

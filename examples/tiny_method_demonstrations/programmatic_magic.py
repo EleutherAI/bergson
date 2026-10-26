@@ -5,7 +5,7 @@ Trains from a random init checkpoint (Pythia step0), attributes eval loss
 to training examples, and validates via leave-subset-out retraining.
 
 Usage:
-    python examples/double_backward_pretrain.py runs/magic_pretrain
+    python examples/tiny_method_demonstrations/programmatic_magic.py runs/magic_pretrain
 
     # Or via the CLI:
     bergson magic runs/magic_pretrain \
