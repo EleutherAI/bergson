@@ -1,6 +1,15 @@
 # CHANGELOG
 
 
+## v2.5.0 (2026-10-26)
+
+### Features
+
+- Add LiSSA influence (Bae et al. 2022) to the leaderboard
+  ([#568](https://github.com/EleutherAI/bergson/pull/568),
+  [`245787f`](https://github.com/EleutherAI/bergson/commit/245787f7d5ea31e48c97e083ea358a517517e87e))
+
+
 ## v2.4.2 (2026-10-26)
 
 ### Performance Improvements
