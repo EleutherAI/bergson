@@ -7,7 +7,7 @@ Neural networks do not have invertible Hessians, but it `has been shown <https:/
 
 Work on the theory of influence functions continues, for example `Mlodozeniec et al. <https://proceedings.neurips.cc/paper_files/paper/2025/file/0e8909cae8248c98279f6cd82074aa6d-Paper-Conference.pdf>`_. But for now, I think applied researchers could do worse than viewing influence functions as simply computing a similarity metric with an empirically useful definition of similarity. Theory that aligns more closely with this view tends to use terms like `kernels, metric matrices <https://proceedings.neurips.cc/paper_files/paper/1998/file/db1915052d15f7815c8b88e879465a1e-Paper.pdf>`_, or `preconditioners <https://docs.modula.systems/algorithms/manifold/>`_.
 
-We offer several such matrices, which we refer to as either Hessians or preconditioners, and expose other hyperparameters such as the inversion damping factor that affect some results. We also provide gradient unit normalization, which can be interpreted as inducing the normalized linear kernel.
+We offer several such matrices, which we refer to as either Hessians or preconditioners, and expose other hyperparameters such as the inversion damping factor that affect results in tiny models. We also provide gradient unit normalization, which can be interpreted as inducing the normalized linear kernel.
 
 Preconditioners
 ---------------
@@ -30,16 +30,6 @@ Preconditioners
      - ``bergson hessian <run_path> --method shampoo``
    * - Optimizer state (Adam / Adafactor)
      - ``--optimizer_state <path>`` on ``build`` / ``score``
-
-ASTRA
------
-
-`ASTRA <https://arxiv.org/abs/2507.14740>`_ refines a Kronecker-factored approximate Hessian :math:`(H + D)^{-1} g_q` with momentum SGD on :math:`\tfrac12 x^\top (H + D) x - x^\top g_q`, preconditioned by the damped Kronecker-factored inverse, where :math:`H` is the Gauss-Newton Hessian estimated on a random batch of training documents per step. Enable it on ``ekfac`` with ``hessian_pipeline_cfg.astra.num_steps``; each step costs about five forward passes over the batch, per query. ``astra.solver: cg`` is a novel variant that anecdotally seems to work better, that refines with preconditioned conjugate gradients on one batch of ``batch_size`` documents. See ``examples/replicate_bae_approx_unrolling_source/wikitext_gpt2_astra.yaml`` and ``examples/compare_wikitext/ekfac_astra_cg.yaml``.
-
-LiSSA
------
-
-``bergson lissa`` estimates each query's :math:`(G + \lambda I)^{-1} g_q`, where :math:`G` is the Gauss-Newton Hessian of the training loss, with `LiSSA <https://arxiv.org/abs/1602.03943>`_'s truncated series :math:`\sigma^{-1} \sum_t (I - (G + \lambda I) / \sigma)^t g_q`, each term estimating :math:`G` on a random batch of training documents, averaged over repeats. This is the influence estimator of `Bae et al. <https://arxiv.org/abs/2209.05364>`_. The series converges when the scale :math:`\sigma` exceeds half the largest eigenvalue of :math:`G + \lambda I`; each term costs about five forward passes over the batch, per query. See ``examples/compare_wikitext/lissa.yaml``.
 
 Reranking candidates
 --------------------
@@ -92,3 +82,13 @@ Compressing the gradients
          hessian_cfg: {method: kfac}
 
 The factored preconditioners apply :math:`H^{-1}` to the unprojected query and down-project the result to match the index. EK-FAC (``ev_correction``) doesn't support projection.
+
+ASTRA
+-----
+
+`ASTRA <https://arxiv.org/abs/2507.14740>`_ refines a Kronecker-factored approximate Hessian :math:`(H + D)^{-1} g_q` with momentum SGD on :math:`\tfrac12 x^\top (H + D) x - x^\top g_q`, preconditioned by the damped Kronecker-factored inverse, where :math:`H` is the Gauss-Newton Hessian estimated on a random batch of training documents per step. Enable it on ``ekfac`` with ``hessian_pipeline_cfg.astra.num_steps``; each step costs about five forward passes over the batch, per query. ``astra.solver: cg`` is a novel variant that anecdotally seems to work better, that refines with preconditioned conjugate gradients on one batch of ``batch_size`` documents. See ``examples/replicate_bae_approx_unrolling_source/wikitext_gpt2_astra.yaml`` and ``examples/compare_wikitext/ekfac_astra_cg.yaml``.
+
+LiSSA
+-----
+
+``bergson lissa`` estimates each query's :math:`(G + \lambda I)^{-1} g_q`, where :math:`G` is the Gauss-Newton Hessian of the training loss, with `LiSSA <https://arxiv.org/abs/1602.03943>`_'s truncated series :math:`\sigma^{-1} \sum_t (I - (G + \lambda I) / \sigma)^t g_q`, each term estimating :math:`G` on a random batch of training documents, averaged over repeats. This is the influence estimator of `Bae et al. <https://arxiv.org/abs/2209.05364>`_. The series converges when the scale :math:`\sigma` exceeds half the largest eigenvalue of :math:`G + \lambda I`; each term costs about five forward passes over the batch, per query. See ``examples/compare_wikitext/lissa.yaml``.
