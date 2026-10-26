@@ -525,7 +525,8 @@ class Plot:
             df = create_comparison_dataframe(dattri_records, bergson_records)
 
             # Save CSV
-            csv_path = Path(self.plot_cfg.output_csv)
+            out = Path(self.plot_cfg.output_path)
+            csv_path = out / "comparison.csv"
             csv_path.parent.mkdir(parents=True, exist_ok=True)
             df.to_csv(csv_path, index=False)
             print(f"Saved comparison data to {csv_path}")
@@ -552,6 +553,7 @@ class Plot:
                         continue
 
                     title_suffix = f" ({num_gpus} GPU{'s' if num_gpus > 1 else ''})"
+                    plot_path = out / f"comparison_{num_gpus}gpu.png"
                     plot_comparison(gpu_df, plot_path, title_suffix)
 
 

@@ -23,7 +23,7 @@ import numpy as np
 from datasets import Dataset, DatasetDict, concatenate_datasets, load_from_disk
 
 from bergson import IndexConfig
-from examples.semantic_experiment.data import (
+from examples.experiments.semantic_experiment.data import (
     HF_ANALYSIS_MODEL,
     load_experiment_data,
 )

@@ -10,7 +10,7 @@ from datasets import Dataset, load_dataset
 
 from bergson import AttentionConfig
 from bergson.utils import assert_type
-from examples.find_induction_heads_experiment.attn_only_transformer import (  # noqa: F401
+from examples.experiments.find_induction_heads_experiment.attn_only_transformer import (  # noqa: F401
     AttnOnlyConfig,
     AttnOnlyForCausalLM,
 )

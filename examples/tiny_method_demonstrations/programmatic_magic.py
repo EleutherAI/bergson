@@ -5,7 +5,7 @@ Trains from a random init checkpoint (Pythia step0), attributes eval loss
 to training examples, and validates via leave-subset-out retraining.
 
 Usage:
-    python examples/magic_pretrain.py runs/magic_pretrain
+    python examples/double_backward_pretrain.py runs/magic_pretrain
 
     # Or via the CLI:
     bergson magic runs/magic_pretrain \
@@ -16,7 +16,7 @@ Usage:
         --query.split "train[:1]"
 """
 
-from bergson.config import DataConfig, LDSConfig, LRScheduleConfig
+from bergson.config import DataConfig, LDSConfig, LRScheduleConfig, QuerySetConfig
 from bergson.magic import MagicConfig, run_magic
 
 
@@ -29,7 +29,7 @@ def main():
             dataset="EleutherAI/SmolLM2-135M-10B",
             split="train[:200]",
         ),
-        query=DataConfig(
+        query=QuerySetConfig(
             dataset="EleutherAI/SmolLM2-135M-10B",
             split="train[:1]",
         ),

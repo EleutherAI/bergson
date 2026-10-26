@@ -306,7 +306,7 @@ class Run:
     def execute(self) -> None:
         """Run the benchmark."""
         if not self.run_cfg.dataset:
-            self.run_cfg.dataset = prepare_benchmark_ds_path()
+            self.run_cfg.dataset = str(prepare_benchmark_ds_path())
 
         if self.run_cfg.model not in MODEL_SPECS:
             raise ValueError(f"Unknown model '{self.run_cfg.model}'")
@@ -594,7 +594,7 @@ class Commands:
                         continue
                     pieces = [
                         "python",
-                        "examples/kronfluence_benchmark.py",
+                        "benchmarks/kronfluence_benchmark.py",
                         "run",
                         model_key,
                         format_examples(train_ex),

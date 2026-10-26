@@ -41,8 +41,9 @@ steps:
       adam_beta2: 0.999
       eps_root: 1.0e-17
 
-      method: lds
-      subsets: runs/compare_wikitext/random/subsets.json
-      subset_fraction: 0.01
-      num_subsets: 100
+      method:
+        kind: lds
+        count: 100
+        fraction: 0.01
+        manifest: runs/compare_wikitext/random/subsets.json
       scores: runs/compare_wikitext/random/scores

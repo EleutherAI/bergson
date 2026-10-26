@@ -39,8 +39,12 @@ steps:
       adam_beta2: 0.999
       eps_root: 1.0e-17
 
-      method: filter-proponents
-      subset_fraction: 0.01
-      num_subsets: 3
+      method:
+        kind: filter
+        direction: proponents
+        fraction: 0.01
+        controls:
+          kind: bank
+          paths: [runs/compare_wikitext/random]
+          count: null
       scores: runs/compare_wikitext/ekfac/scores
-      retrained_dir: runs/compare_wikitext/random

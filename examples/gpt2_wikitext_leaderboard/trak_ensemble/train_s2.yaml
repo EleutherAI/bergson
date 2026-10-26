@@ -40,7 +40,8 @@ steps:
       adam_beta2: 0.999
       eps_root: 1.0e-17
 
-      method: lds
-      num_subsets: 2
-      subset_fraction: 0.5
+      method:
+        kind: lds
+        count: 2
+        fraction: 0.5
       scores: runs/compare_wikitext/random/scores

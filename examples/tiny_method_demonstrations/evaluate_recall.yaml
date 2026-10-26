@@ -1,20 +1,20 @@
-# Evaluate influence-function recall of entailing factual statements.
-#
-# Uses the synthetic facts data (bergson.recall.facts): the model is trained
-# on fact *statements* ("Ada Lovelace works at Google.") and queried with the
-# matching *questions* ("Where does Ada Lovelace work?"). A question's gold
-# documents are all paraphrases of its fact; `recall` reports MRR and
-# Recall@10 over the score matrix.
-#
+# Evaluate recall of entailing factual statements using influence functions.
+
+# Trains the model on synthetic facts data (bergson.recall.facts) in statement
+# form ("Ada Lovelace works at Google."). Queries with matching *questions*
+# ("Where does Ada Lovelace work?"). A question's "gold documents" are all
+# paraphrases of its fact. `bergson recall` reports MRR and Recall@10 for
+# these documents.
+
 # Prerequisites:
 #   1. Generate the cached datasets (reproducible, size-keyed):
 #        python -m bergson.recall.generate --num_people 1000
 #   2. Train the model on the statements dataset (e.g. with `bergson train`
 #      or data/finetune.py) and point `model:` below at the result. With an
 #      untrained base model the metrics are only a sanity floor.
-#
+
 # Run with `bergson examples/pipelines/recall_synthetic.yaml`
-#
+
 # Outputs: runs/recall_synthetic/questions (query gradient index),
 # runs/recall_synthetic/scores/scores.bin (statements x questions score
 # matrix), and runs/recall_synthetic/eval/{recall.csv,summary.csv}.

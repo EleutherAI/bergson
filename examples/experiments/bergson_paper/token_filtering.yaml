@@ -8,9 +8,9 @@
 # (paper: +0.062 filtered, +0.003 random).
 #
 # Build the training mix first:
-#   python examples/bergson_paper/build_finetune_mix.py \
+#   python examples/experiments/bergson_paper/build_finetune_mix.py \
 #       --output_dir runs/bergson_paper/mix_85_15
-# Run with `bergson examples/bergson_paper/token_filtering.yaml`
+# Run with `bergson examples/experiments/bergson_paper/token_filtering.yaml`
 
 run_path: runs/bergson_paper/token_filtering
 steps:

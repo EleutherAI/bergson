@@ -13,7 +13,7 @@ from datasets import Dataset, DatasetDict, concatenate_datasets, load_from_disk
 
 from bergson.config import IndexConfig
 from bergson.data import ModuleGradients
-from examples.semantic_experiment.data import (
+from examples.experiments.semantic_experiment.data import (
     HF_ANALYSIS_MODEL,
     load_experiment_data,
 )

@@ -37,10 +37,9 @@ steps:
 
     hessian_pipeline_cfg: &pipeline
       query:
-        data:
-          dataset: EleutherAI/bergson-wikitext-2-4656-chunks
-          split: validation
-          chunk_length: 0
+        dataset: EleutherAI/bergson-wikitext-2-4656-chunks
+        split: validation
+        chunk_length: 0
         aggregation: none
       # The paper's damping.
       inversion_cfg:
@@ -97,10 +96,9 @@ steps:
       split: train
       chunk_length: 0
     query: &query
-      data:
-        dataset: EleutherAI/bergson-wikitext-2-4656-chunks
-        split: validation
-        chunk_length: 0
+      dataset: EleutherAI/bergson-wikitext-2-4656-chunks
+      split: validation
+      chunk_length: 0
 - validate:
     run_path: runs/wikitext_repro/validate_astra_mlp
     model: gpt2

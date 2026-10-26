@@ -1,0 +1,38 @@
+# Build a compressed TrackStar index of the training set: an autocorrelation
+# Hessian of the projected training gradients, then a 16-dimensional random
+# projection of every training example's gradient. Query it any number of
+# times with query_and_rerank.yaml.
+#
+# Run with `bergson examples/pretraining_scale_attribution/build.yaml`
+#
+# Outputs: runs/pretraining_scale_attribution/hessian and
+# runs/pretraining_scale_attribution/index.
+
+run_path: runs/pretraining_scale_attribution/build
+steps:
+  - hessian:
+      index_cfg:
+        run_path: runs/pretraining_scale_attribution/hessian
+        model: EleutherAI/pythia-14m
+        overwrite: true
+        token_batch_size: 1024
+        projection_dim: 16
+        data:
+          dataset: NeelNanda/pile-10k
+          split: train[:2000]
+          truncation: true
+      hessian_cfg:
+        method: autocorrelation
+
+  - build:
+      index_cfg:
+        run_path: runs/pretraining_scale_attribution/index
+        model: EleutherAI/pythia-14m
+        overwrite: true
+        token_batch_size: 1024
+        projection_dim: 16
+        data:
+          dataset: NeelNanda/pile-10k
+          split: train[:2000]
+          truncation: true
+      preprocess_cfg: {}

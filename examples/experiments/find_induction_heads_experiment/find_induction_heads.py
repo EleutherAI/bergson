@@ -33,11 +33,13 @@ from bergson.huggingface import (
 )
 from bergson.query.attributor import Attributor
 from bergson.utils import assert_type
-from examples.find_induction_heads_experiment.attn_only_transformer import (
+from examples.experiments.find_induction_heads_experiment.attn_only_transformer import (
     AttnOnlyForCausalLM,
 )
-from examples.find_induction_heads_experiment.plot import plot_influence_scores
-from examples.find_induction_heads_experiment.setup_utils import (
+from examples.experiments.find_induction_heads_experiment.plot import (
+    plot_influence_scores,
+)
+from examples.experiments.find_induction_heads_experiment.setup_utils import (
     HEAD_CFGS,
     check_logins,
     create_induction_ds,
@@ -101,7 +103,6 @@ def train_with_gradients(
 
     training_args = TrainingArguments(
         output_dir=output_dir,
-        overwrite_output_dir=True,
         num_train_epochs=1,
         per_device_train_batch_size=8,
         per_device_eval_batch_size=128,

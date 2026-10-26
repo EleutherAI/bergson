@@ -82,7 +82,7 @@ Previous experiments showed hessians have minimal effect on fact-level retrieval
 The easiest way to run the experiment is using pre-generated data from HuggingFace:
 
 ```python
-from examples.semantic_experiment.attribute_preservation import (
+from examples.experiments.semantic_experiment.attribute_preservation import (
     run_attribute_preservation_experiment,
     AttributePreservationConfig,
 )
@@ -109,7 +109,7 @@ results = run_attribute_preservation_experiment(
 To generate fresh data locally (requires Qwen model for rewording):
 
 ```python
-from examples.semantic_experiment.attribute_preservation import run_attribute_preservation_experiment
+from examples.experiments.semantic_experiment.attribute_preservation import run_attribute_preservation_experiment
 
 results = run_attribute_preservation_experiment(
     base_path='runs/attribute_preservation',

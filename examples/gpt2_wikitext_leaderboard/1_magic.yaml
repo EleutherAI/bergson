@@ -40,8 +40,10 @@ steps:
       eps_root: 1.0e-17
 
       skip_validation: false
-      num_subsets: 100
-      subset_fraction: 0.01
+      method:
+        kind: lds
+        count: 100
+        fraction: 0.01
 
       save_models: true
       save_optimizer_state: last

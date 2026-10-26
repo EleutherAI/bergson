@@ -19,7 +19,7 @@ Usage (submit to a compute node; the tokenization is CPU-heavy):
     sbatch --job-name=build_mix --time=02:00:00 --nodes=1 \
         --output=logs/build_mix_%j.out --wrap \
         "source .venv/bin/activate && HF_DATASETS_OFFLINE=1 \
-         python examples/bergson_paper/build_finetune_mix.py \
+         python examples/experiments/bergson_paper/build_finetune_mix.py \
          --output_dir runs/bergson_paper/mix_85_15"
 """
 

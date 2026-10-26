@@ -169,7 +169,6 @@ def run_sft(
             eval_steps=eval_steps,
             save_steps=100,
             save_total_limit=3,
-            group_by_length=True,
             ddp_find_unused_parameters=False,
             dataset_kwargs={"skip_prepare_dataset": True},
             seed=cfg.seed,

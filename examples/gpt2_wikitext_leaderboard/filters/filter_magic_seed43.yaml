@@ -39,7 +39,11 @@ steps:
       adam_beta2: 0.999
       eps_root: 1.0e-17
 
-      method: filter-proponents
-      subset_fraction: 0.01
-      num_subsets: 3
+      method:
+        kind: filter
+        direction: proponents
+        fraction: 0.01
+        controls:
+          kind: retrain
+          count: 3
       scores: runs/compare_wikitext/random/scores
