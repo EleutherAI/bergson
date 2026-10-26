@@ -4,7 +4,7 @@
 #   PYTHONPATH=$PWD python -m bergson examples/replications/bae_approx_unrolling_source_replication/wikitext_gpt2_ekfac.yaml
 
 steps:
-  - ekfac:
+  - influence:
       index_cfg:
         run_path: runs/wikitext_repro/if_scores
         model: runs/wikitext_repro/train/exported/checkpoint-1746

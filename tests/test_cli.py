@@ -13,6 +13,7 @@ SUBCOMMANDS = [
     "build",
     "ekfac",
     "hessian",
+    "influence",
     "magic",
     "query",
     "reduce",

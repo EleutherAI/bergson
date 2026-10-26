@@ -5,7 +5,7 @@
 
 run_path: runs/compare_wikitext/ekfac
 steps:
-  - ekfac:
+  - influence:
       index_cfg:
         run_path: runs/compare_wikitext/ekfac
         model: runs/compare_wikitext/interval/exported/checkpoint-72

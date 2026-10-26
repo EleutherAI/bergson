@@ -6,7 +6,7 @@
 #   PYTHONPATH=$PWD python -m bergson examples/replications/bae_approx_unrolling_source_replication/wikitext_gpt2_astra.yaml
 
 steps:
-- ekfac: &ekfac
+- influence: &influence
     index_cfg:
       run_path: runs/wikitext_repro/ekfac_mlp_scores
       model: runs/wikitext_repro/train/exported/checkpoint-1746
@@ -46,8 +46,8 @@ steps:
         damping_factor: 0.011
         inversion: absolute_damped_inverse
 
-- ekfac:
-    <<: *ekfac
+- influence:
+    <<: *influence
     index_cfg:
       run_path: runs/wikitext_repro/astra_mlp_scores
       model: runs/wikitext_repro/train/exported/checkpoint-1746

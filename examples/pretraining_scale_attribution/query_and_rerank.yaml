@@ -26,7 +26,7 @@ steps:
   # Stage 2: EK-FAC influence of the 100 candidates on the same query. With
   # `resume: true` the factors already at hessian/kfac are read back
   # instead of refitted, so `overwrite` stays off to keep them.
-  - ekfac:
+  - influence:
       index_cfg:
         run_path: runs/pretraining_scale_attribution
         model: EleutherAI/pythia-14m

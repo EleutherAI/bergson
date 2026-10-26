@@ -17,24 +17,58 @@ Preconditioners
    :widths: 40 60
 
    * - Preconditioner
-     - CLI
+     - Fit Preconditioner in CLI
    * - Gradient autocorrelation (second moment)
      - ``bergson hessian <run_path> --method autocorrelation``
-   * - KFAC
+   * - :ref:`KFAC <methods/influence-functions:KFAC>`
      - ``bergson hessian <run_path> --method kfac``
    * - TKFAC
      - ``bergson hessian <run_path> --method tkfac``
-   * - EK-FAC
-     - ``bergson hessian <run_path> --method kfac --ev_correction`` (end-to-end pipeline: ``bergson ekfac``)
+   * - :ref:`EK-FAC <methods/influence-functions:EKFAC>`
+     - ``bergson hessian <run_path> --method kfac --hessian_cfg.ev_correction true``
    * - Shampoo
      - ``bergson hessian <run_path> --method shampoo``
    * - Optimizer state (Adam / Adafactor)
-     - ``--optimizer_state <path>`` on ``build`` / ``score``
+     - Load a training buffer with ``--optimizer_state <path>`` on ``build`` / ``score``
+
+KFAC
+----
+
+KFAC is a simple influence function with moderate accuracy and a fairly low computational cost.
+
+KFAC's :math:`H` is a damped Kronecker-factored approximation to the Gauss-Newton Hessian. The :math:`H` is fitted on the training set with the fully trained model, so KFAC does not require access to training checkpoints or any other training artifacts.
+
+EKFAC
+-----
+
+EKFAC is the workhorse of influence functions, providing fairly good accuracy and a fairly low computational cost.
+
+EKFAC's :math:`H` is a damped Kronecker-factored approximation to the Gauss-Newton Hessian. The :math:`H` is fitted on the training set with the fully trained model, so EKFAC does not require access to training checkpoints or any other training artifacts. Compared to KFAC, EKFAC's :math:`H` applies an additional correction step, where the Kronecker product's eigenvalues are set to the second moments of the gradients in the Kronecker eigenbasis.
+
+ASTRA
+-----
+
+`ASTRA <https://arxiv.org/abs/2507.14740>`_ refines a Kronecker-factored approximate Hessian :math:`(H + D)^{-1} g_q` with momentum SGD on :math:`\tfrac12 x^\top (H + D) x - x^\top g_q`, preconditioned by the damped Kronecker-factored inverse, where :math:`H` is the Gauss-Newton Hessian estimated on a random batch of training documents per step.
+
+Enable it in the CLI or in a YAML in the ``influence`` command, by setting ``hessian_pipeline_cfg.astra.num_steps``. Each step costs about five forward passes over the batch, per query.
+
+``astra.solver: cg`` is an alternative to the canonical ASTRA implementation that uses the CG solver (preconditioned conjugate gradients) on one batch of ``batch_size`` documents.
+
+See ``examples/replications/bae_approx_unrolling_source_replication/wikitext_gpt2_astra.yaml`` and ``examples/gpt2_wikitext_leaderboard/ekfac_astra_cg.yaml``.
+
+LiSSA
+-----
+
+``bergson lissa`` estimates each query's :math:`(G + \lambda I)^{-1} g_q`, where :math:`G` is the Gauss-Newton Hessian approximation of the training loss, with the `LiSSA <https://arxiv.org/abs/1602.03943>`_ iterative solver's truncated series :math:`\sigma^{-1} \sum_t (I - (G + \lambda I) / \sigma)^t g_q`, each term estimating :math:`G` on a random batch of training documents, averaged over repeats.
+
+This is the influence estimator of `Bae et al. <https://arxiv.org/abs/2209.05364>`_.
+
+The series converges when the scale :math:`\sigma` exceeds half the largest eigenvalue of :math:`G + \lambda I`. Each term costs about five forward passes over the batch, per query. See ``examples/gpt2_wikitext_leaderboard/lissa.yaml``.
 
 Reranking candidates
 --------------------
 
-``score_cfg.candidates`` on ``score``, ``ekfac`` or ``trackstar`` scores only the rows an earlier run ranked highest, e.g. TrackStar over every row, then Eigenvalue-corrected Shampoo over its top rows:
+``score_cfg.candidates`` on ``score``, ``influence`` or ``trackstar`` scores only the rows an earlier run ranked highest, e.g. TrackStar over every row, then Eigenvalue-corrected Shampoo over its top rows:
 
 .. code-block:: yaml
 
@@ -42,7 +76,7 @@ Reranking candidates
      - trackstar:
          index_cfg: {run_path: runs/two_stage/trackstar, ...}
          ...
-     - ekfac:
+     - influence:
          index_cfg: {run_path: runs/two_stage/shampoo, ...}
          hessian_cfg: {method: shampoo, ev_correction: true}
          score_cfg:
@@ -58,7 +92,7 @@ See ``examples/pretraining_scale_attribution/query_and_rerank.yaml``.
 Output token influence
 ----------------------
 
-With ``attribute_tokens``, ``score_cfg.token_influence`` on ``score`` or ``ekfac`` chooses what each per-token row scores. Both kinds of row sum to the per-example score.
+With ``attribute_tokens``, ``score_cfg.token_influence`` on ``score`` or ``influence`` chooses what each per-token row scores. Both kinds of row sum to the per-example score.
 
 * ``gradient`` (the default) scores row ``t`` by the per-token gradient at position ``t``. This is the simpler tokenwise attribution of `Studying Large Language Model Generalization with Influence Functions <https://arxiv.org/abs/2308.03296>`_ (Grosse et al., 2023, Eq. 31). Row ``t`` is position ``t``'s effect on the loss of every later token, since later tokens attend to it, so it isn't the influence of any one token.
 * ``output`` scores row ``t`` by the loss on token ``t + 1`` alone, which is the term that loss masking removes. This is the paper's output token influence (Appendix B.1, Eq. 36). Rows without a label are zero.
@@ -75,7 +109,7 @@ Compressing the gradients
 .. code-block:: yaml
 
    steps:
-     - ekfac:
+     - influence:
          index_cfg:
            projection_dim: 4096
            projection_target: global

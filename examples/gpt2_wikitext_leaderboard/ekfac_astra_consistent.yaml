@@ -9,7 +9,7 @@
 
 run_path: runs/compare_wikitext/ekfac_astra_consistent
 steps:
-  - ekfac:
+  - influence:
       index_cfg:
         run_path: runs/compare_wikitext/ekfac_astra_consistent
         model: runs/compare_wikitext/interval/exported/checkpoint-72

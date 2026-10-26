@@ -6,7 +6,7 @@
 
 run_path: runs/compare_wikitext/shampoo
 steps:
-  - ekfac:
+  - influence:
       index_cfg:
         run_path: runs/compare_wikitext/shampoo
         model: runs/compare_wikitext/interval/exported/checkpoint-72

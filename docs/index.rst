@@ -56,10 +56,6 @@ Load the gradients:
    :caption: Methods
 
    methods/influence-functions
-   methods/kfac
-   methods/ekfac
-   methods/astra
-   methods/lissa
    methods/trackstar
    methods/trak
    methods/source
