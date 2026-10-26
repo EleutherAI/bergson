@@ -4,14 +4,14 @@ GPT-2 fine-tuned on WikiText (`EleutherAI/bergson-wikitext-512-chunks`, 4,608 tr
 |---|---|---|---|---|---|---|---|---|
 | MAGIC (per-query) | 0.100 | [0.090, 0.112] | 0.931 | [0.925, 0.936] | 0.933 | 0.804 | 0.970 | 50/50 |
 | MAGIC (cross-seed) | 0.098 | [0.087, 0.110] | 0.829 | [0.815, 0.840] | 0.836 | 0.658 | 0.932 | 50/50 |
-| EK-FAC + ASTRA (CG) | 0.077 | [0.066, 0.089] | 0.685 | [0.664, 0.702] | 0.699 | 0.457 | 0.805 | 50/50 |
+| EKFAC + CG | 0.077 | [0.066, 0.089] | 0.685 | [0.664, 0.702] | 0.699 | 0.457 | 0.805 | 50/50 |
+| EKFAC + ASTRA | 0.073 | [0.061, 0.087] | 0.579 | [0.554, 0.601] | 0.601 | -0.042 | 0.811 | 48/50 |
 | Eigenvalue-corrected Shampoo + ASTRA | 0.072 | [0.061, 0.085] | 0.625 | [0.604, 0.643] | 0.644 | 0.095 | 0.805 | 49/50 |
-| EK-FAC + ASTRA (paper scaling) | 0.071 | [0.060, 0.084] | 0.629 | [0.607, 0.647] | 0.646 | 0.435 | 0.786 | 50/50 |
+| EKFAC + ASTRA (exact paper settings) | 0.071 | [0.060, 0.084] | 0.629 | [0.607, 0.647] | 0.646 | 0.435 | 0.786 | 50/50 |
 | Eigenvalue-corrected Shampoo | 0.071 | [0.060, 0.082] | 0.517 | [0.491, 0.539] | 0.532 | 0.294 | 0.703 | 50/50 |
 | SOURCE (Adam) | 0.071 | [0.060, 0.084] | 0.473 | [0.446, 0.498] | 0.466 | 0.120 | 0.676 | 49/50 |
-| EK-FAC | 0.070 | [0.058, 0.082] | 0.454 | [0.426, 0.479] | 0.453 | 0.095 | 0.664 | 49/50 |
+| EKFAC | 0.070 | [0.058, 0.082] | 0.454 | [0.426, 0.479] | 0.453 | 0.095 | 0.664 | 49/50 |
 | KFAC | 0.067 | [0.056, 0.080] | 0.420 | [0.391, 0.446] | 0.412 | 0.041 | 0.646 | 48/50 |
-| EK-FAC + ASTRA (consistent scaling) | 0.064 | [0.051, 0.077] | 0.494 | [0.468, 0.519] | 0.544 | -0.068 | 0.769 | 44/50 |
 | BM25 | 0.062 | [0.048, 0.076] | 0.220 | [0.185, 0.252] | 0.253 | -0.168 | 0.486 | 28/50 |
 | [Qwen3-Embedding-8B](https://huggingface.co/spaces/mteb/leaderboard) semantic search | 0.049 | [0.038, 0.061] | 0.132 | [0.093, 0.169] | 0.132 | -0.119 | 0.483 | 17/50 |
 | Jina v5 semantic search | 0.046 | [0.035, 0.059] | 0.124 | [0.087, 0.160] | 0.115 | -0.108 | 0.483 | 11/50 |
@@ -71,4 +71,4 @@ python examples/compare_wikitext/qld_from_filters.py runs/compare_wikitext runs/
 python examples/compare_wikitext/lds_tables.py runs/compare_wikitext
 ```
 
-EK-FAC, KFAC, Eigenvalue-corrected Shampoo, TRAK, TrackStar and gradient dot-product scores are influence-signed (higher = proponent) and MAGIC and SOURCE loss-signed, hence `--sign`; the baseline scripts already write loss-signed matrices (negated similarity), so their score directories need no sign flip. `filters/` reuses the bank's random retrains as the matched control.
+EKFAC, KFAC, Eigenvalue-corrected Shampoo, TRAK, TrackStar and gradient dot-product scores are influence-signed (higher = proponent) and MAGIC and SOURCE loss-signed, hence `--sign`; the baseline scripts already write loss-signed matrices (negated similarity), so their score directories need no sign flip. `filters/` reuses the bank's random retrains as the matched control.

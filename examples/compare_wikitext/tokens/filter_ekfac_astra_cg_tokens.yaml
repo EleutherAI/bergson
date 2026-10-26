@@ -1,4 +1,4 @@
-# Per-token proponent filter for EK-FAC + ASTRA: retrain without each query's top 1% of training tokens (their loss terms masked)
+# Per-token proponent filter for EKFAC + CG: retrain without each query's top 1% of training tokens (their loss terms masked)
 # and compare with three random 1% token removals retrained per query.
 # Run with `bergson examples/compare_wikitext/tokens/filter_ekfac_astra_cg_tokens.yaml`
 
