@@ -145,9 +145,34 @@ def test_write_lr_history_matches_hf_log_history_shape(tmp_path):
     assert path.name == LR_HISTORY_FILENAME
     entries = json.loads(path.read_text())
     assert entries == [
-        {"step": 0, "learning_rate": pytest.approx(1e-4)},
-        {"step": 1, "learning_rate": pytest.approx(2e-4)},
-        {"step": 2, "learning_rate": pytest.approx(3e-4)},
+        {"step": 1, "learning_rate": pytest.approx(1e-4)},
+        {"step": 2, "learning_rate": pytest.approx(2e-4)},
+        {"step": 3, "learning_rate": pytest.approx(3e-4)},
+    ]
+
+
+def test_lr_times_steps_sums_the_updates_between_checkpoints(tmp_path):
+    """``step_i`` is the state before update ``i``, so the segment between
+    ``step_2`` and ``step_4`` holds updates 2 and 3, and the final checkpoint
+    of an ``n``-step run is ``step_n``, past the last update ``n - 1``."""
+    export = tmp_path / "exported"
+    export.mkdir()
+    for step in (2, 4):
+        (export / f"step_{step}.ckpt").mkdir()
+
+    def schedule(update: int) -> float:
+        return 1e-3 * (4 - update) / 4
+
+    write_lr_history(export, schedule, 4)
+
+    cfg = ApproxUnrollingConfig(
+        checkpoints=[str(export / "step_2.ckpt"), str(export / "step_4.ckpt")],
+        segments=2,
+        momentum=0.0,
+    )
+    assert compute_lr_times_steps_per_segment(cfg) == [
+        pytest.approx(schedule(0) + schedule(1)),
+        pytest.approx(schedule(2) + schedule(3)),
     ]
 
 
