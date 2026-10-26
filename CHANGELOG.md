@@ -1,6 +1,29 @@
 # CHANGELOG
 
 
+## v2.5.1 (2026-10-26)
+
+### Bug Fixes
+
+- Average MoE expert K-FAC covariances over their routed positions
+  ([#565](https://github.com/EleutherAI/bergson/pull/565),
+  [`f3ffb0a`](https://github.com/EleutherAI/bergson/commit/f3ffb0a41b7a09fb50885495bfcc297bb9b7921b))
+
+- Record each update's LR at its HF step in log_history.json
+  ([#567](https://github.com/EleutherAI/bergson/pull/567),
+  [`87f6442`](https://github.com/EleutherAI/bergson/commit/87f644294cbc6dd4ee33f12d314e4202be9ea8da))
+
+### Performance Improvements
+
+- Collect garbage once per eigenvector gather
+  ([#578](https://github.com/EleutherAI/bergson/pull/578),
+  [`be9c733`](https://github.com/EleutherAI/bergson/commit/be9c733accf8ed6ec43ee55e9cb08848c0ce812a))
+
+- Turn off NumPy's huge pages when bergson is imported
+  ([#574](https://github.com/EleutherAI/bergson/pull/574),
+  [`c2bca7f`](https://github.com/EleutherAI/bergson/commit/c2bca7faa49fd32a5403a901b0242608e2d2e7e3))
+
+
 ## v2.5.0 (2026-10-26)
 
 ### Features
