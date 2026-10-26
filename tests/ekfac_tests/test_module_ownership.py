@@ -220,6 +220,8 @@ def fit_small(rank: int, world_size: int, port: int, root: str):
             )
         )
         run_batches(collector, batches)
+        if isinstance(collector, CovarianceCollector) and rank == 0:
+            torch.save(collector.num_positions, os.path.join(out, "num_positions.pt"))
 
     if world_size > 1:
         dist.destroy_process_group()
@@ -247,3 +249,8 @@ def test_gloo_ranks_match_one_process_on_cpu(tmp_path: Path, monkeypatch):
         assert expected.keys() == actual.keys()
         for key in expected:
             torch.testing.assert_close(actual[key], expected[key])
+
+    # Every rank's positions are counted once, as in one process.
+    assert torch.load(tmp_path / f"fit{CPU_RANKS}" / "num_positions.pt") == torch.load(
+        tmp_path / "fit1" / "num_positions.pt"
+    )
