@@ -21,13 +21,13 @@ Indicative performance of data attribution methods in the finetuning regime.
    * - EKFAC + CG
      - 0.077 [0.066, 0.089]
      - 0.685 [0.664, 0.702]
-   * - EKFAC + ASTRA (consistent scaling)
+   * - EKFAC + ASTRA
      - 0.073 [0.061, 0.087]
      - 0.579 [0.554, 0.601]
    * - Eigenvalue-corrected Shampoo + ASTRA
      - 0.072 [0.061, 0.085]
      - 0.625 [0.604, 0.643]
-   * - EKFAC + ASTRA (paper scaling)
+   * - EKFAC + ASTRA (exact replication settings)
      - 0.071 [0.060, 0.084]
      - 0.629 [0.607, 0.647]
    * - Eigenvalue-corrected Shampoo
@@ -145,16 +145,16 @@ MAGIC
    This method backpropagates through the training process once per query and doesn't support query batching. It works well in FP32 or TF32 but may significantly degrade when used to attribute BF16 training runs, or training runs with low batch sizes.
 
 ASTRA
-   ASTRA improves any existing Kronecker-factored Hessian approximation during each query's application stage, so it adds a constant amount of compute to each query on top of a basic influence function like EKFAC. The ASTRA Hessian is 1/511 the scale of the EKFAC Hessian in EKFAC + ASTRA (paper scaling) and the same scale in EKFAC + ASTRA (consistent scaling) and EKFAC + CG. The consistent-scaling row's step size is tuned on held-out test queries against the ASTRA objective.
+   ASTRA improves a Kronecker-factored Hessian approximation's application to an inverse Hessian vector product, so it adds a constant amount of compute to each query compared to an influence function like EKFAC. The original paper used an ASTRA Hessian that is 1/511 the scale of the EKFAC Hessian. We include this result for completeness along with one using Hessians with identical scales. We run a small learning rate grid search against solver error to tune ASTRA's learning rate.
 
 EKFAC
-   This is a classic influence function in the form $g_t H^{-1} g_q$ using the EKFAC Hessian approximation for H. The H can be swapped out for other matrices including KFAC, Shampoo, and MAC.
+   This is a classic influence function in the form ``g_t H^{-1} g_q`` using the EKFAC Hessian approximation for H. The H can be swapped out for other matrices including KFAC, Shampoo, and MAC.
 
 KFAC
    KFAC supports gradient compression with ``projection_dim``. This produces a highly efficient variant based on a reusable gradient store, suitable for the retrieval stage of a data attribution pipeline, at the cost of some LDS/QLD.
 
 Eigenvalue-corrected Shampoo
-   This is a custom influence function in the form $g_t H^{-1} g_q$ using the Shampoo preconditioner as the H. Its mathematical relationship with the true Hessian is somewhere between "null" and "extremely tenuous", but it performs well anyway. It uses an eigenvalue-correction similar to EKFAC's, and to the variant used in SOAP optimization.
+   This is a custom influence function in the form ``g_t H^{-1} g_q`` using the Shampoo preconditioner as the H. Its mathematical relationship with the true Hessian is somewhere between "null" and "extremely tenuous", but it performs well anyway. It uses an eigenvalue-correction similar to EKFAC's, and to the variant used in SOAP optimization.
 
 SOURCE
    SOURCE uses a weighted combination of Hessian approximations fit on different segments of the training trajectory, so it may perform relatively better in longer or multi-phase training runs.
@@ -166,13 +166,13 @@ TRAK
    TRAK's performance matches `existing results <https://arxiv.org/pdf/2405.12186>`_ in the literature.
 
 Gradient similarity
-   A weak baseline that considers only the direct effect of the parameter update on the query.
+   A baseline that considers only the direct effect of the parameter update on the query.
 
 Semantic search
-   A strong baseline that uses a model optimized to retrieve documents with a similar meaning to the query document.
+   A baseline that uses a model optimized to retrieve documents with a similar meaning to the query document.
 
 BM25
-   A strong baseline that uses a model optimized to retrieve documents with words matching those in the query document.
+   A baseline that uses a model optimized to retrieve documents with words matching those in the query document.
 
 Activation similarity
-   A novel baseline that uses the model of interest's activations rather than gradients. To some extent any representation space can be used to compute data similarities, so to the extent model gradients are especially good data for making counterfactual predictions we expect that they will outperform model activations.
+   A novel baseline that uses the model's activations rather than its gradients. Any embedding of data into a representation space can be used to compute data similarities, so comparing activation-based similarities to gradient-based similarities sheds light on the extent to which gradient-based notions of similarity are especially suited to making counterfactual predictions. Here we see that the best gradient-based methods outperform model activations, but that suitably preconditioned model activations seem to outperform gradient-based methods optimized for efficiency, like gradient cosine similarity and TrackStar, along with semantic search.
