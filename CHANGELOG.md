@@ -1,6 +1,24 @@
 # CHANGELOG
 
 
+## v2.4.1 (2026-10-26)
+
+### Documentation
+
+- Give each EkfacConfig projection field its own docstring
+  ([#547](https://github.com/EleutherAI/bergson/pull/547),
+  [`4ed6a0f`](https://github.com/EleutherAI/bergson/commit/4ed6a0f3d125b5982252aa4b96702643d08bcf78))
+
+- Tune the consistent-scaling ASTRA row; name the CG row EKFAC + CG
+  ([#570](https://github.com/EleutherAI/bergson/pull/570),
+  [`5582b21`](https://github.com/EleutherAI/bergson/commit/5582b21822dc553c13b8b15de64271a7ea933fb5))
+
+### Performance Improvements
+
+- Start spawned workers in parallel ([#572](https://github.com/EleutherAI/bergson/pull/572),
+  [`66bc35a`](https://github.com/EleutherAI/bergson/commit/66bc35a75fa56390bd19b6107c635a8956f3e449))
+
+
 ## v2.4.0 (2026-10-21)
 
 ### Features
