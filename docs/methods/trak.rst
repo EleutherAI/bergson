@@ -64,4 +64,4 @@ Example
        --loss_fn log_odds
 
 Scores are ``higher_is_better``, so a positive score indicates a query proponent.
-See :doc:`cli` for the full ``TrakConfig`` API reference.
+See :doc:`../cli` for the full ``TrakConfig`` API reference.

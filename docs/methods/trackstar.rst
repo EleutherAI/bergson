@@ -42,4 +42,4 @@ Example
        --query.truncation \
        --projection_dim 16
 
-See :doc:`cli` for the full ``TrackstarConfig`` API reference.
+See :doc:`../cli` for the full ``TrackstarConfig`` API reference.

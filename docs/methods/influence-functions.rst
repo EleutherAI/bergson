@@ -82,13 +82,3 @@ Compressing the gradients
          hessian_cfg: {method: kfac}
 
 The factored preconditioners apply :math:`H^{-1}` to the unprojected query and down-project the result to match the index. EK-FAC (``ev_correction``) doesn't support projection.
-
-ASTRA
------
-
-`ASTRA <https://arxiv.org/abs/2507.14740>`_ refines a Kronecker-factored approximate Hessian :math:`(H + D)^{-1} g_q` with momentum SGD on :math:`\tfrac12 x^\top (H + D) x - x^\top g_q`, preconditioned by the damped Kronecker-factored inverse, where :math:`H` is the Gauss-Newton Hessian estimated on a random batch of training documents per step. Enable it on ``ekfac`` with ``hessian_pipeline_cfg.astra.num_steps``; each step costs about five forward passes over the batch, per query. ``astra.solver: cg`` is a novel variant that anecdotally seems to work better, that refines with preconditioned conjugate gradients on one batch of ``batch_size`` documents. See ``examples/replications/bae_approx_unrolling_source_replication/wikitext_gpt2_astra.yaml`` and ``examples/gpt2_wikitext_leaderboard/ekfac_astra_cg.yaml``.
-
-LiSSA
------
-
-``bergson lissa`` estimates each query's :math:`(G + \lambda I)^{-1} g_q`, where :math:`G` is the Gauss-Newton Hessian of the training loss, with `LiSSA <https://arxiv.org/abs/1602.03943>`_'s truncated series :math:`\sigma^{-1} \sum_t (I - (G + \lambda I) / \sigma)^t g_q`, each term estimating :math:`G` on a random batch of training documents, averaged over repeats. This is the influence estimator of `Bae et al. <https://arxiv.org/abs/2209.05364>`_. The series converges when the scale :math:`\sigma` exceeds half the largest eigenvalue of :math:`G + \lambda I`; each term costs about five forward passes over the batch, per query. See ``examples/gpt2_wikitext_leaderboard/lissa.yaml``.

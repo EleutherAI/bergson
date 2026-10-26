@@ -13,7 +13,7 @@ The commands fall into four groups:
 autocorrelation) independently of per-example gradient collection, and ``mix`` combines two autocorrelation hessians into one. See :doc:`building_blocks`.
 
 **Method pipelines** — ``trackstar``, ``ekfac``, and ``approxunrolling`` orchestrate
-building blocks into end-to-end attribution recipes (see :doc:`trackstar`, :doc:`influence-functions`, and :doc:`source`). ``magic`` attributes by backpropagating through training (see :doc:`magic`).
+building blocks into end-to-end attribution recipes (see :doc:`methods/trackstar`, :doc:`methods/influence-functions`, and :doc:`methods/source`). ``magic`` attributes by backpropagating through training (see :doc:`methods/magic`).
 
 **Training & evaluation** — ``train`` trains a model with the Bergson trainer; ``metasmoothness``, ``validate``, and ``recall`` evaluate training runs and attribution scores (see :doc:`training` and :doc:`evaluation`).
 
