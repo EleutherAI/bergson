@@ -87,7 +87,7 @@ def model():
     torch.manual_seed(42)
     torch.cuda.manual_seed(42)
 
-    config = AutoConfig.from_pretrained("trl-internal-testing/tiny-Phi3ForCausalLM")
+    config = AutoConfig.from_pretrained("trl-internal-testing/tiny-Phi3ForCausalLM-3")
     return AutoModelForCausalLM.from_config(config, torch_dtype=torch.float32)
 
 

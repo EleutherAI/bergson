@@ -131,7 +131,7 @@ def _e2e_shared(tmp_path) -> dict:
     query = Dataset.from_dict({"text": ["a dog ran", "birds fly high"]})
     query.save_to_disk(tmp_path / "query")
     return {
-        "model": "trl-internal-testing/tiny-Phi3ForCausalLM",
+        "model": "trl-internal-testing/tiny-Phi3ForCausalLM-3",
         "batch_size": 2,
         "num_epochs": 1,
         "num_subsets": 2,

@@ -30,7 +30,7 @@ from bergson.utils.worker_utils import extract_peft_target_modules
 
 
 def _create_model():
-    config = AutoConfig.from_pretrained("trl-internal-testing/tiny-Phi3ForCausalLM")
+    config = AutoConfig.from_pretrained("trl-internal-testing/tiny-Phi3ForCausalLM-3")
     return AutoModelForCausalLM.from_config(config, torch_dtype=torch.float32)
 
 
@@ -449,7 +449,7 @@ def test_include_bias_false_leaves_bias_unset(tmp_path):
 
 
 def _create_peft_model() -> PeftModel:
-    config = AutoConfig.from_pretrained("trl-internal-testing/tiny-Phi3ForCausalLM")
+    config = AutoConfig.from_pretrained("trl-internal-testing/tiny-Phi3ForCausalLM-3")
     base = AutoModelForCausalLM.from_config(config, torch_dtype=torch.float32)
     model = get_peft_model(
         base,
