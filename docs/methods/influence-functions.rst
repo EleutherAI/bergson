@@ -18,57 +18,38 @@ Preconditioners
 
    * - Preconditioner
      - Fit Preconditioner in CLI
-   * - Gradient autocorrelation (second moment)
+   * - :ref:`Gradient autocorrelation <methods/influence-functions:Gradient autocorrelation>` (second moment)
      - ``bergson hessian <run_path> --method autocorrelation``
    * - :ref:`KFAC <methods/influence-functions:KFAC>`
      - ``bergson hessian <run_path> --method kfac``
-   * - TKFAC
+   * - :ref:`TKFAC <methods/influence-functions:TKFAC>`
      - ``bergson hessian <run_path> --method tkfac``
    * - :ref:`EK-FAC <methods/influence-functions:EKFAC>`
      - ``bergson hessian <run_path> --method kfac --hessian_cfg.ev_correction true``
-   * - Shampoo
+   * - :ref:`Shampoo <methods/influence-functions:Shampoo>`
      - ``bergson hessian <run_path> --method shampoo``
-   * - Optimizer state (Adam / Adafactor)
+   * - :ref:`Optimizer state <methods/influence-functions:Optimizer state>` (Adam / Adafactor)
      - Load a training buffer with ``--optimizer_state <path>`` on ``build`` / ``score``
+   * - Gauss-Newton hessian
+     - Not fitted. Apply per-query with ``bergson lissa`` or ASTRA
 
-KFAC
-----
+Refine a Preconditioner with ASTRA
+----------------------------------
 
-KFAC is a simple influence function with moderate accuracy and a fairly low computational cost.
+`ASTRA <https://arxiv.org/abs/2507.14740>`_ refines a query's inverse-Hessian-vector product :math:`(H + D)^{-1} g_q`, where :math:`H` is the Gauss-Newton Hessian estimated on a random batch of training documents per step and :math:`D` is the damping, by momentum SGD on :math:`\tfrac12 x^\top (H + D) x - x^\top g_q`. It starts from an existing Kronecker-factored Hessian approximation like EKFAC and preconditions every step with the factored inverse. It can yield a more accurate inverse-Hessian-vector product, but adds some computation per query.
 
-KFAC's :math:`H` is a damped Kronecker-factored approximation to the Gauss-Newton Hessian. The :math:`H` is fitted on the training set with the fully trained model, so KFAC does not require access to training checkpoints or any other training artifacts.
+Enable it in the CLI or in a YAML in the ``influence`` command, by setting ``hessian_pipeline_cfg.astra.num_steps``.
 
-EKFAC
------
-
-EKFAC is the workhorse of influence functions, providing fairly good accuracy and a fairly low computational cost.
-
-EKFAC's :math:`H` is a damped Kronecker-factored approximation to the Gauss-Newton Hessian. The :math:`H` is fitted on the training set with the fully trained model, so EKFAC does not require access to training checkpoints or any other training artifacts. Compared to KFAC, EKFAC's :math:`H` applies an additional correction step, where the Kronecker product's eigenvalues are set to the second moments of the gradients in the Kronecker eigenbasis.
-
-ASTRA
------
-
-`ASTRA <https://arxiv.org/abs/2507.14740>`_ refines a Kronecker-factored approximate Hessian :math:`(H + D)^{-1} g_q` with momentum SGD on :math:`\tfrac12 x^\top (H + D) x - x^\top g_q`, preconditioned by the damped Kronecker-factored inverse, where :math:`H` is the Gauss-Newton Hessian estimated on a random batch of training documents per step.
-
-Enable it in the CLI or in a YAML in the ``influence`` command, by setting ``hessian_pipeline_cfg.astra.num_steps``. Each step costs about five forward passes over the batch, per query.
-
-``astra.solver: cg`` is an alternative to the canonical ASTRA implementation that uses the CG solver (preconditioned conjugate gradients) on one batch of ``batch_size`` documents.
+Setting ``astra.solver: cg`` enables an alternative to the canonical ASTRA implementation that uses the CG solver (preconditioned conjugate gradients) on one batch of ``batch_size`` documents.
 
 See ``examples/replications/bae_approx_unrolling_source_replication/wikitext_gpt2_astra.yaml`` and ``examples/gpt2_wikitext_leaderboard/ekfac_astra_cg.yaml``.
 
-LiSSA
------
-
-``bergson lissa`` estimates each query's :math:`(G + \lambda I)^{-1} g_q`, where :math:`G` is the Gauss-Newton Hessian approximation of the training loss, with the `LiSSA <https://arxiv.org/abs/1602.03943>`_ iterative solver's truncated series :math:`\sigma^{-1} \sum_t (I - (G + \lambda I) / \sigma)^t g_q`, each term estimating :math:`G` on a random batch of training documents, averaged over repeats.
-
-This is the influence estimator of `Bae et al. <https://arxiv.org/abs/2209.05364>`_.
-
-The series converges when the scale :math:`\sigma` exceeds half the largest eigenvalue of :math:`G + \lambda I`. Each term costs about five forward passes over the batch, per query. See ``examples/gpt2_wikitext_leaderboard/lissa.yaml``.
-
-Reranking candidates
+Rerank Candidates
 --------------------
 
-``score_cfg.candidates`` on ``score``, ``influence`` or ``trackstar`` scores only the rows an earlier run ranked highest, e.g. TrackStar over every row, then Eigenvalue-corrected Shampoo over its top rows:
+For applications where only the :math:`k` most influential items are of interest, such as interpretability and data filtering, it's possible to achieve improved accuracy at a low cost by ranking all the documents using a highly efficient method like TrackStar, and then reranking the top :math:`k * n` documents, where n is a free hyperparameter, using a less efficient but more accurate method like EKFAC or EKFAC + ASTRA.
+
+To perform reranking for a query, add a second step to the bergson YAML with the field ``score_cfg.candidates`` set on ``score``, or ``influence``. In this example, ``trackstar`` scores all the rows, and then the influence function scores (reranks) only the 1000 rows TrackStar ranked highest:
 
 .. code-block:: yaml
 
@@ -89,8 +70,8 @@ The candidates are the union over the earlier run's query columns of each column
 
 See ``examples/pretraining_scale_attribution/query_and_rerank.yaml``.
 
-Output token influence
-----------------------
+Attribute Tokens
+----------------
 
 With ``attribute_tokens``, ``score_cfg.token_influence`` on ``score`` or ``influence`` chooses what each per-token row scores. Both kinds of row sum to the per-example score.
 
@@ -101,8 +82,8 @@ The paper estimates output token influence by moving the weights a small step al
 
 ``output`` needs an unprojected query (``projection_dim: 0``) and dot-product scoring, and doesn't support ``loss_fn: kl``, ``optimizer_state``, ``split_attention_modules``, quantized models, FSDP, or fused MoE experts. The fused attention kernels don't implement forward-mode derivatives, so the model is loaded with eager attention. The run saves ``data.hf`` with each example's loss, as the gradient path does, but not ``total_processed.pt``, which only Hessian fitting reads.
 
-Compressing the gradients
--------------------------
+Compress Gradients
+------------------
 
 ``index_cfg.projection_dim`` randomly down-projects the gradients before they are scored. ``projection_target: per_module`` compresses each module's gradient to its own ``[projection_dim, projection_dim]`` block; ``global`` compresses the whole gradient to one ``[projection_dim]`` vector:
 
@@ -116,3 +97,49 @@ Compressing the gradients
          hessian_cfg: {method: kfac}
 
 The factored preconditioners apply :math:`H^{-1}` to the unprojected query and down-project the result to match the index. EK-FAC (``ev_correction``) doesn't support projection.
+
+Method details
+--------------
+
+Gradient autocorrelation
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+The simplest preconditioner: for each module, the per-module second moments :math:`H = \sum_n g_n^\top g_n` of the per-example training gradients. It is the primary preconditioner for compressed gradients, including TrackStar's per-module Grams and TRAK's joint Gram over the whole projected gradient. See :doc:`trackstar` and :doc:`trak`.
+
+KFAC
+^^^^
+
+KFAC is a simple influence function with moderate accuracy and a fairly low computational cost.
+
+KFAC's :math:`H` is a damped Kronecker-factored approximation to the Gauss-Newton Hessian. The :math:`H` is fitted on the training set with the fully trained model, so KFAC does not require access to training checkpoints or any other training artifacts.
+
+EKFAC
+^^^^^
+
+EKFAC is the workhorse of influence functions, providing fairly good accuracy and a fairly low computational cost.
+
+EKFAC's :math:`H` is a damped Kronecker-factored approximation to the Gauss-Newton Hessian. The :math:`H` is fitted on the training set with the fully trained model, so EKFAC does not require access to training checkpoints or any other training artifacts. Compared to KFAC, EKFAC's :math:`H` applies an additional correction step, where the Kronecker product's eigenvalues are set to the second moments of the gradients in the Kronecker eigenbasis.
+
+TKFAC
+^^^^^
+
+KFAC with each batch's activation covariance weighted by the trace of that batch's gradient covariance, and vice versa, so the Kronecker product keeps the trace of the block it approximates.
+
+Shampoo
+^^^^^^^
+
+A Kronecker-factored :math:`H` built from the batch parameter gradients :math:`\nabla W = G^\top X` rather than from activations and output gradients separately: the left factor sums :math:`\nabla W \nabla W^\top` over batches and the right factor sums :math:`\nabla W^\top \nabla W`, divided by its trace. These are the preconditioner factors of the Shampoo optimizer.
+
+Optimizer state
+^^^^^^^^^^^^^^^
+
+These states can be loaded from Adam training buffers, i.e. the ``optimizer.pt`` generated by the Hugging Face Trainer or its ``hf://`` URI. Each gradient element is divided by the square root of the training optimizer's second-moment estimate, which is the per-parameter scaling the optimizer applied to the same gradients during training. The same ``--optimizer_state`` must be given for the index and the query gradients. See :doc:`../preprocessing`.
+
+LiSSA Solver
+^^^^^^^^^^^^
+
+``bergson lissa`` estimates each query's :math:`(G + \lambda I)^{-1} g_q`, where :math:`G` is the Gauss-Newton Hessian approximation of the training loss, with the `LiSSA <https://arxiv.org/abs/1602.03943>`_ iterative solver's truncated series :math:`\sigma^{-1} \sum_t (I - (G + \lambda I) / \sigma)^t g_q`, each term estimating :math:`G` on a random batch of training documents, averaged over repeats.
+
+This is the influence estimator of `Bae et al. <https://arxiv.org/abs/2209.05364>`_.
+
+The series converges when the scale :math:`\sigma` exceeds half the largest eigenvalue of :math:`G + \lambda I`. Each term costs about five forward passes over the batch, per query. See ``examples/gpt2_wikitext_leaderboard/lissa.yaml``.
