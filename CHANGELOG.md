@@ -1,6 +1,15 @@
 # CHANGELOG
 
 
+## v2.4.2 (2026-10-26)
+
+### Performance Improvements
+
+- Give each spawned worker its share of the node's cores
+  ([#573](https://github.com/EleutherAI/bergson/pull/573),
+  [`38c7316`](https://github.com/EleutherAI/bergson/commit/38c7316d3680b7c2b289aeba75220d6a7e805f32))
+
+
 ## v2.4.1 (2026-10-26)
 
 ### Documentation
