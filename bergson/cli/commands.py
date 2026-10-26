@@ -19,6 +19,7 @@ from ..config.config import (
     HessianConfig,
     HessianPipelineConfig,
     IndexConfig,
+    LissaConfig,
     MetasmoothnessConfig,
     MixConfig,
     PreprocessConfig,
@@ -150,6 +151,27 @@ class Hessian(Serializable):
         validate_run_path(self.index_cfg)
         save_run_config(self, self.index_cfg.partial_run_path)
         approximate_hessians(self.index_cfg, self.hessian_cfg)
+
+
+@dataclass
+class Lissa(Serializable):
+    """Run LiSSA influence (damped Gauss-Newton Hessian) end-to-end."""
+
+    index_cfg: IndexConfig
+
+    score_cfg: ScoreConfig
+
+    preprocess_cfg: PreprocessConfig
+
+    lissa_cfg: LissaConfig
+
+    def execute(self):
+        from ..hessians.lissa import lissa_pipeline
+
+        save_run_config(self, self.index_cfg.run_path)
+        lissa_pipeline(
+            self.index_cfg, self.score_cfg, self.preprocess_cfg, self.lissa_cfg
+        )
 
 
 @dataclass

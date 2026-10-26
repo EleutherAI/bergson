@@ -1030,6 +1030,47 @@ class AstraConfig(Serializable):
 
 
 @dataclass
+class LissaConfig(Serializable):
+    """Estimate each query's ``(G + damping I)^-1 q`` with LiSSA
+    (https://arxiv.org/abs/1602.03943), the estimator of Bae et al.
+    (https://arxiv.org/abs/2209.05364).
+
+    The estimate is the truncated series ``sum_t (I - (G + damping I) / scale)^t q
+    / scale``, averaged over ``repeats`` runs, where ``G`` is the Gauss-Newton
+    Hessian of the training loss estimated on a random batch of training
+    documents per term."""
+
+    query: QuerySetConfig = field(default_factory=QuerySetConfig)
+    """Query dataset and aggregation. ``none`` produces one score column
+    per query."""
+
+    damping: float = 0.01
+    """Added to every eigenvalue of ``G``."""
+
+    scale: float = 100.0
+    """Divides the damped Hessian. The series converges only when ``scale``
+    exceeds half the largest eigenvalue of the damped Hessian."""
+
+    depth: int = 5000
+    """Terms of the series."""
+
+    repeats: int = 5
+    """Independent estimates averaged per query."""
+
+    batch_size: int = 16
+    """Training documents per Hessian-vector product."""
+
+    micro_batch_size: int = 16
+    """Documents per forward pass within a batch; lower it to save memory."""
+
+    seed: int = 0
+    """Seeds the training batches, which are drawn separately for each query."""
+
+    resume: bool = False
+    """Skip pipeline steps whose output directory already exists."""
+
+
+@dataclass
 class HessianPipelineConfig:
     """Config for the Hessian-preconditioned influence pipeline."""
 

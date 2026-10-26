@@ -42,6 +42,9 @@ Indicative performance of data attribution methods in the finetuning regime.
    * - KFAC
      - 0.067 [0.056, 0.080]
      - 0.420 [0.391, 0.446]
+   * - LiSSA (Gauss-Newton Hessian)
+     - 0.065 [0.054, 0.076]
+     - 0.572 [0.549, 0.592]
    * - BM25
      - 0.062 [0.048, 0.076]
      - 0.220 [0.185, 0.252]
@@ -118,6 +121,8 @@ Per-token attribution scores, which attribute each training token's loss term, e
      - 0.922 [0.887, 0.957]
    * - SOURCE (Adam, EKFAC)
      - 0.908 [0.877, 0.942]
+   * - LiSSA (Gauss-Newton Hessian)
+     - 0.880 [0.850, 0.912]
    * - EKFAC
      - 0.863 [0.833, 0.894]
    * - KFAC
@@ -145,19 +150,22 @@ Notes
 There are many method selection considerations not captured by LDS or QLD. Here is some additional information.
 
 MAGIC
-   This method backpropagates through the training process once per query and doesn't support query batching. It works well in FP32 or TF32 but may significantly degrade when used to attribute BF16 training runs, or training runs with low batch sizes.
-
-ASTRA
-   ASTRA improves a Kronecker-factored Hessian approximation's application to an inverse Hessian vector product, so it adds a constant amount of compute to each query compared to an influence function like EKFAC. The original paper used an ASTRA Hessian that is 1/511 the scale of the EKFAC Hessian. We include this result for completeness along with one using Hessians with identical scales. We run a small learning rate grid search against solver error to tune ASTRA's learning rate.
+   MAGIC backpropagates through the training process once per query - it doesn't support query batching. It works well in FP32 or TF32 but may significantly degrade when used to attribute BF16 training runs, or training runs with low batch sizes.
 
 EKFAC
-   This is a classic influence function in the form ``g_t H^{-1} g_q`` using the EKFAC Hessian approximation for H. The H can be swapped out for other matrices including KFAC, Shampoo, and MAC.
+   A classic influence function in the form ``g_t H^{-1} g_q`` using the EKFAC Hessian approximation for H. The H can be swapped out for other matrices including KFAC, Shampoo, and MAC.
+
+ASTRA
+   ASTRA refines a Kronecker-factored inverse Hessian vector product such as EKFAC's, so it adds a constant amount of compute to each query on top of EKFAC's. Our mainline ASTRA result uses a learning rate tuned via a small grid search against the ASTRA objective, and identically scaled EKFAC and Gauss-Newton Hessians. We also include a reference result matching the implementation in the original paper, which uses a Gauss-Newton Hessian 1/511th the scale of the EKFAC Hessian.
+
+LiSSA
+   The influence function of `Bae et al. <https://arxiv.org/abs/2209.05364>`_: the damped Gauss-Newton Hessian inverse applied to each query by the LiSSA solver. Unlike ASTRA, it doesn't precondition with an existing Hessian approximation, and costs significantly more per query.
 
 KFAC
-   KFAC supports gradient compression with ``projection_dim``. This produces a highly efficient variant based on a reusable gradient store, suitable for the retrieval stage of a data attribution pipeline, at the cost of some LDS/QLD.
+   A classic influence function in the form ``g_t H^{-1} g_q``. KFAC supports gradient compression with ``projection_dim``, enabling a highly efficient variant based on a reusable gradient store, suitable for the retrieval stage of a data attribution pipeline, at the cost of some LDS/QLD.
 
 Eigenvalue-corrected Shampoo
-   This is a custom influence function in the form ``g_t H^{-1} g_q`` using the Shampoo preconditioner as the H. Its mathematical relationship with the true Hessian is somewhere between "null" and "extremely tenuous", but it performs well anyway. It uses an eigenvalue-correction similar to EKFAC's, and to the variant used in SOAP optimization.
+   A novel influence function in the form ``g_t H^{-1} g_q`` using the Shampoo preconditioner as the H. Its mathematical relationship with the true Hessian is somewhere between "null" and "extremely tenuous" but it performs well anyway. It uses an eigenvalue correction similar to EKFAC's, and to the procedure in SOAP optimization.
 
 SOURCE
    SOURCE uses a weighted combination of Hessian approximations fit on different segments of the training trajectory, so it may perform relatively better in longer or multi-phase training runs.
@@ -166,7 +174,7 @@ TrackStar
    TrackStar is a highly efficient method that can more readily scale to pretraining via a reusable compressed gradient store. Presumably it's designed to be used as the first stage of a data search pipeline that eventually uses a more powerful influence function to re-rank the top-k items.
 
 TRAK
-   TRAK's performance matches `existing results <https://arxiv.org/pdf/2405.12186>`_ in the literature.
+   A gradient-based method. TRAK's performance matches `existing results <https://arxiv.org/pdf/2405.12186>`_ in the literature.
 
 Gradient similarity
    A baseline that considers only the direct effect of the parameter update on the query.
@@ -175,7 +183,7 @@ Semantic search
    A baseline that uses a model optimized to retrieve documents with a similar meaning to the query document.
 
 BM25
-   A baseline that uses a model optimized to retrieve documents with words matching those in the query document.
+   A baseline that retrieve documents with words matching those in the query document.
 
 Activation similarity
    A novel baseline that uses the model's activations rather than its gradients. Any embedding of data into a representation space can be used to compute data similarities, so comparing activation-based similarities to gradient-based similarities sheds light on the extent to which gradient-based notions of similarity are especially suited to making counterfactual predictions. Here we see that the best gradient-based methods outperform model activations, but that suitably preconditioned model activations seem to outperform gradient-based methods optimized for efficiency, like gradient cosine similarity and TrackStar, along with semantic search.
