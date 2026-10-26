@@ -25,7 +25,7 @@ from bergson.score.score_writer import save_sequence_scores
 
 from .test_score import _write_query_index
 
-MODEL = "trl-internal-testing/tiny-Phi3ForCausalLM"
+MODEL = "trl-internal-testing/tiny-Phi3ForCausalLM-3"
 
 
 def _write_earlier(path: Path, scores: np.ndarray, higher_is_better: bool) -> str:

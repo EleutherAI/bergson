@@ -16,7 +16,7 @@ from bergson.score.score import score_dataset
 
 from .test_score import _write_query_index
 
-MODEL = "trl-internal-testing/tiny-Phi3ForCausalLM"
+MODEL = "trl-internal-testing/tiny-Phi3ForCausalLM-3"
 # GPT-2 keeps its weights [in, out] in HF Conv1D modules.
 CONV1D_MODEL = "hf-internal-testing/tiny-random-gpt2"
 

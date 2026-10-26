@@ -28,7 +28,9 @@ class TestGradientCollectorCallback:
     @pytest.fixture
     def model(self):
         """Create a small test model."""
-        config = AutoConfig.from_pretrained("trl-internal-testing/tiny-Phi3ForCausalLM")
+        config = AutoConfig.from_pretrained(
+            "trl-internal-testing/tiny-Phi3ForCausalLM-3"
+        )
         return AutoModelForCausalLM.from_config(config, torch_dtype=torch.float32)
 
     @pytest.fixture
@@ -400,7 +402,7 @@ def test_callback_with_optimizer_state_trains(tmp_path: Path):
     lives outside ``base_model`` for both tied and untied models.
     """
     model = AutoModelForCausalLM.from_pretrained(
-        "trl-internal-testing/tiny-Phi3ForCausalLM", dtype=torch.float32
+        "trl-internal-testing/tiny-Phi3ForCausalLM-3", dtype=torch.float32
     )
     data = {"input_ids": [[1, 2, 3, 4, 5]] * 4}
     data["labels"] = data["input_ids"]

@@ -64,7 +64,7 @@ def magic_cfg(
     )
     return MagicConfig(
         run_path=run_path,
-        model="trl-internal-testing/tiny-Phi3ForCausalLM",
+        model="trl-internal-testing/tiny-Phi3ForCausalLM-3",
         fsdp=fsdp,
         data=data,
         query=QuerySetConfig.from_data(query, aggregation="none"),

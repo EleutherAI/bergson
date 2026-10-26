@@ -31,7 +31,7 @@ from bergson.magic.data_stream import (
 from bergson.utils.math import weighted_causal_lm_ce
 from bergson.validate import mean_query_loss, per_doc_query_losses
 
-TINY = "trl-internal-testing/tiny-Phi3ForCausalLM"
+TINY = "trl-internal-testing/tiny-Phi3ForCausalLM-3"
 
 
 def _model():
