@@ -72,3 +72,18 @@ def test_workers_with_large_arguments_start_together(monkeypatch, tmp_path):
     starts = [float(p.read_text()) for p in out.iterdir()]
     assert len(starts) == 4
     assert max(starts) - min(starts) < 2
+
+
+def check_threads(rank: int, local_rank: int, world_size: int, expected: int):
+    assert torch.get_num_threads() == expected
+
+
+def test_workers_share_the_cores(monkeypatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+    monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
+    launch_distributed_run(
+        "test",
+        check_threads,
+        [max(1, os.cpu_count() // 4)],
+        DistributedConfig(nproc_per_node=4),
+    )

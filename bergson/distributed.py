@@ -105,11 +105,15 @@ def dist_worker(
     master_addr: str,
     master_port: str,
     matmul_precision: str,
+    num_threads: int,
     args_path: str,
 ):
     # Spawned children start with torch's default, so copy the parent's, which
     # IndexConfig.use_tf32_matmuls sets.
     torch.set_float32_matmul_precision(matmul_precision)
+    # Each child gets its share of the node's cores, as under torchrun
+    if "OMP_NUM_THREADS" not in os.environ:
+        torch.set_num_threads(num_threads)
     os.environ["LOCAL_RANK"] = str(local_rank)
     os.environ["RANK"] = str(rank)
     os.environ["WORLD_SIZE"] = str(world_size)
@@ -207,6 +211,7 @@ def launch_distributed_run(
                         master_addr,
                         master_port,
                         torch.get_float32_matmul_precision(),
+                        max(1, (os.cpu_count() or 1) // local_world_size),
                         args_file.name,
                     ),
                 )
