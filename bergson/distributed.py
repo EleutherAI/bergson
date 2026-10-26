@@ -1,10 +1,13 @@
 import io
 import os
+import pickle
 import socket
+import tempfile
 from contextlib import nullcontext, redirect_stdout
 from copy import deepcopy
 from datetime import timedelta
 from multiprocessing.connection import wait
+from multiprocessing.reduction import dump
 from typing import Any, Callable, Concatenate, Mapping, ParamSpec
 
 import torch
@@ -102,7 +105,7 @@ def dist_worker(
     master_addr: str,
     master_port: str,
     matmul_precision: str,
-    *worker_args,
+    args_path: str,
 ):
     # Spawned children start with torch's default, so copy the parent's, which
     # IndexConfig.use_tf32_matmuls sets.
@@ -112,6 +115,8 @@ def dist_worker(
     os.environ["WORLD_SIZE"] = str(world_size)
     os.environ["MASTER_ADDR"] = master_addr
     os.environ["MASTER_PORT"] = master_port
+    with open(args_path, "rb") as f:
+        worker_args = pickle.load(f)
 
     with nullcontext() if rank == 0 else redirect_stdout(io.StringIO()):
         worker(rank, local_rank, world_size, *worker_args)
@@ -183,6 +188,10 @@ def launch_distributed_run(
         # other distributed env vars are set inside dist_worker once the
         # child has started, since they're only read by Python code.
         spawn_ctx = mp.get_context("spawn")
+        # Children load the shared arguments from a file, so each start returns
+        # without waiting for the child to import its main module.
+        with tempfile.NamedTemporaryFile(suffix=".pkl", delete=False) as args_file:
+            dump(const_worker_args, args_file)
         saved_cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
         children = []
         try:
@@ -198,7 +207,7 @@ def launch_distributed_run(
                         master_addr,
                         master_port,
                         torch.get_float32_matmul_precision(),
-                        *const_worker_args,
+                        args_file.name,
                     ),
                 )
                 p.start()
@@ -232,6 +241,7 @@ def launch_distributed_run(
                 p.join(timeout=10)
                 if p.is_alive():
                     p.kill()
+            os.remove(args_file.name)
 
 
 Args = ParamSpec("Args")
