@@ -1,6 +1,11 @@
 __version__ = "2.5.0"
 
 import logging
+import os
+
+# NumPy requests huge pages for large arrays, which makes copies out of
+# memory-mapped stores several times slower on long-running hosts
+os.environ.setdefault("NUMPY_MADVISE_HUGEPAGE", "0")
 
 from .builder import Builder
 from .collection import collect_gradients
