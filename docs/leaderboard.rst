@@ -54,6 +54,9 @@ Indicative performance of data attribution methods in the finetuning regime.
    * - Activation similarity (activation covariance preconditioner, projection 64)
      - 0.055 [0.043, 0.069]
      - 0.152 [0.116, 0.187]
+   * - `Gemma Scope 2 <https://huggingface.co/google/gemma-scope-2-27b-pt>`_ SAE feature similarity
+     - 0.053 [0.040, 0.067]
+     - 0.165 [0.129, 0.200]
    * - `Qwen3-Embedding-8B <https://huggingface.co/spaces/mteb/leaderboard>`_ semantic search
      - 0.049 [0.038, 0.061]
      - 0.132 [0.093, 0.169]
@@ -139,6 +142,8 @@ Per-token attribution scores, which attribute each training token's loss term, e
      - 0.119 [0.112, 0.125]
    * - Activation similarity (activation covariance preconditioner)
      - 0.073 [0.056, 0.092]
+   * - Gemma Scope 2 SAE feature similarity
+     - 0.047 [0.037, 0.058]
    * - Activation similarity
      - 0.028 [0.018, 0.039]
    * - Qwen3-Embedding-8B semantic search
@@ -183,6 +188,9 @@ Gradient similarity
 
 Semantic search
    A baseline that uses a model optimized to retrieve documents with a similar meaning to the query document.
+
+SAE feature similarity
+   A baseline that compares documents by the mean of a sparse autoencoder's features on a large language model's residual stream, here the Gemma Scope 2 SAE at layer 31 of Gemma 3 27B.
 
 BM25
    A baseline that retrieve documents with words matching those in the query document.
