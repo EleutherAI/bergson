@@ -1,11 +1,12 @@
 """Backward-compatible wrapper for semantic experiments.
 
 This module re-exports all functions from the semantic package for backward
-compatibility. New code should import directly from examples.semantic instead.
+compatibility. New code should import directly from
+examples.semantic_experiment instead.
 """
 
 # Re-export everything from the semantic package
-from semantic import (
+from examples.semantic_experiment import (
     build_style_indices,
     build_style_lookup,
     compute_between_hessian,

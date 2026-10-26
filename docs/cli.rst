@@ -144,7 +144,7 @@ Method Pipelines
        --method kfac \
        --hessian_cfg.ev_correction true
 
-See ``examples/compare_wikitext/ekfac.yaml`` for a complete pipeline
+See ``examples/gpt2_wikitext_leaderboard/ekfac.yaml`` for a complete pipeline
 configuration, and ``examples/pipelines/trackstar_then_shampoo.yaml`` for a
 two-step pipeline with efficient retrieval followed by precise reranking of top
 candidates.
@@ -187,7 +187,7 @@ configuration.
        --query.dataset NeelNanda/pile-10k \
        --query.split "train[:8]"
 
-See ``examples/magic/gpt2_wikitext_tiny.yaml`` for a complete run
+See ``examples/magic_gpt2_wikitext_tiny.yaml`` for a complete run
 configuration.
 
 Training & Evaluation

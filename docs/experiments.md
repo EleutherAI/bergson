@@ -25,7 +25,7 @@ This option will pull [EleutherAI/bergson-asymmetric-style](https://huggingface.
 **Reproduce results manually**:
 
 ```python
-from examples.semantic.asymmetric import run_asymmetric_experiment, AsymmetricConfig
+from examples.semantic_experiment.asymmetric import run_asymmetric_experiment, AsymmetricConfig
 
 config = AsymmetricConfig(
     # Use pre-computed data
@@ -143,7 +143,7 @@ The unnormalized inner product `g_eval @ H^(-1) @ g_train.T` is the classic infl
 **Run the experiment**:
 
 ```python
-from examples.semantic.asymmetric import run_asymmetric_experiment, AsymmetricConfig
+from examples.semantic_experiment.asymmetric import run_asymmetric_experiment, AsymmetricConfig
 
 config = AsymmetricConfig(
     hf_dataset="EleutherAI/bergson-asymmetric-style",  # Use pre-computed data

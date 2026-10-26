@@ -20,7 +20,7 @@ Options:
 ### For attribute preservation experiment:
 
 ```python
-from examples.semantic.attribute_preservation import (
+from examples.semantic_experiment.attribute_preservation import (
     AttributePreservationConfig,
     compute_attribute_metrics,
     print_attribute_metrics,
@@ -38,7 +38,7 @@ for name in ['no_hess', 'r_between', 'h_eval']:
 # Also compute majority control if available
 from pathlib import Path
 if (Path(base_path) / 'data' / 'eval_majority.hf').exists():
-    from examples.semantic.attribute_preservation import compute_majority_style_metrics
+    from examples.semantic_experiment.attribute_preservation import compute_majority_style_metrics
     majority = compute_majority_style_metrics(config, base_path, None)
     print_attribute_metrics(majority, 'majority_no_hess')
 ```
@@ -46,7 +46,7 @@ if (Path(base_path) / 'data' / 'eval_majority.hf').exists():
 ### For asymmetric experiment:
 
 ```python
-from examples.semantic.asymmetric import (
+from examples.semantic_experiment.asymmetric import (
     AsymmetricConfig,
     compute_asymmetric_metrics,
     print_metrics,
