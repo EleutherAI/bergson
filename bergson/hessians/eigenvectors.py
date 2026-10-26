@@ -630,6 +630,8 @@ def _gather_and_shard_along_dim_0(
     if world_size == 1:
         return input_dict
 
+    # Free tensors held only by reference cycles before the gathers allocate
+    gc.collect()
     result_dict: dict[str, Tensor] = {}
     for key, full_shape in full_shape_per_key.items():
         if key in input_dict:
@@ -644,6 +646,5 @@ def _gather_and_shard_along_dim_0(
         result_dict[key] = shard.to(device="cpu")
 
         del tensor
-        gc.collect()
 
     return result_dict
