@@ -1,0 +1,74 @@
+# Self-influence for GPT-2 fine-tuned on WikiText-2.
+
+# Builds one gradient index over the training chunks, then scores that same
+# dataset against the index as its own query set. Entry (i, j) of the score
+# matrix is the gradient inner product <g_i, g_j>, so the diagonal
+# <g_i, g_i> = ||g_i||^2 is the self-influence of example i -- how much
+# training on an example lowers its own loss. High self-influence flags
+# outliers, mislabeled, or memorized examples.
+
+# No hessian is used, so this is a plain inner product.
+
+# Run with `bergson examples/tiny_method_demonstrations/self_influence.yaml`
+
+# Outputs runs/self_influence/index (the gradient index, reused as the query
+# set) and runs/self_influence/scores, a [4608, 4608] score matrix. Read it
+# with `bergson.data.load_scores`:
+
+#   import numpy as np
+#   from bergson.data import load_scores
+#   scores = load_scores(Path("runs/self_influence/scores"))
+#   self_influence = np.array([scores.get(i, i) for i in range(len(scores))])
+#   print(np.argsort(-self_influence)[:10])  # highest self-influence
+
+run_path: runs/self_influence
+steps:
+  # Step 1/2: build the gradient index that doubles as the query set.
+  # Each module's gradient is randomly projected to projection_dim x
+  # projection_dim (48 tracked modules here, so 49,152 dims per example), which
+  # makes the scores JL estimates of the true inner products: raise it for
+  # fidelity, lower it for speed and disk. The projection is seeded from each
+  # module's name, so step 2 reproduces it as long as the projection settings
+  # match.
+  - build:
+      index_cfg:
+        run_path: runs/self_influence/index
+        model: EleutherAI/GPT-2-wikitext-chunks
+        overwrite: true
+        projection_dim: 32
+        # GPT-2's max context length is 1024
+        token_batch_size: 1024
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "train"
+          # The dataset is pre-chunked to 512 tokens
+          chunk_length: 0
+        distributed:
+          nproc_per_node: 1
+      # Store raw gradients: no normalization, aggregation, or preconditioning.
+      preprocess_cfg: {}
+
+  # Step 2/2: recollect gradients for the same dataset and score them against
+  # the index. `score` always recomputes the index side, so this is a second
+  # gradient pass over the data.
+  - score:
+      score_cfg:
+        query_path: runs/self_influence/index
+        batch_size: 1024
+
+      index_cfg:
+        run_path: runs/self_influence/scores
+        model: EleutherAI/GPT-2-wikitext-chunks
+        overwrite: true
+        projection_dim: 32
+        token_batch_size: 1024
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "train"
+          chunk_length: 0
+        distributed:
+          nproc_per_node: 1
+
+      # unit_normalize stays off so scores are inner products; turning it on
+      # would give cosine similarities, whose diagonal is 1 by construction.
+      preprocess_cfg: {}

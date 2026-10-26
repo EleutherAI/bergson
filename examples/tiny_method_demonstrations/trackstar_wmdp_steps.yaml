@@ -1,0 +1,74 @@
+# Step-by-step TrackStar example.
+
+# Run with `bergson examples/tiny_method_demonstrations/trackstar_wmdp_steps.yaml`
+
+run_path: runs/trackstar_wmdp_pieces
+steps:
+  # Step 1/5: Compute autocorrelation hessian on the value (training) dataset.
+  - hessian:
+      index_cfg:
+        run_path: runs/trackstar_wmdp_pieces/value_hessian
+        overwrite: true
+        model: EleutherAI/pythia-160m
+        data:
+          dataset: NeelNanda/pile-10k
+          split: train[:10000]
+          truncation: true
+      hessian_cfg:
+        method: autocorrelation
+
+  # Step 2/5: Compute autocorrelation hessian on the query dataset.
+  - hessian:
+      index_cfg:
+        run_path: runs/trackstar_wmdp_pieces/query_hessian
+        overwrite: true
+        model: EleutherAI/pythia-160m
+        data:
+          dataset: cais/wmdp
+          split: test[:10000]
+          subset: wmdp-bio
+          prompt_column: question
+          truncation: true
+      hessian_cfg:
+        method: autocorrelation
+
+  # Step 3/5: Mix the query and value hessians.
+  - mix:
+      query_path: runs/trackstar_wmdp_pieces/query_hessian
+      index_path: runs/trackstar_wmdp_pieces/value_hessian
+      output_path: runs/trackstar_wmdp_pieces/mixed_hessian
+
+  # Step 4/5: Aggregate the query dataset into a single mean gradient,
+  # preconditioning with the mixed hessian.
+  - build:
+      index_cfg:
+        run_path: runs/trackstar_wmdp_pieces/query
+        overwrite: true
+        model: EleutherAI/pythia-160m
+        data:
+          dataset: cais/wmdp
+          split: test
+          subset: wmdp-bio
+          prompt_column: question
+          truncation: true
+      preprocess_cfg:
+        hessian_path: runs/trackstar_wmdp_pieces/mixed_hessian
+        unit_normalize: true
+        aggregation: mean
+
+  # Step 5/5: Score the value (training) dataset against the query gradient,
+  # preconditioning with the mixed hessian.
+  - score:
+      score_cfg:
+        query_path: runs/trackstar_wmdp_pieces/query
+      index_cfg:
+        run_path: runs/trackstar_wmdp_pieces/scores
+        overwrite: true
+        model: EleutherAI/pythia-160m
+        data:
+          dataset: NeelNanda/pile-10k
+          split: train
+          truncation: true
+      preprocess_cfg:
+        hessian_path: runs/trackstar_wmdp_pieces/mixed_hessian
+        unit_normalize: true

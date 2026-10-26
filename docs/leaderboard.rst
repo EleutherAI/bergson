@@ -100,7 +100,7 @@ Indicative performance of data attribution methods in the finetuning regime.
      - 0.016 [0.012, 0.020]
      - 0.132 [0.103, 0.159]
 
-Results for GPT-2 finetuned on 4 epochs of the WikiText corpus. Held-out loss dropped from 3.545 to 3.111 over training. Every row scores the same model and query set; per-query statistics, run configs and reproduction steps are in `examples/compare_wikitext <https://github.com/EleutherAI/bergson/tree/main/examples/compare_wikitext>`_.
+Results for GPT-2 finetuned on 4 epochs of the WikiText corpus. Held-out loss dropped from 3.545 to 3.111 over training. Every row scores the same model and query set; per-query statistics, run configs and reproduction steps are in `examples/gpt2_wikitext_leaderboard <https://github.com/EleutherAI/bergson/tree/main/examples/gpt2_wikitext_leaderboard>`_.
 
 Per-token
 ---------
@@ -142,7 +142,7 @@ Per-token attribution scores, which attribute each training token's loss term, e
    * - Qwen3-Embedding-8B semantic search
      - 0.008 [0.006, 0.010]
 
-Configs and per-query statistics are in `examples/compare_wikitext/tokens <https://github.com/EleutherAI/bergson/tree/main/examples/compare_wikitext/tokens>`_.
+Configs and per-query statistics are in `examples/gpt2_wikitext_leaderboard/tokens <https://github.com/EleutherAI/bergson/tree/main/examples/gpt2_wikitext_leaderboard/tokens>`_.
 
 Notes
 -----

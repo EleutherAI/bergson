@@ -76,7 +76,7 @@ Use `bergson validate` and `bergson recall` to compute LDS and recall@k metrics 
 There are many example YAMLs in the `examples` directory, including various paper experiment replications. Use `bergson <yaml_path>` to run them. For example, to MAGIC-attribute a GPT-2 WikiText fine-tune:
 
 ```bash
-bergson examples/magic/gpt2_wikitext_tiny.yaml
+bergson examples/tiny_method_demonstrations/magic_gpt2_wikitext_tiny.yaml
 ```
 
 You can use the same fields used to specify experiments in the YAMLs to run experiments directly in the Bergson CLI. For example, to construct and query an on-disk index of randomly projected gradients from the CLI:

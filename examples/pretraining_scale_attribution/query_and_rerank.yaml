@@ -1,0 +1,52 @@
+# Two-stage retrieval using artifacts from build.yaml. TrackStar ranks every
+# training example for the query read from stdin and records its top 100
+# (10x the final top 10), then EK-FAC rescores just those 100 candidates.
+
+# Run with
+#   rm -rf runs/pretraining_scale_attribution/{candidates.csv,query,kfac_query,scores}
+#   tail -n +2 examples/pretraining_scale_attribution/query.csv \
+#     | sed 's/$/\nexit/' \
+#     | bergson examples/pretraining_scale_attribution/query_and_rerank.yaml
+
+# Outputs: runs/pretraining_scale_attribution/candidates.csv (the TrackStar
+# top 100) and runs/pretraining_scale_attribution/scores (one row per
+# candidate; candidates.npy beside it holds their training rows).
+
+run_path: runs/pretraining_scale_attribution/query_and_rerank
+steps:
+  # Stage 1: cosine similarity of H^-1/2 preconditioned projected gradients
+  # between the query and every row of the stored index.
+  - query:
+      index: runs/pretraining_scale_attribution/index
+      hessian_path: runs/pretraining_scale_attribution/hessian/autocorrelation
+      unit_norm: true
+      top_k: 100
+      record: runs/pretraining_scale_attribution/candidates.csv
+
+  # Stage 2: EK-FAC influence of the 100 candidates on the same query. With
+  # `resume: true` the factors already at hessian/kfac are read back
+  # instead of refitted, so `overwrite` stays off to keep them.
+  - ekfac:
+      index_cfg:
+        run_path: runs/pretraining_scale_attribution
+        model: EleutherAI/pythia-14m
+        token_batch_size: 1024
+        data:
+          dataset: NeelNanda/pile-10k
+          split: train[:2000]
+          truncation: true
+      hessian_cfg:
+        method: kfac
+        ev_correction: true
+      score_cfg:
+        candidates:
+          scores: runs/pretraining_scale_attribution/candidates.csv
+          top_k: 100
+      preprocess_cfg: {}
+      hessian_pipeline_cfg:
+        resume: true
+        query:
+          dataset: examples/pretraining_scale_attribution/query.csv
+          aggregation: none
+        inversion_cfg:
+          damping_factor: 0.1

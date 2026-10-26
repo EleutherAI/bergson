@@ -175,8 +175,6 @@ def _run_bergson_autocorrelation(
         max_tokens=train_tokens,
         precision="bf16",
         projection_dim=run_cfg.projection_dim,
-        skip_hessians=False,
-        skip_index=True,
     )
     Path(index_cfg.run_path).mkdir(parents=True, exist_ok=True)
     index_cfg.partial_run_path.mkdir(parents=True, exist_ok=True)
@@ -189,6 +187,7 @@ def _run_bergson_autocorrelation(
         processor=GradientProcessor(projection_dim=proj_dim),
         data=ds,
         cfg=index_cfg,
+        skip_index=True,
     )
     computer = CollectorComputer(
         model=model,
@@ -242,8 +241,6 @@ def _run_bergson_kfac(
         token_batch_size=run_cfg.token_batch_size,
         max_tokens=train_tokens,
         precision="bf16",
-        skip_hessians=True,
-        skip_index=True,
     )
     # Append method subdir like approximate_hessians does
     index_cfg.run_path = index_cfg.run_path + "/kfac"

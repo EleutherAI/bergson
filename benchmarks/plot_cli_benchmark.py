@@ -18,7 +18,8 @@ from benchmarks.benchmark_bergson_cli import (
     CLIRunRecord,
     load_records,
 )
-from benchmarks.benchmark_utils import extract_gpu_info, model_color
+from benchmarks.benchmark_utils import extract_gpu_info
+from benchmarks.plot_styles import model_color
 
 
 def create_cli_dataframe(

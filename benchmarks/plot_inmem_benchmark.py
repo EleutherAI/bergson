@@ -18,8 +18,8 @@ from benchmarks.benchmark_bergson import RunRecord, load_records
 from benchmarks.benchmark_utils import (
     extract_gpu_info,
     get_hardware_info,
-    model_color,
 )
+from benchmarks.plot_styles import model_color
 
 
 def create_inmem_dataframe(
