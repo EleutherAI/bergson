@@ -2,6 +2,8 @@
 
 import json
 import os
+import heapq
+import random
 from datetime import timedelta
 from pathlib import Path
 
@@ -11,7 +13,7 @@ import torch.distributed as dist
 from tqdm.auto import tqdm
 
 from bergson.collector.collector import HookCollectorBase
-from bergson.data import allocate_batches, allocate_dpo_batches, pad_and_tensor
+from bergson.data import _allocate_batches_world, pad_and_tensor
 from bergson.score.output_influence import output_token_influence, query_directions
 from bergson.score.output_model import install_output_loss_head, register_output_attention
 from bergson.score.score_writer import MemmapSequenceScoreWriter, MemmapTokenScoreWriter
@@ -59,9 +61,32 @@ def output_influence_worker(rank, local_rank, world_size, index_cfg, score_cfg, 
     if dist.is_initialized():
         dist.barrier()
     flags = np.load(flags_path, mmap_mode='r+')
-    batches = (allocate_dpo_batches(ds['length'][:], cfg.token_batch_size, max_batch_size=cfg.max_batch_size)
-               if cfg.loss_fn == 'dpo' else allocate_batches(ds['length'][:], cfg.token_batch_size, max_batch_size=cfg.max_batch_size))
-    for batch_number, indices in enumerate(tqdm(batches, desc='Scoring output token influence')):
+    # Output workers are independent replicas, so they may take unequal steps.
+    # Build one exact global allocation, then assign each batch once; the FSDP
+    # allocator's world-size divisibility constraint is not needed here.
+    lengths = ds['length'][:]
+    if cfg.loss_fn == 'dpo':
+        n = len(lengths)//2
+        pair_lengths = [max(lengths[i],lengths[n+i]) for i in range(n)]
+        pair_batches = _allocate_batches_world(
+            pair_lengths,cfg.token_batch_size//2,1,ranks=[0],
+            max_batch_size=cfg.max_batch_size//2 if cfg.max_batch_size else None,
+        )[0]
+        batches = [indices+[n+i for i in indices] for indices in pair_batches]
+    else:
+        batches = _allocate_batches_world(lengths,cfg.token_batch_size,1,ranks=[0],
+                                          max_batch_size=cfg.max_batch_size)[0]
+    # Balance estimated linear/attention work without requiring equal step counts.
+    # The coefficient matches the measured short-vs-16k cost scale; it changes
+    # scheduling only, never examples, weights, or token losses.
+    costs=[sum(lengths[i]**2+32768*lengths[i] for i in indices) for indices in batches]
+    allocation=[[] for _ in range(world_size)];heap=[(0,r) for r in range(world_size)]
+    for index in sorted(range(len(batches)),key=lambda i:(-costs[i],i)):
+        load,owner=heapq.heappop(heap)
+        allocation[owner].append(batches[index]);heapq.heappush(heap,(load+costs[index],owner))
+    batches=allocation[rank]
+    random.Random(42+rank).shuffle(batches)
+    for indices in tqdm(batches,desc='Scoring output token influence'):
         if flags[indices].all():
             continue
         batch = ds[indices]
