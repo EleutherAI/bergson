@@ -251,6 +251,9 @@ def setup_model_and_peft(
     assert base_model_path is not None
 
     model_kwargs.update(simple_parse_kwargs_string(cfg.model_kwargs))
+    if model_kwargs.get("attn_implementation") == "bergson_efficient_sdpa":
+        from bergson.score.output_model import register_efficient_attention
+        register_efficient_attention()
 
     model = AutoModelForCausalLM.from_pretrained(
         base_model_path,
@@ -287,6 +290,18 @@ def setup_model_and_peft(
         for name in requested:
             model.base_model.get_submodule(name)
         target_modules = requested
+
+    if getattr(cfg, "stream_output_loss", False):
+        from bergson.score.output_model import install_output_loss_head
+        install_output_loss_head(model, checkpoint_reverse=True)
+
+    if getattr(cfg, "checkpoint_mlp", False):
+        from bergson.utils.recompute import checkpoint_mlps
+        checkpoint_mlps(model)
+
+    if getattr(cfg, "checkpoint_attention", False):
+        from bergson.utils.recompute import checkpoint_attentions
+        checkpoint_attentions(model)
 
     # Configure gradients
     model.requires_grad_(False)

@@ -38,6 +38,8 @@ from bergson.gradients import (
 )
 from bergson.utils.logger import get_logger
 from bergson.utils.peft import set_peft_enabled
+from bergson.utils.activation_offload import save_on_cpu_preserve_attention_bias
+from bergson.utils.recompute import IN_RECOMPUTE
 from bergson.utils.utils import assert_type
 
 
@@ -345,6 +347,8 @@ class HookCollectorBase(ContextDecorator, ABC):
 
     def _process_input(self, module: nn.Module, inp: tuple, _):
         """Internal forward hook that extracts input and delegates to subclass."""
+        if IN_RECOMPUTE.get():
+            return
         x = inp[0].detach()
         assert x.ndim == 3, f"Expected input of shape [N, S, I], got {x.shape}"
 
@@ -768,7 +772,7 @@ class CollectorComputer:
                     ),
                 ):
                     autograd_context = (
-                        torch.autograd.graph.save_on_cpu(pin_memory=False)
+                        save_on_cpu_preserve_attention_bias()
                         if self.cfg.offload_activations
                         else nullcontext()
                     )
@@ -833,8 +837,18 @@ def fwd_bwd_factory(cfg: IndexConfig) -> Callable:
                 ref_logits = model(x).logits
                 set_peft_enabled(model, True)
             ref_seq_lp = sequence_log_probs(ref_logits, y, reduction=cfg.loss_reduction)
-        full_logits = model(x).logits
-        logits = full_logits[:, :-1]
+        streamed = getattr(model, '_bergson_output_loss_head', False) and cfg.loss_fn in ('ce', 'dpo')
+        if streamed:
+            from bergson.score.output_model import TOKEN_LOSS_REQUEST
+            request = TOKEN_LOSS_REQUEST.set((y, cfg.label_smoothing))
+            try:
+                token_losses = model(x).logits
+            finally:
+                TOKEN_LOSS_REQUEST.reset(request)
+            full_logits = logits = None
+        else:
+            full_logits = model(x).logits
+            logits = full_logits[:, :-1]
         masks = y[:, 1:] != -100
         denoms = (
             masks.sum(dim=1, dtype=model.dtype) if cfg.loss_reduction == "mean" else 1.0
@@ -862,7 +876,7 @@ def fwd_bwd_factory(cfg: IndexConfig) -> Callable:
             )
             half = N // 2
 
-            seq_lp = sequence_log_probs(full_logits, y, reduction=cfg.loss_reduction)
+            seq_lp = -token_losses.sum(dim=1) / denoms if streamed else sequence_log_probs(full_logits, y, reduction=cfg.loss_reduction)
             assert ref_seq_lp is not None
             if ref_seq_lp.shape[0] != N:
                 raise ValueError("reference_logps must contain one value per expanded row")
@@ -873,7 +887,7 @@ def fwd_bwd_factory(cfg: IndexConfig) -> Callable:
             losses = -F.logsigmoid(chosen_rewards - rejected_rewards)  # [N/2]
 
         else:
-            losses = F.cross_entropy(
+            losses = token_losses if streamed else F.cross_entropy(
                 logits.reshape(-1, logits.size(-1)),
                 y[:, 1:].flatten(),
                 reduction="none",
@@ -915,8 +929,18 @@ def fwd_bwd_hessian_factory(
         )
 
     def fwd_bwd_hessian(model, x: Tensor, y: Tensor, batch: dict):
-        full_logits = model(x).logits
-        logits = full_logits[:, :-1]
+        streamed = getattr(model, '_bergson_output_loss_head', False) and (index_cfg.loss_fn == 'dpo' or hessian_cfg.use_dataset_labels)
+        if streamed:
+            from bergson.score.output_model import TOKEN_LOSS_REQUEST
+            request = TOKEN_LOSS_REQUEST.set((y, 0.0))
+            try:
+                token_losses = model(x).logits
+            finally:
+                TOKEN_LOSS_REQUEST.reset(request)
+            full_logits = logits = None
+        else:
+            full_logits = model(x).logits
+            logits = full_logits[:, :-1]
         masks = y[:, 1:] != -100
         denoms = (
             masks.sum(dim=1, dtype=model.dtype)
@@ -926,7 +950,7 @@ def fwd_bwd_hessian_factory(
         if index_cfg.loss_fn == "dpo":
             if "reference_logps" not in batch:
                 raise ValueError("DPO Hessian requires cached reference_logps")
-            seq_lp = sequence_log_probs(full_logits, y, reduction=index_cfg.loss_reduction)
+            seq_lp = -token_losses.sum(dim=1) / denoms if streamed else sequence_log_probs(full_logits, y, reduction=index_cfg.loss_reduction)
             refs = torch.as_tensor(batch["reference_logps"], device=x.device, dtype=seq_lp.dtype)
             if seq_lp.numel() % 2:
                 raise ValueError("DPO Hessian requires paired rows")
@@ -934,7 +958,7 @@ def fwd_bwd_hessian_factory(
             # times the DPO margin gradient, yielding the logistic GGN weight.
             losses = dpo_ggn_surrogate(seq_lp, refs, index_cfg.dpo_beta)
         elif hessian_cfg.use_dataset_labels:
-            losses = F.cross_entropy(
+            losses = token_losses if streamed else F.cross_entropy(
                 logits.reshape(-1, logits.size(-1)),
                 y[:, 1:].flatten(),
                 reduction="none",

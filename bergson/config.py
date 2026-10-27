@@ -470,6 +470,15 @@ class IndexConfig(AttributionConfig, Serializable):
     For example, "transformer.h.*.mlp.*" will exclude all MLP layers in a
     standard transformer architecture."""
 
+    checkpoint_attention: bool = False
+    """Recompute OLMo3 attention activations during reverse-mode collection."""
+
+    checkpoint_mlp: bool = False
+    """Recompute OLMo3 MLP activations during reverse-mode collection."""
+
+    stream_output_loss: bool = False
+    """Checkpoint a chunked vocabulary loss for reverse-mode CE/DPO collection."""
+
     force_math_sdp: bool = False
     """Disable flash and memory-efficient SDPA backends, forcing the
     math-only kernel. Some models produce inconsistent gradients across
@@ -551,6 +560,12 @@ class ScoreConfig(Serializable):
 
     query_path: str = ""
     """Path to the existing query index."""
+
+    token_influence: Literal["gradient", "output"] = "gradient"
+    """Output mode attributes each predicted-token loss using forward-mode JVP."""
+
+    output_compute_precision: Literal["fp32", "bf16"] = "fp32"
+    """Output JVP matrix compute only; parameters, query and scores stay FP32."""
 
     offload_queries: bool = False
     """Keep query gradients on CPU and score one module at a time."""

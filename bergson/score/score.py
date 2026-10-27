@@ -385,6 +385,14 @@ def score_dataset(
     preprocess_cfg : PreprocessConfig
         Preprocessing configuration for gradient normalization/preconditioning.
     """
+    worker = score_worker
+    if score_cfg.token_influence == 'output':
+        from bergson.score.output_influence import check_output_influence_supported
+        from bergson.score.output_worker import output_influence_worker
+        check_output_influence_supported(index_cfg, preprocess_cfg)
+        if score_cfg.score != 'individual':
+            raise ValueError('Output influence requires individual dot-product scores')
+        worker = output_influence_worker
     index_cfg.partial_run_path.mkdir(parents=True, exist_ok=True)
 
     index_cfg.save_yaml(index_cfg.partial_run_path / "index_config.yaml")
@@ -401,7 +409,7 @@ def score_dataset(
 
     launch_distributed_run(
         "score",
-        score_worker,
+        worker,
         [index_cfg, score_cfg, preprocess_cfg, ds],
         dist_cfg,
     )
