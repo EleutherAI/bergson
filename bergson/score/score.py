@@ -396,7 +396,11 @@ def output_influence_worker(
         )
 
     # The fused attention kernels don't implement forward-mode derivatives.
-    model, target_modules = setup_model_and_peft(index_cfg, attn_implementation="eager")
+    model, target_modules = setup_model_and_peft(
+        index_cfg,
+        device_map_auto=score_cfg.device_map_auto,
+        attn_implementation="eager",
+    )
     # Dropout would give each query column its own random model.
     model.eval()
     # Saves the processor config beside the scores, as score_worker does.
@@ -517,6 +521,16 @@ def score_dataset(
 
     if score_cfg.token_influence == "output":
         check_output_influence_supported(index_cfg, preprocess_cfg)
+
+    if score_cfg.device_map_auto:
+        if score_cfg.token_influence != "output":
+            raise ValueError("device_map_auto requires token_influence='output'.")
+        # launch_distributed_run gives each process a single GPU.
+        if index_cfg.distributed.world_size > 1:
+            raise ValueError(
+                "device_map_auto splits the model across every visible GPU in "
+                "one process, so it needs nnode=1 and nproc_per_node=1."
+            )
 
     processor = processor_for(index_cfg)
     processor.check_saved_projection(score_cfg.query_path, "The query")

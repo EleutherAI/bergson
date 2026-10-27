@@ -102,7 +102,7 @@ def query_direction(
         weight = params[weight_name]
         out_dim = weight.shape[1] if transposed else weight.shape[0]
         in_dim = weight.numel() // out_dim
-        v = block[:, q].reshape(out_dim, -1).to(weight.dtype)
+        v = block[:, q].reshape(out_dim, -1).to(weight.device, weight.dtype)
         w = v[:, :in_dim]
         direction[weight_name] = (w.T if transposed else w).reshape(weight.shape)
         if bias_name is not None:
