@@ -198,7 +198,7 @@ This is cosine similarity in the :math:`H^{-1}`-weighted inner product space —
        --hessian_path runs/hess
 
 For fully automated mixed-hessian pipelines (separate hessians for query
-and training data), use the ``trackstar`` command. See :doc:`trackstar` for details.
+and training data), use the ``trackstar`` command. See :doc:`methods/trackstar` for details.
 
 **Why** :math:`H^{-1/2}` **on both sides?** For inner product scoring, applying :math:`H^{-1}` to one side only is sufficient since the relative ordering of :math:`g_q H^{-1} g_t^T` is preserved. For cosine similarity, the unit normalization would undo a one-sided application: normalizing :math:`g_t` to unit norm discards the hessian's geometry. Applying :math:`H^{-1/2}` symmetrically to both sides before normalization preserves the preconditioned structure and ensures the normalization operates in the correct space.
 

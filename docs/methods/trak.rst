@@ -2,7 +2,7 @@ TRAK
 ====
 
 ``trak`` implements `TRAK: Attributing Model Behavior at Scale <https://arxiv.org/abs/2303.14186>`_
-(2023), a method which randomly projects whole-model gradients from ``model_dim`` to ``projection_dim``.
+(2023), an influence method which randomly projects whole-model gradients from ``model_dim`` to ``projection_dim``.
 
 A training example ``z_i`` is scored for a query ``z_q`` as
 
@@ -13,7 +13,7 @@ A training example ``z_i`` is scored for a query ``z_q`` as
 where :math:`\phi` is the projected per-example gradient of the output function :math:`\log p - \log(1 - p)`
 summed over the example's label tokens, :math:`\Phi` is the matrix of projected training gradients, one row
 per example, and :math:`p_i` is the mean probability of the example's label tokens. This is the language
-modeling form of TRAK from `DsDm <https://arxiv.org/abs/2401.12926>`_ (`reference implementation <https://github.com/MadryLab/trak>`).
+modeling form of TRAK from `DsDm <https://arxiv.org/abs/2401.12926>`_ (`reference implementation <https://github.com/MadryLab/trak>`_).
 
 The Gram :math:`\Phi^\top \Phi` inverse is applied to the query gradients, for computational efficiency,
 and is undamped by default. Pass several independently trained checkpoints to enable ensembling. Each
@@ -64,4 +64,4 @@ Example
        --loss_fn log_odds
 
 Scores are ``higher_is_better``, so a positive score indicates a query proponent.
-See :doc:`cli` for the full ``TrakConfig`` API reference.
+See :doc:`../cli` for the full ``TrakConfig`` API reference.

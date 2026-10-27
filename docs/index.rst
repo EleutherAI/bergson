@@ -55,11 +55,11 @@ Load the gradients:
    :maxdepth: 2
    :caption: Methods
 
-   influence-functions
-   trackstar
-   trak
-   source
-   magic
+   methods/influence-functions
+   methods/trackstar
+   methods/trak
+   methods/source
+   methods/magic
 
 .. toctree::
    :maxdepth: 2

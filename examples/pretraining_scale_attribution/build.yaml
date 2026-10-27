@@ -37,7 +37,7 @@ steps:
           truncation: true
       preprocess_cfg: {}
 
-  # The ekfac step of query_and_rerank.yaml reads its factors from
+  # The influence step of query_and_rerank.yaml reads its factors from
   # {run_path}/hessian/kfac, so this path is fixed by its run_path.
   - hessian:
       index_cfg:

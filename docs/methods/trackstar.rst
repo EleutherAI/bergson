@@ -1,9 +1,11 @@
 Trackstar
 =========
 
-``trackstar`` is a high-level pipeline that computes and mixes hessian preconditioners, then scores queries on the fly, following the methodology described in
+``trackstar`` is a high-level pipeline for the TrackStar influence method. The pipeline computes and mixes hessian preconditioners, then scores queries on the fly, following the methodology described in
 `Scalable Influence and Fact Tracing for Large Language Model Pretraining <https://arxiv.org/abs/2410.17413>`_
-(Chang et al., 2024). TrackStar is designed for use in large-scale language model attribution, so it's fast and efficient. It can be used as the initial recall-optimized step of a two-stage pipeline as proposed in `Efficient Retrieval of Influential LLM Training Examples <https://simons.berkeley.edu/talks/roger-grosse-university-toronto-2026-04-13>`_.
+(Chang et al., 2024). The TrackStar method is designed for use in large-scale language model attribution, so it's fast and efficient. It can be used as the initial recall-optimized step of a two-stage pipeline as proposed in `Efficient Retrieval of Influential LLM Training Examples <https://simons.berkeley.edu/talks/roger-grosse-university-toronto-2026-04-13>`_.
+
+The TrackStar CLI scores items on-the-fly. To build a reusable index that can be used for multiple serial TrackStar queries, build the TrackStar index and Hessian first, then query the index. See ``examples/pretraining_scale_attribution`` for an example where an on-disk TrackStar index is built in one step in ``build.yaml``, then queried as part of a two-stage retrieval pipeline in ``query_and_rerank.yaml``.
 
 What It Produces
 ----------------
@@ -42,4 +44,4 @@ Example
        --query.truncation \
        --projection_dim 16
 
-See :doc:`cli` for the full ``TrackstarConfig`` API reference.
+See :doc:`../cli` for the full ``TrackstarConfig`` API reference.

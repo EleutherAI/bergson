@@ -5,15 +5,15 @@ Bergson exposes all functionality through subcommands of the ``bergson`` CLI:
 
 .. code-block:: bash
 
-   bergson {build,query,score,hessian,mix,trackstar,ekfac,approxunrolling,magic,train,metasmoothness,validate,recall,test_model_configuration} [OPTIONS]
+   bergson {build,query,score,hessian,mix,trackstar,influence,approxunrolling,magic,train,metasmoothness,validate,recall,test_model_configuration} [OPTIONS]
 
 The commands fall into four groups:
 
 **Building blocks** — ``build``, ``query``, ``score``, ``hessian``, and ``mix``. ``build`` and ``query`` are designed for working with compressed gradients stored on disk and queried multiple times. ``build`` and ``score`` are designed for working with both compressed and uncompressed gradients primarily on GPUs, with a single predetermined query set: use ``build --aggregation mean`` (or ``sum``) to accumulate a dataset into a single query gradient, and ``score`` to map over an arbitrarily large dataset, computing the gradient of each item and scoring it against precomputed query gradients. ``hessian`` computes Hessian statistics (KFAC, TKFAC, Shampoo, or gradient
 autocorrelation) independently of per-example gradient collection, and ``mix`` combines two autocorrelation hessians into one. See :doc:`building_blocks`.
 
-**Method pipelines** — ``trackstar``, ``ekfac``, and ``approxunrolling`` orchestrate
-building blocks into end-to-end attribution recipes (see :doc:`trackstar`, :doc:`influence-functions`, and :doc:`source`). ``magic`` attributes by backpropagating through training (see :doc:`magic`).
+**Method pipelines** — ``trackstar``, ``influence``, and ``approxunrolling`` orchestrate
+building blocks into end-to-end attribution recipes (see :doc:`methods/trackstar`, :doc:`methods/influence-functions`, and :doc:`methods/source`). ``magic`` attributes by backpropagating through training (see :doc:`methods/magic`).
 
 **Training & evaluation** — ``train`` trains a model with the Bergson trainer; ``metasmoothness``, ``validate``, and ``recall`` evaluate training runs and attribution scores (see :doc:`training` and :doc:`evaluation`).
 
@@ -126,7 +126,7 @@ Method Pipelines
        --query.truncation \
        --projection_dim 16
 
-.. autoclass:: bergson.__main__.Ekfac
+.. autoclass:: bergson.__main__.Influence
    :members:
    :undoc-members:
    :show-inheritance:
@@ -135,7 +135,7 @@ Method Pipelines
 
 .. code-block:: bash
 
-   bergson ekfac runs/my-ekfac \
+   bergson influence runs/my-ekfac \
        --model EleutherAI/pythia-14m \
        --data.dataset NeelNanda/pile-10k \
        --data.truncation \

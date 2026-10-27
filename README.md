@@ -49,7 +49,7 @@ Results with 95% confidence intervals for GPT-2 finetuned on 4 epochs of the Wik
 
 `bergson magic` runs a powerful attribution method that backpropagates through the training process to compute the gradient of a model behavior loss with respect to a weighting placed on each training item. It is powered by our twice-differentiable trainer, which can also be called directly using `bergson train`.
 
-**Note: unrolled differentiation efficacy is proportional to [metasmoothness](https://bergson.readthedocs.io/en/latest/magic.html#metasmoothness), which is low in some settings, including early pretraining steps. Check your run's estimated metasmoothness with `bergson metasmoothness`.**
+**Note: unrolled differentiation efficacy is proportional to [metasmoothness](https://bergson.readthedocs.io/en/latest/methods/magic.html#smoothness), which is low in some settings, including early pretraining steps. Check your run's estimated metasmoothness with `bergson metasmoothness`.**
 
 `bergson approxunrolling` is an approximation of `bergson magic` that uses a handful of training checkpoints to run the multi-step SOURCE attribution pipeline. This is roughly equivalent to an influence function averaged over several checkpoints.
 
@@ -59,7 +59,7 @@ To build a train‑time gradient store, use our HF Trainer callback. This will i
 
 Bergson supports on-disk gradient stores and on-the-fly queries, and per-token and per-sequence attribution.
 
-The CLI commands `bergson trackstar`, `bergson ekfac`, and `bergson trak` all orchestrate multi-step attribution recipes over a model checkpoint. `bergson trak` also supports [ensembling](https://arxiv.org/abs/2303.14186) over independently trained models.
+The CLI commands `bergson trackstar`, `bergson influence`, and `bergson trak` all orchestrate multi-step attribution recipes over a model checkpoint. `bergson trak` also supports [ensembling](https://arxiv.org/abs/2303.14186) over independently trained models.
 
 At a lower level, you can build your own gradient store for efficient serial queries using `bergson build`. Collection-time gradient compression makes the store space-efficient, and a FAISS integration enables fast KNN search over large stores - see `bergson query`, or `Attributor` in the programmatic interface. For small queries and methods that don't use gradient compression (e.g., EKFAC), you can score a dataset in a single pass using an in-memory query index of precomputed gradients. Dataset items may be scored using max, mean, and individual scoring strategies, enabling [LESS](https://arxiv.org/pdf/2402.04333)-style data filtering. See `bergson score` and `bergson build`.
 

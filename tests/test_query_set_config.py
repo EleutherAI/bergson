@@ -9,7 +9,7 @@ from contextlib import nullcontext
 import pytest
 
 from bergson.build import build_query
-from bergson.cli.commands import Ekfac, Trackstar, Validate
+from bergson.cli.commands import Influence, Trackstar, Validate
 from bergson.config.config import IndexConfig, PreprocessConfig, QuerySetConfig
 from bergson.config.validation import migrate_query_config
 
@@ -90,7 +90,7 @@ def test_mixing_old_and_new_fields_is_an_error():
             "none",
         ),
         (
-            Ekfac,
+            Influence,
             {
                 "index_cfg": INDEX,
                 "hessian_cfg": HESSIAN,
