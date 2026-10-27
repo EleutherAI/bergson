@@ -82,7 +82,7 @@ The paper estimates output token influence by moving the weights a small step al
 
 ``output`` needs an unprojected query (``projection_dim: 0``) and dot-product scoring, and doesn't support ``loss_fn: kl``, ``optimizer_state``, ``split_attention_modules``, quantized models, FSDP, or fused MoE experts. The fused attention kernels don't implement forward-mode derivatives, so the model is loaded with eager attention. The run saves ``data.hf`` with each example's loss, as the gradient path does, but not ``total_processed.pt``, which only Hessian fitting reads.
 
-For a model too large for one GPU, ``score_cfg.device_map_auto`` splits its layers across every visible GPU in a single process, so it needs ``nproc_per_node: 1``. Only one GPU computes at a time, so this makes the model fit without making it faster.
+For a model too large for one GPU, ``score_cfg.device_map_auto`` splits its layers across every visible GPU in a single process. Only one GPU computes at a time, so this makes the model fit without making it faster. The model and the query must fit on the GPUs together; offloading to the CPU or disk isn't supported.
 
 Compress Gradients
 ------------------

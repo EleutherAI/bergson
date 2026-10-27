@@ -905,8 +905,8 @@ class ScoreConfig(Serializable):
     query when you can, and needs an unprojected query and dot-product scoring."""
 
     device_map_auto: bool = False
-    """Split the model's layers across every visible GPU, for a model too large
-    for one. Requires ``token_influence='output'`` and a single process."""
+    """Split the model's layers across every visible GPU in one process, for a
+    model too large for one GPU. Requires ``token_influence='output'``."""
 
     candidates: CandidateConfig = field(default_factory=CandidateConfig)
     """Score only the rows an earlier run ranked highest. The store then has one

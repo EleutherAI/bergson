@@ -33,6 +33,7 @@ from bergson.hessians.preconditioner import (
 from bergson.process_grads import normalize_and_aggregate_grads
 from bergson.score.candidates import select_candidates
 from bergson.score.output_influence import (
+    check_on_gpus,
     check_output_influence_supported,
     output_token_influence,
     query_directions,
@@ -403,6 +404,7 @@ def output_influence_worker(
     )
     # Dropout would give each query column its own random model.
     model.eval()
+    check_on_gpus(model)
     # Saves the processor config beside the scores, as score_worker does.
     create_processor(model, index_cfg, target_modules)
     device = torch.device(get_device(local_rank))
@@ -430,6 +432,8 @@ def output_influence_worker(
             index_cfg.filter_modules,
         ),
     )
+    # The directions keep the query blocks they need, each on its weight's GPU.
+    scorer.query_grads_t.clear()
 
     per_doc_losses = torch.zeros(len(ds), device=device, dtype=torch.float32)
     batches = allocate_batches(
@@ -522,15 +526,8 @@ def score_dataset(
     if score_cfg.token_influence == "output":
         check_output_influence_supported(index_cfg, preprocess_cfg)
 
-    if score_cfg.device_map_auto:
-        if score_cfg.token_influence != "output":
-            raise ValueError("device_map_auto requires token_influence='output'.")
-        # launch_distributed_run gives each process a single GPU.
-        if index_cfg.distributed.world_size > 1:
-            raise ValueError(
-                "device_map_auto splits the model across every visible GPU in "
-                "one process, so it needs nnode=1 and nproc_per_node=1."
-            )
+    if score_cfg.device_map_auto and score_cfg.token_influence != "output":
+        raise ValueError("device_map_auto requires token_influence='output'.")
 
     processor = processor_for(index_cfg)
     processor.check_saved_projection(score_cfg.query_path, "The query")
@@ -555,6 +552,11 @@ def score_dataset(
         print(
             f"reducing to nnode=1 and nproc_per_node={dist_cfg.nproc_per_node} for step"
         )
+    # launch_distributed_run gives each process a single GPU, so one process
+    # sees them all.
+    if score_cfg.device_map_auto and dist_cfg.world_size > 1:
+        dist_cfg = cap_world_size_to_dataset(dist_cfg, 1)
+        print("reducing to one process to split the model across every GPU")
 
     launch_distributed_run(
         "score",

@@ -13,7 +13,11 @@ from transformers import AutoModelForCausalLM
 from bergson.collector.gradient_collectors import GradientCollector
 from bergson.config import IndexConfig, PreprocessConfig, ScoreConfig
 from bergson.data import load_scores
-from bergson.score.output_influence import output_token_influence, query_directions
+from bergson.score.output_influence import (
+    check_on_gpus,
+    output_token_influence,
+    query_directions,
+)
 from bergson.score.score import score_dataset
 
 from .test_score import _write_query_index
@@ -62,11 +66,12 @@ def _score(
     token_influence: Literal["gradient", "output"],
     model=MODEL,
     device_map_auto=False,
+    nproc_per_node=1,
     **kwargs,
 ):
     cfg = IndexConfig(run_path=str(tmp_path / name), model=model, **kwargs)
     cfg.data.dataset = dataset
-    cfg.distributed.nproc_per_node = 1
+    cfg.distributed.nproc_per_node = nproc_per_node
     # Keep the advantage column.
     cfg.drop_columns = False
     score_dataset(
@@ -186,6 +191,8 @@ def test_output_influence_token_rows_are_single_loss_terms(tmp_path: Path):
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 def test_output_influence_device_map_auto_matches(tmp_path: Path):
+    """device_map_auto runs in one process and scores as the default path does.
+    The model may fit on one GPU, so this doesn't check that it's split."""
     model = AutoModelForCausalLM.from_pretrained(MODEL, dtype=torch.float32)
     dataset = _dataset(tmp_path)
     query_path = _query(tmp_path, model, dataset, num_queries=2)
@@ -193,7 +200,13 @@ def test_output_influence_device_map_auto_matches(tmp_path: Path):
     kwargs = dict(attribute_tokens=True, token_influence="output")
     expected = _score(tmp_path, "one", dataset, query_path, **kwargs)
     split = _score(
-        tmp_path, "auto", dataset, query_path, device_map_auto=True, **kwargs
+        tmp_path,
+        "auto",
+        dataset,
+        query_path,
+        device_map_auto=True,
+        nproc_per_node=2,
+        **kwargs,
     )
     np.testing.assert_allclose(split[:], expected[:], rtol=1e-5, atol=1e-6)
 
@@ -261,22 +274,20 @@ def test_output_influence_rejects_unsupported(tmp_path: Path, setting, match):
         )
 
 
-@pytest.mark.parametrize(
-    "token_influence, nproc_per_node, match",
-    [("gradient", 1, "token_influence"), ("output", 2, "nproc_per_node")],
-)
-def test_device_map_auto_rejects_unsupported(
-    tmp_path: Path, token_influence, nproc_per_node, match
-):
-    cfg = IndexConfig(run_path=str(tmp_path / "scores"))
-    cfg.distributed.nproc_per_node = nproc_per_node
-    with pytest.raises(ValueError, match=match):
+def test_device_map_auto_rejects_gradient(tmp_path: Path):
+    with pytest.raises(ValueError, match="token_influence"):
         score_dataset(
-            cfg,
-            ScoreConfig(
-                query_path="unused",
-                token_influence=token_influence,
-                device_map_auto=True,
-            ),
+            IndexConfig(run_path=str(tmp_path / "scores")),
+            ScoreConfig(query_path="unused", device_map_auto=True),
             PreprocessConfig(),
         )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_check_on_gpus_rejects_offload():
+    model = AutoModelForCausalLM.from_pretrained(
+        MODEL,
+        device_map={"model": "cuda:0", "lm_head": "cpu"},
+    )
+    with pytest.raises(ValueError, match="offloaded to cpu"):
+        check_on_gpus(model)
