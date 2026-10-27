@@ -112,8 +112,10 @@ Models and optimizer state
   ``save_models=True``. ``retrained/base`` is the query baseline
   ``evaluate_retrained`` reads; the ``subset_{i}`` retrains only exist for
   a run that actually validates (``bergson validate``, or ``bergson magic
-  --skip_validation False``). (Commands outside the leave-k-out family —
-  plain ``bergson train`` — write the trained model to ``model/`` instead.)
+  --skip_validation False``). A plain ``bergson validate`` bank build does
+  not require scores when ``exclude_zero_scores`` is false. (Commands outside
+  the leave-k-out family — plain ``bergson train`` — write the trained model
+  to ``model/`` instead.)
 
 Smoothness
 ----------

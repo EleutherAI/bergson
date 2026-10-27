@@ -196,3 +196,33 @@ def test_a_bank_gives_the_same_random_filters_as_retraining_them(tmp_path):
     here = random_changes("here")
     from_bank = random_changes("from_bank", retrained_dir=str(bank))
     assert [round(float(x), 5) for x in from_bank] == [round(float(x), 5) for x in here]
+
+
+def test_an_unscored_bank_gives_the_same_random_filters_as_retraining_them(tmp_path):
+    """An unscored bank builds identical models and matches retrained random filters."""
+    from bergson.cli.commands import Magic, Validate
+
+    shared = _e2e_shared(tmp_path)
+    bank = tmp_path / "bank"
+    Validate.from_dict(shared | {"run_path": str(bank), "save_models": True}).execute()
+
+    Magic.from_dict(shared | {"run_path": str(tmp_path / "magic")}).execute()
+    scores = str(tmp_path / "magic" / "scores")
+
+    def random_changes(name, **overrides) -> list[str]:
+        Validate.from_dict(
+            shared
+            | {
+                "run_path": str(tmp_path / name),
+                "scores": scores,
+                "method": "filter-proponents",
+                "subsets": str(bank / "subsets.json"),
+            }
+            | overrides
+        ).execute()
+        with open(tmp_path / name / "random_filter.csv") as f:
+            return [r["loss_change"] for r in csv.DictReader(f)]
+
+    here = random_changes("here")
+    from_bank = random_changes("from_bank", retrained_dir=str(bank))
+    assert [round(float(x), 5) for x in from_bank] == [round(float(x), 5) for x in here]

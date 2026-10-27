@@ -393,7 +393,16 @@ class Validate(ValidationConfig):
 
     def execute(self):
         """Run the validation."""
-        assert self.scores, "Path to attribution scores must be provided."
+        can_build_without_scores = (
+            isinstance(self.method, LDSConfig)
+            and self.method.subsets == "retrain"
+            and not self.exclude_zero_scores
+        )
+        assert self.scores or can_build_without_scores, (
+            "Path to attribution scores must be provided, unless building an LDS "
+            "retrain bank (method: lds, subsets: retrain) with "
+            "exclude_zero_scores: false."
+        )
 
         if isinstance(self.method, LDSConfig) and self.method.subsets == "bank":
             evaluate_retrained(self, self.method.paths, score_path=self.scores)
