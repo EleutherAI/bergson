@@ -16,4 +16,5 @@ def test_importing_bergson_turns_off_numpy_huge_pages():
         text=True,
         check=True,
     )
-    assert out.stdout.strip() == "False"
+    # Dependencies may log warnings to stdout on import; the print is the last line.
+    assert out.stdout.strip().splitlines()[-1] == "False"
