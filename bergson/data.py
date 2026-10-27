@@ -798,21 +798,48 @@ def expand_dpo_dataset(ds: Dataset) -> Dataset:
     ``labels``, and ``length`` columns.  This layout is required by the DPO
     loss in :func:`~bergson.collector.collector.fwd_bwd_factory`.
     """
-    chosen = Dataset.from_dict(
-        {
-            "input_ids": ds["chosen_input_ids"],
-            "labels": ds["chosen_labels"],
-            "length": ds["chosen_length"],
-        }
-    )
-    rejected = Dataset.from_dict(
-        {
-            "input_ids": ds["rejected_input_ids"],
-            "labels": ds["rejected_labels"],
-            "length": ds["rejected_length"],
-        }
-    )
-    return concatenate_datasets([chosen, rejected])
+    required = {
+        "chosen_input_ids", "chosen_labels", "chosen_length",
+        "rejected_input_ids", "rejected_labels", "rejected_length",
+    }
+    missing = required.difference(ds.column_names)
+    if missing:
+        raise ValueError(f"DPO dataset is missing columns: {sorted(missing)}")
+    n = len(ds)
+    for side in ("chosen", "rejected"):
+        if any(len(ds[f"{side}_{field}"]) != n for field in ("input_ids", "labels", "length")):
+            raise ValueError(f"DPO {side} columns have inconsistent row counts")
+    if "reference_chosen_logps" in ds.column_names or "reference_rejected_logps" in ds.column_names:
+        if not {"reference_chosen_logps", "reference_rejected_logps"}.issubset(ds.column_names):
+            raise ValueError("DPO cached references must include chosen and rejected values")
+
+    # Keep a stable pair identity alongside the expanded rows.  Building rows
+    # here also lets metadata and cached reference values follow their pair.
+    rows: list[dict[str, Any]] = []
+    # Keep all chosen rows first and all rejected rows second.  This is the
+    # layout consumed by allocate_dpo_batches and the DPO objective.
+    for side in ("chosen", "rejected"):
+        for i in range(n):
+            row: dict[str, Any] = {
+                "input_ids": ds[f"{side}_input_ids"][i],
+                "labels": ds[f"{side}_labels"][i],
+                "length": ds[f"{side}_length"][i],
+                "pair_index": i,
+                "dpo_side": side,
+            }
+            for name in ds.column_names:
+                if name in required:
+                    continue
+                # Pair-level metadata is repeated; side-specific reference
+                # values become the row's scalar reference_logps.
+                if name in ("reference_chosen_logps", "reference_rejected_logps"):
+                    continue
+                row[name] = ds[name][i]
+            ref_name = f"reference_{side}_logps"
+            if ref_name in ds.column_names:
+                row["reference_logps"] = ds[ref_name][i]
+            rows.append(row)
+    return Dataset.from_list(rows)
 
 
 def allocate_dpo_batches(

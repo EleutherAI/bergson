@@ -14,6 +14,7 @@ from bergson.collection import collect_gradients
 from bergson.config import IndexConfig, PreprocessConfig, ScoreConfig
 from bergson.data import (
     allocate_batches,
+    allocate_dpo_batches,
     load_gradients,
 )
 from bergson.distributed import (
@@ -145,6 +146,10 @@ def create_scorer(
       preconditioning in split mode (``unit_normalize=True``).
     """
     query_grads, query_preprocess_cfg = get_query_grads(score_cfg)
+    # EKFAC inverse application can promote fp32 model gradients to fp64.
+    # Keep that precision in the dot products and their on-disk score writer.
+    if any(query.dtype == torch.float64 for query in query_grads.values()):
+        dtype = torch.float64
 
     # Load hessian: H^(-1/2) for split, H^(-1) for one-sided
     hessians = get_trackstar_hessian(
@@ -193,7 +198,7 @@ def create_scorer(
         query_grads,
         score_cfg.modules,
         unit_normalize=unit_normalize,
-        device=device,
+        device=torch.device("cpu") if score_cfg.offload_queries else device,
         aggregate_grads=aggregation,
         normalize_aggregated_grad=normalize_aggregated_grad,
     )
@@ -219,6 +224,7 @@ def create_scorer(
         score_mode=score_cfg.score,
         attribute_tokens=attribute_tokens,
         index_transform=index_transform,
+        offload_queries=score_cfg.offload_queries,
     )
 
 
@@ -292,14 +298,25 @@ def score_worker(
     score_device = torch.device(get_device(local_rank))
 
     if isinstance(ds, Dataset):
-        kwargs["batches"] = allocate_batches(
-            ds["length"][:],
-            index_cfg.token_batch_size,
-            max_batch_size=index_cfg.max_batch_size,
+        kwargs["batches"] = (
+            allocate_dpo_batches(
+                ds["length"][:],
+                index_cfg.token_batch_size,
+                max_batch_size=index_cfg.max_batch_size,
+            )
+            if index_cfg.loss_fn == "dpo"
+            else allocate_batches(
+                ds["length"][:],
+                index_cfg.token_batch_size,
+                max_batch_size=index_cfg.max_batch_size,
+            )
+        )
+        scorer_data = (
+            ds.select(range(len(ds) // 2)) if index_cfg.loss_fn == "dpo" else ds
         )
         kwargs["scorer"] = create_scorer(
             index_cfg.partial_run_path,
-            ds,
+            scorer_data,
             score_cfg,
             preprocess_cfg,
             device=score_device,

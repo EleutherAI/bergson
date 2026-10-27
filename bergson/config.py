@@ -45,6 +45,10 @@ class DataConfig(Serializable):
     truncation: bool = False
     """Whether to truncate long documents to fit the token budget."""
 
+    max_length: int = 0
+    """Sequence length used when truncation is enabled.  Zero uses the model
+    context limit; token_batch_size controls packing and never truncation."""
+
     format_template: str = ""
     """Path to a YAML containing a Jinja2 template specifying how to
     format dataset rows into text. The YAML must contain `doc_to_text`
@@ -432,6 +436,16 @@ class IndexConfig(AttributionConfig, Serializable):
     loss_reduction: Literal["mean", "sum"] = "sum"
     """Reduction method for the loss function."""
 
+    example_weight_column: str = ""
+    """Optional nonnegative per-example loss multiplier; DPO weights are per pair.
+    For a weighted mean query, normalize these weights to sum to the row count."""
+
+    offload_gradients: bool = False
+    """Move each module's collected gradient to CPU immediately."""
+
+    offload_activations: bool = False
+    """Move saved autograd and collector activations to CPU during collection."""
+
     label_smoothing: float = 0.0
     """Label smoothing coefficient for cross-entropy loss. When > 0, prevents
     near-zero gradients for high-confidence predictions that can cause numerical
@@ -522,6 +536,9 @@ class PreprocessConfig(Serializable):
     """Method for aggregating the gradients. In score, only query
     gradients will be aggregated."""
 
+    aggregation_device: Literal["cuda", "cpu"] = "cuda"
+    """Device for the aggregated query buffer; CPU avoids a full-model GPU buffer."""
+
     normalize_aggregated_grad: bool = False
     """Whether to unit normalize the aggregated gradient. This has
     no effect on future relative score rankings but does affect score
@@ -534,6 +551,9 @@ class ScoreConfig(Serializable):
 
     query_path: str = ""
     """Path to the existing query index."""
+
+    offload_queries: bool = False
+    """Keep query gradients on CPU and score one module at a time."""
 
     score: Literal["nearest", "individual"] = "individual"
     """Method for scoring the gradients with the query.
@@ -597,6 +617,9 @@ class HessianConfig(Serializable):
     ev_correction: bool = False
     """Whether to additionally compute eigenvalue correction."""
 
+    offload_to_cpu: bool = False
+    """Store inactive KFAC factors and EKFAC eigenvectors/corrections on CPU."""
+
     hessian_dtype: Literal["bf16", "fp16", "fp32"] = "fp32"
     """Precision (dtype) to use for the Hessian approximation."""
 
@@ -648,11 +671,32 @@ class HessianPipelineConfig:
     query: DataConfig = field(default_factory=DataConfig)
     """Query dataset specification."""
 
+    query_loss_fn: Literal["ce", "kl", "dpo"] | None = None
+    """Independent query objective. None inherits the training objective."""
+
+    query_loss_reduction: Literal["mean", "sum"] | None = None
+    """Independent query token reduction. None inherits the training setting."""
+
+    query_dpo_beta: float | None = None
+    """Independent query preference temperature, when the query uses DPO."""
+
+    query_weight_column: str = ""
+    """Query loss multipliers, independently of uniform training-pair weights."""
+
+    hessian_run_path: str = ""
+    """Optional shared curvature directory for comparisons of query objectives."""
+
+    provenance_path: str = ""
+    """JSON manifest with immutable model/data identities, included in stage hashes."""
+
     lambda_damp_factor: float = 0.1
     """Damping factor for EKFAC eigenvalue correction."""
 
     resume: bool = False
-    """Skip pipeline steps whose output directory already exists."""
+    """Reuse only completed stages with matching configuration and provenance."""
+
+    skip_scoring: bool = False
+    """Stop after inverse application so prepared queries can share a scoring pass."""
 
 
 @dataclass

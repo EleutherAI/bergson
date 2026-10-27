@@ -245,7 +245,14 @@ def normalize_and_aggregate_grads(
         return {name: grad_dict[name].to(device=device) for name in grad_column_names}
 
     grads = {
-        name: grad_dict[name].to(device=device, dtype=torch.float32)
+        name: grad_dict[name].to(
+            device=device,
+            dtype=(
+                grad_dict[name].dtype
+                if grad_dict[name].dtype in (torch.float32, torch.float64)
+                else torch.float32
+            ),
+        )
         for name in grad_column_names
     }
 

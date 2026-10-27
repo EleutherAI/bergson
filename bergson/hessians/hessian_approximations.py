@@ -11,7 +11,7 @@ from bergson.collector.collector import (
     fwd_bwd_hessian_factory,
 )
 from bergson.config import AttentionConfig, HessianConfig, IndexConfig
-from bergson.data import allocate_batches
+from bergson.data import allocate_batches, allocate_dpo_batches
 from bergson.distributed import init_dist, launch_distributed_run
 from bergson.hessians.eigenvectors import (
     LambdaCollector,
@@ -141,7 +141,13 @@ def hessian_worker(
         "attention_cfgs": {
             module: index_cfg.attention for module in index_cfg.split_attention_modules
         },
-        "batches": allocate_batches(ds["length"][:], index_cfg.token_batch_size),
+        "batches": (
+            allocate_dpo_batches(ds["length"][:], index_cfg.token_batch_size,
+                                 max_batch_size=index_cfg.max_batch_size)
+            if index_cfg.loss_fn == "dpo"
+            else allocate_batches(ds["length"][:], index_cfg.token_batch_size,
+                                  max_batch_size=index_cfg.max_batch_size)
+        ),
     }
 
     collect_hessians(**kwargs)
@@ -217,10 +223,16 @@ def collect_hessians(
             **collector_args,
             eigen_path=eigen_path,
             output_subdir=output_subdir,
+            is_dpo=index_cfg.loss_fn == "dpo",
+            offload_to_cpu=hessian_cfg.offload_to_cpu,
         )
         desc += " (eigenvalue correction)"
     else:
         collector_args["dtype"] = hessian_dtype
+        if hessian_cfg.offload_to_cpu:
+            if hessian_cfg.method != "kfac":
+                raise ValueError("CPU factor offload currently supports KFAC/EKFAC")
+            collector_args["offload_to_cpu"] = True
         collector = HESSIAN_APPROXIMATIONS[hessian_cfg.method](**collector_args)
 
     computer = CollectorComputer(

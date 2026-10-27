@@ -29,6 +29,7 @@ from transformers import PreTrainedModel
 
 from bergson.config import AttentionConfig, HessianConfig, IndexConfig
 from bergson.data import pad_and_tensor
+from bergson.dpo import sequence_log_probs, dpo_ggn_surrogate
 from bergson.gradients import (
     AdafactorNormalizer,
     AdamNormalizer,
@@ -105,6 +106,11 @@ class HookCollectorBase(ContextDecorator, ABC):
 
         self._fwd_hooks: list[RemovableHandle] = []
         self._bwd_hooks: list[RemovableHandle] = []
+        # Collectors carry an IndexConfig, while concrete collector classes vary.
+        self.offload_activations = getattr(
+            getattr(self, "cfg", None), "offload_activations", False
+        )
+        self.activation_offload_seen = False
 
         # Discover target modules using the static method
         self.target_info = self.discover_targets(
@@ -343,6 +349,20 @@ class HookCollectorBase(ContextDecorator, ABC):
         assert x.ndim == 3, f"Expected input of shape [N, S, I], got {x.shape}"
 
         self.forward_hook(module, x)
+        # A module may be invoked more than once in one forward graph (for
+        # example tied/output paths). Keep one activation per invocation so
+        # backward hooks cannot consume the wrong call's activation.
+        if hasattr(module, "_inputs"):
+            stack = getattr(module, "_inputs_stack", None)
+            if stack is None:
+                stack = []
+                module._inputs_stack = stack  # type: ignore[attr-defined]
+            cached = module._inputs  # type: ignore[attr-defined]
+            if self.offload_activations:
+                cached = cached.to(device="cpu")
+                self.activation_offload_seen = True
+            stack.append(cached)
+            del module._inputs
 
     def _process_grad(self, module: nn.Module, _, grad_out):
         """Internal backward hook that extracts gradient and delegates to subclass."""
@@ -354,7 +374,19 @@ class HookCollectorBase(ContextDecorator, ABC):
 
         g = grad_out[0].detach()  # [N, S, O]
 
-        self.backward_hook(module, g)
+        stack = getattr(module, "_inputs_stack", None)
+        if stack is not None:
+            if not stack:
+                raise RuntimeError(f"No cached activation for backward hook on {module._name}")
+            cached = stack.pop()  # type: ignore[attr-defined]
+            module._inputs = (
+                cached.to(device=g.device) if self.offload_activations else cached
+            )
+        try:
+            self.backward_hook(module, g)
+        finally:
+            if hasattr(module, "_inputs"):
+                del module._inputs
         if hasattr(module, "_inputs"):
             del module._inputs
 
@@ -364,6 +396,8 @@ class HookCollectorBase(ContextDecorator, ABC):
         for layer in self.model.modules():
             if hasattr(layer, "_inputs"):
                 del layer._inputs
+            if hasattr(layer, "_inputs_stack"):
+                del layer._inputs_stack
             if hasattr(layer, "_name"):
                 del layer._name
 
@@ -647,6 +681,9 @@ class CollectorComputer:
 
         # Other
         self.cfg = cfg
+        # Concrete collectors such as LambdaCollector do not retain cfg; propagate
+        # this shared memory option explicitly from the computation orchestrator.
+        self.collector.offload_activations = cfg.offload_activations
         self.logger = get_logger(
             "CollectorComputer", level="DEBUG" if cfg.debug else "INFO"
         )
@@ -730,7 +767,13 @@ class CollectorComputer:
                         else nullcontext()
                     ),
                 ):
-                    losses = self.forward_backward(self.model, x, y, batch)
+                    autograd_context = (
+                        torch.autograd.graph.save_on_cpu(pin_memory=False)
+                        if self.cfg.offload_activations
+                        else nullcontext()
+                    )
+                    with autograd_context:
+                        losses = self.forward_backward(self.model, x, y, batch)
 
                     # TODO: currently builder also calls torch.cuda.synchronize
                     torch.cuda.synchronize() if torch.cuda.is_available() else None
@@ -779,7 +822,19 @@ def fwd_bwd_factory(cfg: IndexConfig) -> Callable:
     """
 
     def fwd_bwd(model, x: Tensor, y: Tensor, batch: dict):
-        logits = model(x).logits[:, :-1]
+        ref_seq_lp = None
+        if cfg.loss_fn == "dpo" and "reference_logps" in batch:
+            ref_seq_lp = torch.as_tensor(batch["reference_logps"], device=x.device, dtype=model.dtype)
+        elif cfg.loss_fn == "dpo" and not isinstance(model, PeftModel):
+            raise ValueError("DPO full-finetuned models require cached reference_logps")
+        if cfg.loss_fn == "dpo" and isinstance(model, PeftModel) and ref_seq_lp is None:
+            with torch.inference_mode():
+                set_peft_enabled(model, False)
+                ref_logits = model(x).logits
+                set_peft_enabled(model, True)
+            ref_seq_lp = sequence_log_probs(ref_logits, y, reduction=cfg.loss_reduction)
+        full_logits = model(x).logits
+        logits = full_logits[:, :-1]
         masks = y[:, 1:] != -100
         denoms = (
             masks.sum(dim=1, dtype=model.dtype) if cfg.loss_reduction == "mean" else 1.0
@@ -799,7 +854,7 @@ def fwd_bwd_factory(cfg: IndexConfig) -> Callable:
             if "advantage" in batch:
                 losses *= torch.tensor(batch["advantage"], device=losses.device)
 
-        elif cfg.loss_fn == "dpo":
+        if cfg.loss_fn == "dpo":
             N = x.shape[0]
             assert N % 2 == 0, (
                 "DPO requires an even batch size: first N/2 samples are chosen, "
@@ -807,27 +862,10 @@ def fwd_bwd_factory(cfg: IndexConfig) -> Callable:
             )
             half = N // 2
 
-            # Policy log-probs per sequence
-            ft_lps = torch.log_softmax(logits, dim=-1)  # [N, S-1, V]
-            token_lp = ft_lps.gather(
-                -1, y[:, 1:].clamp(min=0).unsqueeze(-1)
-            ).squeeze(-1)  # [N, S-1]
-            seq_lp = (token_lp * masks).sum(1)  # [N]
-            if cfg.loss_reduction == "mean":
-                seq_lp = seq_lp / masks.sum(1, dtype=model.dtype).clamp(min=1)
-
-            # Reference log-probs (base model without adapter)
-            with torch.inference_mode():
-                set_peft_enabled(model, False)
-                ref_logits = model(x).logits[:, :-1]
-                set_peft_enabled(model, True)
-            ref_lps = torch.log_softmax(ref_logits, dim=-1)
-            ref_token_lp = ref_lps.gather(
-                -1, y[:, 1:].clamp(min=0).unsqueeze(-1)
-            ).squeeze(-1)
-            ref_seq_lp = (ref_token_lp * masks).sum(1)
-            if cfg.loss_reduction == "mean":
-                ref_seq_lp = ref_seq_lp / masks.sum(1, dtype=model.dtype).clamp(min=1)
+            seq_lp = sequence_log_probs(full_logits, y, reduction=cfg.loss_reduction)
+            assert ref_seq_lp is not None
+            if ref_seq_lp.shape[0] != N:
+                raise ValueError("reference_logps must contain one value per expanded row")
 
             # DPO loss: -logsigmoid(β * ((log π_θ(w) - log π_ref(w)) - (log π_θ(l) - log π_ref(l))))
             chosen_rewards = cfg.dpo_beta * (seq_lp[:half] - ref_seq_lp[:half])
@@ -845,6 +883,20 @@ def fwd_bwd_factory(cfg: IndexConfig) -> Callable:
             if "advantage" in batch:
                 losses *= torch.tensor(batch["advantage"], device=losses.device)
 
+        if cfg.example_weight_column:
+            if cfg.example_weight_column not in batch:
+                raise ValueError(f"Missing example weight column: {cfg.example_weight_column}")
+            weights = torch.as_tensor(batch[cfg.example_weight_column], device=losses.device, dtype=losses.dtype)
+            if weights.ndim != 1 or not torch.isfinite(weights).all() or (weights < 0).any():
+                raise ValueError("example weights must be finite and nonnegative")
+            if cfg.loss_fn == "dpo":
+                if weights.numel() != 2 * losses.numel() or not torch.equal(weights[:losses.numel()], weights[losses.numel():]):
+                    raise ValueError("DPO example weights must have identical chosen/rejected halves")
+                weights = weights[:losses.numel()]
+            elif weights.numel() != losses.numel():
+                raise ValueError("example weights must match per-row losses")
+            losses = losses * weights
+
         losses.sum().backward()
         model.zero_grad()
 
@@ -856,15 +908,32 @@ def fwd_bwd_factory(cfg: IndexConfig) -> Callable:
 def fwd_bwd_hessian_factory(
     index_cfg: IndexConfig, hessian_cfg: HessianConfig
 ) -> Callable:
+    if index_cfg.example_weight_column:
+        raise ValueError(
+            "example weights are not supported by the Hessian/GGN collector; "
+            "use unweighted training curvature"
+        )
+
     def fwd_bwd_hessian(model, x: Tensor, y: Tensor, batch: dict):
-        logits = model(x).logits[:, :-1]
+        full_logits = model(x).logits
+        logits = full_logits[:, :-1]
         masks = y[:, 1:] != -100
         denoms = (
             masks.sum(dim=1, dtype=model.dtype)
             if index_cfg.loss_reduction == "mean"
             else 1.0
         )
-        if hessian_cfg.use_dataset_labels:
+        if index_cfg.loss_fn == "dpo":
+            if "reference_logps" not in batch:
+                raise ValueError("DPO Hessian requires cached reference_logps")
+            seq_lp = sequence_log_probs(full_logits, y, reduction=index_cfg.loss_reduction)
+            refs = torch.as_tensor(batch["reference_logps"], device=x.device, dtype=seq_lp.dtype)
+            if seq_lp.numel() % 2:
+                raise ValueError("DPO Hessian requires paired rows")
+            # The surrogate's gradient is sqrt(sigmoid(m)(1-sigmoid(m)))
+            # times the DPO margin gradient, yielding the logistic GGN weight.
+            losses = dpo_ggn_surrogate(seq_lp, refs, index_cfg.dpo_beta)
+        elif hessian_cfg.use_dataset_labels:
             losses = F.cross_entropy(
                 logits.reshape(-1, logits.size(-1)),
                 y[:, 1:].flatten(),

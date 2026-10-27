@@ -29,6 +29,7 @@ class Scorer:
         unit_normalize: bool = False,
         score_mode: str = "individual",
         attribute_tokens: bool = False,
+        offload_queries: bool = False,
         index_transform: Callable[[dict[str, Tensor]], dict[str, Tensor]] = lambda x: x,
     ):
         """
@@ -66,6 +67,10 @@ class Scorer:
         self.attribute_tokens = attribute_tokens
         self.writer = writer
         self.index_transform = index_transform
+        self.offload_queries = offload_queries
+        if offload_queries:
+            self.query_grads = {m: query_grads[m].to(device="cpu", dtype=self.dtype) for m in modules}
+            return
 
         # Pre-transpose for scoring: [total_dim, n_queries]
         q_list = [
@@ -86,6 +91,23 @@ class Scorer:
     def score(self, index_grads: dict[str, Tensor]) -> Tensor:
         """Compute scores for a batch of gradients."""
         index_grads = self.index_transform(index_grads)
+
+        if self.offload_queries:
+            scores, norm_sq = None, None
+            for name in self.modules:
+                index = index_grads[name].to(self.device, self.dtype)
+                query = self.query_grads[name].to(self.device, self.dtype)
+                contribution = index @ query.T
+                scores = contribution if scores is None else scores + contribution
+                if self.unit_normalize:
+                    squared = index.square().sum(dim=1, keepdim=True)
+                    norm_sq = squared if norm_sq is None else norm_sq + squared
+                del index, query
+            if scores is None:
+                raise ValueError("No modules selected for scoring")
+            if self.unit_normalize:
+                scores /= norm_sq.sqrt().clamp_min(1e-12)
+            return scores.max(dim=-1).values if self.score_mode == "nearest" else scores
 
         all_index = torch.cat(
             [

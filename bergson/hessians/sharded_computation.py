@@ -86,9 +86,14 @@ class ShardedMul:
     ):
         if not self.dist:
             global_lambda_mean = lambda_ci.mean()
-            inverse_lambda = (
-                lambda_ci + lambda_damp_factor * global_lambda_mean
-            ).reciprocal()
+            denominator = lambda_ci + lambda_damp_factor * global_lambda_mean
+            floor = torch.finfo(denominator.dtype).tiny
+            denominator = torch.where(
+                denominator.abs() < floor,
+                torch.full_like(denominator, floor),
+                denominator,
+            )
+            inverse_lambda = denominator.reciprocal()
             matrix_noi.mul_(inverse_lambda)
         else:
             self._sharded_hadamard(matrix_noi, lambda_ci, lambda_damp_factor)
@@ -196,8 +201,12 @@ class ShardedMul:
 
             start_row = rank_index * shard_ci.shape[0]
             end_row = (rank_index + 1) * shard_ci.shape[0]
-            inverse_lambda = (
-                shard_ci + lambda_damp_factor * global_lambda_mean
+            inverse_lambda = shard_ci + lambda_damp_factor * global_lambda_mean
+            floor = torch.finfo(inverse_lambda.dtype).tiny
+            inverse_lambda = torch.where(
+                inverse_lambda.abs() < floor,
+                torch.full_like(inverse_lambda, floor),
+                inverse_lambda,
             ).reciprocal()
 
             matrix_noi[:, start_row:end_row, :].mul_(inverse_lambda)

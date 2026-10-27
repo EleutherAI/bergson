@@ -76,7 +76,8 @@ class Builder:
         total_grad_dim = sum(grad_sizes.values())
 
         # ── Device & precomputed hessian ──────────────────────────────────────
-        device = torch.device("cuda", torch.cuda.current_device())
+        device = (torch.device("cpu") if preprocess_cfg.aggregation_device == "cpu"
+                  else torch.device("cuda", torch.cuda.current_device()))
         self.h_inv = get_trackstar_hessian(
             preprocess_cfg.hessian_path,
             power=-0.5 if preprocess_cfg.unit_normalize else -1,
@@ -85,11 +86,12 @@ class Builder:
 
         # ── Aggregation buffer (sequence-level only) ─────────────────────
         if preprocess_cfg.aggregation != "none":
-            np_dtype = np.float32
+            aggregate_dtype = torch.promote_types(dtype, torch.float32)
+            np_dtype = convert_dtype_to_np(aggregate_dtype)
             num_grads = 1
             self.in_memory_grad_buffer: torch.Tensor | None = torch.zeros(
                 (1, total_grad_dim),
-                dtype=torch.float32,
+                dtype=aggregate_dtype,
                 device=device,
             )
         else:
@@ -154,7 +156,7 @@ class Builder:
         if self.preprocess_cfg.aggregation != "none":
             assert self.in_memory_grad_buffer is not None
             self.in_memory_grad_buffer[0] += grads.sum(dim=0).to(
-                dtype=torch.float32, device=self.in_memory_grad_buffer.device
+                dtype=self.in_memory_grad_buffer.dtype, device=self.in_memory_grad_buffer.device
             )
             return
 
@@ -209,11 +211,17 @@ class Builder:
         assert self.in_memory_grad_buffer is not None
 
         if dist.is_initialized():
-            dist.reduce(
-                self.in_memory_grad_buffer,
-                dst=0,
-                op=dist.ReduceOp.SUM,
-            )
+            if self.in_memory_grad_buffer.device.type == "cpu" and dist.get_backend() == "nccl":
+                # NCCL cannot reduce CPU tensors. Transfer bounded slices instead
+                # of allocating a complete full-parameter buffer on the GPU.
+                for start in range(0, self.in_memory_grad_buffer.shape[1], 1_000_000):
+                    view = self.in_memory_grad_buffer[:, start:start + 1_000_000]
+                    chunk = view.to(torch.device("cuda", torch.cuda.current_device()))
+                    dist.reduce(chunk, dst=0, op=dist.ReduceOp.SUM)
+                    if dist.get_rank() == 0:
+                        view.copy_(chunk.cpu())
+            else:
+                dist.reduce(self.in_memory_grad_buffer, dst=0, op=dist.ReduceOp.SUM)
 
         if self.preprocess_cfg.aggregation == "mean":
             self.in_memory_grad_buffer /= self.num_items

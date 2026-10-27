@@ -280,6 +280,14 @@ def setup_model_and_peft(
         )
         target_modules = extract_peft_target_modules(model)  # type: ignore
 
+    if selected_modules := getattr(cfg, "modules", None):
+        requested = set(selected_modules)
+        if target_modules is not None and not requested.issubset(target_modules):
+            raise ValueError("Requested modules are outside the trainable adapter modules")
+        for name in requested:
+            model.base_model.get_submodule(name)
+        target_modules = requested
+
     # Configure gradients
     model.requires_grad_(False)
     model.get_input_embeddings().requires_grad_(True)  # type: ignore
@@ -423,7 +431,9 @@ def setup_data_pipeline(
             f"Use --token_batch_size {max_model_length} or smaller."
         )
 
-    max_length = min(max_model_length, max_token_bz)
+    if data_cfg.max_length < 0:
+        raise ValueError("data.max_length must be nonnegative")
+    max_length = min(max_model_length, data_cfg.max_length or max_model_length)
     remove_columns = set(ds.column_names) if cfg.drop_columns else set()
     tokenize_cfg = data_cfg
 
@@ -435,7 +445,10 @@ def setup_data_pipeline(
             truncation=data_cfg.truncation,
         )
 
-    if not ds.column_names or "input_ids" not in ds.column_names:
+    # Already-tokenized DPO datasets have chosen_input_ids/rejected_input_ids;
+    # do not send them through the text tokenizer again.
+    if ("input_ids" not in ds.column_names
+            and "chosen_input_ids" not in ds.column_names):
         ds = ds.map(
             tokenize,
             batched=True,
@@ -491,7 +504,10 @@ def setup_data_pipeline(
         ds = filter_by_max_tokens(ds, cfg)
 
     # Remove extraneous columns
-    keep = {"length", "input_ids", "labels"}
+    keep = {"length", "input_ids", "labels", "pair_index", "dpo_side",
+            "reference_logps"}
+    if cfg.example_weight_column:
+        keep.add(cfg.example_weight_column)
     remove_columns -= keep
     remove_columns &= set(ds.column_names)
     if remove_columns:

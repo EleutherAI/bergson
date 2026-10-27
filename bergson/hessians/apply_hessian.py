@@ -1,4 +1,3 @@
-import gc
 import json
 import os
 from dataclasses import dataclass
@@ -16,6 +15,17 @@ from bergson.distributed import init_dist
 from bergson.hessians.sharded_computation import ShardedMul
 from bergson.utils.logger import get_logger
 from bergson.utils.utils import get_device
+
+
+def damped_inverse(eigenvalues: Tensor, damping: float) -> Tensor:
+    """Return a finite damped inverse while retaining float64 inputs."""
+    mean = eigenvalues.mean()
+    floor = torch.finfo(eigenvalues.dtype).tiny
+    denominator = eigenvalues + damping * mean
+    denominator = torch.where(
+        denominator.abs() < floor, torch.full_like(denominator, floor), denominator
+    )
+    return denominator.reciprocal()
 
 
 @dataclass
@@ -49,13 +59,12 @@ class EkfacApplicator:
         self.sharded_computer = ShardedMul()
 
     def compute_ivhp_sharded(self):
+        # safetensors stays CPU resident; only the current module is moved below.
         eigen_a = load_file(
             self.path + f"/eigen_activation_sharded/shard_{self.rank}.safetensors",
-            device=self.device,
         )
         eigen_g = load_file(
             self.path + f"/eigen_gradient_sharded/shard_{self.rank}.safetensors",
-            device=self.device,
         )
         lambda_dir = (
             "eigenvalue_correction_sharded"
@@ -64,96 +73,105 @@ class EkfacApplicator:
         )
         lambda_factor = load_file(
             self.path + f"/{lambda_dir}/shard_{self.rank}.safetensors",
-            device=self.device,
         )
-
-        for k, v in lambda_factor.items():
-            eigen_a[k] = eigen_a[k].to(dtype=torch.float32)
-            eigen_g[k] = eigen_g[k].to(dtype=torch.float32)
-            lambda_factor[k] = v.to(dtype=torch.float32)
 
         grad_sizes = {
             name: eigen_g[name].shape[1] * eigen_a[name].shape[1] for name in eigen_a
         }
 
-        mmap = load_gradients(self.gradient_path)
+        # A structured row can be tens of GiB for full models and NumPy's
+        # structured dtype construction overflows the C int itemsize limit.
+        # Keep the on-disk format unchanged but map the flat representation.
+        mmap = load_gradients(self.gradient_path, structured=False)
         with open(os.path.join(self.gradient_path, "info.json")) as f:
             info = json.load(f)
 
+        source_sizes = info["grad_sizes"]
+        offsets = {}
+        offset = 0
+        for name, size in source_sizes.items():
+            offsets[name] = (offset, offset + int(size))
+            offset += int(size)
+
+        base_dtype = info.get("base_dtype")
+        if base_dtype is None:
+            if mmap.dtype.fields is None:
+                base_dtype = mmap.dtype
+            else:
+                base_dtype = mmap.dtype.fields[next(iter(mmap.dtype.fields))][0].base
+        input_dtype = np.dtype(base_dtype)
+        promoted_dtype = (
+            np.float64
+            if (
+                input_dtype == np.float64
+                or any(
+                    v.dtype == torch.float64
+                    for d in (eigen_a, eigen_g, lambda_factor)
+                    for v in d.values()
+                )
+            )
+            else np.float32
+        )
         grad_buffer = create_index(
             Path(self.cfg.run_path),
             num_grads=info["num_grads"],
             grad_sizes=grad_sizes,
-            dtype=np.float32,
+            dtype=promoted_dtype,
+            with_structure=False,
         )
+        output_offsets = {}
+        output_offset = 0
+        for name, size in grad_sizes.items():
+            output_offsets[name] = (output_offset, output_offset + int(size))
+            output_offset += int(size)
 
         self.logger.info(
             f"Loaded gradients for {len(mmap)} queries and computing IVHP..."
         )
 
-        # Forward rotation into eigenbasis: Q_S^T @ G @ Q_A
-        transformed_gradients: dict[str, Tensor] = {}
-        for k, v in eigen_a.items():
-            gradients_noi = torch.from_numpy(mmap[k][:]).to(
-                device=self.device, dtype=torch.float32
+        # Process modules in identical sorted order on every rank. Factors and
+        # transformed queries are released after each module to bound device RAM.
+        output_dtype = torch.float64 if promoted_dtype == np.float64 else torch.float32
+        for k in sorted(eigen_a):
+            v = eigen_a[k].to(device=self.device, dtype=output_dtype)
+            g = eigen_g[k].to(device=self.device, dtype=output_dtype)
+            lam = lambda_factor[k].to(device=self.device, dtype=output_dtype)
+            if k not in offsets:
+                raise KeyError(f"Gradient index is missing module {k!r}")
+            start, end = offsets[k]
+            gradients_noi = torch.from_numpy(mmap[:, start:end]).to(
+                device=self.device, dtype=output_dtype
             )
-            gradients_noi = gradients_noi.view(
-                -1, eigen_g[k].shape[1], eigen_a[k].shape[1]
-            )
-            transformed_gradients[k] = self.sharded_computer._matmul(
+            gradients_noi = gradients_noi.view(-1, g.shape[1], v.shape[1])
+            transformed = self.sharded_computer._matmul(
                 vector_nsa=gradients_noi, matrix_cb=v
             )
-
-        self.logger.debug("Finished G @ Q_A")
-
-        for k, v in eigen_g.items():
-            transformed_gradients[k] = self.sharded_computer._matmul(
-                vector_nsa=transformed_gradients[k].transpose(-2, -1), matrix_cb=v
+            transformed = self.sharded_computer._matmul(
+                vector_nsa=transformed.transpose(-2, -1), matrix_cb=g
             ).transpose(-2, -1)
-
-        self.logger.debug("Finished G' = Q_S^T @ G @ Q_A")
-
-        # Apply eigenvalue function in eigenbasis (default = damped inverse).
-        for k, v in lambda_factor.items():
-            if self.apply_fn is None:
+            if self.apply_fn is None and not self.sharded_computer.dist:
+                transformed.mul_(damped_inverse(lam, self.cfg.lambda_damp_factor))
+            elif self.apply_fn is None:
                 self.sharded_computer._hadamard(
-                    matrix_noi=transformed_gradients[k],
-                    lambda_ci=v,
-                    lambda_damp_factor=self.cfg.lambda_damp_factor,
+                    transformed, lam, self.cfg.lambda_damp_factor
                 )
             else:
-                self.sharded_computer._apply_eigfn(
-                    matrix_noi=transformed_gradients[k],
-                    lambda_ci=v,
-                    fn=self.apply_fn,
-                )
-
-        self.logger.debug("Finished G' / lambda")
-        del lambda_factor
-        gc.collect()
-
-        # Rotate back to parameter space: Q_S @ G' @ Q_A^T
-        for k, v in eigen_g.items():
-            transformed_gradients[k] = self.sharded_computer._transpose_matmul(
-                vector_nsa=transformed_gradients[k].transpose(-2, -1), matrix_cb=v
+                self.sharded_computer._apply_eigfn(transformed, lam, fn=self.apply_fn)
+            transformed = self.sharded_computer._transpose_matmul(
+                vector_nsa=transformed.transpose(-2, -1), matrix_cb=g
             ).transpose(-2, -1)
-
-        self.logger.debug("Finished Q_S @ G'")
-        del eigen_g
-        gc.collect()
-
-        for k, v in eigen_a.items():
-            transformed_gradients[k] = self.sharded_computer._transpose_matmul(
-                vector_nsa=transformed_gradients[k], matrix_cb=v
+            transformed = self.sharded_computer._transpose_matmul(
+                vector_nsa=transformed, matrix_cb=v
             )
-
-        self.logger.debug("Finished H^{-1} G = Q_S @ (G' / lambda) @ Q_A^T")
-        del eigen_a
-        gc.collect()
-
-        torch.cuda.synchronize()
-        for k, v in transformed_gradients.items():
-            grad_buffer[k][:] = v.to(device="cpu", non_blocking=True).flatten(1).numpy()
+            out_start, out_end = output_offsets[k]
+            grad_buffer[:, out_start:out_end] = (
+                transformed.to(device="cpu").flatten(1).numpy()
+            )
+            del v, g, lam, gradients_noi, transformed
+            if torch.device(self.device).type == "cuda":
+                torch.cuda.empty_cache()
+        if torch.device(self.device).type == "cuda":
+            torch.cuda.synchronize()
 
         grad_buffer.flush()
 

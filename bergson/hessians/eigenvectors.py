@@ -11,6 +11,7 @@ from torch import Tensor
 from tqdm import tqdm
 
 from bergson.collector.collector import HookCollectorBase
+from bergson.dpo import combine_pair_gradients
 from bergson.hessians.sharded_computation import ShardedMul
 from bergson.utils.logger import get_logger
 from bergson.utils.utils import (
@@ -83,6 +84,8 @@ class LambdaCollector(HookCollectorBase):
     """Override read location for eigvecs; defaults to ``self.path``."""
 
     output_subdir: str = "eigenvalue_correction_sharded"
+    is_dpo: bool = False
+    offload_to_cpu: bool = False
     """Subdir under ``self.path`` to write lambda shards into."""
 
     def setup(self) -> None:
@@ -97,18 +100,19 @@ class LambdaCollector(HookCollectorBase):
             os.path.join(
                 eigen_src, f"eigen_activation_sharded/shard_{self.rank}.safetensors"
             ),
-            device=self.device,
+            device="cpu" if self.offload_to_cpu else self.device,
         )
         self.eigen_g = load_file(
             os.path.join(
                 eigen_src, f"eigen_gradient_sharded/shard_{self.rank}.safetensors"
             ),
-            device=self.device,
+            device="cpu" if self.offload_to_cpu else self.device,
         )
 
         # Initialize accumulators
         self.eigenvalue_corrections = {}
         self.transformed_a_cache = {}
+        self.num_pairs = 0
 
     def forward_hook(self, module: nn.Module, a: Tensor) -> None:
         """Transform activations using eigenvectors and cache."""
@@ -117,11 +121,11 @@ class LambdaCollector(HookCollectorBase):
 
         # Transform: a @ eigen_a
         transformed = self.shard_computer._matmul(
-            vector_nsa=a, matrix_cb=self.eigen_a[name]
+            vector_nsa=a, matrix_cb=self.eigen_a[name].to(a.device)
         )  # shape [N, S, I]
 
         # Cache for use in backward pass
-        self.transformed_a_cache[name] = transformed
+        self.transformed_a_cache[name] = transformed.cpu() if self.offload_to_cpu else transformed
 
     def backward_hook(self, module: nn.Module, g: Tensor) -> None:
         """Transform gradients and compute eigenvalue corrections."""
@@ -130,15 +134,19 @@ class LambdaCollector(HookCollectorBase):
 
         # Transform: g @ eigen_g
         transformed_g = self.shard_computer._matmul(
-            vector_nsa=g, matrix_cb=self.eigen_g[name]
+            vector_nsa=g, matrix_cb=self.eigen_g[name].to(g.device)
         )  # shape [N, S, O]
 
         # Compute outer product: sum_n (transformed_a_n^T @ transformed_g_n)
         # Einstein notation: [N, S, I] x [N, S, O] -> [N, O, I]
         transformed_grad_shard = torch.einsum(
-            "N S I, N S O -> N O I", self.transformed_a_cache[name], transformed_g
+            "N S I, N S O -> N O I", self.transformed_a_cache.pop(name).to(g.device), transformed_g
         )
 
+        # DPO rows are chosen then rejected.  Form the signed pair gradient
+        # before squaring so the preference cross terms are retained.
+        if getattr(self, "is_dpo", False):
+            transformed_grad_shard = combine_pair_gradients(transformed_grad_shard)
         # Square and sum over batch
         transformed_grad_shard = (transformed_grad_shard**2).sum(dim=0).contiguous()
 
@@ -156,6 +164,8 @@ class LambdaCollector(HookCollectorBase):
             self.eigenvalue_corrections[name] = transformed_grad_shard[
                 start_row:end_row, :
             ].contiguous()
+            if self.offload_to_cpu:
+                self.eigenvalue_corrections[name] = self.eigenvalue_corrections[name].cpu()
         else:
             self.eigenvalue_corrections[name] = self.eigenvalue_corrections[name].to(
                 device=self.device
@@ -169,10 +179,23 @@ class LambdaCollector(HookCollectorBase):
 
     def process_batch(self, indices: list[int], **kwargs) -> None:
         """No per-batch processing needed for lambda collection."""
-        pass
+        if self.is_dpo:
+            if len(indices) % 2:
+                raise ValueError("DPO lambda batches must contain paired rows")
+            self.num_pairs += len(indices) // 2
 
     def teardown(self) -> None:
         """Save eigenvalue corrections to disk."""
+        if self.is_dpo:
+            count = torch.tensor(float(self.num_pairs), device=self.device)
+            if dist.is_initialized():
+                dist.all_reduce(count, op=dist.ReduceOp.SUM)
+            if count.item() <= 0:
+                raise ValueError("DPO lambda collection saw no preference pairs")
+            self.eigenvalue_corrections = {
+                name: value / count.to(device=value.device, dtype=value.dtype)
+                for name, value in self.eigenvalue_corrections.items()
+            }
         output_path = os.path.join(self.path, self.output_subdir)
         os.makedirs(output_path, exist_ok=True)
 

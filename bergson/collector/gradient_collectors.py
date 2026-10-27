@@ -12,6 +12,7 @@ from torch import Tensor
 
 from bergson.builder import Builder
 from bergson.collector.collector import HookCollectorBase
+from bergson.dpo import combine_pair_gradients
 from bergson.config import IndexConfig, PreprocessConfig
 from bergson.process_autocorrelation import process_autocorrelation_matrices
 from bergson.score.scorer import Scorer
@@ -72,8 +73,10 @@ class GradientCollector(HookCollectorBase):
         self.lo = torch.finfo(self.save_dtype).min
         self.hi = torch.finfo(self.save_dtype).max
 
+        self.is_dpo = self.cfg.loss_fn == "dpo"
+        self.num_pairs = len(self.data) // 2 if self.is_dpo else len(self.data)
         self.per_doc_losses = torch.full(
-            (len(self.data),),
+            (self.num_pairs,),
             device=self.model.device,
             dtype=torch.float32,
             fill_value=0.0,
@@ -84,8 +87,9 @@ class GradientCollector(HookCollectorBase):
 
         if self.save_index:
             grad_sizes = {name: math.prod(s) for name, s in self.shapes().items()}
+            builder_data = self.data.select(range(self.num_pairs)) if self.is_dpo else self.data
             self.builder = Builder(
-                self.data,
+                builder_data,
                 grad_sizes,
                 self.save_dtype,
                 self.preprocess_cfg,
@@ -104,14 +108,18 @@ class GradientCollector(HookCollectorBase):
         global_proj = self.processor.projection_target == "global"
 
         # Collect per-module hessians when projection target is per_module
-        if not self.cfg.skip_hessians and not global_proj:
+        if not self.cfg.skip_hessians and not global_proj and not self.is_dpo:
             P = P.float()
             if name in self.processor.hessians:
                 self.processor.hessians[name].addmm_(P.mT, P)
             else:
                 self.processor.hessians[name] = P.mT @ P
 
-        if global_proj:
+        if self.cfg.offload_gradients:
+            if global_proj:
+                raise ValueError("CPU gradient offload requires per-module projection")
+            self.mod_grads[name] = P.to(device="cpu", dtype=self.save_dtype)
+        elif global_proj:
             # Keep on-device until the global projection runs in process_batch.
             self.mod_grads[name] = P
         elif self.save_index and self.preprocess_cfg.aggregation == "none":
@@ -184,6 +192,28 @@ class GradientCollector(HookCollectorBase):
         if self.processor.projection_target == "global":
             self.global_project()
 
+        if self.is_dpo:
+            n = len(self.mod_grads[next(iter(self.mod_grads))])
+            if n % 2 or len(losses) != n // 2:
+                raise ValueError("DPO batch gradients/losses must contain paired rows")
+            half = n // 2
+            self.mod_grads = {
+                name: combine_pair_gradients(grad)
+                for name, grad in self.mod_grads.items()
+            }
+            if not self.cfg.skip_hessians and self.processor.projection_target != "global":
+                for name, grad in self.mod_grads.items():
+                    p = grad.float()
+                    if name in self.processor.hessians:
+                        self.processor.hessians[name].addmm_(p.mT, p)
+                    else:
+                        self.processor.hessians[name] = p.mT @ p
+            pair_indices = list(indices[:half])
+            # Pair IDs are stable even when a caller reorders a batch.
+            if "pair_index" in kwargs:
+                pair_indices = list(kwargs["pair_index"][:half])
+            indices = pair_indices
+
         if self.builder:
             self.builder(indices, self.mod_grads)
         if self.scorer:
@@ -206,7 +236,7 @@ class GradientCollector(HookCollectorBase):
             process_autocorrelation_matrices(
                 self.processor,
                 self.processor.hessians,
-                len(self.data),
+                self.num_pairs,
                 grad_sizes,
                 self.rank,
             )
@@ -225,6 +255,8 @@ class GradientCollector(HookCollectorBase):
                     ]
                 )
             else:
+                if self.is_dpo:
+                    self.data = self.data.select(range(self.num_pairs))
                 if self.cfg.drop_columns:
                     self.data = self.data.remove_columns(["input_ids"])
 

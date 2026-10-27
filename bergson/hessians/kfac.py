@@ -26,12 +26,19 @@ class CovarianceCollector(HookCollectorBase):
 
     dtype: torch.dtype
     path: str
+    offload_to_cpu: bool = False
 
     def setup(self) -> None:
         """Initialize covariance storage dictionaries."""
         self.A_cov_dict = {}
         self.S_cov_dict = {}
         self.shard_computer = ShardedMul()
+        if self.offload_to_cpu:
+            for name, (_, shape, _) in self.target_info.items():
+                out_dim, in_dim = shape
+                self.A_cov_dict[name] = torch.zeros((in_dim // self.world_size, in_dim), dtype=self.dtype)
+                self.S_cov_dict[name] = torch.zeros((out_dim // self.world_size, out_dim), dtype=self.dtype)
+            return
         # Initialize sharded covariance matrices for ALL modules in target_info
         self.shard_computer._init_covariance_dict(
             activation_covariance_dict=self.A_cov_dict,
@@ -63,7 +70,7 @@ class CovarianceCollector(HookCollectorBase):
         update_slice_ki = local_update_ii[start_row:end_row, :]
 
         # Accumulate
-        A_cov_ki.add_(update_slice_ki)
+        A_cov_ki.add_(update_slice_ki.to(A_cov_ki.device))
 
     def backward_hook(self, module: nn.Module, g: Tensor) -> None:
         """Compute gradient covariance: G^T @ G."""
@@ -87,7 +94,7 @@ class CovarianceCollector(HookCollectorBase):
         update_slice_po = local_update_oo[start_row:end_row, :]
 
         # Accumulate
-        S_cov_po.add_(update_slice_po)
+        S_cov_po.add_(update_slice_po.to(S_cov_po.device))
 
     def process_batch(self, indices: list[int], **kwargs) -> None:
         """No per-batch processing needed for covariance collection."""

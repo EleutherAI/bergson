@@ -1,6 +1,7 @@
 import io
 import os
 import socket
+import traceback
 from contextlib import nullcontext, redirect_stdout
 from copy import deepcopy
 from datetime import timedelta
@@ -102,17 +103,22 @@ def dist_worker(
     os.environ["MASTER_ADDR"] = master_addr
     os.environ["MASTER_PORT"] = master_port
 
+    completed = False
     try:
         with nullcontext() if rank == 0 else redirect_stdout(io.StringIO()):
             worker(rank, local_rank, world_size, *worker_args)
+        completed = True
+    except BaseException:
+        # Print the original worker failure before distributed cleanup, which
+        # otherwise can hide it behind a later collective timeout.
+        traceback.print_exc()
+        # A rank with failed collectives cannot synchronize during teardown.
+        # Exit the owned child; the parent terminates its remaining peers.
+        os._exit(1)
     finally:
         if dist.is_initialized():
-            try:
+            if completed:
                 dist.barrier()
-            except Exception as e:
-                print(f"Barrier failed during cleanup: {e}")
-                pass
-
             dist.destroy_process_group()
 
 
@@ -192,12 +198,26 @@ def launch_distributed_run(
             else:
                 os.environ["CUDA_VISIBLE_DEVICES"] = saved_cvd
 
-        for p in children:
-            p.join()
-            if p.exitcode != 0:
-                raise RuntimeError(
-                    f"{process_name} child exited with code {p.exitcode}"
-                )
+        pending = set(children)
+        try:
+            while pending:
+                for p in list(pending):
+                    p.join(timeout=1)
+                    if p.exitcode is None:
+                        continue
+                    pending.remove(p)
+                    if p.exitcode != 0:
+                        raise RuntimeError(
+                            f"{process_name} child exited with code {p.exitcode}"
+                        )
+        finally:
+            # Only terminate children owned by this launch. A failed rank must
+            # not leave its peers waiting for the one-hour NCCL timeout.
+            for p in children:
+                if p.is_alive():
+                    p.terminate()
+            for p in children:
+                p.join(timeout=5)
 
 
 Args = ParamSpec("Args")
