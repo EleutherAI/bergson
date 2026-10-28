@@ -20,7 +20,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev,faiss]"
       - name: Run tests
-        run: pytest
+        run: pytest tests -n auto --dist loadgroup
   # torch.compile raises at decoration time on Python 3.14 (torch <= 2.9), so
   # an import-time @torch.compile makes the package unimportable there. This
   # job catches any such import-time regression on the newest interpreter.
