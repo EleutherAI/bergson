@@ -33,7 +33,8 @@ class _CrashAt:
 def _cfg(run_path, interval: int):
     return SimpleNamespace(
         run_path=str(run_path),
-        retrain_save_interval=interval,
+        save_mode="final" if interval == 0 else "interval",
+        save_interval=interval,
         resume=True,
         fsdp=False,
         max_grad_norm=None,

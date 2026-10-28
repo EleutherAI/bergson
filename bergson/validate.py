@@ -58,13 +58,13 @@ def _retrain_dir(run_cfg, name: str) -> str:
 
 
 def run_retrain(trainer, state, stream, run_cfg, name: str):
-    """Run one leave-k-out retrain, checkpointing every ``retrain_save_interval``."""
+    """Run one leave-k-out retrain, checkpointing on the run's ``save_mode``."""
     step_kwargs = dict(
         fsdp=run_cfg.fsdp,
         max_grad_norm=run_cfg.max_grad_norm,
         grad_accum_steps=run_cfg.grad_accum_steps,
     )
-    if run_cfg.retrain_save_interval <= 0:
+    if run_cfg.save_mode == "final":
         for x in stream:
             state = trainer.step(state, x, inplace=True, **step_kwargs)
         return state
@@ -73,8 +73,8 @@ def run_retrain(trainer, state, stream, run_cfg, name: str):
         stream,
         inplace=True,
         save_dir=_retrain_dir(run_cfg, name),
-        save_mode="interval",
-        save_interval=run_cfg.retrain_save_interval,
+        save_mode=run_cfg.save_mode,
+        save_interval=run_cfg.save_interval,
         resume=run_cfg.resume,
         keep_last=1,
         **step_kwargs,
@@ -83,7 +83,7 @@ def run_retrain(trainer, state, stream, run_cfg, name: str):
 
 def drop_retrain_checkpoints(run_cfg, name: str) -> None:
     """Delete a finished retrain's checkpoints."""
-    if run_cfg.retrain_save_interval <= 0:
+    if run_cfg.save_mode == "final":
         return
     if dist.is_initialized():
         dist.barrier()

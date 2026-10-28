@@ -444,11 +444,6 @@ class TrainingConfig(AttributionConfig, Serializable):
     save_interval: int = 0
     """Checkpointing interval in steps for `save_mode: interval`."""
 
-    retrain_save_interval: int = 0
-    """Checkpoint each leave-k-out retrain every this many steps so a stopped run
-    resumes mid-retrain (0 disables). The latest checkpoint is kept under
-    `<run_path>/retrain_checkpoints/<retrain>` and deleted when the retrain finishes."""
-
     weight_decay: float = 0.01
     """Weight decay coefficient for AdamW and Muon."""
 
@@ -508,7 +503,12 @@ class MetasmoothnessConfig(TrainingConfig):
 
 @dataclass
 class ValidationConfig(TrainingConfig, ABC):
-    """Config for leave-k-out validation of attribution scores."""
+    """Config for leave-k-out validation of attribution scores.
+
+    Each retrain checkpoints on ``save_mode`` under
+    ``<run_path>/retrain_checkpoints/<retrain>``, keeping only the latest so
+    ``resume`` picks up mid-retrain; the checkpoints are deleted once the
+    retrain finishes."""
 
     ckpt_avg_k: int = 1
     """Average the query gradient over the last ``k`` saved trajectory checkpoints."""
