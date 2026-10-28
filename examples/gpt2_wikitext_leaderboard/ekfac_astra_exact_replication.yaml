@@ -1,17 +1,15 @@
-# EK-FAC scores refined by ASTRA with the paper's settings and Hessian-vector
-# products of the same loss as the EK-FAC factors, for the 1_magic.yaml model
-# against the test queries, one score column per query. The step size has the
-# lowest mean final / |step-0| objective, on each query's last 16-document batch,
-# over the held-out queries test[50:60], from 1e-3 to 1e-7; 1e-5 and above diverge.
+# EK-FAC scores refined by ASTRA with the paper's settings (Wang et al. 2025,
+# App. B), as in examples/replications/bae_approx_unrolling_source_replication/wikitext_gpt2_astra.yaml,
+# for the 1_magic.yaml model against the test queries, one score column per query.
 # LDS: examples/gpt2_wikitext_leaderboard/lds_from_bank.py --sign grad.
 
-# Run with `bergson examples/gpt2_wikitext_leaderboard/ekfac_astra_consistent.yaml`
+# Run with `bergson examples/gpt2_wikitext_leaderboard/ekfac_astra_exact_replication.yaml`
 
-run_path: runs/compare_wikitext/ekfac_astra_consistent
+run_path: runs/compare_wikitext/ekfac_astra_exact_replication
 steps:
   - influence:
       index_cfg:
-        run_path: runs/compare_wikitext/ekfac_astra_consistent
+        run_path: runs/compare_wikitext/ekfac_astra_exact_replication
         model: runs/compare_wikitext/interval/exported/checkpoint-72
         overwrite: true
         # GPT-2's max context length is 1024.
@@ -22,7 +20,7 @@ steps:
         # GPT-2 uses an nn.Linear for its LM head.
         filter_modules: "lm_head"
         distributed:
-          nproc_per_node: 8
+          nproc_per_node: 4
           nnode: 1
         data:
           dataset: EleutherAI/bergson-wikitext-512-chunks
@@ -48,10 +46,12 @@ steps:
           # One score column per query, for per-query LDS.
           aggregation: none
         inversion_cfg:
-          damping_factor: 0.1
+          damping_factor: 0.011
+          inversion: absolute_damped_inverse
         astra:
           num_steps: 300
-          lr: 3.0e-6
+          loss_reduction: mean
+          lr: 0.011
           momentum: 0.9
           batch_size: 16
           micro_batch_size: 8

@@ -1,8 +1,9 @@
-# GPT-2 fine-tuned on WikiText with AdamW: per-query MAGIC scores for the test
-# queries and a leave-1%-out retrain bank of random subsets. The retrained
-# models are saved and the final Adam second moments kept for trackstar.yaml.
+# Finetune GPT-2 on WikiText with AdamW then produce per-query MAGIC scores
+# for the test queries, and a leave-1%-out retrain bank of random subsets.
+# The retrained models are saved and the final Adam second moments kept
+# for TrackStar attribution.
 
-# Run with `bergson examples/gpt2_wikitext_leaderboard/1_magic.yaml`
+# Run in the CLI with `bergson examples/gpt2_wikitext_leaderboard/1_magic.yaml`.
 
 run_path: runs/compare_wikitext/magic
 steps:
