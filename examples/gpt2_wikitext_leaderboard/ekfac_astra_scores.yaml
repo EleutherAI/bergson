@@ -1,0 +1,33 @@
+# Scores of the ASTRA solutions of ekfac_astra.yaml with queries 15 and 44 from
+# its lr 1e-6 step, written over its scores. Merge the solutions first:
+#   python examples/gpt2_wikitext_leaderboard/replace_query_rows.py \
+#     runs/compare_wikitext/ekfac_astra/astra_query \
+#     runs/compare_wikitext/ekfac_astra_lr1e-6/astra_query \
+#     runs/compare_wikitext/ekfac_astra/astra_query_merged 15 44
+# LDS: examples/gpt2_wikitext_leaderboard/lds_from_bank.py --sign grad.
+
+# Run with `bergson examples/gpt2_wikitext_leaderboard/ekfac_astra_scores.yaml`
+
+run_path: runs/compare_wikitext/ekfac_astra/scores
+steps:
+  - score:
+      index_cfg:
+        run_path: runs/compare_wikitext/ekfac_astra/scores
+        model: runs/compare_wikitext/interval/exported/checkpoint-72
+        overwrite: true
+        token_batch_size: 1024
+        max_batch_size: 64
+        filter_modules: "lm_head"
+        distributed:
+          nproc_per_node: 8
+          nnode: 1
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "train"
+          chunk_length: 0
+      score_cfg:
+        query_path: runs/compare_wikitext/ekfac_astra/astra_query_merged
+        batch_size: 1024
+        query_batch_size: 64
+      preprocess_cfg:
+        unit_normalize: false

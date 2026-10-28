@@ -22,12 +22,12 @@ Indicative performance of data attribution methods in the finetuning regime.
      - 0.077 [0.066, 0.089]
      - 0.685 [0.664, 0.702]
    * - EKFAC + ASTRA
-     - 0.073 [0.061, 0.087]
-     - 0.579 [0.554, 0.601]
+     - 0.076 [0.064, 0.089]
+     - 0.605 [0.581, 0.625]
    * - Eigenvalue-corrected Shampoo + ASTRA
      - 0.072 [0.061, 0.085]
      - 0.625 [0.604, 0.643]
-   * - EKFAC + ASTRA (exact replication settings)
+   * - EKFAC + ASTRA (exact replication)
      - 0.071 [0.060, 0.084]
      - 0.629 [0.607, 0.647]
    * - Eigenvalue-corrected Shampoo
@@ -121,6 +121,8 @@ Per-token attribution scores, which attribute each training token's loss term, e
      - 0.922 [0.887, 0.957]
    * - SOURCE (Adam, EKFAC)
      - 0.908 [0.877, 0.942]
+   * - EKFAC + ASTRA
+     - 0.907 [0.863, 0.943]
    * - LiSSA (Gauss-Newton Hessian)
      - 0.880 [0.850, 0.912]
    * - EKFAC
@@ -156,7 +158,7 @@ EKFAC
    A classic influence function in the form ``g_t H^{-1} g_q`` using the EKFAC Hessian approximation for H. The H can be swapped out for other matrices including KFAC, Shampoo, and MAC.
 
 ASTRA
-   ASTRA refines a Kronecker-factored inverse Hessian vector product such as EKFAC's, so it adds a constant amount of compute to each query on top of EKFAC's. Our mainline ASTRA result uses a learning rate tuned via a small grid search against the ASTRA objective, and identically scaled EKFAC and Gauss-Newton Hessians. We also include a reference result matching the implementation in the original paper, which uses a Gauss-Newton Hessian 1/511th the scale of the EKFAC Hessian.
+   ASTRA refines a Kronecker-factored inverse Hessian vector product such as EKFAC's, so it adds a constant amount of compute to each query on top of EKFAC's. Our mainline ASTRA result uses a learning rate tuned via a small grid search against the ASTRA objective, and identically scaled EKFAC and Gauss-Newton Hessians. We also include a reference result matching the implementation in the original paper, which uses a Gauss-Newton Hessian 1/511th the scale of the EKFAC Hessian. Results on this benchmark could likely be improved with careful per-query learning rate tuning - we recommend always tuning ASTRA's learning rate.
 
 LiSSA
    The influence function of `Bae et al. <https://arxiv.org/abs/2209.05364>`_: the damped Gauss-Newton Hessian inverse applied to each query by the LiSSA solver. Unlike ASTRA, it doesn't precondition with an existing Hessian approximation, and costs significantly more per query.
