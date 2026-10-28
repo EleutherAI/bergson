@@ -22,8 +22,8 @@ Indicative performance of data attribution methods in the finetuning regime.
      - 0.077 [0.066, 0.089]
      - 0.685 [0.664, 0.702]
    * - EKFAC + ASTRA
-     - 0.073 [0.061, 0.087]
-     - 0.579 [0.554, 0.601]
+     - 0.076 [0.064, 0.089]
+     - 0.605 [0.581, 0.625]
    * - Eigenvalue-corrected Shampoo + ASTRA
      - 0.072 [0.061, 0.085]
      - 0.625 [0.604, 0.643]
@@ -121,10 +121,10 @@ Per-token attribution scores, which attribute each training token's loss term, e
      - 0.922 [0.887, 0.957]
    * - SOURCE (Adam, EKFAC)
      - 0.908 [0.877, 0.942]
+   * - EKFAC + ASTRA
+     - 0.907 [0.863, 0.943]
    * - LiSSA (Gauss-Newton Hessian)
      - 0.880 [0.850, 0.912]
-   * - EKFAC + ASTRA
-     - 0.872 [0.810, 0.922]
    * - EKFAC
      - 0.863 [0.833, 0.894]
    * - KFAC

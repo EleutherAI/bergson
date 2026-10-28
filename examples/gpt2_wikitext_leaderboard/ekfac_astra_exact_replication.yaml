@@ -3,13 +3,13 @@
 # for the 1_magic.yaml model against the test queries, one score column per query.
 # LDS: examples/gpt2_wikitext_leaderboard/lds_from_bank.py --sign grad.
 
-# Run with `bergson examples/gpt2_wikitext_leaderboard/ekfac_astra_paper.yaml`
+# Run with `bergson examples/gpt2_wikitext_leaderboard/ekfac_astra_exact_replication.yaml`
 
-run_path: runs/compare_wikitext/ekfac_astra_paper
+run_path: runs/compare_wikitext/ekfac_astra_exact_replication
 steps:
   - influence:
       index_cfg:
-        run_path: runs/compare_wikitext/ekfac_astra_paper
+        run_path: runs/compare_wikitext/ekfac_astra_exact_replication
         model: runs/compare_wikitext/interval/exported/checkpoint-72
         overwrite: true
         # GPT-2's max context length is 1024.

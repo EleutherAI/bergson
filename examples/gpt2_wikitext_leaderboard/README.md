@@ -13,7 +13,7 @@ Every method scores the same 50 test chunks (`test[0:50]`). We report the QLD an
 | MAGIC (per-query) | 0.100 | [0.090, 0.112] | 0.931 | [0.925, 0.936] | 0.933 | 0.804 | 0.970 | 50/50 |
 | MAGIC (cross-seed) | 0.098 | [0.087, 0.110] | 0.829 | [0.815, 0.840] | 0.836 | 0.658 | 0.932 | 50/50 |
 | EKFAC + CG | 0.077 | [0.066, 0.089] | 0.685 | [0.664, 0.702] | 0.699 | 0.457 | 0.805 | 50/50 |
-| EKFAC + ASTRA | 0.073 | [0.061, 0.087] | 0.579 | [0.554, 0.601] | 0.601 | -0.042 | 0.811 | 48/50 |
+| EKFAC + ASTRA | 0.076 | [0.064, 0.089] | 0.605 | [0.581, 0.625] | 0.614 | 0.201 | 0.811 | 50/50 |
 | Eigenvalue-corrected Shampoo + ASTRA | 0.072 | [0.061, 0.085] | 0.625 | [0.604, 0.643] | 0.644 | 0.095 | 0.805 | 49/50 |
 | EKFAC + ASTRA (exact paper settings) | 0.071 | [0.060, 0.084] | 0.629 | [0.607, 0.647] | 0.646 | 0.435 | 0.786 | 50/50 |
 | Eigenvalue-corrected Shampoo | 0.071 | [0.060, 0.082] | 0.517 | [0.491, 0.539] | 0.532 | 0.294 | 0.703 | 50/50 |
@@ -46,6 +46,8 @@ MAGIC (cross-seed) applies the seed-42 MAGIC scores to retrains with seed 43 (di
 
 KFAC is `kfac.yaml`: the Kronecker factors and damping of `ekfac.yaml` without the eigenvalue correction (`ev_correction: false`), so the two rows isolate what the correction adds.
 
+EKFAC + ASTRA's LDS and QLD take queries 15 and 44 from the lr 1e-6 step of `ekfac_astra.yaml`.
+
 LiSSA is `lissa.yaml`, the influence function of Bae et al. (2022): each query's damped Gauss-Newton Hessian inverse `(G + 0.01 I)^-1 q`, estimated by LiSSA with the paper's Transformer settings (5,000 terms, 5 repeats) on fresh 8-chunk batches, with each chunk's loss the mean over its tokens as in the paper; the scale 50 is the smallest of the paper's grid (10 to 500) that stays bounded over 5,000 terms (10 and 25 diverge on some queries). At depth 5,000 the estimates have not fully converged: their norm still changes by 5.8% (median) over the last 500 terms. It ran 25.4 h on 8 A40s.
 
 KFAC (projection 64) is `kfac_p64.yaml`: the same factors and damping with the gradients random-projected per module to 64 dimensions as in the TrackStar rows.
@@ -68,7 +70,7 @@ bergson examples/gpt2_wikitext_leaderboard/2_interval.yaml    # evenly spaced ch
 python -c "from bergson.utils.trainer_export import export_checkpoints; export_checkpoints('runs/compare_wikitext/interval', steps=[72])"
 bergson examples/gpt2_wikitext_leaderboard/ekfac.yaml
 bergson examples/gpt2_wikitext_leaderboard/ekfac_astra_cg.yaml
-bergson examples/gpt2_wikitext_leaderboard/ekfac_astra_paper.yaml
+bergson examples/gpt2_wikitext_leaderboard/ekfac_astra_exact_replication.yaml
 bergson examples/gpt2_wikitext_leaderboard/ekfac_astra.yaml
 bergson examples/gpt2_wikitext_leaderboard/lissa.yaml
 bergson examples/gpt2_wikitext_leaderboard/shampoo_astra.yaml
@@ -90,12 +92,12 @@ done
 for p in 0 64; do   # writes baselines/activation_ekfac_scores and baselines/activation_ekfac_p64_scores
   python -m examples.gpt2_wikitext_leaderboard.gradient_free_baselines.activation_baseline --bank runs/compare_wikitext/random --query_split "test[0:50]" --out runs/compare_wikitext/baselines --hessian runs/compare_wikitext/ekfac/hessian/kfac --projection_dim $p
 done
-for f in magic magic_seed43 ekfac lissa ekfac_astra_cg ekfac_astra_paper ekfac_astra kfac kfac_p64 shampoo trak_ens gradient_dot trackstar trackstar_adam source gradient_cosine bm25 semantic qwen3 activation activation_ekfac activation_ekfac_p64; do
+for f in magic magic_seed43 ekfac lissa ekfac_astra_cg ekfac_astra_exact_replication ekfac_astra kfac kfac_p64 shampoo trak_ens gradient_dot trackstar trackstar_adam source gradient_cosine bm25 semantic qwen3 activation activation_ekfac activation_ekfac_p64; do
   bergson examples/gpt2_wikitext_leaderboard/filters/filter_$f.yaml
 done
 python examples/gpt2_wikitext_leaderboard/lds_from_bank.py --validation runs/compare_wikitext/random/validation.csv --out runs/compare_wikitext/lds_magic.json
 python examples/gpt2_wikitext_leaderboard/lds_from_bank.py --validation runs/compare_wikitext/magic_seed43/validation.csv --out runs/compare_wikitext/lds_magic_seed43.json
-for m in ekfac lissa ekfac_astra_cg ekfac_astra_paper ekfac_astra kfac kfac_p64 shampoo trackstar_p16 trackstar_p32 trackstar_p64 trackstar_adam_p16 trackstar_adam_p32 trackstar_adam_p64 gradient_cosine gradient_cosine_projected gradient_dot; do python examples/gpt2_wikitext_leaderboard/lds_from_bank.py --sign grad --scores runs/compare_wikitext/$m/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_$m.json; done
+for m in ekfac lissa ekfac_astra_cg ekfac_astra_exact_replication kfac kfac_p64 shampoo trackstar_p16 trackstar_p32 trackstar_p64 trackstar_adam_p16 trackstar_adam_p32 trackstar_adam_p64 gradient_cosine gradient_cosine_projected gradient_dot; do python examples/gpt2_wikitext_leaderboard/lds_from_bank.py --sign grad --scores runs/compare_wikitext/$m/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_$m.json; done
 python examples/gpt2_wikitext_leaderboard/lds_from_bank.py --sign grad --scores runs/compare_wikitext/trak/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_trak_ens.json
 for b in bm25 semantic qwen3 activation activation_ekfac activation_ekfac_p64; do python examples/gpt2_wikitext_leaderboard/lds_from_bank.py --sign loss --scores runs/compare_wikitext/baselines/${b}_scores/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_$b.json; done
 for m in source source_adam; do python examples/gpt2_wikitext_leaderboard/lds_from_bank.py --sign loss --scores runs/compare_wikitext/$m/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_$m.json; done

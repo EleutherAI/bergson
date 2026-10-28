@@ -43,7 +43,7 @@ steps:
       hessian_pipeline_cfg:
         query:
           dataset: EleutherAI/bergson-wikitext-512-chunks
-          split: "test[0:50]"
+          split: "test[0:15]+test[16:44]+test[45:50]"
           chunk_length: 0
           # One score column per query, for per-query LDS.
           aggregation: none
@@ -52,6 +52,55 @@ steps:
         astra:
           num_steps: 300
           lr: 3.0e-6
+          momentum: 0.9
+          batch_size: 16
+          micro_batch_size: 8
+          lr_decay: 0.9
+          lr_decay_interval: 100
+  # Queries 15 and 44 diverge at lr 3e-6, so they run at the next grid step size.
+  - influence:
+      index_cfg:
+        run_path: runs/compare_wikitext/ekfac_astra_lr1e-6
+        model: runs/compare_wikitext/interval/exported/checkpoint-72
+        overwrite: true
+        # GPT-2's max context length is 1024.
+        token_batch_size: 1024
+        # Cap batch size in docs so the bin-packer doesn't produce large
+        # batches of very few tokens; EK-FAC gradients aren't compressed.
+        max_batch_size: 64
+        # GPT-2 uses an nn.Linear for its LM head.
+        filter_modules: "lm_head"
+        distributed:
+          nproc_per_node: 8
+          nnode: 1
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "train"
+          chunk_length: 0
+
+      hessian_cfg:
+        method: kfac
+        ev_correction: true
+
+      score_cfg:
+        batch_size: 1024
+        query_batch_size: 64
+
+      preprocess_cfg:
+        unit_normalize: false
+
+      hessian_pipeline_cfg:
+        query:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "test[15:16]+test[44:45]"
+          chunk_length: 0
+          # One score column per query, for per-query LDS.
+          aggregation: none
+        inversion_cfg:
+          damping_factor: 0.1
+        astra:
+          num_steps: 300
+          lr: 1.0e-6
           momentum: 0.9
           batch_size: 16
           micro_batch_size: 8
