@@ -7,6 +7,7 @@ Per-token attribution on the WikiText leaderboard model (the `1_magic.yaml` run 
 | Eigenvalue-corrected Shampoo | 0.922 | [0.887, 0.957] | 0.922 | 0.671 | 1.270 | 0.0011 | 50/50 |
 | SOURCE (Adam, EKFAC) | 0.908 | [0.877, 0.942] | 0.903 | 0.686 | 1.266 | 0.0004 | 50/50 |
 | LiSSA (Gauss-Newton Hessian) | 0.880 | [0.850, 0.912] | 0.874 | 0.641 | 1.130 | 0.0005 | 50/50 |
+| EKFAC + ASTRA | 0.872 | [0.810, 0.922] | 0.926 | 0.045 | 1.108 | 0.0005 | 50/50 |
 | EKFAC | 0.863 | [0.833, 0.894] | 0.860 | 0.648 | 1.175 | 0.0006 | 50/50 |
 | KFAC | 0.786 | [0.758, 0.815] | 0.784 | 0.584 | 1.058 | 0.0008 | 50/50 |
 | BM25 | 0.677 | [0.650, 0.704] | 0.678 | 0.462 | 0.926 | 0.0004 | 50/50 |
@@ -19,7 +20,7 @@ Per-token attribution on the WikiText leaderboard model (the `1_magic.yaml` run 
 
 Paired over queries, MAGIC exceeds EKFAC + CG by 0.361 [0.342, 0.379] and EKFAC + CG exceeds EKFAC by 0.151 [0.138, 0.165], each on 50 of 50 queries (95% CI from the per-query differences). The 95% CIs in the table are a 10k bootstrap over queries.
 
-`ekfac_tokens.yaml` and `ekfac_astra_cg_tokens.yaml` score the published EKFAC and ASTRA query directions (`../ekfac.yaml`, `../ekfac_astra_cg.yaml`) token by token with `token_influence: output`; `magic_tokens.yaml` resumes the leaderboard trajectory with `attribute_tokens: true`, so its scores are the per-token MAGIC gradient with the four epochs summed onto each chunk. The `filter_*_tokens.yaml` configs are `validate` runs with `method.kind: filter` over the per-token score stores; `exclude_zero_scores` skips the final position of each chunk, which carries no loss.
+`ekfac_tokens.yaml`, `ekfac_astra_cg_tokens.yaml` and `ekfac_astra_tokens.yaml` score the published EKFAC, CG and ASTRA query directions (`../ekfac.yaml`, `../ekfac_astra_cg.yaml`, `../ekfac_astra.yaml`) token by token with `token_influence: output`; `magic_tokens.yaml` resumes the leaderboard trajectory with `attribute_tokens: true`, so its scores are the per-token MAGIC gradient with the four epochs summed onto each chunk. The `filter_*_tokens.yaml` configs are `validate` runs with `method.kind: filter` over the per-token score stores; `exclude_zero_scores` skips the final position of each chunk, which carries no loss.
 
 Every other method's rows are the forward-mode equivalent of its document score: row `t` is the method's share of the chunk's score from the loss on token `t + 1`, and a chunk's rows add up to its score.
 
@@ -30,15 +31,16 @@ Every other method's rows are the forward-mode equivalent of its document score:
 - Gradient cosine similarity, TrackStar and TRAK score along the full-parameter direction `direction_store.py` rebuilds from the doc-level run: the query preconditioned and normalized as its scorer does, mapped back through the random projection (per module for TrackStar, global for TRAK). `combine_tokens.py rescale` gives each chunk its doc-level normalization (the inverse norm of its training gradient); `combine_tokens.py trak` averages the eight members' log-odds passes as bergson averages members.
 - The gradient-free baselines split their document scores exactly (`token_baselines.py`): activation similarity by position, with or without the activation covariance preconditioner, since its pooled activations are means over positions; BM25 by term occurrence, over the GPT-2 tokens an occurrence spans; Qwen3-Embedding, which pools a causal model's last token, by each token's change in the prefix embedding's cosine. Tokens with no lexical or embedding overlap score exactly zero, which the filter's `exclude_zero_scores` would drop from its pool, so `full_pool.py` gives them `+1e-30` and every method removes 1% of all training tokens.
 
-Reproduce (after `../1_magic.yaml`, `../2_interval.yaml`, the checkpoint export, `../ekfac.yaml` and `../ekfac_astra_cg.yaml`):
+Reproduce (after `../1_magic.yaml`, `../2_interval.yaml`, the checkpoint export, `../ekfac.yaml`, `../ekfac_astra_cg.yaml` and `../ekfac_astra.yaml`):
 
 ```bash
 bergson examples/gpt2_wikitext_leaderboard/tokens/ekfac_tokens.yaml
 bergson examples/gpt2_wikitext_leaderboard/tokens/ekfac_astra_cg_tokens.yaml
+bergson examples/gpt2_wikitext_leaderboard/tokens/ekfac_astra_tokens.yaml
 mkdir -p runs/compare_wikitext/tokens/magic_tokens
 cp -r runs/compare_wikitext/random/checkpoints runs/compare_wikitext/random/optimizer.pt runs/compare_wikitext/tokens/magic_tokens/
 bergson examples/gpt2_wikitext_leaderboard/tokens/magic_tokens.yaml
-for f in ekfac ekfac_astra_cg magic; do
+for f in ekfac ekfac_astra_cg ekfac_astra magic; do
   bergson examples/gpt2_wikitext_leaderboard/tokens/filter_${f}_tokens.yaml
 done
 python examples/gpt2_wikitext_leaderboard/qld_from_filters.py runs/compare_wikitext/tokens

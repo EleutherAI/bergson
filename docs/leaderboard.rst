@@ -123,6 +123,8 @@ Per-token attribution scores, which attribute each training token's loss term, e
      - 0.908 [0.877, 0.942]
    * - LiSSA (Gauss-Newton Hessian)
      - 0.880 [0.850, 0.912]
+   * - EKFAC + ASTRA
+     - 0.872 [0.810, 0.922]
    * - EKFAC
      - 0.863 [0.833, 0.894]
    * - KFAC
@@ -156,7 +158,7 @@ EKFAC
    A classic influence function in the form ``g_t H^{-1} g_q`` using the EKFAC Hessian approximation for H. The H can be swapped out for other matrices including KFAC, Shampoo, and MAC.
 
 ASTRA
-   ASTRA refines a Kronecker-factored inverse Hessian vector product such as EKFAC's, so it adds a constant amount of compute to each query on top of EKFAC's. Our mainline ASTRA result uses a learning rate tuned via a small grid search against the ASTRA objective, and identically scaled EKFAC and Gauss-Newton Hessians. We also include a reference result matching the implementation in the original paper, which uses a Gauss-Newton Hessian 1/511th the scale of the EKFAC Hessian.
+   ASTRA refines a Kronecker-factored inverse Hessian vector product such as EKFAC's, so it adds a constant amount of compute to each query on top of EKFAC's. Our mainline ASTRA result uses a learning rate tuned via a small grid search against the ASTRA objective, and identically scaled EKFAC and Gauss-Newton Hessians. We also include a reference result matching the implementation in the original paper, which uses a Gauss-Newton Hessian 1/511th the scale of the EKFAC Hessian. Results on this benchmark could likely be improved with careful per-query learning rate tuning - we recommend always tuning ASTRA's learning rate.
 
 LiSSA
    The influence function of `Bae et al. <https://arxiv.org/abs/2209.05364>`_: the damped Gauss-Newton Hessian inverse applied to each query by the LiSSA solver. Unlike ASTRA, it doesn't precondition with an existing Hessian approximation, and costs significantly more per query.
