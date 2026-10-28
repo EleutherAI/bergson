@@ -1,6 +1,6 @@
 import csv
 from contextlib import contextmanager
-from dataclasses import asdict
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Generator
 
@@ -69,18 +69,17 @@ def query(
 
     # Load a different model than the one the index was built for, e.g.
     # a different checkpoint.
-    if query_cfg.model:
-        query_index_cfg = IndexConfig(
-            **{k: v for k, v in asdict(index_cfg).items() if k != "model"},
-            model=query_cfg.model,
-        )
-        tokenizer = AutoTokenizer.from_pretrained(query_cfg.model)
-        query_index_cfg.distributed.device_map_auto = query_cfg.device_map_auto
-        model, target_modules = setup_model_and_peft(query_index_cfg)
-    else:
-        tokenizer = AutoTokenizer.from_pretrained(index_cfg.model)
-        index_cfg.distributed.device_map_auto = query_cfg.device_map_auto
-        model, target_modules = setup_model_and_peft(index_cfg)
+    model_cfg = replace(
+        index_cfg,
+        model=query_cfg.model or index_cfg.model,
+        distributed=replace(
+            index_cfg.distributed,
+            device_map_auto=query_cfg.device_map_auto
+            or index_cfg.distributed.device_map_auto,
+        ),
+    )
+    tokenizer = AutoTokenizer.from_pretrained(model_cfg.model)
+    model, target_modules = setup_model_and_peft(model_cfg)
 
     ds = load_data_string(
         index_cfg.data.dataset,

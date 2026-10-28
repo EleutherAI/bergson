@@ -56,6 +56,8 @@ class GaussNewtonProduct:
     ):
         if index_cfg.loss_fn != "ce":
             raise ValueError("ASTRA supports loss_fn='ce' only.")
+        if index_cfg.distributed.device_map_auto:
+            raise ValueError("ASTRA and LiSSA don't support device_map_auto.")
 
         self.model = model
         self.data = data

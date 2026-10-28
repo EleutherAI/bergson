@@ -150,6 +150,17 @@ def apply_logit_scale(model, scale: float):
     return model
 
 
+def check_on_gpus(model: PreTrainedModel | PeftModel):
+    """Raise if device_map="auto" offloaded part of the model to the CPU or disk,
+    which Bergson's hooks and forward-mode scoring don't support."""
+    offloaded = {"cpu", "disk"} & set(getattr(model, "hf_device_map", {}).values())
+    if offloaded and torch.cuda.is_available():
+        raise ValueError(
+            f"device_map_auto offloaded part of the model to "
+            f"{', '.join(sorted(offloaded))}. Use more GPUs or a lower precision."
+        )
+
+
 def setup_model_and_peft(
     cfg: ModelConfig,
     apply_fsdp: bool = True,
@@ -266,6 +277,9 @@ def setup_model_and_peft(
     # Configure gradients
     model.requires_grad_(False)
     model.get_input_embeddings().requires_grad_(True)  # type: ignore
+
+    if cfg.distributed.device_map_auto:
+        check_on_gpus(model)
 
     # Apply FSDP if needed
     if cfg.fsdp and apply_fsdp:

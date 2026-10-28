@@ -33,7 +33,6 @@ from bergson.hessians.preconditioner import (
 from bergson.process_grads import normalize_and_aggregate_grads
 from bergson.score.candidates import select_candidates
 from bergson.score.output_influence import (
-    check_on_gpus,
     check_output_influence_supported,
     output_token_influence,
     query_directions,
@@ -400,7 +399,6 @@ def output_influence_worker(
     model, target_modules = setup_model_and_peft(index_cfg, attn_implementation="eager")
     # Dropout would give each query column its own random model.
     model.eval()
-    check_on_gpus(model)
     # Saves the processor config beside the scores, as score_worker does.
     create_processor(model, index_cfg, target_modules)
     device = torch.device(get_device(local_rank))

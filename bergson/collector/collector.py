@@ -398,7 +398,10 @@ class HookCollectorBase(ContextDecorator, ABC):
             self.processor.projection_scale,
         )  # [N, proj_dim]
         if "gradients" in self.mod_grads:
-            self.mod_grads["gradients"].add_(projected)
+            # The model may be split across GPUs.
+            self.mod_grads["gradients"].add_(
+                projected.to(self.mod_grads["gradients"].device)
+            )
         else:
             self.mod_grads["gradients"] = projected
         return True

@@ -1090,6 +1090,8 @@ class Trainer:
 
 def prepare_trainer(cfg: TrainingConfig, rank: int, schedule: Callable):
     """Prepare the model, optimizer, and trainer for training."""
+    if cfg.distributed.device_map_auto:
+        raise ValueError("Training doesn't support device_map_auto.")
     shard = cfg.fsdp and dist.is_initialized()
 
     model, target_modules = setup_model_and_peft(

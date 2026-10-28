@@ -155,6 +155,8 @@ def lissa_pipeline(
         raise ValueError("LiSSA needs projection_dim=0.")
     if index_cfg.distributed.nnode > 1:
         raise ValueError("LiSSA runs on a single node.")
+    if index_cfg.distributed.device_map_auto:
+        raise ValueError("LiSSA doesn't support device_map_auto.")
 
     run_path = index_cfg.run_path
     query_path = f"{run_path}/query"

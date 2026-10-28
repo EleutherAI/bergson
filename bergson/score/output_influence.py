@@ -30,18 +30,6 @@ def check_output_influence_supported(
         )
 
 
-def check_on_gpus(model: PreTrainedModel | PeftModel):
-    """Raise if part of the model is offloaded to the CPU or disk."""
-    offloaded = {"cpu", "disk"} & set(getattr(model, "hf_device_map", {}).values())
-    # Offloading reloads each weight before its module runs, which would replace
-    # the weight that carries the query direction.
-    if offloaded and torch.cuda.is_available():
-        raise ValueError(
-            f"token_influence='output' can't score a model offloaded to "
-            f"{', '.join(sorted(offloaded))}. Use more GPUs or a lower precision."
-        )
-
-
 def query_directions(
     model: PreTrainedModel | PeftModel,
     query_grads_t: dict[str, Tensor],

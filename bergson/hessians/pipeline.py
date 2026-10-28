@@ -70,6 +70,12 @@ def hessian_pipeline(
             "Hessian."
         )
 
+    if (
+        hessian_pipeline_cfg.astra.num_steps > 0
+        and index_cfg.distributed.device_map_auto
+    ):
+        raise ValueError("ASTRA doesn't support device_map_auto.")
+
     run_path = index_cfg.run_path
     method = hessian_cfg.method
     query_path = f"{run_path}/query"

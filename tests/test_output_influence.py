@@ -18,12 +18,9 @@ from bergson.config import (
     ScoreConfig,
 )
 from bergson.data import load_scores
-from bergson.score.output_influence import (
-    check_on_gpus,
-    output_token_influence,
-    query_directions,
-)
+from bergson.score.output_influence import output_token_influence, query_directions
 from bergson.score.score import score_dataset
+from bergson.utils.worker_utils import check_on_gpus
 
 from .test_score import _write_query_index
 
@@ -283,5 +280,5 @@ def test_check_on_gpus_rejects_offload():
         MODEL,
         device_map={"model": "cuda:0", "lm_head": "cpu"},
     )
-    with pytest.raises(ValueError, match="offloaded to cpu"):
+    with pytest.raises(ValueError, match="model to cpu"):
         check_on_gpus(model)
