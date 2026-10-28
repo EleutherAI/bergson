@@ -25,6 +25,7 @@ from bergson.hessians.preconditioner import (
     DiagonalFactoredPreconditioner,
     FactoredPreconditioner,
 )
+from bergson.hessians.sharded_computation import assign_module_owners
 from bergson.utils.logger import get_logger
 from bergson.utils.utils import get_device, numpy_to_tensor
 
@@ -117,6 +118,20 @@ class EkfacApplicator:
         self.world_size = dist.get_world_size() if dist.is_initialized() else 1
         self.device = get_device(self.rank)
 
+    def _factor_devices(
+        self, o_dims: dict[str, int], i_dims: dict[str, int]
+    ) -> str | dict[str, torch.device]:
+        """This rank's device, or in a single process that sees several GPUs,
+        each module's GPU, balancing the factors' sizes across them."""
+        num_gpus = torch.cuda.device_count()
+        if dist.is_initialized() or num_gpus < 2:
+            return self.device
+        owners = assign_module_owners(
+            {name: (None, (o_dims[name], i_dims[name]), False) for name in o_dims},
+            num_gpus,
+        )
+        return {name: torch.device("cuda", gpu) for name, gpu in owners.items()}
+
     def _factor_dims(self) -> tuple[list[str], dict[str, int], dict[str, int]]:
         """Module names and their [O]/[I] sizes from the eigenvector shard headers."""
         shard = f"shard_{self.rank}.safetensors"
@@ -131,7 +146,9 @@ class EkfacApplicator:
             o_dims = {n: f.get_slice(n).get_shape()[1] for n in names}
         return names, o_dims, i_dims
 
-    def _build_preconditioner(self, modules: list[str] | None):
+    def _build_preconditioner(
+        self, modules: list[str] | None, devices: str | dict[str, torch.device]
+    ):
         """The preconditioner chain for ``modules`` (all when ``None``)."""
         chain: list = []
         if self.cfg.preconditioner_path:
@@ -154,7 +171,7 @@ class EkfacApplicator:
                 preconditioner = FactoredPreconditioner.from_shards(
                     self.path,
                     rank=self.rank,
-                    device=self.device,
+                    device=devices,
                     inversion_cfg=self.inversion_cfg or InversionConfig(),
                     ev_correction=self.cfg.ev_correction,
                 )
@@ -164,7 +181,7 @@ class EkfacApplicator:
             preconditioner = FactoredPreconditioner.from_shards(
                 self.path,
                 rank=self.rank,
-                device=self.device,
+                device=devices,
                 inversion_cfg=(
                     None if self.apply_fn is not None else self.inversion_cfg
                 ),
@@ -220,10 +237,11 @@ class EkfacApplicator:
             f"Loaded gradients for {num_queries} queries and computing IVHP..."
         )
 
+        devices = self._factor_devices(o_dims, i_dims)
         groups = partition_modules(names, self.cfg.module_partitions)
         for group in groups:
             chain, preconditioner = self._build_preconditioner(
-                group if len(groups) > 1 else None
+                group if len(groups) > 1 else None, devices
             )
             self._apply_group(
                 group,

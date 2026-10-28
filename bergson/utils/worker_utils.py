@@ -152,7 +152,6 @@ def apply_logit_scale(model, scale: float):
 
 def setup_model_and_peft(
     cfg: ModelConfig,
-    device_map_auto: bool = False,
     apply_fsdp: bool = True,
     meta_init: bool = False,
     **model_kwargs,
@@ -179,7 +178,9 @@ def setup_model_and_peft(
             raise ValueError(f"Unsupported precision: {other}")
 
     # Common configuration
-    if device_map_auto:
+    if cfg.distributed.device_map_auto:
+        if cfg.fsdp:
+            raise ValueError("device_map_auto and fsdp are mutually exclusive.")
         device_map = "auto"
     elif cfg.fsdp or not torch.cuda.is_available():
         device_map = "cpu"

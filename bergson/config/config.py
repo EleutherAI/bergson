@@ -168,6 +168,17 @@ class DistributedConfig(Serializable):
     """The rank of the current node. If not set Bergson will attempt to infer
     it from environment variables."""
 
+    device_map_auto: bool = False
+    """Split the model's layers across every visible GPU in a single process,
+    for a model too large for one GPU. Only one GPU computes at a time, so this
+    makes the model fit without making it faster. Sets ``nproc_per_node`` to 1."""
+
+    def __post_init__(self):
+        if self.device_map_auto:
+            if self.nnode > 1:
+                raise ValueError("device_map_auto runs on a single node.")
+            self.nproc_per_node = 1
+
     @property
     def _node_rank(self) -> int:
         """Get the rank of the node from config or environment variables."""
@@ -903,10 +914,6 @@ class ScoreConfig(Serializable):
     ``attribute_tokens``, ``output`` only changes how that score is computed.
     ``output`` costs one forward-mode pass per query column, so aggregate the
     query when you can, and needs an unprojected query and dot-product scoring."""
-
-    device_map_auto: bool = False
-    """Split the model's layers across every visible GPU in one process, for a
-    model too large for one GPU. Requires ``token_influence='output'``."""
 
     candidates: CandidateConfig = field(default_factory=CandidateConfig)
     """Score only the rows an earlier run ranked highest. The store then has one

@@ -127,30 +127,21 @@ class LambdaCollector(HookCollectorBase):
             self._setup_owned(eigen_src)
             return
 
-        if self.eigenvectors is not None:
-            self.eigen_a, self.eigen_g = (
-                {k: v.to(self.device, self.dtype) for k, v in vectors.items()}
-                for vectors in self.eigenvectors
+        if self.eigenvectors is None:
+            self.eigenvectors = tuple(
+                load_file(
+                    os.path.join(eigen_src, subdir, f"shard_{self.rank}.safetensors")
+                )
+                for subdir in ("eigen_activation_sharded", "eigen_gradient_sharded")
             )
-            return
-
-        # Load precomputed eigenvectors
-        self.eigen_a = load_file(
-            os.path.join(
-                eigen_src, f"eigen_activation_sharded/shard_{self.rank}.safetensors"
-            ),
-            device=self.device,
+        # Each on its module's device, in the accumulation dtype.
+        self.eigen_a, self.eigen_g = (
+            {
+                k: vectors[k].to(self.target_info[k][0], self.dtype)
+                for k in self.target_info
+            }
+            for vectors in self.eigenvectors
         )
-        self.eigen_g = load_file(
-            os.path.join(
-                eigen_src, f"eigen_gradient_sharded/shard_{self.rank}.safetensors"
-            ),
-            device=self.device,
-        )
-
-        # Cast eigenvectors once so the rotations run in the accumulation dtype.
-        self.eigen_a = {k: v.to(self.dtype) for k, v in self.eigen_a.items()}
-        self.eigen_g = {k: v.to(self.dtype) for k, v in self.eigen_g.items()}
 
     def _setup_owned(self, eigen_src: str) -> None:
         """Load the full eigenvectors of the modules this rank owns, joining the
@@ -268,7 +259,7 @@ class LambdaCollector(HookCollectorBase):
             self.eigenvalue_corrections[name] = transformed_grad.to(device="cpu")
         else:
             self.eigenvalue_corrections[name] = self.eigenvalue_corrections[name].to(
-                device=self.device
+                device=transformed_grad.device
             )
             self.eigenvalue_corrections[name].add_(transformed_grad)
             self.eigenvalue_corrections[name] = self.eigenvalue_corrections[name].to(
@@ -398,8 +389,8 @@ def eigendecompose_owned(
     positions it summed, when given, else by ``total_processed``. The two differ
     for an MoE expert, which only sums the positions routed to it.
 
-    Returns the eigenvectors of the modules this rank owns, in full, on this
-    rank's device, and this rank's row shard of every module's eigenvalues on
+    Returns the eigenvectors of the modules this rank owns, in full, on their
+    covariances' devices, and this rank's row shard of every module's eigenvalues on
     the CPU. Empties ``covariances`` as it goes, so each covariance is freed once
     its eigenvectors exist.
     """
@@ -415,8 +406,12 @@ def eigendecompose_owned(
         position=rank,
         leave=False,
     ):
+        covariance = covariances.pop(key)
+        # On the covariance's device, which is its module's when the model is
+        # split across GPUs.
         count = _module_count(key, total_processed, num_positions)
-        values, vectors = _eigh(key, covariances.pop(key), count, dtype)
+        values, vectors = _eigh(key, covariance, count.to(covariance.device), dtype)
+        del covariance
         eigenvectors[key] = vectors
         eigenvalues[key] = values
 

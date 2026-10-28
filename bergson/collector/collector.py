@@ -447,17 +447,21 @@ class HookCollectorBase(ContextDecorator, ABC):
         return self
 
     def collection_mask(self, module: nn.Module) -> Tensor | None:
-        """The mask over ``module``'s gradient-carrying positions. Supports the
-        ``_positions`` grid, each row's source sequence position, which an expanded
-        MoE expert must populate in the forward pass."""
+        """The mask over ``module``'s gradient-carrying positions, on its device.
+        Supports the ``_positions`` grid, each row's source sequence position,
+        which an expanded MoE expert must populate in the forward pass."""
+        mask = self._current_collection_mask
+        if mask is not None:
+            # The model may be split across GPUs.
+            mask = mask.to(module.weight.device)
         positions = getattr(module, "_positions", None)
         if positions is None:
-            return self._current_collection_mask
+            return mask
 
         real = positions >= 0
-        if self._current_collection_mask is None:
+        if mask is None:
             return real
-        return real & self._current_collection_mask.gather(1, positions.clamp(min=0))
+        return real & mask.gather(1, positions.clamp(min=0))
 
     def __enter__(self):
         """Register forward and backward hooks on all target modules."""
@@ -600,7 +604,7 @@ class HookCollectorBase(ContextDecorator, ABC):
         if self.attribute_tokens:
             # Drop uncollected positions (padding and each sequence's last
             # position) before forming any [O, I] gradients
-            mask = self._current_collection_mask
+            mask = self.collection_mask(module)
             g, a = g[mask], a[mask]  # [T, O], [T, I/q]
 
         adam = isinstance(normalizer, AdamNormalizer)

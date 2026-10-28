@@ -21,7 +21,7 @@ The eigenvalue math lives in :mod:`bergson.hessians.inversion`.
 import os
 from glob import glob
 from pathlib import Path
-from typing import Iterable, Protocol, runtime_checkable
+from typing import Iterable, Mapping, Protocol, runtime_checkable
 
 import torch
 import torch.distributed as dist
@@ -225,14 +225,15 @@ class FactoredPreconditioner:
         hessian_path: str | Path,
         *,
         rank: int,
-        device: str | torch.device,
+        device: str | torch.device | Mapping[str, torch.device],
         inversion_cfg: InversionConfig | None = None,
         apply_fn=None,
         power: float = -1.0,
         ev_correction: bool = False,
         modules: Iterable[str] | None = None,
     ) -> "FactoredPreconditioner":
-        """Distributed: load this rank's shard of the factors, or only ``modules``."""
+        """Distributed: load this rank's shard of the factors, or only ``modules``,
+        onto ``device`` or each module's device in it."""
 
         def load(sub):
             return _load_shard(hessian_path, sub, rank, device, modules)
@@ -605,11 +606,15 @@ def _load_shard(
     hessian_path: str | Path,
     subdir: str,
     rank: int,
-    device: str | torch.device,
+    device: str | torch.device | Mapping[str, torch.device],
     modules: Iterable[str] | None = None,
 ) -> dict[str, Tensor]:
     """Load ``rank``'s shard of the factors under ``hessian_path/subdir`` onto
-    ``device`` as fp32, restricted to ``modules`` when given."""
+    ``device``, or each module's device in it, as fp32, restricted to
+    ``modules`` when given."""
+    if isinstance(device, Mapping):
+        shard = _load_shard(hessian_path, subdir, rank, "cpu", modules)
+        return {k: v.to(device[k]) for k, v in shard.items()}
     path = os.path.join(str(hessian_path), subdir, f"shard_{rank}.safetensors")
     if modules is None:
         shard = load_file(path, device=str(device))

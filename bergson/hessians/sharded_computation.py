@@ -133,7 +133,8 @@ class ShardedMul:
         dtype: torch.dtype,
         target_info: dict[str, tuple[torch.device, torch.Size, bool]],
     ):
-        """Initialize the covariance matrices for activations and gradients."""
+        """Initialize the covariance matrices for activations and gradients, each
+        on its module's device."""
 
         for name, (device, weight_shape, collect_bias) in target_info.items():
             # Activation covariance A^T A has shape [in_dim, in_dim], or
@@ -141,14 +142,14 @@ class ShardedMul:
             in_dim = weight_shape[1] + (1 if collect_bias else 0)
             in_start, in_end = self.shard_bounds(in_dim)
             activation_covariance_dict[name] = torch.zeros(
-                (in_end - in_start, in_dim), device=self.device, dtype=dtype
+                (in_end - in_start, in_dim), device=device, dtype=dtype
             )
 
             # Gradient covariance G^T G has shape [out_dim, out_dim]
             out_dim = weight_shape[0]
             out_start, out_end = self.shard_bounds(out_dim)
             gradient_covariance_dict[name] = torch.zeros(
-                (out_end - out_start, out_dim), device=self.device, dtype=dtype
+                (out_end - out_start, out_dim), device=device, dtype=dtype
             )
 
     def _matmul(

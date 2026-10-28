@@ -11,7 +11,12 @@ from datasets import Dataset
 from transformers import AutoModelForCausalLM
 
 from bergson.collector.gradient_collectors import GradientCollector
-from bergson.config import IndexConfig, PreprocessConfig, ScoreConfig
+from bergson.config import (
+    DistributedConfig,
+    IndexConfig,
+    PreprocessConfig,
+    ScoreConfig,
+)
 from bergson.data import load_scores
 from bergson.score.output_influence import (
     check_on_gpus,
@@ -65,13 +70,13 @@ def _score(
     query_path,
     token_influence: Literal["gradient", "output"],
     model=MODEL,
-    device_map_auto=False,
-    nproc_per_node=1,
+    distributed=DistributedConfig(nproc_per_node=1),
     **kwargs,
 ):
-    cfg = IndexConfig(run_path=str(tmp_path / name), model=model, **kwargs)
+    cfg = IndexConfig(
+        run_path=str(tmp_path / name), model=model, distributed=distributed, **kwargs
+    )
     cfg.data.dataset = dataset
-    cfg.distributed.nproc_per_node = nproc_per_node
     # Keep the advantage column.
     cfg.drop_columns = False
     score_dataset(
@@ -79,7 +84,6 @@ def _score(
         ScoreConfig(
             query_path=str(query_path),
             token_influence=token_influence,
-            device_map_auto=device_map_auto,
         ),
         PreprocessConfig(),
     )
@@ -204,8 +208,7 @@ def test_output_influence_device_map_auto_matches(tmp_path: Path):
         "auto",
         dataset,
         query_path,
-        device_map_auto=True,
-        nproc_per_node=2,
+        distributed=DistributedConfig(nproc_per_node=2, device_map_auto=True),
         **kwargs,
     )
     np.testing.assert_allclose(split[:], expected[:], rtol=1e-5, atol=1e-6)
@@ -270,15 +273,6 @@ def test_output_influence_rejects_unsupported(tmp_path: Path, setting, match):
         score_dataset(
             cfg,
             ScoreConfig(query_path="unused", token_influence="output"),
-            PreprocessConfig(),
-        )
-
-
-def test_device_map_auto_rejects_gradient(tmp_path: Path):
-    with pytest.raises(ValueError, match="token_influence"):
-        score_dataset(
-            IndexConfig(run_path=str(tmp_path / "scores")),
-            ScoreConfig(query_path="unused", device_map_auto=True),
             PreprocessConfig(),
         )
 
