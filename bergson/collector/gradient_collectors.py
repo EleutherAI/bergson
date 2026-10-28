@@ -119,7 +119,8 @@ class GradientCollector(HookCollectorBase):
                 device="cpu", dtype=self.save_dtype, non_blocking=True
             )
         else:
-            self.mod_grads[name] = P.to(dtype=self.save_dtype)
+            # Each module's on its own GPU when the model is split.
+            self.mod_grads[name] = P.to(self.model.device, self.save_dtype)
 
     def process_batch(self, indices: list[int], **kwargs):
         """Process collected gradients for a batch and update losses."""

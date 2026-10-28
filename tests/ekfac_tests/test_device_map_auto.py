@@ -84,7 +84,8 @@ def test_split_fit_matches_one_gpu(tmp_path: Path):
             torch.testing.assert_close(x, y, rtol=1e-4, atol=1e-5, msg=f"{sub}/{key}")
 
 
-def test_split_pipeline_matches_one_gpu(tmp_path: Path):
+@pytest.mark.parametrize("aggregation", ["none", "mean"])
+def test_split_pipeline_matches_one_gpu(tmp_path: Path, aggregation: str):
     def run(name: str, distributed: DistributedConfig) -> np.ndarray:
         cfg = _index_cfg(tmp_path / name, distributed)
         hessian_pipeline(
@@ -97,7 +98,7 @@ def test_split_pipeline_matches_one_gpu(tmp_path: Path):
                     dataset="NeelNanda/pile-10k",
                     split="train[8:10]",
                     truncation=True,
-                    aggregation="none",
+                    aggregation=aggregation,
                 ),
             ),
         )
