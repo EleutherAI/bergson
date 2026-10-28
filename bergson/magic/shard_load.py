@@ -109,7 +109,6 @@ def materialize_buffers(model, config, device) -> None:
         ]
         if not meta_names:
             continue
-        # Built on the host: newer transformers take no ``device`` argument
         rebuilt = type(module)(config=config)
         for name in meta_names:
             source = rebuilt._buffers[name]
