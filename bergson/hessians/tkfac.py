@@ -29,6 +29,9 @@ class TraceCovarianceCollector(HookCollectorBase):
     ``Ψ · Σ_t |g_t|² / tr(F)`` as the gradient covariance, sums whose product
     carries δ and which reduce to K-FAC's ``Σ a aᵀ`` and ``Σ g gᵀ`` when ``|a|``
     and ``|g|`` are independent, so they are normalized like K-FAC's.
+
+    ``num_positions`` counts the positions each module's covariances summed,
+    across all ranks after teardown, as in ``CovarianceCollector``.
     """
 
     dtype: torch.dtype
@@ -38,6 +41,7 @@ class TraceCovarianceCollector(HookCollectorBase):
         """Initialize covariance storage dictionaries."""
         self.A_tcov_dict = {}
         self.S_tcov_dict = {}
+        self.num_positions: dict[str, int] = dict.fromkeys(self.target_info, 0)
         self.shard_computer = ShardedMul()
         # Per module: positions, Σ_t |g_t|² and tr(F) = Σ_t |a_t|² |g_t|².
         self.stats = {
@@ -130,6 +134,7 @@ class TraceCovarianceCollector(HookCollectorBase):
             if dist.is_initialized():
                 dist.all_reduce(stats, op=dist.ReduceOp.SUM)
             positions, g_sq, trace = stats.tolist()
+            self.num_positions[name] = int(positions)
             if trace > 0:
                 self.A_tcov_dict[name].mul_(positions / g_sq)
                 self.S_tcov_dict[name].mul_(g_sq / trace)
