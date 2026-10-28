@@ -1,4 +1,4 @@
 Performance
 ===========
 
-Setting ``NCCL_P2P_LEVEL=SYS`` allows data to be shared directly between GPUs that don't share a PCIe switch, which can improve performance on some nodes.
+If `nvidia-smi topo -m` shows SYS between GPUs, setting NCCL_P2P_LEVEL=SYS might speed up multi-GPU Bergson runs.
