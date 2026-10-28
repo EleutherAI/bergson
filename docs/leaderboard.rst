@@ -27,7 +27,7 @@ Indicative performance of data attribution methods in the finetuning regime.
    * - Eigenvalue-corrected Shampoo + ASTRA
      - 0.072 [0.061, 0.085]
      - 0.625 [0.604, 0.643]
-   * - EKFAC + ASTRA (exact replication settings)
+   * - EKFAC + ASTRA (exact replication)
      - 0.071 [0.060, 0.084]
      - 0.629 [0.607, 0.647]
    * - Eigenvalue-corrected Shampoo
