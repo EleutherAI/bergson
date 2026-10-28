@@ -1,6 +1,21 @@
 # CHANGELOG
 
 
+## v2.5.2 (2026-10-28)
+
+### Bug Fixes
+
+- FSDP, rebuild meta buffers without a device argument
+  ([#584](https://github.com/EleutherAI/bergson/pull/584),
+  [`1128ec4`](https://github.com/EleutherAI/bergson/commit/1128ec4ac79f03f5a188948a00637776cf964fd4))
+
+### Documentation
+
+- Document NCCL_P2P_LEVEL for nodes whose GPUs share no PCIe switch
+  ([#581](https://github.com/EleutherAI/bergson/pull/581),
+  [`01e4f11`](https://github.com/EleutherAI/bergson/commit/01e4f11efcd21e6831aec4debce4f129d3aa3e11))
+
+
 ## v2.5.1 (2026-10-26)
 
 ### Bug Fixes
