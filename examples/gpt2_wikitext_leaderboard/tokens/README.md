@@ -20,7 +20,7 @@ Per-token attribution on the WikiText leaderboard model (the `1_magic.yaml` run 
 
 Paired over queries, MAGIC exceeds EKFAC + CG by 0.361 [0.342, 0.379] and EKFAC + CG exceeds EKFAC by 0.151 [0.138, 0.165], each on 50 of 50 queries (95% CI from the per-query differences). The 95% CIs in the table are a 10k bootstrap over queries.
 
-`ekfac_tokens.yaml`, `ekfac_astra_cg_tokens.yaml` and `ekfac_astra_tokens.yaml` score the published EKFAC, CG and ASTRA query directions (`../ekfac.yaml`, `../ekfac_astra_cg.yaml`, `../ekfac_astra.yaml`) token by token with `token_influence: output`; `magic_tokens.yaml` resumes the leaderboard trajectory with `attribute_tokens: true`, so its scores are the per-token MAGIC gradient with the four epochs summed onto each chunk. The `filter_*_tokens.yaml` configs are `validate` runs with `method.kind: filter` over the per-token score stores; `exclude_zero_scores` skips the final position of each chunk, which carries no loss.
+`ekfac_tokens.yaml`, `ekfac_astra_cg_tokens.yaml` and `ekfac_astra_tokens.yaml` score the published EKFAC, CG and ASTRA query directions (`../ekfac.yaml`, `../ekfac_astra_cg.yaml`, `../ekfac_astra_scores.yaml`) token by token with `token_influence: output`; `magic_tokens.yaml` resumes the leaderboard trajectory with `attribute_tokens: true`, so its scores are the per-token MAGIC gradient with the four epochs summed onto each chunk. The `filter_*_tokens.yaml` configs are `validate` runs with `method.kind: filter` over the per-token score stores; `exclude_zero_scores` skips the final position of each chunk, which carries no loss.
 
 Every other method's rows are the forward-mode equivalent of its document score: row `t` is the method's share of the chunk's score from the loss on token `t + 1`, and a chunk's rows add up to its score.
 
@@ -31,7 +31,7 @@ Every other method's rows are the forward-mode equivalent of its document score:
 - Gradient cosine similarity, TrackStar and TRAK score along the full-parameter direction `direction_store.py` rebuilds from the doc-level run: the query preconditioned and normalized as its scorer does, mapped back through the random projection (per module for TrackStar, global for TRAK). `combine_tokens.py rescale` gives each chunk its doc-level normalization (the inverse norm of its training gradient); `combine_tokens.py trak` averages the eight members' log-odds passes as bergson averages members.
 - The gradient-free baselines split their document scores exactly (`token_baselines.py`): activation similarity by position, with or without the activation covariance preconditioner, since its pooled activations are means over positions; BM25 by term occurrence, over the GPT-2 tokens an occurrence spans; Qwen3-Embedding, which pools a causal model's last token, by each token's change in the prefix embedding's cosine. Tokens with no lexical or embedding overlap score exactly zero, which the filter's `exclude_zero_scores` would drop from its pool, so `full_pool.py` gives them `+1e-30` and every method removes 1% of all training tokens.
 
-Reproduce (after `../1_magic.yaml`, `../2_interval.yaml`, the checkpoint export, `../ekfac.yaml`, `../ekfac_astra_cg.yaml` and `../ekfac_astra.yaml`):
+Reproduce (after `../1_magic.yaml`, `../2_interval.yaml`, the checkpoint export, `../ekfac.yaml`, `../ekfac_astra_cg.yaml` and the `../ekfac_astra*.yaml` steps):
 
 ```bash
 bergson examples/gpt2_wikitext_leaderboard/tokens/ekfac_tokens.yaml
