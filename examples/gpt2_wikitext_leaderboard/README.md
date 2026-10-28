@@ -46,7 +46,7 @@ MAGIC (cross-seed) applies the seed-42 MAGIC scores to retrains with seed 43 (di
 
 KFAC is `kfac.yaml`: the Kronecker factors and damping of `ekfac.yaml` without the eigenvalue correction (`ev_correction: false`), so the two rows isolate what the correction adds.
 
-EKFAC + ASTRA's LDS and QLD take queries 15 and 44 from the lr 1e-6 step of `ekfac_astra.yaml`.
+EKFAC + ASTRA takes queries 15 and 44 from the lr 1e-6 step of `ekfac_astra.yaml` (`ekfac_astra_scores.yaml`).
 
 LiSSA is `lissa.yaml`, the influence function of Bae et al. (2022): each query's damped Gauss-Newton Hessian inverse `(G + 0.01 I)^-1 q`, estimated by LiSSA with the paper's Transformer settings (5,000 terms, 5 repeats) on fresh 8-chunk batches, with each chunk's loss the mean over its tokens as in the paper; the scale 50 is the smallest of the paper's grid (10 to 500) that stays bounded over 5,000 terms (10 and 25 diverge on some queries). At depth 5,000 the estimates have not fully converged: their norm still changes by 5.8% (median) over the last 500 terms. It ran 25.4 h on 8 A40s.
 
@@ -71,7 +71,10 @@ python -c "from bergson.utils.trainer_export import export_checkpoints; export_c
 bergson examples/gpt2_wikitext_leaderboard/ekfac.yaml
 bergson examples/gpt2_wikitext_leaderboard/ekfac_astra_cg.yaml
 bergson examples/gpt2_wikitext_leaderboard/ekfac_astra_exact_replication.yaml
+mkdir -p runs/compare_wikitext/ekfac_astra_lr1e-6 && ln -s ../ekfac_astra/hessian runs/compare_wikitext/ekfac_astra_lr1e-6/hessian
 bergson examples/gpt2_wikitext_leaderboard/ekfac_astra.yaml
+python examples/gpt2_wikitext_leaderboard/replace_query_rows.py runs/compare_wikitext/ekfac_astra/astra_query runs/compare_wikitext/ekfac_astra_lr1e-6/astra_query runs/compare_wikitext/ekfac_astra/astra_query_merged 15 44
+bergson examples/gpt2_wikitext_leaderboard/ekfac_astra_scores.yaml
 bergson examples/gpt2_wikitext_leaderboard/lissa.yaml
 bergson examples/gpt2_wikitext_leaderboard/shampoo_astra.yaml
 bergson examples/gpt2_wikitext_leaderboard/kfac.yaml
@@ -97,7 +100,7 @@ for f in magic magic_seed43 ekfac lissa ekfac_astra_cg ekfac_astra_exact_replica
 done
 python examples/gpt2_wikitext_leaderboard/lds_from_bank.py --validation runs/compare_wikitext/random/validation.csv --out runs/compare_wikitext/lds_magic.json
 python examples/gpt2_wikitext_leaderboard/lds_from_bank.py --validation runs/compare_wikitext/magic_seed43/validation.csv --out runs/compare_wikitext/lds_magic_seed43.json
-for m in ekfac lissa ekfac_astra_cg ekfac_astra_exact_replication kfac kfac_p64 shampoo trackstar_p16 trackstar_p32 trackstar_p64 trackstar_adam_p16 trackstar_adam_p32 trackstar_adam_p64 gradient_cosine gradient_cosine_projected gradient_dot; do python examples/gpt2_wikitext_leaderboard/lds_from_bank.py --sign grad --scores runs/compare_wikitext/$m/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_$m.json; done
+for m in ekfac lissa ekfac_astra_cg ekfac_astra_exact_replication ekfac_astra kfac kfac_p64 shampoo trackstar_p16 trackstar_p32 trackstar_p64 trackstar_adam_p16 trackstar_adam_p32 trackstar_adam_p64 gradient_cosine gradient_cosine_projected gradient_dot; do python examples/gpt2_wikitext_leaderboard/lds_from_bank.py --sign grad --scores runs/compare_wikitext/$m/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_$m.json; done
 python examples/gpt2_wikitext_leaderboard/lds_from_bank.py --sign grad --scores runs/compare_wikitext/trak/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_trak_ens.json
 for b in bm25 semantic qwen3 activation activation_ekfac activation_ekfac_p64; do python examples/gpt2_wikitext_leaderboard/lds_from_bank.py --sign loss --scores runs/compare_wikitext/baselines/${b}_scores/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_$b.json; done
 for m in source source_adam; do python examples/gpt2_wikitext_leaderboard/lds_from_bank.py --sign loss --scores runs/compare_wikitext/$m/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_$m.json; done
