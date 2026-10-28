@@ -73,6 +73,7 @@ Load the gradients:
    evaluation
    numerical-stability
    reproducibility
+   performance
 
 .. toctree::
    :maxdepth: 2
