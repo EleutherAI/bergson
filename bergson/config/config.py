@@ -503,12 +503,7 @@ class MetasmoothnessConfig(TrainingConfig):
 
 @dataclass
 class ValidationConfig(TrainingConfig, ABC):
-    """Config for leave-k-out validation of attribution scores.
-
-    Each retrain checkpoints on ``save_mode`` under
-    ``<run_path>/retrain_checkpoints/<retrain>``, keeping only the latest so
-    ``resume`` picks up mid-retrain; the checkpoints are deleted once the
-    retrain finishes."""
+    """Config for leave-k-out validation of attribution scores."""
 
     ckpt_avg_k: int = 1
     """Average the query gradient over the last ``k`` saved trajectory checkpoints."""
