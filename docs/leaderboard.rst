@@ -66,6 +66,9 @@ Indicative performance of data attribution methods in the finetuning regime.
    * - TrackStar (no optimizer correction, projection 64)
      - 0.045 [0.036, 0.055]
      - 0.276 [0.252, 0.299]
+   * - KFAC (projection 64)
+     - 0.045 [0.036, 0.055]
+     - 0.244 [0.216, 0.270]
    * - TrackStar (Adam, projection 64)
      - 0.043 [0.034, 0.052]
      - 0.242 [0.216, 0.267]
@@ -78,9 +81,6 @@ Indicative performance of data attribution methods in the finetuning regime.
    * - TRAK (8-model ensemble)
      - 0.032 [0.024, 0.040]
      - 0.138 [0.111, 0.165]
-   * - KFAC (projection 64)
-     - 0.023 [0.016, 0.032]
-     - 0.103 [0.076, 0.128]
    * - SOURCE
      - 0.022 [0.017, 0.027]
      - 0.165 [0.138, 0.191]

@@ -25,11 +25,11 @@ Every method scores the same 50 test chunks (`test[0:50]`). We report the QLD an
 | [Qwen3-Embedding-8B](https://huggingface.co/spaces/mteb/leaderboard) semantic search | 0.049 | [0.038, 0.061] | 0.132 | [0.093, 0.169] | 0.132 | -0.119 | 0.483 | 17/50 |
 | Jina v5 semantic search | 0.046 | [0.035, 0.059] | 0.124 | [0.087, 0.160] | 0.115 | -0.108 | 0.483 | 11/50 |
 | TrackStar (no optimizer correction, projection 64) | 0.045 | [0.036, 0.055] | 0.276 | [0.252, 0.299] | 0.280 | -0.017 | 0.487 | 42/50 |
+| KFAC (projection 64) | 0.045 | [0.036, 0.055] | 0.244 | [0.216, 0.270] | 0.244 | -0.060 | 0.445 | 36/50 |
 | TrackStar (Adam, projection 64) | 0.043 | [0.034, 0.052] | 0.242 | [0.216, 0.267] | 0.249 | -0.072 | 0.392 | 36/50 |
 | TrackStar (no optimizer correction, projection 32) | 0.035 | [0.027, 0.044] | 0.194 | [0.171, 0.216] | 0.195 | -0.098 | 0.455 | 25/50 |
 | TrackStar (Adam, projection 32) | 0.032 | [0.025, 0.041] | 0.182 | [0.156, 0.209] | 0.191 | -0.074 | 0.458 | 24/50 |
 | TRAK (8-model ensemble) | 0.032 | [0.024, 0.040] | 0.138 | [0.111, 0.165] | 0.141 | -0.131 | 0.430 | 13/50 |
-| KFAC (projection 64) | 0.023 | [0.016, 0.032] | 0.103 | [0.076, 0.128] | 0.107 | -0.137 | 0.309 | 9/50 |
 | SOURCE | 0.022 | [0.017, 0.027] | 0.165 | [0.138, 0.191] | 0.171 | -0.120 | 0.419 | 16/50 |
 | TrackStar (no optimizer correction, projection 16) | 0.022 | [0.016, 0.028] | 0.120 | [0.090, 0.149] | 0.116 | -0.091 | 0.314 | 12/50 |
 | Gradient cosine similarity | 0.021 | [0.016, 0.027] | 0.156 | [0.131, 0.181] | 0.154 | -0.142 | 0.396 | 15/50 |
@@ -50,7 +50,7 @@ EKFAC + ASTRA takes queries 15 and 44 from the lr 1e-6 step of `ekfac_astra.yaml
 
 LiSSA is `lissa.yaml`, the influence function of Bae et al. (2022): each query's damped Gauss-Newton Hessian inverse `(G + 0.01 I)^-1 q`, estimated by LiSSA with the paper's Transformer settings (5,000 terms, 5 repeats) on fresh 8-chunk batches, with each chunk's loss the mean over its tokens as in the paper; the scale 50 is the smallest of the paper's grid (10 to 500) that stays bounded over 5,000 terms (10 and 25 diverge on some queries). At depth 5,000 the estimates have not fully converged: their norm still changes by 5.8% (median) over the last 500 terms. It ran 25.4 h on 8 A40s.
 
-KFAC (projection 64) is `kfac_p64.yaml`: the same factors and damping with the gradients random-projected per module to 64 dimensions as in the TrackStar rows.
+KFAC (projection 64) is `kfac_p64.yaml`: the same factors and damping with the gradients random-projected per module to 64 dimensions as in the TrackStar rows, and the Kronecker factors projected to match and inverted in the projected space.
 
 TrackStar is swept over projection dims 16/32/64 (per-module random projection of the gradients), plain and Adam-normalized.
 
