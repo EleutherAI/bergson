@@ -32,6 +32,8 @@ def test_merge_partitions_unmaps_before_deleting(tmp_path: Path, monkeypatch):
     merge_partitions(tmp_path, num_partitions=2, rank=0)
 
     assert not list(tmp_path.glob("partition_*"))
-    merged = load_file(tmp_path / "eigenvalue_correction_sharded" / "shard_0.safetensors")
+    merged = load_file(
+        tmp_path / "eigenvalue_correction_sharded" / "shard_0.safetensors"
+    )
     assert sorted(merged) == ["layer_0", "layer_1"]
     assert merged["layer_1"].eq(1).all()
