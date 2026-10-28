@@ -16,12 +16,12 @@ from bergson import (
     collect_gradients,
     load_token_gradients,
 )
+from bergson.attribution_unit import AttributionUnit, compute_num_token_grads
 from bergson.builder import Builder
 from bergson.collector.gradient_collectors import GradientCollector
 from bergson.config import IndexConfig, PreprocessConfig
 from bergson.data import (
     allocate_batches,
-    compute_num_token_grads,
     create_token_index,
     load_scores,
 )
@@ -168,7 +168,7 @@ def test_token_builder_write(tmp_path: Path):
             grad_sizes,
             torch.float32,
             cfg,
-            attribute_tokens=True,
+            unit=AttributionUnit("token"),
             path=tmp_path,
         )
 
@@ -390,7 +390,6 @@ def test_token_score_e2e(tmp_path: Path, model, dataset):
         writer=writer,
         device=torch.device("cuda:0"),
         dtype=score_dtype,
-        attribute_tokens=True,
     )
 
     cfg = IndexConfig(
@@ -656,7 +655,6 @@ def test_trackstar_token_scores_sum_to_sequence_scores_on_disk(
         writer=tok_writer,
         device=device,
         dtype=dtype,
-        attribute_tokens=True,
     )
     # Per-token Scorer expects already-flat per-token gradients of shape
     # [total_valid_tokens, grad_dim] per module, which is exactly what the

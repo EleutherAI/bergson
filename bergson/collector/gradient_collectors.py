@@ -9,6 +9,7 @@ from datasets import Dataset, Value
 from jaxtyping import Float
 from torch import Tensor
 
+from bergson.attribution_unit import AttributionUnit
 from bergson.builder import Builder
 from bergson.collector.collector import HookCollectorBase
 from bergson.config import IndexConfig, PreprocessConfig
@@ -60,12 +61,12 @@ class GradientCollector(HookCollectorBase):
             self.model.device, torch.device
         ), "Model device is not set correctly"
 
-        self.attribute_tokens = self.cfg.attribute_tokens
+        self.unit = AttributionUnit.from_cfg(self.cfg)
 
-        if self.cfg.attribute_tokens:
+        if self.unit.ragged:
             assert (
                 self.preprocess_cfg.aggregation == "none"
-            ), "attribute_tokens is incompatible with reduce mode."
+            ), f"Per-{self.unit.kind} attribution is incompatible with reduce mode."
 
         self.save_dtype = get_gradient_dtype(self.model)
         self.lo = torch.finfo(self.save_dtype).min
@@ -88,7 +89,7 @@ class GradientCollector(HookCollectorBase):
                 grad_sizes,
                 self.save_dtype,
                 self.preprocess_cfg,
-                attribute_tokens=self.cfg.attribute_tokens,
+                unit=self.unit,
                 path=self.cfg.partial_run_path,
             )
         else:

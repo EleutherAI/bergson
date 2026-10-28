@@ -8,6 +8,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from ..attribution_unit import AttributionUnit
 from ..build import build_query
 from ..config.config import HessianConfig, IndexConfig, InversionConfig, TrakConfig
 from ..config.config_io import save_run_config
@@ -65,7 +66,7 @@ def _train_label_probs(index_cfg: IndexConfig, batch_size: int) -> np.ndarray:
 
 def _open_scores(scores_dir: Path, mode: Literal["r", "r+"]) -> tuple[np.memmap, dict]:
     info = json.loads((scores_dir / "info.json").read_text())
-    if info.get("attribute_tokens"):
+    if AttributionUnit.from_info(info).ragged:
         raise ValueError("TRAK weighting supports per-sequence scores only")
     mmap = np.memmap(
         scores_dir / "scores.bin",

@@ -26,9 +26,10 @@ from torch.utils.hooks import RemovableHandle
 from tqdm.auto import tqdm
 from transformers import PreTrainedModel
 
+from bergson.attribution_unit import AttributionUnit
 from bergson.collector.projection_matrix import random_matrix
 from bergson.config import AttentionConfig, HessianConfig, IndexConfig
-from bergson.data import compute_num_token_grads, pad_and_tensor
+from bergson.data import pad_and_tensor
 from bergson.gradients import (
     AdafactorNormalizer,
     AdamNormalizer,
@@ -86,8 +87,8 @@ class HookCollectorBase(ContextDecorator, ABC):
     into per-head gradients. See also bergson.config.AttentionConfig.
     """
 
-    attribute_tokens: bool = False
-    """When True, compute per-position gradients instead of per-example."""
+    unit: AttributionUnit = AttributionUnit("document")
+    """What each gradient row attributes to."""
 
     lo: float = float("-inf")
     """Lower clamp bound for gradients. May be narrowed in subclass ``setup()``."""
@@ -417,12 +418,9 @@ class HookCollectorBase(ContextDecorator, ABC):
 
     def num_rows(self, data: Dataset) -> int:
         """Number of gradient rows accumulated into an autocorrelation Gram
-        over ``data``: one per gradient-carrying token when
-        ``attribute_tokens`` is set, else one per document. Used to normalize
-        the Gram into a second moment over the matching unit."""
-        if self.attribute_tokens:
-            return int(compute_num_token_grads(data).sum())
-        return len(data)
+        over ``data``, one per ``unit``. Used to normalize the Gram into a
+        second moment over the matching unit."""
+        return int(self.unit.row_counts(data).sum())
 
     def with_batch(self, collection_mask: Tensor | None = None) -> "HookCollectorBase":
         """
@@ -461,11 +459,14 @@ class HookCollectorBase(ContextDecorator, ABC):
 
     def __enter__(self):
         """Register forward and backward hooks on all target modules."""
-        if self.attribute_tokens and any(
+        if self.unit.ragged and any(
             isinstance(self.model.get_submodule(name), ExpertLinear)
             for name in self.target_info
         ):
-            raise ValueError("attribute_tokens is incompatible with fused MoE experts.")
+            raise ValueError(
+                f"Per-{self.unit.kind} attribution is incompatible with fused "
+                "MoE experts."
+            )
 
         for name in self.target_info:
             layer = self.model.get_submodule(name)
@@ -585,7 +586,7 @@ class HookCollectorBase(ContextDecorator, ABC):
         they are formed from.
 
         Handles normalizer preprocessing, bias gradients, per-module random
-        projection and ``attribute_tokens``, but not global random projection.
+        projection and per-token rows, but not global random projection.
         Adam normalizes each entry, so with projection its gradients are formed
         before they are projected, and returned as a [rows, p, p] tensor.
         """
@@ -597,7 +598,7 @@ class HookCollectorBase(ContextDecorator, ABC):
         o = getattr(module, LayerAdapter.out_attr(module))
         normalizer = self.normalizer_for(name)
 
-        if self.attribute_tokens:
+        if self.unit.kind == "token":
             # Drop uncollected positions (padding and each sequence's last
             # position) before forming any [O, I] gradients
             mask = self._current_collection_mask
@@ -612,7 +613,7 @@ class HookCollectorBase(ContextDecorator, ABC):
         bias = None
         if module._collect_bias:
             bias = g if normalizer is None else normalizer.normalize_bias(g)
-            if not self.attribute_tokens:
+            if self.unit.kind != "token":
                 bias = bias.sum(dim=1)  # [N, O]
             bias = bias.type_as(g)
 

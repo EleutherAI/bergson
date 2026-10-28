@@ -29,7 +29,6 @@ class Scorer:
         *,
         unit_normalize: bool = False,
         score_mode: str = "individual",
-        attribute_tokens: bool = False,
         index_transform: Callable[[dict[str, Tensor]], dict[str, Tensor]] | None = None,
         query_offset: int = 0,
     ):
@@ -53,8 +52,6 @@ class Scorer:
             Whether to unit normalize gradients before scoring.
         score_mode : str
             Scoring mode: "individual" or "nearest".
-        attribute_tokens : bool
-            Whether gradients are per-token (rows = total_valid tokens).
         index_transform : Callable | None
             Optional transform applied to index gradients per-batch before
             scoring. Receives and returns ``dict[str, Tensor]``. When ``None``,
@@ -67,7 +64,6 @@ class Scorer:
         self.modules = modules
         self.unit_normalize = unit_normalize
         self.score_mode = score_mode
-        self.attribute_tokens = attribute_tokens
         self.writer = writer
         self.index_transform = index_transform
         self.query_offset = query_offset

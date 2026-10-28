@@ -7,6 +7,7 @@ import torch.nn as nn
 from datasets import Dataset
 from transformers import AutoConfig, AutoModelForCausalLM
 
+from bergson.attribution_unit import AttributionUnit
 from bergson.collector.collector import (
     HookCollectorBase,
     create_module_projection_matrix,
@@ -807,21 +808,21 @@ def _rows_of(normalizer, lo: int, hi: int):
 
 
 AUTOGRAD_CASES = [
-    (normalizer, include_bias, projection_dim, attribute_tokens, split_heads)
+    (normalizer, include_bias, projection_dim, kind, split_heads)
     for normalizer in ["none", "adam", "adafactor"]
     for include_bias in [False, True]
     for projection_dim in [None, 2]
-    for attribute_tokens in [False, True]
+    for kind in ["document", "token"]
     for split_heads in [False, True]
 ]
 
 
 @pytest.mark.parametrize(
-    "normalizer,include_bias,projection_dim,attribute_tokens,split_heads",
+    "normalizer,include_bias,projection_dim,kind,split_heads",
     AUTOGRAD_CASES,
 )
 def test_module_gradients_match_autograd(
-    normalizer, include_bias, projection_dim, attribute_tokens, split_heads
+    normalizer, include_bias, projection_dim, kind, split_heads
 ):
     """Each module's gradients equal autograd's gradients of each token's loss,
     normalized and projected, for per-token rows and their per-example sums."""
@@ -842,7 +843,7 @@ def test_module_gradients_match_autograd(
     recorder = _GradientRecorder(
         model=model,
         processor=processor,
-        attribute_tokens=attribute_tokens,
+        unit=AttributionUnit(kind),
         attention_cfgs=(
             {"up": AttentionConfig(num_heads=2, head_size=head_size, head_dim=2)}
             if split_heads
@@ -909,7 +910,7 @@ def test_module_gradients_match_autograd(
     assert set(recorder.grads) == set(rows)
     for name, token_rows in rows.items():
         want = torch.stack([row for _, row in token_rows])
-        if not attribute_tokens:
+        if kind == "document":
             examples = torch.tensor([n for n, _ in token_rows])
             want = torch.zeros(2, want.shape[1]).index_add_(0, examples, want)
         torch.testing.assert_close(recorder.grads[name], want, msg=name)

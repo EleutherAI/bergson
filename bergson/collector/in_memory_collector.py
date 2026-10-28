@@ -10,6 +10,7 @@ from datasets import Dataset
 from jaxtyping import Float
 from torch import Tensor, nn
 
+from bergson.attribution_unit import AttributionUnit
 from bergson.builder import Builder
 from bergson.collector.collector import HookCollectorBase
 from bergson.config.config import IndexConfig, PreprocessConfig
@@ -73,16 +74,16 @@ class InMemoryCollector(HookCollectorBase):
         assert isinstance(
             self.model.device, torch.device
         ), "Model device is not set correctly"
-        self.attribute_tokens = self.cfg.attribute_tokens
+        self.unit = AttributionUnit.from_cfg(self.cfg)
         if self.processor.projection_target == "global":
             assert self.skip_hessians, (
                 "projection_target='global' sums all modules into a single key, "
                 "so per-module autocorrelation statistics are undefined."
             )
-        if self.cfg.attribute_tokens:
-            assert self.preprocess_cfg.aggregation == "none", (
-                "attribute_tokens is incompatible" " with reduce mode."
-            )
+        if self.unit.ragged:
+            assert (
+                self.preprocess_cfg.aggregation == "none"
+            ), f"Per-{self.unit.kind} attribution is incompatible with reduce mode."
 
         self.save_dtype = get_gradient_dtype(self.model)
         self.lo = torch.finfo(self.save_dtype).min
@@ -106,7 +107,7 @@ class InMemoryCollector(HookCollectorBase):
                 grad_sizes,
                 self.save_dtype,
                 self.preprocess_cfg,
-                attribute_tokens=self.cfg.attribute_tokens,
+                unit=self.unit,
             )
 
     def teardown(self) -> None:
