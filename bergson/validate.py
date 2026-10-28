@@ -46,6 +46,7 @@ from .magic.data_stream import (
     mask_padded_rows,
     pad_dataset_to_batch_size,
 )
+from .magic.fsdp import full_state_dict
 from .magic.grad_accum import loss_denom, split_batch
 from .magic.trainer import TrainerState, prepare_trainer
 from .utils.csv_writer import CSVWriter
@@ -930,13 +931,19 @@ def validate_scores(
 
         fwd_state = run_retrain(trainer, fwd_state, stream, run_cfg, f"subset_{i}")
 
-        if save_models and global_rank == 0:
-            out_dir = os.path.join(run_cfg.run_path, "retrained", f"subset_{i}")
-            os.makedirs(out_dir, exist_ok=True)
+        if save_models:
+            # Gathering shards is a collective; rank 0 writes.
             with fwd_state.activate(model), torch.no_grad():
-                model.save_pretrained(out_dir, safe_serialization=True)
-            if retrained_tokenizer is not None:
-                retrained_tokenizer.save_pretrained(out_dir)
+                state = full_state_dict(model)
+            if global_rank == 0:
+                out_dir = os.path.join(run_cfg.run_path, "retrained", f"subset_{i}")
+                os.makedirs(out_dir, exist_ok=True)
+                model.save_pretrained(
+                    out_dir, state_dict=state, safe_serialization=True
+                )
+                if retrained_tokenizer is not None:
+                    retrained_tokenizer.save_pretrained(out_dir)
+            del state
 
         if multi_query:
             with fwd_state.activate(model):

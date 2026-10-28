@@ -29,6 +29,7 @@ from ..utils.utils import dist_backend, dist_device_id, get_device, get_device_i
 from ..utils.worker_utils import setup_data_pipeline
 from .cli import attach_doc_ids_if_missing, shuffled_epochs
 from .data_stream import DataStream, pad_dataset_to_batch_size
+from .fsdp import full_state_dict
 from .trainer import prepare_trainer
 
 
@@ -44,10 +45,6 @@ def metasmoothness_score(
     ``sign(theta_2h - theta_h) . diag(d / |d|_1) . sign(theta_h - theta0)``
     with ``d = |theta_2h - theta0|`` (Def. 2 of arXiv 2503.13751; the ``/h``
     factors cancel inside ``sign``).
-
-    The weighted sum and ``|d|_1`` are both plain sums over coordinates, so
-    with ``reduce`` the arguments may be one rank's disjoint shard and the
-    all-reduce returns exactly the value the unsharded vectors would give.
     """
     d = (theta_2h - theta0).abs()
     s1 = torch.sign(theta_h - theta0)
@@ -96,13 +93,6 @@ def metasmoothness_worker(
         )
 
     assert not getattr(run_cfg, "per_token", False)
-
-    if run_cfg.fsdp and run_cfg.save_models:
-        raise ValueError(
-            "metasmoothness save_models is not supported with fsdp: the "
-            "parameters are sharded DTensors and each rank would write its "
-            "own slice as if it were the whole adapter."
-        )
 
     assert run_cfg.batch_size % world_size == 0
 
@@ -163,14 +153,20 @@ def metasmoothness_worker(
         if global_rank == 0:
             print(f"[metasmoothness] finished training {k + 1}/3 (w = 1 + {k}*h*v)")
 
-        if k == 0 and run_cfg.save_models and global_rank == 0:
-            out_dir = os.path.join(run_cfg.run_path, "model")
-            os.makedirs(out_dir, exist_ok=True)
+        if k == 0 and run_cfg.save_models:
+            # Gathering shards is a collective; rank 0 writes.
             with fwd_state.activate(model), torch.no_grad():
-                model.save_pretrained(out_dir, safe_serialization=True)
-            AutoTokenizer.from_pretrained(
-                run_cfg.tokenizer or run_cfg.model
-            ).save_pretrained(out_dir)
+                state = full_state_dict(model)
+            if global_rank == 0:
+                out_dir = os.path.join(run_cfg.run_path, "model")
+                os.makedirs(out_dir, exist_ok=True)
+                model.save_pretrained(
+                    out_dir, state_dict=state, safe_serialization=True
+                )
+                AutoTokenizer.from_pretrained(
+                    run_cfg.tokenizer or run_cfg.model
+                ).save_pretrained(out_dir)
+            del state
         del trainer, fwd_state, model
 
     # Both reductions are collectives, so they run on every rank.
