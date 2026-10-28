@@ -77,6 +77,21 @@ def partition_modules(names: list[str], num_partitions: int) -> list[list[str]]:
     return groups
 
 
+def merge_files(files: list[str], out_path: str):
+    """Save the tensors of every safetensors file in ``files`` to ``out_path``.
+
+    The loaded tensors map their source files until they're freed, and on NFS
+    a deleted file that's still mapped keeps its directory from being removed.
+    Returning frees them before ``merge_partitions`` deletes the sources."""
+    merged = {}
+    with ExitStack() as stack:
+        for f in files:
+            handle = stack.enter_context(safe_open(f, framework="pt", device="cpu"))
+            for key in handle.keys():
+                merged[key] = handle.get_tensor(key)
+        save_file(merged, out_path)
+
+
 def merge_partitions(run_path: str | os.PathLike, num_partitions: int, rank: int):
     """Merge this rank's shard from every ``partition_{i}`` under ``run_path`` into
     the run's factor stores; rank 0 then deletes the partition directories."""
@@ -93,14 +108,8 @@ def merge_partitions(run_path: str | os.PathLike, num_partitions: int, rank: int
             missing = [f for f, ok in zip(files, present) if not ok]
             raise FileNotFoundError(f"Partition shards missing for {sub}: {missing}")
 
-        merged = {}
-        with ExitStack() as stack:
-            for f in files:
-                handle = stack.enter_context(safe_open(f, framework="pt", device="cpu"))
-                for key in handle.keys():
-                    merged[key] = handle.get_tensor(key)
-            os.makedirs(os.path.join(run_path, sub), exist_ok=True)
-            save_file(merged, os.path.join(run_path, sub, shard))
+        os.makedirs(os.path.join(run_path, sub), exist_ok=True)
+        merge_files(files, os.path.join(run_path, sub, shard))
 
     dist.barrier() if dist.is_initialized() else None
     if rank == 0:
