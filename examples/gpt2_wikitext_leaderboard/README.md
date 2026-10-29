@@ -48,6 +48,8 @@ KFAC is `kfac.yaml`: the Kronecker factors and damping of `ekfac.yaml` without t
 
 EKFAC + ASTRA takes queries 15 and 44 from the lr 1e-6 step of `ekfac_astra.yaml` (`ekfac_astra_scores.yaml`).
 
+The ASTRA lr should be tuned on the query.
+
 LiSSA is `lissa.yaml`, the influence function of Bae et al. (2022): each query's damped Gauss-Newton Hessian inverse `(G + 0.01 I)^-1 q`, estimated by LiSSA with the paper's Transformer settings (5,000 terms, 5 repeats) on fresh 8-chunk batches, with each chunk's loss the mean over its tokens as in the paper; the scale 50 is the smallest of the paper's grid (10 to 500) that stays bounded over 5,000 terms (10 and 25 diverge on some queries). At depth 5,000 the estimates have not fully converged: their norm still changes by 5.8% (median) over the last 500 terms. It ran 25.4 h on 8 A40s.
 
 KFAC (projection 64) is `kfac_p64.yaml`: the same factors and damping with the gradients random-projected per module to 64 dimensions as in the TrackStar rows.
