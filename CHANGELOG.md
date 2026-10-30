@@ -1,6 +1,23 @@
 # CHANGELOG
 
 
+## v2.5.3 (2026-10-29)
+
+### Bug Fixes
+
+- Free merged partition tensors before deleting the partitions
+  ([`1104660`](https://github.com/EleutherAI/bergson/commit/11046609b6cb92e7a5073400b96cb4ecaee04e12))
+
+### Documentation
+
+- Fix EKFAC + ASTRA benchmark ([#575](https://github.com/EleutherAI/bergson/pull/575),
+  [`69c10de`](https://github.com/EleutherAI/bergson/commit/69c10dec008c7faed2820c52d4057e3f8919f326))
+
+- Score EKFAC + ASTRA from merged query rows
+  ([#585](https://github.com/EleutherAI/bergson/pull/585),
+  [`2a0c5a7`](https://github.com/EleutherAI/bergson/commit/2a0c5a715c4278cafdc391ec9077fb9cc6ac22a7))
+
+
 ## v2.5.2 (2026-10-28)
 
 ### Bug Fixes
