@@ -1,7 +1,7 @@
 # Proponent-filter for unrolled Gauss-Newton. Uses the random retrain bank computed with
-# `examples/compare_wikitext/1_magic.yaml`.
+# `examples/gpt2_wikitext_leaderboard/1_magic.yaml`.
 
-# Run with `bergson examples/compare_wikitext/filters/filter_unrolled_gauss_newton.yaml`
+# Run with `bergson examples/gpt2_wikitext_leaderboard/filters/filter_unrolled_gauss_newton.yaml`
 
 run_path: runs/compare_wikitext/filter_unrolled_gauss_newton
 steps:
