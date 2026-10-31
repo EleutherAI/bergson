@@ -371,7 +371,7 @@ def compute_per_query_unrolled_scores(
     size = run_cfg.unroll.query_batch_size
     passes = -(-max(1, -(-num_query_docs // world_size)) // size)
     for p in range(passes):
-        group = [qi for qi in mine[p * size : (p + 1) * size]]
+        group = mine[p * size : (p + 1) * size]
         todo = [qi for qi in group if not os.path.exists(query_path(qi))]
         done = torch.tensor([len(todo) == 0], device=device)
         if world_size > 1:
