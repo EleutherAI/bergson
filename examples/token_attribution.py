@@ -1,10 +1,9 @@
-"""In-memory per-token attribution, the way the leaderboard scores tokens.
+"""In-memory per-token attribution.
 
 Demonstrates how to:
 1. Reduce query gradients to a single vector via mean reduction
 2. Score every training loss term by its rate of change along that query
-   (``token_influence: output``, the mode of the per-token leaderboard in
-   ``examples/gpt2_wikitext_leaderboard/tokens``)
+   (``token_influence: output``, the most efficacious known mode)
 3. Access token-level attribution scores
 
 Row ``t`` of a document is the score of the loss on token ``t + 1``, the
