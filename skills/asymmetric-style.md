@@ -9,7 +9,7 @@ This simulates a realistic scenario: your training data is mostly in one style (
 There is no CLI interface for this experiment. It is run via the Python API.
 
 ```python
-from examples.semantic.asymmetric import run_asymmetric_experiment, AsymmetricConfig
+from examples.experiments.semantic_experiment.asymmetric import run_asymmetric_experiment, AsymmetricConfig
 
 config = AsymmetricConfig(hf_dataset="EleutherAI/bergson-asymmetric-style")
 results = run_asymmetric_experiment(config=config, base_path="runs/asymmetric_style")
@@ -76,7 +76,7 @@ These are available via `run_asymmetric_experiment()` parameters but disabled by
 ### Run the experiment
 
 ```python
-from examples.semantic.asymmetric import run_asymmetric_experiment, AsymmetricConfig
+from examples.experiments.semantic_experiment.asymmetric import run_asymmetric_experiment, AsymmetricConfig
 
 results = run_asymmetric_experiment(
     config=AsymmetricConfig(hf_dataset="EleutherAI/bergson-asymmetric-style"),

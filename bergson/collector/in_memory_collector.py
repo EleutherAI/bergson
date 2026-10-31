@@ -74,15 +74,16 @@ class InMemoryCollector(HookCollectorBase):
             self.model.device, torch.device
         ), "Model device is not set correctly"
         self.attribute_tokens = self.cfg.attribute_tokens
+        self.span_column = self.cfg.data.span_column
         if self.processor.projection_target == "global":
             assert self.skip_hessians, (
                 "projection_target='global' sums all modules into a single key, "
                 "so per-module autocorrelation statistics are undefined."
             )
-        if self.cfg.attribute_tokens:
-            assert self.preprocess_cfg.aggregation == "none", (
-                "attribute_tokens is incompatible" " with reduce mode."
-            )
+        if self.cfg.attribute_tokens or self.attribute_spans:
+            assert (
+                self.preprocess_cfg.aggregation == "none"
+            ), "Per-token and per-span attribution are incompatible with reduce mode."
 
         self.save_dtype = get_gradient_dtype(self.model)
         self.lo = torch.finfo(self.save_dtype).min
@@ -107,6 +108,7 @@ class InMemoryCollector(HookCollectorBase):
                 self.save_dtype,
                 self.preprocess_cfg,
                 attribute_tokens=self.cfg.attribute_tokens,
+                span_column=self.span_column,
             )
 
     def teardown(self) -> None:

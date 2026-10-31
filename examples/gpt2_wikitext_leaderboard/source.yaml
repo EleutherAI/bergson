@@ -1,0 +1,59 @@
+# SOURCE (approximate unrolling, Bae et al. 2024) for the 1_magic.yaml model:
+# plain and Adam-preconditioned variants, scored at the final 2_interval.yaml
+# checkpoint; lr_list and step_size_list come from that run's log_history.json.
+# LDS: examples/gpt2_wikitext_leaderboard/lds_from_bank.py --sign loss.
+
+# Run with `bergson examples/gpt2_wikitext_leaderboard/source.yaml`
+
+run_path: runs/compare_wikitext/source
+steps:
+  - approxunrolling: &source
+      index_cfg: &index
+        run_path: runs/compare_wikitext/source
+        model: runs/compare_wikitext/interval/exported/checkpoint-72
+        overwrite: true
+        precision: fp32
+        # GPT-2's max context length is 1024.
+        token_batch_size: 1024
+        # GPT-2 uses an nn.Linear for its LM head.
+        filter_modules: "lm_head"
+        distributed:
+          nproc_per_node: 4
+          nnode: 1
+        data:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "train"
+          chunk_length: 0
+
+      hessian_cfg:
+        method: kfac
+        hessian_dtype: fp32
+        ev_correction: true
+
+      approx_unrolling_cfg: &unroll
+        checkpoints:
+          - runs/compare_wikitext/interval/checkpoints/step_12.ckpt
+          - runs/compare_wikitext/interval/checkpoints/step_24.ckpt
+          - runs/compare_wikitext/interval/checkpoints/step_36.ckpt
+          - runs/compare_wikitext/interval/checkpoints/step_48.ckpt
+          - runs/compare_wikitext/interval/checkpoints/step_60.ckpt
+          - runs/compare_wikitext/interval/checkpoints/step_72.ckpt
+        segments: 3
+        query:
+          dataset: EleutherAI/bergson-wikitext-512-chunks
+          split: "test[0:50]"
+          chunk_length: 0
+          # One score column per query, for per-query LDS.
+          aggregation: none
+
+  - approxunrolling:
+      # In YAML the << notation copies the section tagged with "source" here
+      <<: *source
+      index_cfg:
+        # In YAML the << notation copies the section tagged with "index" here
+        <<: *index
+        run_path: runs/compare_wikitext/source_adam
+      approx_unrolling_cfg:
+        # In YAML the << notation copies the section tagged with "unroll" here
+        <<: *unroll
+        use_adam_preconditioner: true

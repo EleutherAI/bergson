@@ -1,6 +1,177 @@
 # CHANGELOG
 
 
+## v2.7.0 (2026-10-31)
+
+### Features
+
+- Invert the Kronecker factors in the projected space
+  ([#543](https://github.com/EleutherAI/bergson/pull/543),
+  [`dd3b38f`](https://github.com/EleutherAI/bergson/commit/dd3b38f48a97d500515df5d2c1ef57401c96f332))
+
+
+## v2.6.0 (2026-10-31)
+
+### Features
+
+- Add a Gemma Scope 2 SAE feature similarity baseline
+  ([#579](https://github.com/EleutherAI/bergson/pull/579),
+  [`25a5f48`](https://github.com/EleutherAI/bergson/commit/25a5f4832144fc7faef20e23494152f800dbb1c8))
+
+
+## v2.5.4 (2026-10-31)
+
+### Bug Fixes
+
+- ASTRA under FSDP ([#588](https://github.com/EleutherAI/bergson/pull/588),
+  [`320cedb`](https://github.com/EleutherAI/bergson/commit/320cedb97fc9c5abe02403053b405304ce5ea0b8))
+
+### Documentation
+
+- Keep the ASTRA solve with the lowest final objective
+  ([#590](https://github.com/EleutherAI/bergson/pull/590),
+  [`9248ff2`](https://github.com/EleutherAI/bergson/commit/9248ff27a631bb964124eaee7afe9f31b3abd473))
+
+- Note module batching for influence function Hessians
+  ([#592](https://github.com/EleutherAI/bergson/pull/592),
+  [`2508f72`](https://github.com/EleutherAI/bergson/commit/2508f72120135323a558e6e62f4bf6f1d9aa81d1))
+
+- Tune the ASTRA lr on the query ([#587](https://github.com/EleutherAI/bergson/pull/587),
+  [`f39b22e`](https://github.com/EleutherAI/bergson/commit/f39b22ed9a4e7a85619fe122f7a09cf4504fdb15))
+
+
+## v2.5.3 (2026-10-29)
+
+### Bug Fixes
+
+- Free merged partition tensors before deleting the partitions
+  ([`1104660`](https://github.com/EleutherAI/bergson/commit/11046609b6cb92e7a5073400b96cb4ecaee04e12))
+
+### Documentation
+
+- Fix EKFAC + ASTRA benchmark ([#575](https://github.com/EleutherAI/bergson/pull/575),
+  [`69c10de`](https://github.com/EleutherAI/bergson/commit/69c10dec008c7faed2820c52d4057e3f8919f326))
+
+- Score EKFAC + ASTRA from merged query rows
+  ([#585](https://github.com/EleutherAI/bergson/pull/585),
+  [`2a0c5a7`](https://github.com/EleutherAI/bergson/commit/2a0c5a715c4278cafdc391ec9077fb9cc6ac22a7))
+
+
+## v2.5.2 (2026-10-28)
+
+### Bug Fixes
+
+- FSDP, rebuild meta buffers without a device argument
+  ([#584](https://github.com/EleutherAI/bergson/pull/584),
+  [`1128ec4`](https://github.com/EleutherAI/bergson/commit/1128ec4ac79f03f5a188948a00637776cf964fd4))
+
+### Documentation
+
+- Document NCCL_P2P_LEVEL for nodes whose GPUs share no PCIe switch
+  ([#581](https://github.com/EleutherAI/bergson/pull/581),
+  [`01e4f11`](https://github.com/EleutherAI/bergson/commit/01e4f11efcd21e6831aec4debce4f129d3aa3e11))
+
+
+## v2.5.1 (2026-10-26)
+
+### Bug Fixes
+
+- Average MoE expert K-FAC covariances over their routed positions
+  ([#565](https://github.com/EleutherAI/bergson/pull/565),
+  [`f3ffb0a`](https://github.com/EleutherAI/bergson/commit/f3ffb0a41b7a09fb50885495bfcc297bb9b7921b))
+
+- Record each update's LR at its HF step in log_history.json
+  ([#567](https://github.com/EleutherAI/bergson/pull/567),
+  [`87f6442`](https://github.com/EleutherAI/bergson/commit/87f644294cbc6dd4ee33f12d314e4202be9ea8da))
+
+### Performance Improvements
+
+- Collect garbage once per eigenvector gather
+  ([#578](https://github.com/EleutherAI/bergson/pull/578),
+  [`be9c733`](https://github.com/EleutherAI/bergson/commit/be9c733accf8ed6ec43ee55e9cb08848c0ce812a))
+
+- Turn off NumPy's huge pages when bergson is imported
+  ([#574](https://github.com/EleutherAI/bergson/pull/574),
+  [`c2bca7f`](https://github.com/EleutherAI/bergson/commit/c2bca7faa49fd32a5403a901b0242608e2d2e7e3))
+
+
+## v2.5.0 (2026-10-26)
+
+### Features
+
+- Add LiSSA influence (Bae et al. 2022) to the leaderboard
+  ([#568](https://github.com/EleutherAI/bergson/pull/568),
+  [`245787f`](https://github.com/EleutherAI/bergson/commit/245787f7d5ea31e48c97e083ea358a517517e87e))
+
+
+## v2.4.2 (2026-10-26)
+
+### Performance Improvements
+
+- Give each spawned worker its share of the node's cores
+  ([#573](https://github.com/EleutherAI/bergson/pull/573),
+  [`38c7316`](https://github.com/EleutherAI/bergson/commit/38c7316d3680b7c2b289aeba75220d6a7e805f32))
+
+
+## v2.4.1 (2026-10-26)
+
+### Documentation
+
+- Give each EkfacConfig projection field its own docstring
+  ([#547](https://github.com/EleutherAI/bergson/pull/547),
+  [`4ed6a0f`](https://github.com/EleutherAI/bergson/commit/4ed6a0f3d125b5982252aa4b96702643d08bcf78))
+
+- Tune the consistent-scaling ASTRA row; name the CG row EKFAC + CG
+  ([#570](https://github.com/EleutherAI/bergson/pull/570),
+  [`5582b21`](https://github.com/EleutherAI/bergson/commit/5582b21822dc553c13b8b15de64271a7ea933fb5))
+
+### Performance Improvements
+
+- Start spawned workers in parallel ([#572](https://github.com/EleutherAI/bergson/pull/572),
+  [`66bc35a`](https://github.com/EleutherAI/bergson/commit/66bc35a75fa56390bd19b6107c635a8956f3e449))
+
+
+## v2.4.0 (2026-10-21)
+
+### Features
+
+- ASTRA conjugate-gradient solver; leaderboard rows for paper, consistent and CG ASTRA
+  ([#544](https://github.com/EleutherAI/bergson/pull/544),
+  [`a11aa35`](https://github.com/EleutherAI/bergson/commit/a11aa35ece86d1d2836da968e2073f2b668be1e0))
+
+
+## v2.3.1 (2026-10-20)
+
+### Bug Fixes
+
+- Slice saved datasets by split and promote rerun EK-FAC outputs
+  ([#564](https://github.com/EleutherAI/bergson/pull/564),
+  [`30882a6`](https://github.com/EleutherAI/bergson/commit/30882a65eb59e0fe48665fc571ba95aec4277343))
+
+
+## v2.3.0 (2026-10-20)
+
+### Bug Fixes
+
+- Forward trust_remote_code when reading the model's max length
+  ([#562](https://github.com/EleutherAI/bergson/pull/562),
+  [`a20a28e`](https://github.com/EleutherAI/bergson/commit/a20a28e40d2caafe93e0da1b1c1883a3dc93ce5f))
+
+### Features
+
+- Add advantage_column for GRPO rollouts ([#563](https://github.com/EleutherAI/bergson/pull/563),
+  [`ddc9cb7`](https://github.com/EleutherAI/bergson/commit/ddc9cb7d5d90a539a509d643ab5846a0c9e499dc))
+
+
+## v2.2.4 (2026-10-20)
+
+### Bug Fixes
+
+- Probe auto_batch_size with the run's own batches
+  ([#561](https://github.com/EleutherAI/bergson/pull/561),
+  [`aa76118`](https://github.com/EleutherAI/bergson/commit/aa76118993219386a3cd40526920871381fe7f2a))
+
+
 ## v2.2.3 (2026-10-06)
 
 ### Bug Fixes

@@ -347,7 +347,9 @@ def filter_by_max_tokens(ds: Dataset, cfg: AttributionConfig) -> Dataset:
     return ds
 
 
-def max_tokens_for_model(tokenizer, model_str: str, revision: str | None) -> int:
+def max_tokens_for_model(
+    tokenizer, model_str: str, revision: str | None, trust_remote_code: bool = False
+) -> int:
     # You might think model_max_length should always be the same as
     # max_position_embeddings, but some models (e.g. Pythia!) have a smaller
     # max_position_embeddings than model_max_length, so we need to check both.
@@ -360,7 +362,9 @@ def max_tokens_for_model(tokenizer, model_str: str, revision: str | None) -> int
     except ValueError:
         pass
 
-    model_cfg = AutoConfig.from_pretrained(model_str, revision=revision)
+    model_cfg = AutoConfig.from_pretrained(
+        model_str, revision=revision, trust_remote_code=trust_remote_code
+    )
     model_max_length = getattr(tokenizer, "model_max_length", BIG_NUM)
     max_pos_emb = getattr(model_cfg, "max_position_embeddings", BIG_NUM)
     return min(model_max_length, max_pos_emb)
@@ -377,7 +381,12 @@ def setup_data_pipeline(
         data_cfg.dataset, data_cfg.split, data_cfg.subset, data_cfg.data_kwargs
     )
     tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer or cfg.model)
-    max_model_length = max_tokens_for_model(tokenizer, cfg.model, cfg.revision)
+    trust_remote_code = bool(
+        simple_parse_kwargs_string(cfg.model_kwargs).get("trust_remote_code", False)
+    )
+    max_model_length = max_tokens_for_model(
+        tokenizer, cfg.model, cfg.revision, trust_remote_code
+    )
 
     if data_cfg.chunk_length > 0:
         # Sanity check
@@ -449,23 +458,28 @@ def setup_data_pipeline(
                 f"Consider increasing --token_batch_size or using --truncation."
             )
 
-    if data_cfg.reward_column:
+    value_column = data_cfg.reward_column or data_cfg.advantage_column
+    if value_column:
         assert isinstance(ds, Dataset), "Dataset required for advantage estimation"
 
-        rewards = np.array(ds[data_cfg.reward_column], dtype=np.float64)
-        nan_mask = np.isnan(rewards)
+        values = np.array(ds[value_column], dtype=np.float64)
+        nan_mask = np.isnan(values)
         if nan_mask.any():
             if data_cfg.skip_nan_rewards:
-                print(f"Warning: Filtering out {nan_mask.sum()} rows with NaN rewards")
+                print(f"Warning: Filtering out {nan_mask.sum()} rows with NaN values")
                 ds = ds.filter(lambda _, idx: not nan_mask[idx], with_indices=True)
             else:
-                raise ValueError(
-                    f"Reward column '{data_cfg.reward_column}' contains NaN values"
-                )
+                raise ValueError(f"Column '{value_column}' contains NaN values")
 
+        if data_cfg.reward_column:
+            advantages = estimate_advantage(ds, data_cfg)
+        else:
+            advantages = ds[data_cfg.advantage_column][:]
+        if "advantage" in ds.column_names:
+            ds = ds.remove_columns("advantage")
         ds = ds.add_column(
             "advantage",
-            estimate_advantage(ds, data_cfg),
+            advantages,
             new_fingerprint="advantage",  # type: ignore
         )
 
@@ -475,6 +489,10 @@ def setup_data_pipeline(
 
     # Remove extraneous columns
     keep = {"length", "input_ids", "labels"}
+    if value_column:
+        keep.add("advantage")
+    if data_cfg.span_column:
+        keep.add(data_cfg.span_column)
     remove_columns -= keep
     remove_columns &= set(ds.column_names)
     if remove_columns:

@@ -74,7 +74,6 @@ def worker(
             logging_steps=10,
             eval_steps=20,
             save_total_limit=3,
-            group_by_length=True,
             completion_only_loss=True,
             ddp_find_unused_parameters=False,
             seed=0,

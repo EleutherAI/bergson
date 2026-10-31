@@ -64,7 +64,7 @@ def magic_cfg(
     )
     return MagicConfig(
         run_path=run_path,
-        model="trl-internal-testing/tiny-Phi3ForCausalLM",
+        model="trl-internal-testing/tiny-Phi3ForCausalLM-3",
         fsdp=fsdp,
         data=data,
         query=QuerySetConfig.from_data(query, aggregation="none"),
@@ -278,3 +278,51 @@ def test_save_optimizer_state_completes_under_fsdp(tmp_path):
     assert optimizer_pt["state"], "optimizer.pt has no second-moment entries"
     for entry in optimizer_pt["state"].values():
         assert torch.isfinite(entry["exp_avg_sq"]).all()
+
+
+@requires_multi_gpu
+@pytest.mark.parametrize("peft", ["", "r=4,target_modules=qkv_proj|o_proj"])
+def test_fsdp_save_models_matches_ddp(tmp_path, peft):
+    """save_models under FSDP writes the gathered weights, not one rank's shard."""
+    from safetensors.torch import load_file
+    from transformers import AutoModelForCausalLM
+
+    from bergson.config.config import MetasmoothnessConfig
+    from bergson.magic.metasmoothness import run_metasmoothness
+
+    data = DataConfig(
+        dataset="Salesforce/wikitext",
+        subset="wikitext-2-raw-v1",
+        split="train[:64]",
+        chunk_length=32,
+    )
+    for mode, fsdp in [("ddp", False), ("fsdp", True)]:
+        run_metasmoothness(
+            MetasmoothnessConfig(
+                run_path=f"{tmp_path}/{mode}",
+                model="trl-internal-testing/tiny-Phi3ForCausalLM",
+                fsdp=fsdp,
+                data=data,
+                lr_schedule=_LR_SCHEDULE,
+                batch_size=8,
+                num_epochs=1,
+                overwrite=True,
+                save_models=True,
+                peft_init_kwargs=peft,
+                distributed=DistributedConfig(nproc_per_node=2),
+            )
+        )
+
+    name = "adapter_model.safetensors" if peft else "model.safetensors"
+    ddp = load_file(f"{tmp_path}/ddp/model/{name}")
+    fsdp = load_file(f"{tmp_path}/fsdp/model/{name}")
+    assert ddp.keys() == fsdp.keys()
+    for k in ddp:
+        torch.testing.assert_close(fsdp[k], ddp[k], atol=1e-5, rtol=1e-4)
+
+    if not peft:
+        # The saved weights are the trained ones, not the pretrained model.
+        base = AutoModelForCausalLM.from_pretrained(
+            "trl-internal-testing/tiny-Phi3ForCausalLM", dtype=torch.float32
+        ).state_dict()
+        assert any(not torch.equal(base[k], fsdp[k]) for k in fsdp)

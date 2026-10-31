@@ -51,11 +51,17 @@ def write_lr_history(
     save_dir: str | Path, schedule: Callable[[int], float], num_steps: int
 ) -> Path:
     """Record per-step LRs beside the checkpoints, from the ``schedule`` the
-    optimizer was built with."""
+    optimizer was built with.
+
+    As in HF's ``log_history``, entry ``step`` holds the LR of the ``step``-th
+    update counting from one, so update ``i`` (``schedule(i)``, taking
+    ``step_i`` to ``step_{i + 1}``) is recorded at ``step = i + 1``. SOURCE
+    sums steps ``(a, b]`` for the updates between checkpoints ``step_a`` and
+    ``step_b``."""
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
     history = [
-        {"step": step, "learning_rate": float(schedule(step))}
+        {"step": step + 1, "learning_rate": float(schedule(step))}
         for step in range(num_steps)
     ]
     path = save_dir / LR_HISTORY_FILENAME
@@ -126,6 +132,17 @@ class SaveFuture:
             self.grp = None
 
         return result
+
+
+def prune_checkpoints(save_dir: str, keep_last: int) -> None:
+    """Delete all but the newest ``keep_last`` complete checkpoints in ``save_dir``."""
+    complete = [
+        path
+        for _, path in sorted_checkpoints(save_dir)
+        if os.path.exists(os.path.join(path, ".metadata"))
+    ]
+    for path in complete[:-keep_last]:
+        rmtree(path) if os.path.isdir(path) else os.remove(path)
 
 
 def next_save_index(
@@ -588,6 +605,7 @@ class Trainer:
         grad_accum_steps: int = 1,
         optimizer_cfg: dict | None = None,
         save_interval: int = 0,
+        keep_last: int = 0,
     ) -> TrainerState:
         """Train the model on the given data stream, starting from the given state.
 
@@ -617,6 +635,8 @@ class Trainer:
                 write each checkpoint's second moments to ``optimizer.pt``,
                 tagged with the step and these hyperparameters. AdamW only.
             save_interval: Checkpointing interval in steps for ``save_mode="interval"``.
+            keep_last: Keep only the newest ``keep_last`` checkpoints in ``save_dir``
+                (0 keeps all).
 
         Returns:
             The final trainer state after training.
@@ -654,6 +674,8 @@ class Trainer:
                     # operations.
                     if pending_save is not None:
                         pending_save.result()
+                        if keep_last and main:
+                            prune_checkpoints(save_dir, keep_last)
 
                     p = os.path.join(save_dir, f"step_{i}.ckpt")
 
@@ -697,6 +719,8 @@ class Trainer:
             if pending_save is not None:
                 with suppress(Exception):
                     pending_save.result()
+                if save_dir and keep_last and main:
+                    prune_checkpoints(save_dir, keep_last)
             raise
 
         if pending_save is not None:
@@ -722,6 +746,9 @@ class Trainer:
                     **optimizer_cfg,
                 )
             state.save(p).result()
+
+        if save_dir and keep_last and main:
+            prune_checkpoints(save_dir, keep_last)
 
         return state
 

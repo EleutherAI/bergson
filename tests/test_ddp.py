@@ -22,7 +22,7 @@ from bergson.validate import mean_query_loss, per_doc_query_losses
 
 def _make_model():
     torch.manual_seed(42)
-    config = AutoConfig.from_pretrained("trl-internal-testing/tiny-Phi3ForCausalLM")
+    config = AutoConfig.from_pretrained("trl-internal-testing/tiny-Phi3ForCausalLM-3")
     model = AutoModelForCausalLM.from_config(
         config, torch_dtype=torch.float32, attn_implementation="eager"
     )

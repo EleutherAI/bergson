@@ -17,7 +17,7 @@ from ..config.config_io import save_run_config
 from ..data import create_index, load_gradients
 from ..distributed import launch_distributed_run
 from ..score.score import score_dataset
-from ..utils.step_state import partial_path, prepare_step
+from ..utils.step_state import partial_path, prepare_step, promote_step
 from ..utils.worker_utils import validate_run_path
 from .apply_hessian import EkfacConfig, apply_worker
 from .astra import AstraPaths, astra_worker
@@ -69,6 +69,11 @@ def hessian_pipeline(
             "only ever fits and applies a factored (kfac/tkfac/shampoo) "
             "Hessian."
         )
+    if index_cfg.projection_dim > 0 and index_cfg.projection_target == "global":
+        raise ValueError(
+            "projection_target='global' is not supported with Kronecker-factored "
+            "Hessians; the factors are projected per module."
+        )
 
     run_path = index_cfg.run_path
     method = hessian_cfg.method
@@ -94,11 +99,9 @@ def hessian_pipeline(
         print(f"  using the existing query index at {query_path}")
     elif not _step_complete(query_path, resume):
         with _timed("step1_build_query", durations):
-            # The preconditioner keys on module names, so the query stays
-            # uncompressed; only its output is randomly down-projected.
+            # The factors are projected to match the query.
             query_cfg = deepcopy(index_cfg)
             query_cfg.run_path = query_path
-            query_cfg.projection_dim = 0
             _validate(query_cfg)
             build_query(query_cfg, query_set_cfg, PreprocessConfig())
 
@@ -139,7 +142,7 @@ def hessian_pipeline(
             index_cfg.distributed,
         )
         if index_cfg.distributed.rank == 0:
-            shutil.move(ekfac_cfg.run_path, transformed_query_path)
+            promote_step(transformed_query_path)
 
     astra_cfg = hessian_pipeline_cfg.astra
     if astra_cfg.num_steps > 0:
@@ -217,4 +220,4 @@ def _run_astra(
         ],
         index_cfg.distributed,
     )
-    shutil.move(part, out_path)
+    promote_step(out_path)

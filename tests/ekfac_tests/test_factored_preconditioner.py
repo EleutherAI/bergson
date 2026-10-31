@@ -20,7 +20,10 @@ import torch.multiprocessing as mp
 from safetensors.torch import load_file, save_file
 
 from bergson import GradientProcessor
-from bergson.collector.collector import create_projection_matrix
+from bergson.collector.collector import (
+    HookCollectorBase,
+    create_projection_matrix,
+)
 from bergson.collector.gradient_collectors import GradientCollector
 from bergson.config import IndexConfig, InversionConfig
 from bergson.data import column_offsets, create_index, load_module_gradients
@@ -290,105 +293,106 @@ def test_from_path_applies_full_factors_under_process_group(tmp_path):
             torch.testing.assert_close(results[rank][name], expected[name])
 
 
-def test_apply_hessian_compresses_per_module(tmp_path):
-    """``EkfacConfig.projection_dim > 0`` compresses the IVHP output to a
-    ``[p, p]`` per-module Kronecker random projection, applied *after* H^-1
-    on the full gradient. It must use the exact same
-    ``create_projection_matrix`` convention (identifiers ``f"{name}/left"``
-    / ``f"{name}/right"``) that ``bergson build`` uses on training
-    gradients, so a compressed query is directly comparable to a compressed
-    training-side gradient store.
-    """
+def test_apply_hessian_projects_factors(tmp_path):
+    """A per-module ``projection_dim`` applies the damped inverse of
+    ``(P_l G P_l^T) ⊗ (P_r A P_r^T)`` to the projected query."""
     modules = {"a": (4, 6), "b": (5, 3)}  # (O, I)
     hessian_path = tmp_path / "hessian"
-    _write_factored_hessian(hessian_path, modules, num_shards=1, seed=0)
+    _write_factored_hessian(hessian_path, modules, num_shards=2, seed=0)
 
-    grad_sizes = {name: o * i for name, (o, i) in modules.items()}
-    num_grads = 3
-    query_path = str(tmp_path / "query")
-    _make_query_gradients(query_path, grad_sizes, num_grads)
+    p, num_grads = 2, 3
+    query_path = tmp_path / "query"
+    _make_query_gradients(str(query_path), {name: p * p for name in modules}, num_grads)
+    processor_for(IndexConfig(run_path="", projection_dim=p)).save(query_path)
+    query = load_module_gradients(str(query_path))
 
-    inversion_cfg = InversionConfig(inversion="damped_inverse", damping_factor=0.1)
-
-    # Reference: full, uncompressed IVHP output.
-    ref = _apply(
-        str(hessian_path),
-        query_path,
-        str(tmp_path / "out_full"),
-        "damped_inverse",
-        ev_correction=False,
-    )
-
-    p = 2
-    compressed_cfg = EkfacConfig(
+    cfg = EkfacConfig(
         hessian_method_path=str(hessian_path),
-        gradient_path=query_path,
-        run_path=str(tmp_path / "out_compressed"),
+        gradient_path=str(query_path),
+        run_path=str(tmp_path / "out"),
         ev_correction=False,
         projection_dim=p,
     )
-    EkfacApplicator(compressed_cfg, inversion_cfg=inversion_cfg).compute_ivhp_sharded()
-    got = load_module_gradients(str(tmp_path / "out_compressed"))
+    EkfacApplicator(cfg, inversion_cfg=InversionConfig()).compute_ivhp_sharded()
+    got = load_module_gradients(str(tmp_path / "out"))
     # Scoring checks the saved projection against the index's.
-    assert GradientProcessor.load_config(tmp_path / "out_full").projection_dim is None
-    saved = GradientProcessor.load_config(tmp_path / "out_compressed")
+    saved = GradientProcessor.load_config(tmp_path / "out")
     assert (saved.projection_dim, saved.projection_type) == (p, "rademacher")
     processor_for(IndexConfig(run_path="", projection_dim=p)).check_saved_projection(
-        tmp_path / "out_compressed", "The compressed query"
+        tmp_path / "out", "The compressed query"
     )
 
+    def full(sub, name):
+        shards = [
+            load_file(hessian_path / sub / f"shard_{r}.safetensors") for r in (0, 1)
+        ]
+        return torch.cat([shard[name] for shard in shards]).double()
+
     for name, (o, i) in modules.items():
-        full = torch.from_numpy(np.asarray(ref[name][:])).view(num_grads, o, i)
+        q_a, q_g = full("eigen_activation_sharded", name), full(
+            "eigen_gradient_sharded", name
+        )
+        lam_a = load_file(hessian_path / "factor_eig_a" / "shard_0.safetensors")[name]
+        A = (q_a * lam_a.double()) @ q_a.T
+        G = (q_g * full("factor_eig_g", name)) @ q_g.T
         P_l = create_projection_matrix(
-            f"{name}/left", p, o, full.dtype, full.device, "rademacher"
+            f"{name}/left", p, o, torch.float64, "cpu", "rademacher"
         )
         P_r = create_projection_matrix(
-            f"{name}/right", p, i, full.dtype, full.device, "rademacher"
+            f"{name}/right", p, i, torch.float64, "cpu", "rademacher"
         )
-        expected = torch.einsum("ps,nsa,ra->npr", P_l, full, P_r)
+        H = torch.kron(P_l @ G @ P_l.T, P_r @ A @ P_r.T)
+        damped = H + 0.1 * torch.linalg.eigvalsh(H).mean() * torch.eye(p * p)
+        q = torch.from_numpy(np.asarray(query[name][:])).double()
+        expected = torch.linalg.solve(damped, q.T).T
 
-        compressed = torch.from_numpy(np.asarray(got[name][:])).view(num_grads, p, p)
-        assert compressed.shape == (num_grads, p, p)
-        assert torch.allclose(
-            compressed, expected, atol=1e-4, rtol=1e-4
-        ), f"{name}: compressed IVHP output doesn't match manual post-projection"
+        torch.testing.assert_close(
+            torch.from_numpy(np.asarray(got[name][:])).double(),
+            expected,
+            rtol=1e-3,
+            atol=1e-5,
+        )
+
+
+def test_apply_hessian_rejects_global_projection(tmp_path):
+    cfg = EkfacConfig(
+        hessian_method_path=str(tmp_path),
+        gradient_path=str(tmp_path),
+        run_path=str(tmp_path / "out"),
+        ev_correction=False,
+        projection_dim=4,
+        projection_target="global",
+    )
+    with pytest.raises(ValueError, match="global"):
+        EkfacApplicator(cfg, inversion_cfg=InversionConfig())
 
 
 def test_apply_hessian_compression_matches_collector(tmp_path, model, dataset):
-    """The compressed IVHP output must use the same projection matrices as the
+    """The projected factors must use the same projection matrices as the
     gradient collector, including with a non-default type, scale and seed.
-    With an identity Hessian, compressing the full gradient must give exactly
-    what the collector writes for the same example.
+    With identity factors and no damping, the collector's projected gradient
+    ``P_l g P_r^T`` comes out as ``(P_l P_l^T)^-1 P_l g P_r^T (P_r P_r^T)^-1``.
     """
-    p = 4
+    p, seed = 4, 7
     tokens = torch.tensor([dataset[0]["input_ids"]])
     cfg = IndexConfig(run_path=str(tmp_path))
-
-    def collect(processor: GradientProcessor) -> dict[str, torch.Tensor]:
-        collector = GradientCollector(
-            model=model,
-            cfg=cfg,
-            data=dataset,
-            processor=processor,
-            skip_index=True,
-        )
-        with collector:
-            model.zero_grad()
-            model(input_ids=tokens, labels=tokens).loss.backward()
-        return {k: v.clone().float().cpu() for k, v in collector.mod_grads.items()}
-
-    full = collect(GradientProcessor(projection_dim=None))
-    compressed = collect(
-        GradientProcessor(
-            projection_dim=p,
-            projection_type="normal",
-            projection_scale="row_norm",
-            projection_seed=7,
-        )
+    processor = GradientProcessor(
+        projection_dim=p,
+        projection_type="normal",
+        projection_scale="row_norm",
+        projection_seed=seed,
     )
 
+    collector = GradientCollector(
+        model=model, cfg=cfg, data=dataset, processor=processor, skip_index=True
+    )
+    with collector:
+        model.zero_grad()
+        model(input_ids=tokens, labels=tokens).loss.backward()
+    compressed = {k: v.clone().float().cpu() for k, v in collector.mod_grads.items()}
+
     modules = {}
-    for name in full:
+    for name in compressed:
         o, i = model.get_submodule(name).weight.shape
         modules[name] = (o, i)
 
@@ -407,17 +411,14 @@ def test_apply_hessian_compression_matches_collector(tmp_path, model, dataset):
         )
 
     query_path = tmp_path / "query"
+    grad_sizes = {name: p * p for name in modules}
     index = create_index(
-        root=query_path,
-        num_grads=1,
-        grad_sizes={name: o * i for name, (o, i) in modules.items()},
-        dtype=np.float32,
+        root=query_path, num_grads=1, grad_sizes=grad_sizes, dtype=np.float32
     )
-    for name, (lo, hi) in column_offsets(
-        {name: o * i for name, (o, i) in modules.items()}
-    ).items():
-        index[:, lo:hi] = full[name].numpy()
+    for name, (lo, hi) in column_offsets(grad_sizes).items():
+        index[:, lo:hi] = compressed[name].numpy()
     index.flush()
+    processor.save(query_path)
 
     apply_cfg = EkfacConfig(
         hessian_method_path=str(hessian_path),
@@ -427,31 +428,44 @@ def test_apply_hessian_compression_matches_collector(tmp_path, model, dataset):
         projection_dim=p,
         projection_type="normal",
         projection_scale="row_norm",
-        projection_seed=7,
+        projection_seed=seed,
     )
-    # With unit eigenvalues and no damping, H^-1 is the identity.
     EkfacApplicator(
         apply_cfg, inversion_cfg=InversionConfig(damping_factor=0.0)
     ).compute_ivhp_sharded()
     got = load_module_gradients(str(tmp_path / "out"))
     # Scoring checks the saved projection, seed included, against the index's.
-    assert GradientProcessor.load_config(tmp_path / "out").projection_seed == 7
+    assert GradientProcessor.load_config(tmp_path / "out").projection_seed == seed
     processor_for(
         IndexConfig(
             run_path="",
             projection_dim=p,
             projection_type="normal",
             projection_scale="row_norm",
-            projection_seed=7,
+            projection_seed=seed,
         )
     ).check_saved_projection(tmp_path / "out", "The compressed query")
 
-    for name in modules:
+    for name, (o, i) in modules.items():
+        P_l, P_r = (
+            create_projection_matrix(
+                HookCollectorBase.projection_identifier(name, role, seed),
+                p,
+                n,
+                torch.float64,
+                "cpu",
+                "normal",
+                "row_norm",
+            )
+            for role, n in (("left", o), ("right", i))
+        )
+        q = compressed[name].double().view(p, p)
+        expected = torch.linalg.solve(P_l @ P_l.T, q) @ torch.linalg.inv(P_r @ P_r.T)
         torch.testing.assert_close(
-            torch.from_numpy(np.asarray(got[name][:])),
-            compressed[name],
+            torch.from_numpy(np.asarray(got[name][:])).double().view(p, p),
+            expected,
+            rtol=1e-3,
             atol=1e-5,
-            rtol=1e-4,
         )
 
 

@@ -77,6 +77,45 @@ def test_hessian_pipeline_resume_reruns_interrupted_steps(tmp_path):
     assert (run / "scores").exists()
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_hessian_pipeline_reruns_over_finished_outputs(tmp_path):
+    """Running again into a finished run replaces its outputs."""
+    run = tmp_path / "run"
+
+    def run_pipeline():
+        hessian_pipeline(
+            IndexConfig(
+                run_path=str(run),
+                model="EleutherAI/pythia-14m",
+                data=DataConfig(
+                    dataset="NeelNanda/pile-10k", split="train[:8]", truncation=True
+                ),
+                token_batch_size=512,
+                precision="fp32",
+                filter_modules="embed_out",
+                overwrite=True,
+            ),
+            HessianConfig(method="kfac", ev_correction=True, use_dataset_labels=True),
+            ScoreConfig(batch_size=64),
+            PreprocessConfig(),
+            HessianPipelineConfig(
+                query=QuerySetConfig(
+                    dataset="NeelNanda/pile-10k",
+                    split="train[8:10]",
+                    truncation=True,
+                    aggregation="none",
+                ),
+            ),
+        )
+
+    run_pipeline()
+    run_pipeline()
+    assert (run / "kfac_query" / "info.json").exists()
+    assert not (run / "kfac_query" / "kfac_query.part").exists()
+    assert not (run / "kfac_query.part").exists()
+    assert (run / "scores").exists()
+
+
 def test_hessian_pipeline_passes_projection_config_to_apply(tmp_path, monkeypatch):
     """The apply step must compress the query with the same projection settings
     as the index it is scored against."""

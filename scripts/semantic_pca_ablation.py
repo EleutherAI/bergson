@@ -21,13 +21,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from datasets import DatasetDict, load_dataset, load_from_disk
 
-from examples.semantic.asymmetric import (
+from examples.experiments.semantic_experiment.asymmetric import (
     AsymmetricConfig,
     AsymmetricMetrics,
     compute_asymmetric_metrics_with_pca,
 )
-from examples.semantic.data import HF_ANALYSIS_MODEL
-from examples.semantic.hessians import compute_pca_style_subspace
+from examples.experiments.semantic_experiment.data import HF_ANALYSIS_MODEL
+from examples.experiments.semantic_experiment.hessians import compute_pca_style_subspace
 
 BASE_PATH = Path("runs/asymmetric_style")
 SEMANTIC_IDX_PATH = Path("runs/hess_comparison_semantic")

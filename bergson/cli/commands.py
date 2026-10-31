@@ -6,6 +6,7 @@ import lower-level commands for config serialization without importing the
 corresponding CLI entrypoint.
 """
 
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -19,6 +20,7 @@ from ..config.config import (
     HessianConfig,
     HessianPipelineConfig,
     IndexConfig,
+    LissaConfig,
     MetasmoothnessConfig,
     MixConfig,
     PreprocessConfig,
@@ -101,8 +103,8 @@ class Build(Serializable):
 
 
 @dataclass
-class Ekfac(Serializable):
-    """Run the full EKFAC influence pipeline end-to-end."""
+class Influence(Serializable):
+    """Run the Hessian-preconditioned influence pipeline end-to-end."""
 
     index_cfg: IndexConfig
 
@@ -138,6 +140,26 @@ class Ekfac(Serializable):
         )
 
 
+# TODO Lucia Quirke delete 12/2026
+@dataclass
+class Ekfac(Influence):
+    """Deprecated name of ``influence``."""
+
+    def execute(self):
+        warnings.warn(
+            "The `ekfac` command is deprecated; use `influence`",
+            FutureWarning,
+            stacklevel=2,
+        )
+        Influence(
+            self.index_cfg,
+            self.hessian_cfg,
+            self.score_cfg,
+            self.preprocess_cfg,
+            self.hessian_pipeline_cfg,
+        ).execute()
+
+
 @dataclass
 class Hessian(Serializable):
     """Approximate Hessian matrices using KFAC or EKFAC."""
@@ -150,6 +172,27 @@ class Hessian(Serializable):
         validate_run_path(self.index_cfg)
         save_run_config(self, self.index_cfg.partial_run_path)
         approximate_hessians(self.index_cfg, self.hessian_cfg)
+
+
+@dataclass
+class Lissa(Serializable):
+    """Run LiSSA influence (damped Gauss-Newton Hessian) end-to-end."""
+
+    index_cfg: IndexConfig
+
+    score_cfg: ScoreConfig
+
+    preprocess_cfg: PreprocessConfig
+
+    lissa_cfg: LissaConfig
+
+    def execute(self):
+        from ..hessians.lissa import lissa_pipeline
+
+        save_run_config(self, self.index_cfg.run_path)
+        lissa_pipeline(
+            self.index_cfg, self.score_cfg, self.preprocess_cfg, self.lissa_cfg
+        )
 
 
 @dataclass

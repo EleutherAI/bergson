@@ -1,0 +1,50 @@
+# Ground truth: retrain GPT-2 on 100 random halves of the training data with
+# the training recipe, once per seed, saving every model. Seed 1004 draws and
+# saves the subsets; the other seeds reuse them.
+#
+#   PYTHONPATH=$PWD python -m bergson examples/replications/bae_approx_unrolling_source_replication/wikitext_gpt2_retrain.yaml
+
+steps:
+- validate:
+    run_path: runs/wikitext_repro/retrain_seed{seed}
+    model: gpt2
+    overwrite: true
+    precision: fp32
+    seed: '{seed}'
+    scores: runs/wikitext_repro/if_scores/scores
+    data:
+      dataset: EleutherAI/bergson-wikitext-2-4656-chunks
+      split: train
+      chunk_length: 0
+    query:
+      dataset: EleutherAI/bergson-wikitext-2-4656-chunks
+      split: validation
+      chunk_length: 0
+    distributed:
+      nproc_per_node: 8
+      nnode: 1
+    optimizer: adamw
+    adam_beta1: 0.9
+    adam_beta2: 0.999
+    adam_eps: 1.0e-08
+    eps_root: 0.0
+    weight_decay: 0.01
+    batch_size: 8
+    num_epochs: 3
+    lr_schedule:
+      lr_scheduler_type: constant
+      lr: 3.0e-05
+    train_mode: true
+    method:
+      kind: lds
+      count: 100
+      fraction: 0.5
+      manifest: runs/wikitext_repro/retrain_seed1004/subsets.json
+    save_models: true
+    matrix:
+      seed:
+      - 1004
+      - 1005
+      - 1006
+      - 1007
+      - 1008

@@ -33,6 +33,11 @@ class CovarianceCollector(HookCollectorBase):
     every rank's positions for that module; teardown saves the usual row shards.
     Teardown leaves the covariances this rank owns, in full, on its device in
     ``A_cov_dict`` and ``S_cov_dict`` for the eigendecomposition.
+
+    ``num_positions`` counts the positions each module's covariances summed,
+    across all ranks after teardown. It is ``total_processed`` for a dense
+    module, but only the routed positions for an MoE expert, and is what the
+    eigendecomposition divides the sums by to get per-position means.
     """
 
     dtype: torch.dtype
@@ -42,6 +47,7 @@ class CovarianceCollector(HookCollectorBase):
         """Initialize covariance storage dictionaries."""
         self.A_cov_dict = {}
         self.S_cov_dict = {}
+        self.num_positions: dict[str, int] = dict.fromkeys(self.target_info, 0)
         self.shard_computer = ShardedMul()
         self.A_shapes, self.S_shapes = {}, {}
         for name, (_, (out_dim, in_dim), collect_bias) in self.target_info.items():
@@ -71,8 +77,12 @@ class CovarianceCollector(HookCollectorBase):
                     self.S_shapes[name], device=device, dtype=self.dtype
                 )
 
-    def with_batch(self, collection_mask: Tensor | None = None):
-        super().with_batch(collection_mask)
+    def with_batch(
+        self,
+        collection_mask: Tensor | None = None,
+        spans: tuple[Tensor, Tensor] | None = None,
+    ):
+        super().with_batch(collection_mask, spans)
         if self.owners is not None and collection_mask is not None:
             # Every rank pads its positions to the batch's largest count.
             counts = gather_batch_shapes(
@@ -89,6 +99,7 @@ class CovarianceCollector(HookCollectorBase):
 
         # a: [N, S, I], collection mask: [N, S] -> select gradient-carrying positions
         a_bi = a[mask]  # [num_valid, I]
+        self.num_positions[name] += a_bi.shape[0]
 
         # Augment with a ones column so A matches the [O, I+1] gradient layout
         # produced when the bias gradient is collected.
@@ -155,3 +166,11 @@ class CovarianceCollector(HookCollectorBase):
                 shards = covariances
             save_file(shards, os.path.join(path, f"shard_{self.rank}.safetensors"))
             del shards
+
+        if dist.is_initialized():
+            counts = torch.tensor(
+                list(self.num_positions.values()),
+                device=self.shard_computer.device,
+            )
+            dist.all_reduce(counts, op=dist.ReduceOp.SUM)
+            self.num_positions = dict(zip(self.num_positions, counts.tolist()))

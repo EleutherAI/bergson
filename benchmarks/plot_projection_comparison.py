@@ -32,8 +32,8 @@ from benchmarks.benchmark_dattri import (
 from benchmarks.benchmark_utils import (
     extract_gpu_info,
     format_tokens,
-    model_color,
 )
+from benchmarks.plot_styles import model_color
 
 BENCH_ROOT = Path("/projects/a6a/public/lucia/proj_bench")
 FIXED_BERGSON_ROOT = Path("/projects/a6a/public/lucia/proj_bench_bergson_fixedbatch")

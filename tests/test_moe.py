@@ -8,6 +8,7 @@ import pytest
 import torch
 import torch.nn as nn
 from datasets import Dataset
+from safetensors.torch import load_file
 from transformers import (
     AutoModelForCausalLM,
     GptOssConfig,
@@ -17,8 +18,9 @@ from transformers import (
 
 from bergson.collector.collector import HookCollectorBase
 from bergson.collector.gradient_collectors import GradientCollector
-from bergson.config import IndexConfig
+from bergson.config import HessianConfig, IndexConfig
 from bergson.gradients import GradientProcessor, LayerAdapter
+from bergson.hessians.hessian_approximations import fit_factored_hessians
 from bergson.hessians.kfac import CovarianceCollector
 from bergson.moe import ExpertLinear, expand_moe
 from bergson.utils.utils import get_device
@@ -215,6 +217,57 @@ def test_covariance_honors_the_collection_mask(tmp_path):
         assert bool(collected > 0) is keep
 
 
+def test_kfac_normalizes_experts_by_their_routed_positions(tmp_path):
+    """An expert's covariances sum only the positions routed to it, so they must
+    be averaged over that count, not over every position in the dataset.
+
+    Each document has one gradient-carrying position, where a module's gradient
+    is ``g aᵀ``. The EK-FAC corrected eigenvalues then sum to the exact mean
+    per-document Fisher trace ``E[|a|² |g|²]``, and the uncorrected K-FAC grid
+    sums to ``E[|a|²] E[|g|²]``. These agree up to the correlation of ``|a|`` and
+    ``|g|``; averaging an expert's sums over every position instead scales its
+    K-FAC trace by the fraction of positions routed to it, about 1/4 here.
+    """
+    device = get_device(0)
+    torch.manual_seed(0)
+    config = CONFIGS["mixtral"]()
+    config.num_experts_per_tok = 1
+    model = AutoModelForCausalLM.from_config(config, dtype=torch.float32)
+    model = model.eval().to(device)
+    expand_moe(model, PATTERN)
+    model.requires_grad_(True)
+
+    num_documents = 64
+    data = Dataset.from_dict(
+        {"input_ids": torch.randint(0, 64, (num_documents, 2)).tolist()}
+    )
+    index_cfg = IndexConfig(run_path=str(tmp_path / "run"))
+    index_cfg.partial_run_path.mkdir(parents=True)
+    path = str(tmp_path / "hessian")
+    fit_factored_hessians(
+        model,
+        data,
+        index_cfg,
+        HessianConfig(method="kfac", ev_correction=True, use_dataset_labels=True),
+        target_modules=None,
+        attention_cfgs={},
+        batches=[[i] for i in range(num_documents)],
+        path=path,
+        do_eigendecomposition=True,
+    )
+
+    def traces(subdir: str) -> dict[str, float]:
+        tensors = load_file(f"{path}/{subdir}/shard_0.safetensors")
+        return {name: float(t.sum()) for name, t in tensors.items()}
+
+    kfac = traces("eigenvalue_sharded")
+    exact = traces("eigenvalue_correction_sharded")
+    assert len(expert_names(kfac)) == NUM_LAYERS * NUM_EXPERTS * 2
+    for name in kfac:
+        if exact[name] > 0:
+            assert 0.7 < kfac[name] / exact[name] < 1.4, name
+
+
 def test_bad_patterns_raise():
     model = build_model("gpt_oss")
     with pytest.raises(ValueError, match="matched no module"):
@@ -236,6 +289,6 @@ def test_attribute_tokens_is_rejected():
     expand_moe(model, PATTERN)
     collector = make_collector(model, attribute_tokens=True)
 
-    with pytest.raises(ValueError, match="attribute_tokens is incompatible"):
+    with pytest.raises(ValueError, match="incompatible with fused MoE experts"):
         with collector:
             pass

@@ -1,0 +1,35 @@
+# Single-step MAGIC attribution example (tiny GPT-2 / WikiText-2).
+
+# Run with `bergson examples/tiny_method_demonstrations/magic_gpt2_wikitext_tiny.yaml`
+
+steps:
+  - magic:
+      run_path: runs/gpt2_wikitext
+      model: gpt2
+      overwrite: true
+
+      data:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "train"
+        chunk_length: 0
+
+      query:
+        dataset: EleutherAI/bergson-wikitext-512-chunks
+        split: "test[0:1]"
+        chunk_length: 0
+
+      distributed:
+        nproc_per_node: 1
+
+      batch_size: 64
+      grad_accum_steps: 4
+      double_backward_batch_size: 4
+      num_epochs: 1
+      lr_schedule:
+        lr_scheduler_type: polynomial
+        lr: 0.0008
+        lr_start: 1e-6
+        lr_end: 0.00008
+        warmup_steps: 0.25
+
+      wandb_project: magic

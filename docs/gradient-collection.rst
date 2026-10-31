@@ -129,11 +129,11 @@ By default Bergson collects gradients for named parameter matrices, but per-atte
 Collect GRPO Loss Gradients
 ---------------------------
 
-Where a reward signal is available we compute gradients using a weighted advantage estimate based on Dr. GRPO:
+For RL rollouts, include advantages for a Dr. GRPO policy gradient, e.g. as logged by a GRPO trainer, as a dataset column and specify the column name with ``--advantage_column``:
 
 .. code-block:: bash
 
-   bergson build <output_path> --model <model_name> --dataset <dataset_name> --reward_column <reward_column_name>
+   bergson build <output_path> --model <model_name> --dataset <dataset_name> --advantage_column <advantage_column_name>
 
 Mixture-of-Experts Models
 -------------------------
@@ -145,7 +145,7 @@ Gradients for fused MoE modules, which do not use ``nn.Linear``, can be collecte
    bergson build <output_path> --model openai/gpt-oss-20b --dataset <dataset_name> \
        --moe_experts "model.layers.*.mlp.experts"
 
-The value is a comma-separated list of globs over ``model.named_modules()``. Collection runs on the base model, so the index names the new modules ``layers.0.mlp.experts.expert_3.gate_up_proj``, which ``filter_modules`` globs match like any other. See ``examples/moe_experts.yaml``.
+The value is a comma-separated list of globs over ``model.named_modules()``. Collection runs on the base model, so the index names the new modules ``layers.0.mlp.experts.expert_3.gate_up_proj``, which ``filter_modules`` globs match like any other. See ``examples/tiny_method_demonstrations/moe_experts.yaml``.
 
 When collecting MoE gradients a grouped-matmul kernel is disabled, reducing performance somewhat.
 

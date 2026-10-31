@@ -64,5 +64,3 @@ mean_intra_subject_similarity = torch.mean(torch.tensor(intra_subject_similariti
 mean_inter_subject_similarity = torch.mean(torch.tensor(inter_subject_similarities))
 print(f"Intra-subject similarity mean: {mean_intra_subject_similarity}")
 print(f"Inter-subject similarity mean: {mean_inter_subject_similarity}")
-
-breakpoint()

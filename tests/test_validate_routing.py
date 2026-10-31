@@ -9,7 +9,7 @@ from bergson.cli.commands import Magic, Validate
 from bergson.config.config_io import read_config
 from bergson.magic.cli import run_magic
 
-MODEL = "trl-internal-testing/tiny-Phi3ForCausalLM"
+MODEL = "trl-internal-testing/tiny-Phi3ForCausalLM-3"
 
 
 def _datasets(tmp_path) -> dict:

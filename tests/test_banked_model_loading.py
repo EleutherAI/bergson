@@ -15,7 +15,7 @@ from transformers import AutoModelForCausalLM
 from bergson.magic.config import MagicConfig
 from bergson.validate import _load_banked_model
 
-MODEL = "trl-internal-testing/tiny-Phi3ForCausalLM"
+MODEL = "trl-internal-testing/tiny-Phi3ForCausalLM-3"
 
 
 def _logits(model: torch.nn.Module) -> torch.Tensor:

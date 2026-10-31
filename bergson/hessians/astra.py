@@ -5,6 +5,7 @@ SGD preconditioned by that same inverse."""
 import json
 import math
 import warnings
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -12,13 +13,14 @@ from typing import Literal
 import numpy as np
 import torch
 import torch.autograd.forward_ad as fwAD
+import torch.distributed as dist
 import torch.nn.functional as F
 from datasets import Dataset
 from torch import Tensor
-from torch.func import functional_call
 
 from bergson.config import AstraConfig, IndexConfig, InversionConfig
 from bergson.data import column_offsets, load_gradients, pad_and_tensor
+from bergson.distributed import init_dist
 from bergson.gradients import LayerAdapter
 from bergson.hessians.preconditioner import FactoredPreconditioner
 from bergson.utils.logger import get_logger
@@ -62,6 +64,7 @@ class GaussNewtonProduct:
         self.names = names
         self.mean_reduction = (loss_reduction or index_cfg.loss_reduction) == "mean"
         self.micro_batch_size = micro_batch_size
+        self.fsdp = index_cfg.fsdp
         self.device = next(model.parameters()).device
 
         param_names = {id(p): n for n, p in model.named_parameters()}
@@ -76,11 +79,8 @@ class GaussNewtonProduct:
         }
         for layer in self.layers.values():
             layer.requires_grad_(True)
-        params = dict(model.named_parameters())
-        self.params = {
-            k: params[k]
-            for k in [*self.weight_names.values(), *self.bias_names.values()]
-        }
+        self.rank = dist.get_rank() if dist.is_initialized() else 0
+        self.world_size = dist.get_world_size() if dist.is_initialized() else 1
 
     def _to_params(self, name: str, v: Tensor) -> dict[str, Tensor]:
         """Split a flat ``[O, I]`` (``[O, I + 1]`` with bias) vector into the
@@ -111,18 +111,29 @@ class GaussNewtonProduct:
 
     def __call__(self, v: dict[str, Tensor], indices: list[int]) -> dict[str, Tensor]:
         """``H_B v`` on the documents ``indices``, a mean over documents like the
-        fitted Hessians."""
+        fitted Hessians. Each rank of a process group takes every
+        ``world_size``-th document, and the ranks sum their shares."""
         out = {name: torch.zeros_like(v[name]) for name in self.names}
-        for start in range(0, len(indices), self.micro_batch_size):
-            chunk = indices[start : start + self.micro_batch_size]
-            for name, h in self._product(v, chunk, len(indices)).items():
+        share = indices[self.rank :: self.world_size]
+        # Every rank runs as many micro-batches as the largest share needs, as
+        # FSDP's forwards and backwards gather parameters from every rank
+        largest = math.ceil(len(indices) / self.world_size)
+        for start in range(0, largest, self.micro_batch_size):
+            chunk = share[start : start + self.micro_batch_size]
+            scale = 1.0 if chunk else 0.0
+            chunk = chunk or indices[:1]
+            for name, h in self._product(v, chunk, len(indices), scale).items():
                 out[name] += h
+        if self.world_size > 1:
+            for h in out.values():
+                dist.all_reduce(h)
         return out
 
     def _product(
-        self, v: dict[str, Tensor], indices: list[int], batch_size: int
+        self, v: dict[str, Tensor], indices: list[int], batch_size: int, scale: float
     ) -> dict[str, Tensor]:
-        """This chunk's share of the product over a batch of ``batch_size``."""
+        """This chunk's share of the product over a batch of ``batch_size``,
+        times ``scale``."""
         batch = self.data[indices]
         x, y, _, _ = pad_and_tensor(
             batch["input_ids"],
@@ -134,16 +145,21 @@ class GaussNewtonProduct:
         for name in self.names:
             tangents.update(self._to_params(name, v[name]))
 
-        with fwAD.dual_level():
-            duals = {k: fwAD.make_dual(p, tangents[k]) for k, p in self.params.items()}
-            out = functional_call(self.model, duals, (x,)).logits[:, :-1]
+        # FSDP's hooks take no tangents in a forward that records a graph, so
+        # under FSDP the JVP's forward records none and a second forward does
+        grad_mode = torch.no_grad() if self.fsdp else nullcontext()
+        with fwAD.dual_level(), grad_mode, self._forward_params(tangents) as params:
+            out = self.model(x).logits[:, :-1]
             logits, jvp = fwAD.unpack_dual(out)
             assert jvp is not None
             jvp = jvp.detach()
+        if self.fsdp:
+            with self._forward_params() as params:
+                logits = self.model(x).logits[:, :-1]
 
         # Cross-entropy's Hessian in the logits, diag(p) - p p^T, per position.
         mask = (y[:, 1:] != -100).to(logits.dtype)
-        weight = mask / batch_size
+        weight = mask / batch_size * scale
         if self.mean_reduction:
             weight = weight / mask.sum(1, keepdim=True).clamp_min(1)
         with torch.no_grad():
@@ -152,9 +168,48 @@ class GaussNewtonProduct:
             hjvp *= weight[..., None]
         del jvp, probs
 
-        grads = torch.autograd.grad(logits, list(self.params.values()), hjvp)
-        grads = dict(zip(self.params, grads))
+        grads = torch.autograd.grad(logits, list(params.values()), hjvp)
+        grads = dict(zip(params, grads))
         return {name: self._to_flat(name, grads) for name in self.names}
+
+    @contextmanager
+    def _forward_params(self, tangents: dict[str, Tensor] | None = None):
+        """The layers' parameters as their forwards run with them, FSDP's
+        gathered ones under FSDP, made dual tensors with ``tangents`` if given."""
+        params: dict[str, Tensor] = {}
+        attrs = {
+            n: [("weight", self.weight_names[n])]
+            + ([("bias", self.bias_names[n])] if n in self.bias_names else [])
+            for n in self.names
+        }
+
+        def swap_in(name):
+            def hook(layer, args):
+                for attr, key in attrs[name]:
+                    p = originals[name, attr] = layer._parameters[attr]
+                    if tangents is not None:
+                        p = fwAD.make_dual(p, tangents[key].to(p.dtype))
+                    layer._parameters[attr] = params[key] = p
+
+            return hook
+
+        def swap_out(name):
+            def hook(layer, args, output):
+                for attr, _ in attrs[name]:
+                    layer._parameters[attr] = originals.pop((name, attr))
+
+            return hook
+
+        originals: dict[tuple[str, str], Tensor] = {}
+        handles = []
+        for n, layer in self.layers.items():
+            handles.append(layer.register_forward_pre_hook(swap_in(n)))
+            handles.append(layer.register_forward_hook(swap_out(n)))
+        try:
+            yield params
+        finally:
+            for handle in handles:
+                handle.remove()
 
 
 class Astra:
@@ -223,8 +278,13 @@ class Astra:
             }
 
     def refine(self, q: dict[str, Tensor], x: dict[str, Tensor], row: int):
-        """Momentum SGD from ``x`` on ``x^T (H + D) x / 2 - x^T q``."""
+        """Minimize ``x^T (H + D) x / 2 - x^T q`` from ``x``."""
         gen = torch.Generator().manual_seed(self.cfg.seed * 1_000_003 + row)
+        if self.cfg.solver == "cg":
+            indices = torch.randperm(self.num_docs, generator=gen)[
+                : self.cfg.batch_size
+            ].tolist()
+            return self._cg(q, x, row, indices)
         buf = {n: torch.zeros_like(x[n]) for n in self.names}
         lr = self.cfg.lr
         for step in range(self.cfg.num_steps):
@@ -253,6 +313,49 @@ class Astra:
                 x[n].sub_(buf[n], alpha=lr)
         return x
 
+    def _damped_product(
+        self, v: dict[str, Tensor], indices: list[int]
+    ) -> dict[str, Tensor]:
+        """``(H_B + D) v`` on the documents ``indices``."""
+        hv = self.hvp(v, indices)
+        return {n: hv[n] + self.damping[n] * v[n] for n in self.names}
+
+    def _precondition(self, r: dict[str, Tensor]) -> dict[str, Tensor]:
+        out = self.preconditioner.apply({n: r[n][None] for n in self.names})
+        return {n: out[n][0] for n in self.names}
+
+    def _dot(self, u: dict[str, Tensor], v: dict[str, Tensor]) -> float:
+        return sum((u[n].double() @ v[n].double()).item() for n in self.names)
+
+    def _cg(
+        self, q: dict[str, Tensor], x: dict[str, Tensor], row: int, indices: list[int]
+    ):
+        """Preconditioned conjugate gradients on the documents ``indices``."""
+        ax = self._damped_product(x, indices)
+        r = {n: q[n] - ax[n] for n in self.names}
+        z = self._precondition(r)
+        p = {n: z[n].clone() for n in self.names}
+        rz = self._dot(r, z)
+        for step in range(self.cfg.num_steps):
+            if step % 50 == 0 or step == self.cfg.num_steps - 1:
+                # With r = q - (H_B + D) x, the objective is -(q + r)^T x / 2.
+                objective = -(self._dot(q, x) + self._dot(r, x)) / 2
+                self.logger.info(f"query {row} step {step}: objective {objective:.6g}")
+            ap = self._damped_product(p, indices)
+            pap = self._dot(p, ap)
+            if pap <= 0:
+                self.logger.warning(f"query {row} step {step}: curvature {pap:.3g}")
+                break
+            alpha = rz / pap
+            for n in self.names:
+                x[n].add_(p[n], alpha=alpha)
+                r[n].sub_(ap[n], alpha=alpha)
+            z = self._precondition(r)
+            rz, rz_old = self._dot(r, z), rz
+            for n in self.names:
+                p[n] = z[n] + (rz / rz_old) * p[n]
+        return x
+
     def run(self, rows: range):
         query = load_gradients(self.paths.query_path)
         init = load_gradients(self.paths.init_path)
@@ -270,9 +373,11 @@ class Astra:
             q = self._read_row(query, query_offsets, row)
             x = self._read_row(init, offsets, row)
             x = self.refine(q, x, row)
-            for n in self.names:
-                out[row, slice(*offsets[n])] = x[n].cpu().numpy()
-            out.flush()
+            # Under FSDP every rank refines every row to the same solution
+            if self.hvp.rank == 0:
+                for n in self.names:
+                    out[row, slice(*offsets[n])] = x[n].cpu().numpy()
+                out.flush()
 
 
 def astra_worker(
@@ -286,12 +391,17 @@ def astra_worker(
     ev_correction: bool,
 ):
     """Refine this rank's share of the queries; each rank holds the full
-    factors, so no process group is needed."""
+    factors. Under FSDP the ranks refine every query together, each taking a
+    share of every batch's documents."""
     device = get_device(local_rank)
     if torch.cuda.is_available():
         torch.cuda.set_device(device)
 
     num_queries = load_gradients(paths.init_path).shape[0]
-    per_rank = math.ceil(num_queries / world_size)
-    rows = range(rank * per_rank, min((rank + 1) * per_rank, num_queries))
+    if index_cfg.fsdp:
+        init_dist(rank, local_rank, world_size)
+        rows = range(num_queries)
+    else:
+        per_rank = math.ceil(num_queries / world_size)
+        rows = range(rank * per_rank, min((rank + 1) * per_rank, num_queries))
     Astra(paths, index_cfg, inversion_cfg, astra_cfg, ev_correction, device).run(rows)

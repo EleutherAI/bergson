@@ -16,7 +16,7 @@ from bergson.score.score import score_dataset
 
 from .test_score import _write_query_index
 
-MODEL = "trl-internal-testing/tiny-Phi3ForCausalLM"
+MODEL = "trl-internal-testing/tiny-Phi3ForCausalLM-3"
 # GPT-2 keeps its weights [in, out] in HF Conv1D modules.
 CONV1D_MODEL = "hf-internal-testing/tiny-random-gpt2"
 
@@ -86,8 +86,8 @@ def _score(
 def test_output_influence_matches_gradient_scores(
     tmp_path: Path, loss_reduction, filter_modules, model_name
 ):
-    """Per-document output influence scores equal the gradient dot products, and
-    per-token scores sum to them. The saved dataset carries the same losses."""
+    """Per-token output influence scores sum to the gradient dot products, and
+    the saved dataset carries the same losses."""
     model = AutoModelForCausalLM.from_pretrained(model_name, dtype=torch.float32)
     dataset = _dataset(tmp_path)
     query_path = _query(tmp_path, model, dataset, num_queries=2)
@@ -101,9 +101,6 @@ def test_output_influence_matches_gradient_scores(
     expected = _score(
         tmp_path, "grad", dataset, query_path, token_influence="gradient", **common
     )[:]
-    docs = _score(
-        tmp_path, "output", dataset, query_path, token_influence="output", **common
-    )
     tokens = _score(
         tmp_path,
         "output_tokens",
@@ -114,7 +111,6 @@ def test_output_influence_matches_gradient_scores(
         **common,
     )
 
-    np.testing.assert_allclose(docs[:], expected, rtol=1e-4, atol=1e-5)
     assert tokens.offsets is not None
     summed = np.stack(
         [
@@ -125,12 +121,9 @@ def test_output_influence_matches_gradient_scores(
     np.testing.assert_allclose(summed, expected, rtol=1e-4, atol=1e-5)
 
     grad_data = Dataset.load_from_disk(str(tmp_path / "grad" / "data.hf"))
-    for name in ("output", "output_tokens"):
-        data = Dataset.load_from_disk(str(tmp_path / name / "data.hf"))
-        assert data.column_names == grad_data.column_names
-        np.testing.assert_allclose(
-            data["loss"], grad_data["loss"], rtol=1e-4, atol=1e-5
-        )
+    data = Dataset.load_from_disk(str(tmp_path / "output_tokens" / "data.hf"))
+    assert data.column_names == grad_data.column_names
+    np.testing.assert_allclose(data["loss"], grad_data["loss"], rtol=1e-4, atol=1e-5)
 
 
 def test_output_influence_token_rows_are_single_loss_terms(tmp_path: Path):
@@ -182,10 +175,10 @@ def test_output_influence_token_rows_are_single_loss_terms(tmp_path: Path):
     [({"projection_dim": 16}, "projection_dim"), ({"precision": "int8"}, "int8")],
 )
 def test_output_influence_rejects_unsupported(tmp_path: Path, setting, match):
-    cfg = IndexConfig(run_path=str(tmp_path / "scores"), **setting)
+    """Per-token scoring defaults to output token influence, which raises on
+    settings it can't reproduce."""
+    cfg = IndexConfig(
+        run_path=str(tmp_path / "scores"), attribute_tokens=True, **setting
+    )
     with pytest.raises(ValueError, match=match):
-        score_dataset(
-            cfg,
-            ScoreConfig(query_path="unused", token_influence="output"),
-            PreprocessConfig(),
-        )
+        score_dataset(cfg, ScoreConfig(query_path="unused"), PreprocessConfig())

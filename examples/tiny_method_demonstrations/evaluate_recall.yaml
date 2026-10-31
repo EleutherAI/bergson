@@ -1,0 +1,59 @@
+# Evaluate recall of entailing factual statements using influence functions.
+
+# Trains the model on synthetic facts data (bergson.recall.facts) in statement
+# form ("Ada Lovelace works at Google."). Queries with matching *questions*
+# ("Where does Ada Lovelace work?"). A question's "gold documents" are all
+# paraphrases of its fact. `bergson recall` reports MRR and Recall@10 for
+# these documents.
+
+# Prerequisites:
+#   1. Generate the cached datasets (reproducible, size-keyed):
+#        python -m bergson.recall.generate --num_people 1000
+#   2. Train the model on the statements dataset (e.g. with `bergson train`
+#      or data/finetune.py) and point `model:` below at the result. With an
+#      untrained base model the metrics are only a sanity floor.
+
+# Run with `bergson examples/tiny_method_demonstrations/evaluate_recall.yaml`
+
+# Outputs: runs/recall_synthetic/questions (query gradient index),
+# runs/recall_synthetic/scores/scores.bin (statements x questions score
+# matrix), and runs/recall_synthetic/eval/{recall.csv,summary.csv}.
+
+run_path: runs/recall_synthetic
+
+steps:
+  # Build query gradients for the questions. The `text` column is the
+  # question and answer concatenated, for models without a chat template.
+  # For chat-template models, mask loss to the answer span instead with:
+  #   prompt_column: question
+  #   completion_column: answer
+  - build:
+      index_cfg:
+        run_path: runs/recall_synthetic/questions
+        model: EleutherAI/pythia-160m # <- replace with the trained model
+        overwrite: true
+        data:
+          dataset: data/questions_1000p_seed0.hf
+          prompt_column: text
+      preprocess_cfg: {}
+
+  # Score every statement against every question query gradient.
+  - score:
+      index_cfg:
+        run_path: runs/recall_synthetic/scores
+        model: EleutherAI/pythia-160m # <- replace with the trained model
+        overwrite: true
+        data:
+          dataset: data/statements_1000p_seed0.hf
+          prompt_column: fact
+      score_cfg:
+        query_path: runs/recall_synthetic/questions
+      preprocess_cfg: {}
+
+  # Rank statements per question and report MRR / Recall@10.
+  - recall:
+      run_path: runs/recall_synthetic/eval
+      scores: runs/recall_synthetic/scores
+      data:
+        num_people: 1000
+        seed: 0

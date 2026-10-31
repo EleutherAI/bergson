@@ -58,6 +58,7 @@ from .data_stream import (
     mask_padded_rows,
     pad_dataset_to_batch_size,
 )
+from .fsdp import full_state_dict
 from .grad_accum import accumulate_grads
 from .score_plot import plot_score_trajectory
 from .trainer import BackwardState, TrainerState, prepare_trainer, write_lr_history
@@ -430,11 +431,14 @@ def compute_per_query_unrolled_scores(
 
 
 def scores_are_per_token(score_path: str) -> bool:
+    """Whether a store's scores load as a ``[docs, seq_len]`` token grid, as
+    per-token and span stores do."""
     info_path = os.path.join(score_path, "info.json")
     if not os.path.isfile(info_path):
         return False
     with open(info_path) as f:
-        return bool(json.load(f).get("attribute_tokens", False))
+        info = json.load(f)
+    return bool(info.get("attribute_tokens") or info.get("attribute_spans"))
 
 
 def attach_doc_ids_if_missing(dataset: Dataset) -> Dataset:
@@ -665,20 +669,24 @@ def worker(
         and isinstance(run_cfg.method, LDSConfig)
         and run_cfg.method.start != 0
     )
-    if run_cfg.save_models and global_rank == 0 and not trails_slice:
-        # For the leave-k-out family the trained model is the query baseline
-        # that evaluate_retrained reads from retrained/base.
-        if isinstance(run_cfg, ValidationConfig):
-            base_dir = os.path.join(run_cfg.run_path, "retrained", "base")
-        else:
-            base_dir = os.path.join(run_cfg.run_path, "model")
-        os.makedirs(base_dir, exist_ok=True)
+    if run_cfg.save_models and not trails_slice:
+        # Gather on every rank, save on rank 0.
         with fwd_state.activate(model), torch.no_grad():
-            model.save_pretrained(base_dir, safe_serialization=True)
-        base_tokenizer = AutoTokenizer.from_pretrained(
-            run_cfg.tokenizer or run_cfg.model
-        )
-        base_tokenizer.save_pretrained(base_dir)
+            state = full_state_dict(model)
+        if global_rank == 0:
+            # For the leave-k-out family the trained model is the query baseline
+            # that evaluate_retrained reads from retrained/base.
+            if isinstance(run_cfg, ValidationConfig):
+                base_dir = os.path.join(run_cfg.run_path, "retrained", "base")
+            else:
+                base_dir = os.path.join(run_cfg.run_path, "model")
+            os.makedirs(base_dir, exist_ok=True)
+            model.save_pretrained(base_dir, state_dict=state, safe_serialization=True)
+            base_tokenizer = AutoTokenizer.from_pretrained(
+                run_cfg.tokenizer or run_cfg.model
+            )
+            base_tokenizer.save_pretrained(base_dir)
+        del state
 
     # If no query dataset is provided, skip backward and validation entirely
     if query_dataset is None:

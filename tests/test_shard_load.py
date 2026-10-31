@@ -1,7 +1,13 @@
 import torch
 from safetensors.torch import save_file
+from transformers import GPTNeoXConfig, GPTNeoXForCausalLM
 
-from bergson.magic.shard_load import ShardReader, chunk_bounds, lora_init
+from bergson.magic.shard_load import (
+    ShardReader,
+    chunk_bounds,
+    lora_init,
+    materialize_buffers,
+)
 
 
 def test_chunk_bounds_matches_torch_chunk():
@@ -44,3 +50,15 @@ def test_slices_reconstruct_the_checkpoint(tmp_path):
             assert torch.equal(torch.cat(pieces), truth[key])
         for reader in readers:
             reader.close()
+
+
+def test_buffers_rebuilt_from_meta():
+    config = GPTNeoXConfig(
+        hidden_size=32, num_attention_heads=4, num_hidden_layers=1, vocab_size=64
+    )
+    with torch.device("meta"):
+        model = GPTNeoXForCausalLM(config)
+    materialize_buffers(model, config, "cpu")
+    truth = dict(GPTNeoXForCausalLM(config).named_buffers())
+    for name, buf in model.named_buffers():
+        assert torch.equal(buf, truth[name])

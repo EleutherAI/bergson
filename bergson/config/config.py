@@ -52,8 +52,13 @@ class DataConfig(Serializable):
     When specified, gradients are calculated using the policy
     gradient loss from Dr. GRPO. https://arxiv.org/abs/2503.20783"""
 
+    advantage_column: str = ""
+    """Optional column in the dataset that contains per-example advantages, e.g.
+    those logged by a GRPO trainer. When specified, gradients are calculated using
+    the Dr. GRPO policy gradient loss."""
+
     skip_nan_rewards: bool = False
-    """Whether to skip examples with NaN rewards."""
+    """Whether to skip examples with NaN rewards or advantages."""
 
     truncation: bool = False
     """Whether to truncate long documents to fit the token budget."""
@@ -72,13 +77,27 @@ class DataConfig(Serializable):
     """When positive, concatenate and chunk the documents into fixed-length token
     sequences of this length. Incompatible with truncation and format_template."""
 
+    span_column: str | None = None
+    """Optional column containing a list of span start positions for each document
+    in a pre-tokenized dataset. When present continuous spans of tokens are attributed
+    instead of documents. Start positions must be increasing and begin
+    at 0. Incompatible with ``chunk_length``."""
+
     def __post_init__(self):
+        if self.reward_column and self.advantage_column:
+            raise ValueError(
+                "reward_column and advantage_column cannot both be specified"
+            )
         if self.chunk_length > 0:
             if self.truncation:
                 raise ValueError("chunk_length and truncation cannot both be True")
             if self.format_template:
                 raise ValueError(
                     "chunk_length and format_template cannot both be specified"
+                )
+            if self.span_column:
+                raise ValueError(
+                    "chunk_length and span_column cannot both be specified"
                 )
 
 
@@ -706,6 +725,14 @@ class IndexConfig(AttributionConfig, Serializable):
     modules: list[str] = field(default_factory=list)
     """Modules to use for the query. If empty, all modules will be used."""
 
+    def __post_init__(self):
+        super().__post_init__()
+        if self.attribute_tokens and self.data.span_column:
+            raise ValueError(
+                "attribute_tokens and data.span_column both set a gradient row's "
+                "unit; pick per-token or per-span attribution."
+            )
+
     @property
     def partial_run_path(self) -> Path:
         """Temporary path to use while writing build artifacts."""
@@ -885,15 +912,16 @@ class ScoreConfig(Serializable):
     capability (e.g. in influence functions). False for unrolled
     differentiation."""
 
-    token_influence: Literal["gradient", "output"] = "gradient"
-    """What each row scores with ``attribute_tokens``. ``gradient`` scores row
-    ``t`` by the per-token gradient at position ``t``, which is position ``t``'s
-    effect on the loss of every later token. ``output`` scores row ``t`` by the
-    loss on token ``t + 1`` alone, the output token influence of Grosse et al.
-    (2023). Both kinds of row sum to the per-example score, so without
-    ``attribute_tokens``, ``output`` only changes how that score is computed.
-    ``output`` costs one forward-mode pass per query column, so aggregate the
-    query when you can, and needs an unprojected query and dot-product scoring."""
+    token_influence: Literal["gradient", "output"] = "output"
+    """What each row scores with ``attribute_tokens``. ``output`` scores row
+    ``t`` by the loss on token ``t + 1`` alone, the output token influence of
+    Grosse et al. (2023). ``gradient`` scores row ``t`` by the per-token
+    gradient at position ``t``, which is position ``t``'s effect on the loss of
+    every later token. Both kinds of row sum to the per-example score, so
+    without ``attribute_tokens`` or ``data.span_column`` the setting has no
+    effect and the gradient path scores each example. ``output`` costs one
+    forward-mode pass per query column, so aggregate the query when you can,
+    and needs an unprojected query and dot-product scoring."""
 
     candidates: CandidateConfig = field(default_factory=CandidateConfig)
     """Score only the rows an earlier run ranked highest. The store then has one
@@ -991,6 +1019,11 @@ class AstraConfig(Serializable):
     num_steps: int = 0
     """Steps per query; 0 scores the factored solution unchanged."""
 
+    solver: Literal["sgd", "cg"] = "sgd"
+    """``sgd`` is ASTRA's momentum SGD. ``cg`` runs preconditioned conjugate
+    gradients on one batch of ``batch_size`` documents and ignores ``lr``,
+    ``momentum`` and the decay."""
+
     loss_reduction: Literal["mean", "sum"] | None = None
     """Overrides ``index_cfg.loss_reduction`` in the Hessian-vector products.
     Used to replicate ASTRA; its theoretical interpretation is unclear."""
@@ -1013,6 +1046,47 @@ class AstraConfig(Serializable):
 
     seed: int = 0
     """Seeds the training batches, which are drawn separately for each query."""
+
+
+@dataclass
+class LissaConfig(Serializable):
+    """Estimate each query's ``(G + damping I)^-1 q`` with LiSSA
+    (https://arxiv.org/abs/1602.03943), the estimator of Bae et al.
+    (https://arxiv.org/abs/2209.05364).
+
+    The estimate is the truncated series ``sum_t (I - (G + damping I) / scale)^t q
+    / scale``, averaged over ``repeats`` runs, where ``G`` is the Gauss-Newton
+    Hessian of the training loss estimated on a random batch of training
+    documents per term."""
+
+    query: QuerySetConfig = field(default_factory=QuerySetConfig)
+    """Query dataset and aggregation. ``none`` produces one score column
+    per query."""
+
+    damping: float = 0.01
+    """Added to every eigenvalue of ``G``."""
+
+    scale: float = 100.0
+    """Divides the damped Hessian. The series converges only when ``scale``
+    exceeds half the largest eigenvalue of the damped Hessian."""
+
+    depth: int = 5000
+    """Terms of the series."""
+
+    repeats: int = 5
+    """Independent estimates averaged per query."""
+
+    batch_size: int = 16
+    """Training documents per Hessian-vector product."""
+
+    micro_batch_size: int = 16
+    """Documents per forward pass within a batch; lower it to save memory."""
+
+    seed: int = 0
+    """Seeds the training batches, which are drawn separately for each query."""
+
+    resume: bool = False
+    """Skip pipeline steps whose output directory already exists."""
 
 
 @dataclass

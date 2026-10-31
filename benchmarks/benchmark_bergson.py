@@ -12,6 +12,7 @@ from typing import Optional
 import torch
 from datasets import Dataset
 from simple_parsing import ArgumentParser, ConflictResolution, field
+from transformers import AutoTokenizer
 
 from benchmarks.benchmark_utils import (
     MODEL_SPECS,
@@ -31,6 +32,7 @@ from bergson.score.score_writer import InMemorySequenceScoreWriter
 from bergson.score.scorer import Scorer
 from bergson.utils.batch_size import determine_batch_size
 from bergson.utils.worker_utils import (
+    max_tokens_for_model,
     setup_data_pipeline,
     setup_model_and_peft,
 )
@@ -161,18 +163,22 @@ def get_token_batch_size(model, index_cfg, eval_ds, projection_dim=16):
     """
     proj_dim = projection_dim if projection_dim > 0 else None
 
-    optimal_token_batch_size = determine_batch_size(
-        root=Path(".cache"),
+    tokenizer = AutoTokenizer.from_pretrained(index_cfg.tokenizer or index_cfg.model)
+    max_len = max_tokens_for_model(tokenizer, index_cfg.model, index_cfg.revision)
+    collector = InMemoryCollector(
+        model=model.base_model,  # type: ignore
+        processor=GradientProcessor(projection_dim=proj_dim),
+        data=eval_ds,
         cfg=index_cfg,
-        model=model,
-        collector=InMemoryCollector(
-            model=model.base_model,  # type: ignore
-            processor=GradientProcessor(projection_dim=proj_dim),
-            data=eval_ds,
-            cfg=index_cfg,
-        ),
     )
-    return optimal_token_batch_size
+    return determine_batch_size(
+        index_cfg,
+        model,
+        eval_ds,
+        collector,  # type: ignore[arg-type]
+        [int(n) for n in eval_ds["length"][:]],
+        max_len,
+    )
 
 
 @dataclass
@@ -239,8 +245,8 @@ class Run:
             token_batch_size=self.run_cfg.max_length,
             max_tokens=train_tokens,
             precision=precision,
-            skip_hessians=self.run_cfg.skip_hessians,
         )
+        index_cfg.partial_run_path.mkdir(parents=True, exist_ok=True)
 
         model, _ = setup_model_and_peft(index_cfg, device_map_auto=True)
 
@@ -284,6 +290,7 @@ class Run:
                 processor=GradientProcessor(projection_dim=proj_dim),
                 data=eval_ds,
                 cfg=index_cfg,
+                skip_hessians=self.run_cfg.skip_hessians,
             )
             query_batches = allocate_batches(
                 eval_ds["length"][:], optimal_token_batch_size
@@ -321,6 +328,7 @@ class Run:
                 data=ds,
                 cfg=index_cfg,
                 scorer=scorer,
+                skip_hessians=self.run_cfg.skip_hessians,
             )
             score_computer = CollectorComputer(
                 model=model,

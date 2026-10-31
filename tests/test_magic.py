@@ -15,7 +15,7 @@ from bergson.magic.grad_accum import accumulate_grads
 from bergson.utils.math import weighted_causal_lm_ce
 
 MODEL_CONFIGS = [
-    "trl-internal-testing/tiny-Phi3ForCausalLM",
+    "trl-internal-testing/tiny-Phi3ForCausalLM-3",
     "EleutherAI/pythia-14m",
 ]
 
@@ -455,7 +455,7 @@ def test_magic_packed_cli_aggregation_with_shuffle(model_name):
     torch.testing.assert_close(agg, per_doc.to(torch.float64), atol=1e-5, rtol=1e-4)
 
 
-TINY_MODEL = "trl-internal-testing/tiny-Phi3ForCausalLM"
+TINY_MODEL = "trl-internal-testing/tiny-Phi3ForCausalLM-3"
 
 
 def _multi_step_stream(n_steps: int, device: str = "cpu") -> DataStream:

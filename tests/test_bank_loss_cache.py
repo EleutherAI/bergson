@@ -21,7 +21,7 @@ from bergson.magic.config import MagicConfig
 from bergson.score.score_writer import save_sequence_scores
 from bergson.validate import bank_loss_cache_key, evaluate_retrained
 
-MODEL = "trl-internal-testing/tiny-Phi3ForCausalLM"
+MODEL = "trl-internal-testing/tiny-Phi3ForCausalLM-3"
 
 # Bank drops these train doc ids per subset; scores must cover the max id.
 SUBSETS = [[0, 1], [2, 3], [4]]
