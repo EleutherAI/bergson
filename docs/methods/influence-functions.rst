@@ -68,7 +68,7 @@ To perform reranking for a query, add a second step to the bergson YAML with the
              top_k: 1000
          ...
 
-The candidates are the union over the earlier run's query columns of each column's ``top_k`` rows (or ``fraction``) at the ``direction`` end. ``scores`` may also be the CSV written by ``bergson query --record``, whose ``Top`` (or ``Bottom``) rows per query are the candidates, the first ``top_k`` of each when set. The Hessian is still fitted on the whole training set. The store has one row per candidate in training order; ``candidates.npy`` beside it holds their training rows, which ``load_scores`` returns as ``candidates``.
+The candidates are the union over the earlier run's query columns of each column's ``top_k`` rows (or ``fraction``) at the ``direction`` end. ``scores`` may also be the CSV written by ``bergson query --record``, whose ``Top`` (or ``Bottom``) rows per query are the candidates, the first ``top_k`` of each when set. The Hessian is still fitted on the whole training set. The store has one row per candidate in training order; ``candidates.npy`` beside it holds their training rows, which ``load_scores`` returns as ``candidates``. With ``data.span_column``, each candidate gets its block of span rows.
 
 See ``examples/pretraining_scale_attribution/query_and_rerank.yaml``.
 
@@ -83,6 +83,32 @@ With ``attribute_tokens``, ``score_cfg.token_influence`` on ``score`` or ``influ
 The paper estimates output token influence by moving the weights a small step along the query and comparing each token's loss before and after. Bergson computes the rate of change exactly instead, with one forward-mode pass (a Jacobian-vector product) per query column that covers every token in the batch, so aggregate the query when you can. Without ``attribute_tokens``, ``output`` gives the same per-example scores as ``gradient`` by a different computation.
 
 ``output`` needs an unprojected query (``projection_dim: 0``) and dot-product scoring, and doesn't support ``loss_fn: kl``, ``optimizer_state``, ``split_attention_modules``, quantized models, FSDP, or fused MoE experts. The fused attention kernels don't implement forward-mode derivatives, so the model is loaded with eager attention. The run saves ``data.hf`` with each example's loss, as the gradient path does, but not ``total_processed.pt``, which only Hessian fitting reads.
+
+Span attribution
+----------------
+
+A midpoint between attributing tokens and attributing documents is attributing contiguous spans of tokens within documents.
+
+Attribute spans by pre-tokenizing your dataset, defining your desired spans over each row in a dataset column, and passing the name of the column to Bergson with ``data.span_column``. This column must hold each document's span start positions, which could mark a sentence, a paragraph or a fixed-width window. The starts must be increasing and begin at 0, so the spans partition the document:
+
+.. code-block:: yaml
+
+   steps:
+     - score:
+         index_cfg:
+           data:
+             dataset: my_pretokenized_dataset
+             span_column: span_starts     # e.g. [0, 46, 91, ...] per document
+         score_cfg:
+           query_path: runs/ekfac/kfac_query
+
+The column must be generated outside Bergson. You can generate fixed windows with a ``map``:
+
+.. code-block:: python
+
+   ds = ds.map(lambda row: {"span_starts": list(range(0, len(row["input_ids"]), 64))})
+
+The cost of span attribution is the same as token attribution when ``score_cfg.token_influence`` is ``output``, and between per-token and per-document attribution when ``score_cfg.token_influence`` is ``gradient``. Unevenly chunked spans cost a little more than even ones because each batch of spans is padded. A span's attribution score is the sum of its per-token scores.
 
 Compress Gradients
 ------------------

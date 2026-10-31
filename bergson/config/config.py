@@ -77,6 +77,12 @@ class DataConfig(Serializable):
     """When positive, concatenate and chunk the documents into fixed-length token
     sequences of this length. Incompatible with truncation and format_template."""
 
+    span_column: str | None = None
+    """Optional column containing a list of span start positions for each document
+    in a pre-tokenized dataset. When present continuous spans of tokens are attributed
+    instead of documents. Start positions must be increasing and begin
+    at 0. Incompatible with ``chunk_length``."""
+
     def __post_init__(self):
         if self.reward_column and self.advantage_column:
             raise ValueError(
@@ -88,6 +94,10 @@ class DataConfig(Serializable):
             if self.format_template:
                 raise ValueError(
                     "chunk_length and format_template cannot both be specified"
+                )
+            if self.span_column:
+                raise ValueError(
+                    "chunk_length and span_column cannot both be specified"
                 )
 
 
@@ -714,6 +724,14 @@ class IndexConfig(AttributionConfig, Serializable):
 
     modules: list[str] = field(default_factory=list)
     """Modules to use for the query. If empty, all modules will be used."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        if self.attribute_tokens and self.data.span_column:
+            raise ValueError(
+                "attribute_tokens and data.span_column both set a gradient row's "
+                "unit; pick per-token or per-span attribution."
+            )
 
     @property
     def partial_run_path(self) -> Path:
