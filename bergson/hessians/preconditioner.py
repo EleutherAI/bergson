@@ -167,6 +167,7 @@ class FactoredPreconditioner:
         factor_eig_a: dict[str, Tensor] | None = None,
         factor_eig_g: dict[str, Tensor] | None = None,
         sharded: bool = True,
+        compute_device: str | torch.device | None = None,
     ):
         if inversion_cfg is not None and apply_fn is not None:
             raise ValueError("Pass either inversion_cfg or apply_fn, not both.")
@@ -180,6 +181,8 @@ class FactoredPreconditioner:
         self.apply_fn = apply_fn
         self.power = power
         self.shard_computer = ShardedMul(sharded=sharded)
+        # Where apply() works, when the factors are held on another device.
+        self.compute_device = compute_device
         # Per-step debug logs are off by default; consumer code may raise this
         # logger to DEBUG to surface the apply's progress trace.
         self.logger = get_logger("FactoredPreconditioner")
@@ -194,9 +197,11 @@ class FactoredPreconditioner:
         power: float = -1.0,
         ev_correction: bool = False,
         device: str | torch.device = "cpu",
+        compute_device: str | torch.device | None = None,
     ) -> "FactoredPreconditioner":
         """Load the full factors (concatenating any shards); each rank applies
-        them locally."""
+        them locally. ``compute_device`` applies them there one module at a time,
+        so that only one module's factors leave ``device``."""
 
         def load(sub):
             return _load_full(hessian_path, sub, device)
@@ -209,7 +214,7 @@ class FactoredPreconditioner:
             # So load a single shard rather than concatenating across shards.
             return _load_shard(hessian_path, sub, 0, device)
 
-        return cls._from_loaded(
+        preconditioner = cls._from_loaded(
             load,
             load_replicated,
             inversion_cfg,
@@ -218,6 +223,8 @@ class FactoredPreconditioner:
             ev_correction,
             sharded=False,
         )
+        preconditioner.compute_device = compute_device
+        return preconditioner
 
     @classmethod
     def from_shards(
@@ -292,7 +299,7 @@ class FactoredPreconditioner:
         distributed). The inverse eigenvalues are computed from this rank's shard
         plus the globally-reduced means, then applied across shards in-place.
         """
-        lam = self.lambdas[name]
+        lam = self.lambdas[name].to(g.device)
         o, i = g.shape[1], lam.shape[1]
         if self.apply_fn is not None:
             inverse_eigvals = self.apply_fn(lam)
@@ -340,10 +347,11 @@ class FactoredPreconditioner:
                 out[name] = flat
                 continue
 
-            q_a = self.eigen_a[name]
-            q_g = self.eigen_g[name]
+            device = self.compute_device or self.eigen_a[name].device
+            q_a = self.eigen_a[name].to(device)
+            q_g = self.eigen_g[name].to(device)
             o, i = q_g.shape[1], q_a.shape[1]
-            g = flat.to(q_a.device, torch.float32).view(-1, o, i)
+            g = flat.to(device, torch.float32).view(-1, o, i)
 
             # Forward rotation: G' = Q_G^T @ G @ Q_A
             g = self.shard_computer._matmul(vector_nsa=g, matrix_cb=q_a)

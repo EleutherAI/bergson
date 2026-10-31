@@ -193,3 +193,37 @@ def test_astra_under_fsdp_matches_unsharded(two_gpu_kfac_run, solver):
     # The ranks sum the documents in another order, which moves a product
     # about as much as changing its micro-batch size does
     assert (solutions[True] - solutions[False]).norm() < 1e-2 * moved
+
+
+@requires_multi_gpu
+@pytest.mark.parametrize("solver", ["sgd", "cg"])
+@pytest.mark.parametrize("fsdp", [False, True])
+def test_astra_factors_on_cpu_matches_gpu_factors(two_gpu_kfac_run, solver, fsdp):
+    """Holding the factors in CPU memory doesn't change the solutions."""
+    index_cfg, hessian_cfg = two_gpu_kfac_run
+    run = index_cfg.run_path
+    solutions = {}
+    for on_cpu in (False, True):
+        out = f"{run}/astra_on_cpu_{solver}_{fsdp}_{on_cpu}"
+        _run_astra(
+            replace(index_cfg, fsdp=fsdp),
+            hessian_cfg,
+            HessianPipelineConfig(
+                astra=AstraConfig(
+                    num_steps=4,
+                    solver=solver,
+                    batch_size=5,
+                    lr=1e-4,
+                    factors_on_cpu=on_cpu,
+                ),
+            ),
+            f"{run}/query",
+            f"{run}/kfac_query",
+            out,
+        )
+        solutions[on_cpu] = torch.from_numpy(load_gradients(out).astype("float32"))
+
+    init = torch.from_numpy(load_gradients(f"{run}/kfac_query").astype("float32"))
+    moved = (solutions[False] - init).norm()
+    assert moved > 0
+    assert (solutions[True] - solutions[False]).norm() < 1e-5 * moved

@@ -44,6 +44,8 @@ Setting ``astra.solver: cg`` enables an alternative to the canonical ASTRA imple
 
 The ASTRA solver learning rate should be tuned to minimize solver error. If you use multiple solver seeds, use the seed with the lowest final objective.
 
+Setting ``astra.factors_on_cpu: true`` holds the Kronecker factors in CPU memory and preconditions one module at a time, for models where the factors and the model don't fit on one GPU together.
+
 See ``examples/replications/bae_approx_unrolling_source_replication/wikitext_gpt2_astra.yaml`` and ``examples/gpt2_wikitext_leaderboard/ekfac_astra_cg.yaml``.
 
 Rerank Candidates
