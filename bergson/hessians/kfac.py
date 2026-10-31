@@ -56,7 +56,8 @@ class CovarianceCollector(HookCollectorBase):
         self.S_cov_dict = {}
         self.num_positions: dict[str, int] = dict.fromkeys(self.target_info, 0)
         self.shard_computer = ShardedMul()
-        self.A_shapes, self.S_shapes = {}, {}
+        self.A_shapes: dict[str, tuple[int, ...]] = {}
+        self.S_shapes: dict[str, tuple[int, ...]] = {}
         for name, (_, (out_dim, in_dim), collect_bias) in self.target_info.items():
             self.A_shapes[name] = (in_dim + collect_bias,) * 2
             self.S_shapes[name] = (out_dim, out_dim)
