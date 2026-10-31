@@ -62,6 +62,7 @@ from .fsdp import full_state_dict
 from .grad_accum import accumulate_grads
 from .score_plot import plot_score_trajectory
 from .trainer import BackwardState, TrainerState, prepare_trainer, write_lr_history
+from .unroll import unroll_scores, unrolled_names
 
 
 def compute_query_gradients(
@@ -319,6 +320,114 @@ def compute_per_query_magic_scores(
     del restored
 
     return torch.stack(per_query, dim=-1)
+
+
+def unroll_kwargs(run_cfg: "MagicConfig", schedule) -> dict:
+    """Keyword arguments of :func:`unroll_scores` for ``run_cfg``."""
+    return dict(
+        lr=schedule,
+        betas=(run_cfg.adam_beta1, run_cfg.adam_beta2),
+        eps=run_cfg.adam_eps,
+        eps_root=run_cfg.eps_root,
+        weight_decay=run_cfg.weight_decay,
+        grad_accum_steps=run_cfg.grad_accum_steps,
+        micro_batch_size=run_cfg.gauss_newton.micro_batch_size,
+        tf32=run_cfg.gauss_newton.tf32,
+        bf16=run_cfg.gauss_newton.bf16,
+        debug=run_cfg.debug,
+    )
+
+
+def compute_per_query_unrolled_scores(
+    trainer,
+    ckpts_path: str,
+    stream: DataStream,
+    fwd_state: TrainerState,
+    model: torch.nn.Module,
+    query_dataset: Dataset,
+    num_query_docs: int,
+    run_cfg: "MagicConfig",
+    world_size: int,
+    global_rank: int,
+    padding: Padding,
+    schedule,
+) -> torch.Tensor:
+    """Per-query unrolled Gauss-Newton scores.
+
+    Each rank scores ``gauss_newton.query_batch_size`` of its queries per pass and
+    writes them to ``<run_path>/per_query/q{i}.pt``.
+    """
+    device = stream.weights.device
+    scores_dir = os.path.join(run_cfg.run_path, "per_query")
+    if global_rank == 0:
+        os.makedirs(scores_dir, exist_ok=True)
+    if world_size > 1:
+        dist.barrier()
+
+    def query_path(qi: int) -> str:
+        return os.path.join(scores_dir, f"q{qi}.pt")
+
+    names = unrolled_names(model, fwd_state.params)
+    mine = list(range(global_rank, num_query_docs, world_size))
+    size = run_cfg.gauss_newton.query_batch_size
+    passes = -(-max(1, -(-num_query_docs // world_size)) // size)
+    for p in range(passes):
+        group = mine[p * size : (p + 1) * size]
+        todo = [qi for qi in group if not os.path.exists(query_path(qi))]
+        done = torch.tensor([len(todo) == 0], device=device)
+        if world_size > 1:
+            dist.all_reduce(done, op=dist.ReduceOp.MIN)
+        if bool(done.item()):  # resume: every rank has this pass on disk
+            continue
+
+        queries = []
+        for qi in range(num_query_docs):
+            # Gradients are a collective; every rank takes part, then keeps its own.
+            if (qi // world_size) // size != p:
+                continue
+            one = query_dataset.select([qi])
+            if "doc_ids" in one.column_names:
+                one = one.remove_columns("doc_ids")
+            one, n_one, one_padding = pad_dataset_to_batch_size(
+                one, world_size, 1, f"Query {qi}", global_rank
+            )
+            qstream = DataStream(
+                one,
+                world_size,
+                device=device,
+                input_key=run_cfg.query.prompt_column,
+                weight_shape=(n_one,),
+            )
+            one_padding.zero_weights(qstream.weights.data)
+            qgrads, _ = compute_query_gradients(
+                fwd_state, model, qstream, "mean", False, run_cfg.grad_accum_steps
+            )
+            fwd_state.detach_()
+            if qi in group:
+                queries.append({k: qgrads[k] for k in names})
+            del qgrads
+
+        scores = unroll_scores(
+            trainer,
+            ckpts_path,
+            stream,
+            fwd_state,
+            queries,
+            **unroll_kwargs(run_cfg, schedule),
+        )
+        del queries
+        for j, qi in enumerate(group):
+            s = padding.trim(scores[..., j].cpu())
+            torch.save(s, query_path(qi) + ".tmp")
+            os.replace(query_path(qi) + ".tmp", query_path(qi))
+        if world_size > 1:
+            dist.barrier()
+        if global_rank == 0:
+            print(f"[unroll] pass {p + 1}/{passes} scored")
+
+    return torch.stack(
+        [torch.load(query_path(qi)) for qi in range(num_query_docs)], dim=-1
+    )
 
 
 def scores_are_per_token(score_path: str) -> bool:
@@ -646,7 +755,7 @@ def worker(
             raise RuntimeError("run_cfg must be a MagicConfig to compute scores")
         assert query_dataset is not None
 
-        scores = compute_per_query_magic_scores(
+        args = (
             trainer,
             ckpts_path,
             stream,
@@ -659,6 +768,10 @@ def worker(
             global_rank,
             padding,
         )
+        if run_cfg.curvature == "gauss_newton":
+            scores = compute_per_query_unrolled_scores(*args, schedule)
+        else:
+            scores = compute_per_query_magic_scores(*args)
         multi_query = True
         if global_rank == 0:
             print(f"Baseline loss: {baseline}")
@@ -675,7 +788,7 @@ def worker(
         # Sanity check
         if not isinstance(run_cfg, MagicConfig):
             raise RuntimeError("run_cfg must be a MagicConfig to compute scores")
-        if run_cfg.save_mode == "interval":
+        if run_cfg.save_mode == "interval" and run_cfg.curvature == "exact":
             raise ValueError("save_mode='interval' not supported for MAGIC attribution")
 
         stream.requires_grad = True
@@ -690,26 +803,43 @@ def worker(
             torch.zeros_like(stream.weights),
         )
 
-        bwd_state = trainer.backward(
-            ckpts_path,
-            stream,
-            bwd_state,
-            fwd_state,
-            cleanup=run_cfg.cleanup_ckpts,
-            debug=run_cfg.debug,
-            inplace=True,
-            fsdp=run_cfg.fsdp,
-            resume=run_cfg.resume,
-            save_every=run_cfg.backward_save_every,
-            save_mode=run_cfg.save_mode,
-            max_grad_norm=run_cfg.max_grad_norm,
-            grad_accum_steps=run_cfg.grad_accum_steps,
-            double_backward_batch_size=run_cfg.double_backward_batch_size,
-        )
-        if world_size > 1:
-            dist.all_reduce(bwd_state.weight_grads, op=dist.ReduceOp.SUM)
+        if run_cfg.curvature == "gauss_newton":
+            # Rank 0 scores the query.
+            unrolled = unroll_scores(
+                trainer,
+                ckpts_path,
+                stream,
+                fwd_state,
+                [query_grads] if global_rank == 0 else [],
+                **unroll_kwargs(run_cfg, schedule),
+            )
+            weight_grads = torch.empty_like(stream.weights)
+            if global_rank == 0:
+                weight_grads.copy_(unrolled[..., 0])
+            if world_size > 1:
+                dist.broadcast(weight_grads, src=0)
+        else:
+            bwd_state = trainer.backward(
+                ckpts_path,
+                stream,
+                bwd_state,
+                fwd_state,
+                cleanup=run_cfg.cleanup_ckpts,
+                debug=run_cfg.debug,
+                inplace=True,
+                fsdp=run_cfg.fsdp,
+                resume=run_cfg.resume,
+                save_every=run_cfg.backward_save_every,
+                save_mode=run_cfg.save_mode,
+                max_grad_norm=run_cfg.max_grad_norm,
+                grad_accum_steps=run_cfg.grad_accum_steps,
+                double_backward_batch_size=run_cfg.double_backward_batch_size,
+            )
+            if world_size > 1:
+                dist.all_reduce(bwd_state.weight_grads, op=dist.ReduceOp.SUM)
+            weight_grads = bwd_state.weight_grads
 
-        scores = padding.trim(bwd_state.weight_grads.cpu())
+        scores = padding.trim(weight_grads.cpu())
 
         if global_rank == 0:
             print(f"Baseline loss: {baseline}")

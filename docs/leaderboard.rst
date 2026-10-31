@@ -15,6 +15,9 @@ Indicative performance of data attribution methods in the finetuning regime.
    * - MAGIC
      - 0.100 [0.090, 0.112]
      - 0.931 [0.925, 0.936]
+   * - Unrolled Gauss-Newton
+     - 0.084 [0.072, 0.096]
+     - 0.819 [0.806, 0.829]
    * - MAGIC (cross-seed)
      - 0.098 [0.087, 0.110]
      - 0.829 [0.815, 0.840]
@@ -185,6 +188,9 @@ MAGIC
 
 EKFAC
    A classic influence function in the form ``g_t H^{-1} g_q`` using the EKFAC Hessian approximation for H. The H can be swapped out for other matrices including KFAC, Shampoo, and MAC.
+
+Unrolled Gauss-Newton
+   This method backpropagates through the AdamW training run on the weights of the linear layers, with each step's loss Hessian replaced by its Gauss-Newton matrix. Unlike MAGIC it supports query batching.
 
 ASTRA
    ASTRA refines a Kronecker-factored inverse Hessian vector product such as EKFAC's, so it adds a constant amount of compute to each query on top of EKFAC's. Our mainline ASTRA result uses a learning rate tuned via a small grid search against the ASTRA objective, and identically scaled EKFAC and Gauss-Newton Hessians. We also include a reference result matching the implementation in the original paper, which uses a Gauss-Newton Hessian 1/511th the scale of the EKFAC Hessian. Results on this benchmark could likely be improved with careful per-query learning rate tuning - we recommend always tuning ASTRA's learning rate.

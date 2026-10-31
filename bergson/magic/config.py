@@ -1,6 +1,26 @@
 from dataclasses import dataclass
+from typing import Literal
+
+from simple_parsing import Serializable, field
 
 from ..config.config import ValidationConfig
+
+
+@dataclass
+class GaussNewtonConfig(Serializable):
+    """Settings for ``curvature: gauss_newton``."""
+
+    query_batch_size: int = 8
+    """Number of queries each rank scores per pass back through the run."""
+
+    micro_batch_size: int = 4
+    """Batch size when computing Gauss-Newton products on each rank."""
+
+    tf32: bool = True
+    """Whether to use TF32 matmuls in the Gauss-Newton products."""
+
+    bf16: bool = False
+    """Whether to autocast the Gauss-Newton products to bf16."""
 
 
 @dataclass
@@ -12,6 +32,15 @@ class MagicConfig(ValidationConfig):
 
     cleanup_ckpts: bool = True
     """Whether to delete all but the last checkpoint during the backward pass."""
+
+    curvature: Literal["exact", "gauss_newton"] = "exact"
+    """Curvature of each training step in the backward pass. ``exact``
+    differentiates through the step (MAGIC). ``gauss_newton`` replaces the
+    step's loss Hessian with its Gauss-Newton matrix and backpropagates on the
+    weights of the linear layers only, replaying the AdamW run from its
+    checkpoints (unrolled Gauss-Newton)."""
+
+    gauss_newton: GaussNewtonConfig = field(default_factory=GaussNewtonConfig)
 
     attribute_tokens: bool = False
     """Whether to compute attribution scores per token (instead of per sequence);
@@ -33,6 +62,15 @@ class MagicConfig(ValidationConfig):
             )
         if self.per_token:
             self.attribute_tokens = True
+        if self.curvature == "gauss_newton":
+            if self.fsdp or self.optimizer != "adamw" or self.max_grad_norm:
+                raise ValueError(
+                    "curvature='gauss_newton' supports AdamW without fsdp or clipping."
+                )
+            if self.attribute_tokens:
+                raise ValueError(
+                    "curvature='gauss_newton' does not support attribute_tokens."
+                )
         if self.query.aggregation == "none" and self.query.contrast is not None:
             raise ValueError(
                 "query.contrast subtracts one aggregated query from another; "

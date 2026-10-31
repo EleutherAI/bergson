@@ -11,6 +11,7 @@ Every method scores the same 50 test chunks (`test[0:50]`). We report the QLD an
 | method | proponent QLD | 95% CI | LDS | 95% CI | median | min | max | queries p<.05 |
 |---|---|---|---|---|---|---|---|---|
 | MAGIC (per-query) | 0.100 | [0.090, 0.112] | 0.931 | [0.925, 0.936] | 0.933 | 0.804 | 0.970 | 50/50 |
+| Unrolled Gauss-Newton | 0.084 | [0.072, 0.096] | 0.819 | [0.806, 0.829] | 0.829 | 0.651 | 0.912 | 50/50 |
 | MAGIC (cross-seed) | 0.098 | [0.087, 0.110] | 0.829 | [0.815, 0.840] | 0.836 | 0.658 | 0.932 | 50/50 |
 | EKFAC + CG | 0.077 | [0.066, 0.089] | 0.685 | [0.664, 0.702] | 0.699 | 0.457 | 0.805 | 50/50 |
 | EKFAC + ASTRA | 0.076 | [0.064, 0.089] | 0.605 | [0.581, 0.625] | 0.614 | 0.201 | 0.811 | 50/50 |
@@ -42,6 +43,8 @@ Every method scores the same 50 test chunks (`test[0:50]`). We report the QLD an
 | Activation similarity | 0.049 | [0.037, 0.063] | 0.110 | [0.070, 0.149] | 0.106 | -0.137 | 0.361 | 11/50 |
 
 ## Notes on the Methods
+
+Unrolled Gauss-Newton is `unrolled_gauss_newton.yaml`, which replays the `1_magic.yaml` run from its checkpoints with `curvature: gauss_newton`.
 
 MAGIC (cross-seed) applies the seed-42 MAGIC scores to retrains with seed 43 (different data order and dropout): its LDS uses the same 100 subsets retrained at seed 43 and its QLD retrains the proponent filters at seed 43.
 
@@ -91,6 +94,9 @@ bergson examples/gpt2_wikitext_leaderboard/trak.yaml                # scores the
 bergson examples/gpt2_wikitext_leaderboard/gradient_cosine.yaml # full and projected gradients
 bergson examples/gpt2_wikitext_leaderboard/gradient_dot.yaml    # unnormalized gradient dot products
 bergson examples/gpt2_wikitext_leaderboard/magic_seed43.yaml
+mkdir -p runs/compare_wikitext/unrolled_gauss_newton
+cp -r runs/compare_wikitext/random/checkpoints runs/compare_wikitext/random/optimizer.pt runs/compare_wikitext/unrolled_gauss_newton/
+bergson examples/gpt2_wikitext_leaderboard/unrolled_gauss_newton.yaml
 bergson examples/gpt2_wikitext_leaderboard/metasmoothness.yaml
 for b in bm25 semantic qwen3 sae activation; do   # writes baselines/${b}_scores/scores
   python -m examples.gpt2_wikitext_leaderboard.gradient_free_baselines.${b}_baseline --bank runs/compare_wikitext/random --query_split "test[0:50]" --out runs/compare_wikitext/baselines
@@ -98,7 +104,7 @@ done
 for p in 0 64; do   # writes baselines/activation_ekfac_scores and baselines/activation_ekfac_p64_scores
   python -m examples.gpt2_wikitext_leaderboard.gradient_free_baselines.activation_baseline --bank runs/compare_wikitext/random --query_split "test[0:50]" --out runs/compare_wikitext/baselines --hessian runs/compare_wikitext/ekfac/hessian/kfac --projection_dim $p
 done
-for f in magic magic_seed43 ekfac lissa ekfac_astra_cg ekfac_astra_exact_replication ekfac_astra kfac kfac_p64 shampoo trak_ens gradient_dot trackstar trackstar_adam source gradient_cosine bm25 semantic qwen3 sae activation activation_ekfac activation_ekfac_p64; do
+for f in magic magic_seed43 unrolled_gauss_newton ekfac lissa ekfac_astra_cg ekfac_astra_exact_replication ekfac_astra kfac kfac_p64 shampoo trak_ens gradient_dot trackstar trackstar_adam source gradient_cosine bm25 semantic qwen3 sae activation activation_ekfac activation_ekfac_p64; do
   bergson examples/gpt2_wikitext_leaderboard/filters/filter_$f.yaml
 done
 python examples/gpt2_wikitext_leaderboard/lds_from_bank.py --validation runs/compare_wikitext/random/validation.csv --out runs/compare_wikitext/lds_magic.json
@@ -106,7 +112,7 @@ python examples/gpt2_wikitext_leaderboard/lds_from_bank.py --validation runs/com
 for m in ekfac lissa ekfac_astra_cg ekfac_astra_exact_replication ekfac_astra kfac kfac_p64 shampoo trackstar_p16 trackstar_p32 trackstar_p64 trackstar_adam_p16 trackstar_adam_p32 trackstar_adam_p64 gradient_cosine gradient_cosine_projected gradient_dot; do python examples/gpt2_wikitext_leaderboard/lds_from_bank.py --sign grad --scores runs/compare_wikitext/$m/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_$m.json; done
 python examples/gpt2_wikitext_leaderboard/lds_from_bank.py --sign grad --scores runs/compare_wikitext/trak/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_trak_ens.json
 for b in bm25 semantic qwen3 sae activation activation_ekfac activation_ekfac_p64; do python examples/gpt2_wikitext_leaderboard/lds_from_bank.py --sign loss --scores runs/compare_wikitext/baselines/${b}_scores/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_$b.json; done
-for m in source source_adam; do python examples/gpt2_wikitext_leaderboard/lds_from_bank.py --sign loss --scores runs/compare_wikitext/$m/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_$m.json; done
+for m in unrolled_gauss_newton source source_adam; do python examples/gpt2_wikitext_leaderboard/lds_from_bank.py --sign loss --scores runs/compare_wikitext/$m/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_$m.json; done
 python examples/gpt2_wikitext_leaderboard/qld_from_filters.py runs/compare_wikitext runs/compare_wikitext/random
 python examples/gpt2_wikitext_leaderboard/lds_tables.py runs/compare_wikitext
 ```

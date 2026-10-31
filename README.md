@@ -30,6 +30,7 @@ Indicative performance of select data attribution methods in the finetuning regi
 | Method | QLD | LDS | Per-token QLD |
 |:---|:---:|:---:|:---:|
 | MAGIC | 0.100 [0.090, 0.112] | 0.931 [0.925, 0.936] | 1.375 [1.348, 1.403] |
+| Unrolled Gauss-Newton | 0.084 [0.072, 0.096] | 0.819 [0.806, 0.829] | – |
 | EKFAC + CG | 0.077 [0.066, 0.089] | 0.685 [0.664, 0.702] | 1.014 [0.986, 1.043] |
 | SOURCE (Adam, EKFAC) | 0.071 [0.060, 0.084] | 0.473 [0.446, 0.498] | 0.908 [0.877, 0.942] |
 | EKFAC | 0.070 [0.058, 0.082] | 0.454 [0.426, 0.479] | 0.863 [0.833, 0.894] |
