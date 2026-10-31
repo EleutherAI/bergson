@@ -217,7 +217,8 @@ def test_covariance_honors_the_collection_mask(tmp_path):
         assert bool(collected > 0) is keep
 
 
-def test_kfac_normalizes_experts_by_their_routed_positions(tmp_path):
+@pytest.mark.parametrize("method", ["kfac", "tkfac"])
+def test_kfac_normalizes_experts_by_their_routed_positions(tmp_path, method):
     """An expert's covariances sum only the positions routed to it, so they must
     be averaged over that count, not over every position in the dataset.
 
@@ -227,6 +228,8 @@ def test_kfac_normalizes_experts_by_their_routed_positions(tmp_path):
     sums to ``E[|a|²] E[|g|²]``. These agree up to the correlation of ``|a|`` and
     ``|g|``; averaging an expert's sums over every position instead scales its
     K-FAC trace by the fraction of positions routed to it, about 1/4 here.
+    TKFAC keeps the trace, so with one position per document its grid sums to
+    the exact trace.
     """
     device = get_device(0)
     torch.manual_seed(0)
@@ -248,7 +251,7 @@ def test_kfac_normalizes_experts_by_their_routed_positions(tmp_path):
         model,
         data,
         index_cfg,
-        HessianConfig(method="kfac", ev_correction=True, use_dataset_labels=True),
+        HessianConfig(method=method, ev_correction=True, use_dataset_labels=True),
         target_modules=None,
         attention_cfgs={},
         batches=[[i] for i in range(num_documents)],
@@ -265,7 +268,10 @@ def test_kfac_normalizes_experts_by_their_routed_positions(tmp_path):
     assert len(expert_names(kfac)) == NUM_LAYERS * NUM_EXPERTS * 2
     for name in kfac:
         if exact[name] > 0:
-            assert 0.7 < kfac[name] / exact[name] < 1.4, name
+            if method == "tkfac":
+                assert kfac[name] == pytest.approx(exact[name], rel=1e-3), name
+            else:
+                assert 0.7 < kfac[name] / exact[name] < 1.4, name
 
 
 def test_bad_patterns_raise():

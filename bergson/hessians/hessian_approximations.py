@@ -372,13 +372,16 @@ def fit_factored_hessians(
         )
         eigenvectors = (eigenvectors_a, eigenvectors_g)
     else:
+        num_positions = getattr(collector, "num_positions", None)
         eigenvalues_a = compute_eigendecomposition(
             os.path.join(path, "activation_sharded"),
             total_processed=total_processed,
+            num_positions=num_positions,
         )
         eigenvalues_g = compute_eigendecomposition(
             os.path.join(path, "gradient_sharded"),
             total_processed=total_processed,
+            num_positions=num_positions,
         )
 
     dist.barrier() if dist.is_initialized() else None

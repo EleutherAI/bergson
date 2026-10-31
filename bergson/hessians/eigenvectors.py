@@ -441,6 +441,7 @@ def eigendecompose_owned(
 def compute_eigendecomposition(
     covariance_path: str,
     total_processed: int | Tensor,
+    num_positions: dict[str, int] | None = None,
 ) -> dict[str, Tensor]:
     """
     Compute eigendecomposition from covariance matrices (Eq. 18 from paper).
@@ -453,6 +454,8 @@ def compute_eigendecomposition(
     Args:
         covariance_path: Full path to the covariance sharded directory.
         total_processed: Number of samples used to compute covariance.
+        num_positions: Positions each module's covariances summed, used in place
+            of ``total_processed`` when given, as in :func:`eigendecompose_owned`.
 
     Returns:
         Per-key eigenvalue shards (rows per shard_bounds) on CPU. The
@@ -499,7 +502,8 @@ def compute_eigendecomposition(
             world_size=world_size,
         )
 
-        eigenvalues, eigenvectors = _eigh(key, matrix, total_processed, original_dtype)
+        count = _module_count(key, total_processed, num_positions)
+        eigenvalues, eigenvectors = _eigh(key, matrix, count, original_dtype)
         del matrix
         covariance_eigenvectors[key] = eigenvectors.cpu()
         covariance_eigenvalues[key] = eigenvalues.cpu()
