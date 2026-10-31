@@ -60,9 +60,11 @@ def span_gather(
     device: torch.device | str = "cpu",
     shift: int = 0,
 ) -> tuple[Tensor, Tensor]:
-    """``(index, valid)``, both ``[num_spans, longest_span]``, gathering each
-    span's rows out of a batch padded to ``seq_len`` and flattened over its
-    first two dimensions. ``valid`` is False where a span is padded out to the
+    """Returns the tuple ``(index, valid)``, both with shape
+    ``[num_spans, longest_span]``, for gathering each span's token
+    scores and gradients into span scores/gradients.
+
+    ``valid`` is False where a span is padded out to the
     longest one, so a batch of uneven spans gathers more rows than it has
     positions -- by the ratio of the longest span to the mean one.
     """

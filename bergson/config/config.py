@@ -78,13 +78,10 @@ class DataConfig(Serializable):
     sequences of this length. Incompatible with truncation and format_template."""
 
     span_column: str | None = None
-    """Column holding each document's span start positions, which switches
-    attribution from whole documents to spans: contiguous runs of token
-    positions, one gradient row each. The starts must be increasing and begin
-    at 0, so the spans partition the document; fixed-length windows are
-    ``range(0, length, width)``. Needs a pre-tokenized dataset, since the
-    positions index ``input_ids``. Incompatible with ``chunk_length``, which
-    re-cuts the documents the positions refer to."""
+    """Optional column containing a list of span start positions for each document
+    in a pre-tokenized dataset. When present continuous spans of tokens are attributed
+    instead of documents. Start positions must be increasing and begin
+    at 0. Incompatible with ``chunk_length``."""
 
     def __post_init__(self):
         if self.reward_column and self.advantage_column:

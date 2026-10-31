@@ -91,9 +91,8 @@ class HookCollectorBase(ContextDecorator, ABC):
     """When True, compute per-position gradients instead of per-example."""
 
     span_column: str | None = None
-    """When set, compute per-span gradients instead of per-example, over the
-    spans this dataset column holds. Each batch's spans arrive through
-    :meth:`with_batch`."""
+    """Compute gradients for continugous spans within each document when spans
+    are defined in a dataset column."""
 
     lo: float = float("-inf")
     """Lower clamp bound for gradients. May be narrowed in subclass ``setup()``."""
@@ -292,7 +291,6 @@ class HookCollectorBase(ContextDecorator, ABC):
 
     @property
     def attribute_spans(self) -> bool:
-        """Whether gradient rows are spans, which ``span_column`` decides."""
         return self.span_column is not None
 
     @property
