@@ -38,10 +38,10 @@ class EkfacConfig:
     """Number of query gradients moved on-device and preconditioned at a time."""
     projection_dim: int = 0
     """When set, ``gradient_path`` holds each module's ``[p, p]`` projected
-    gradients, and the inverse of the Kronecker factors projected by the same
-    matrices is applied to them."""
+    gradients. The Kronecker factors are projected with the same matrices
+    before they are inverted."""
     projection_target: Literal["per_module", "global"] = "per_module"
-    """Must be ``per_module``: the factors are projected module by module."""
+    """Must be ``per_module``."""
     projection_type: Literal["normal", "rademacher"] = "rademacher"
     """Type of random projection. Must match the index being scored. See
     ``IndexConfig``."""
@@ -288,7 +288,7 @@ class EkfacApplicator:
         self.logger.info(f"Saved IVHP gradients to {self.cfg.run_path}")
 
     def _processor(self) -> GradientProcessor:
-        """The projection settings of the output."""
+        """Return the projection settings of the output."""
         # The factors include a bias column exactly when the query gradients do,
         # which widens the right projection like the collector's include_bias.
         query_cfg = Path(self.gradient_path, "processor_config.yaml")

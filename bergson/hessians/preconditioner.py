@@ -229,13 +229,12 @@ class FactoredPreconditioner:
         device: str | torch.device = "cpu",
         modules: Iterable[str] | None = None,
     ) -> "FactoredPreconditioner":
-        """Load the full factors (or only ``modules``) and project them, so the
-        inverse applies to ``[p, p]`` projected gradients.
+        """Load the factors and project them so the inverse applies to
+        ``[p, p]`` projected gradients.
 
         ``projection(name, role, n)`` returns module ``name``'s ``[p, n]``
-        projection matrix: ``left`` for the gradient factor, ``right`` for the
-        activation factor. The projected Hessian is
-        ``(P_l G P_l^T) ⊗ (P_r A P_r^T)``.
+        ``left`` (gradient factor) or ``right`` (activation factor) projection
+        matrix.
         """
 
         def project(vectors: Tensor, values: Tensor, P: Tensor):

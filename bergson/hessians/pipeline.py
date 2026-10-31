@@ -99,8 +99,7 @@ def hessian_pipeline(
         print(f"  using the existing query index at {query_path}")
     elif not _step_complete(query_path, resume):
         with _timed("step1_build_query", durations):
-            # The query keeps the index's projection; the factors are projected
-            # to match it.
+            # The factors are projected to match the query.
             query_cfg = deepcopy(index_cfg)
             query_cfg.run_path = query_path
             _validate(query_cfg)
