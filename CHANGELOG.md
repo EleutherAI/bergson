@@ -1,6 +1,27 @@
 # CHANGELOG
 
 
+## v2.5.4 (2026-10-31)
+
+### Bug Fixes
+
+- ASTRA under FSDP ([#588](https://github.com/EleutherAI/bergson/pull/588),
+  [`320cedb`](https://github.com/EleutherAI/bergson/commit/320cedb97fc9c5abe02403053b405304ce5ea0b8))
+
+### Documentation
+
+- Keep the ASTRA solve with the lowest final objective
+  ([#590](https://github.com/EleutherAI/bergson/pull/590),
+  [`9248ff2`](https://github.com/EleutherAI/bergson/commit/9248ff27a631bb964124eaee7afe9f31b3abd473))
+
+- Note module batching for influence function Hessians
+  ([#592](https://github.com/EleutherAI/bergson/pull/592),
+  [`2508f72`](https://github.com/EleutherAI/bergson/commit/2508f72120135323a558e6e62f4bf6f1d9aa81d1))
+
+- Tune the ASTRA lr on the query ([#587](https://github.com/EleutherAI/bergson/pull/587),
+  [`f39b22e`](https://github.com/EleutherAI/bergson/commit/f39b22ed9a4e7a85619fe122f7a09cf4504fdb15))
+
+
 ## v2.5.3 (2026-10-29)
 
 ### Bug Fixes
