@@ -1,6 +1,15 @@
 # CHANGELOG
 
 
+## v2.6.0 (2026-10-31)
+
+### Features
+
+- Add a Gemma Scope 2 SAE feature similarity baseline
+  ([#579](https://github.com/EleutherAI/bergson/pull/579),
+  [`25a5f48`](https://github.com/EleutherAI/bergson/commit/25a5f4832144fc7faef20e23494152f800dbb1c8))
+
+
 ## v2.5.4 (2026-10-31)
 
 ### Bug Fixes
