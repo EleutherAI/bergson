@@ -538,7 +538,10 @@ def score_dataset(
     if score_cfg.candidates.scores and index_cfg.attribute_tokens:
         raise ValueError("score_cfg.candidates does not support attribute_tokens.")
 
-    if score_cfg.token_influence == "output":
+    # Per-example scores are the same either way, and the gradient path is cheaper.
+    per_token = index_cfg.attribute_tokens or index_cfg.data.span_column is not None
+    output = score_cfg.token_influence == "output" and per_token
+    if output:
         check_output_influence_supported(index_cfg, preprocess_cfg)
 
     processor = processor_for(index_cfg)
@@ -567,11 +570,7 @@ def score_dataset(
 
     launch_distributed_run(
         "score",
-        (
-            output_influence_worker
-            if score_cfg.token_influence == "output"
-            else score_worker
-        ),
+        output_influence_worker if output else score_worker,
         [index_cfg, score_cfg, preprocess_cfg, ds],
         dist_cfg,
     )
