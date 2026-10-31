@@ -539,7 +539,8 @@ def score_dataset(
         raise ValueError("score_cfg.candidates does not support attribute_tokens.")
 
     # Per-example scores are the same either way, and the gradient path is cheaper.
-    output = score_cfg.token_influence == "output" and index_cfg.attribute_tokens
+    per_token = index_cfg.attribute_tokens or index_cfg.data.span_column is not None
+    output = score_cfg.token_influence == "output" and per_token
     if output:
         check_output_influence_supported(index_cfg, preprocess_cfg)
 

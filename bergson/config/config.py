@@ -918,10 +918,10 @@ class ScoreConfig(Serializable):
     Grosse et al. (2023). ``gradient`` scores row ``t`` by the per-token
     gradient at position ``t``, which is position ``t``'s effect on the loss of
     every later token. Both kinds of row sum to the per-example score, so
-    without ``attribute_tokens`` the setting has no effect and the gradient
-    path scores each example. ``output`` costs one forward-mode pass per query
-    column, so aggregate the query when you can, and needs an unprojected query
-    and dot-product scoring."""
+    without ``attribute_tokens`` or ``data.span_column`` the setting has no
+    effect and the gradient path scores each example. ``output`` costs one
+    forward-mode pass per query column, so aggregate the query when you can,
+    and needs an unprojected query and dot-product scoring."""
 
     candidates: CandidateConfig = field(default_factory=CandidateConfig)
     """Score only the rows an earlier run ranked highest. The store then has one
