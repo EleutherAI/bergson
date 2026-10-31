@@ -151,29 +151,29 @@ Per-token attribution scores, which attribute each training token's loss term, e
 
 Configs and per-query statistics are in `examples/gpt2_wikitext_leaderboard/tokens <https://github.com/EleutherAI/bergson/tree/main/examples/gpt2_wikitext_leaderboard/tokens>`_.
 
-Per-chunk
----------
+Per-span
+--------
 
-Per-chunk scores sum each method's per-token scores over chunks of a training chunk: 64-token windows, or natural pieces cut after sentence ends and line breaks and merged to at least 32 tokens (median 46). The proponent QLD masks the query's top 1% of training tokens by chunk score, about 369 whole windows or 413 whole pieces; the control retrains without a random 1% of tokens.
+Per-span scores sum each method's per-token scores over spans of each training chunk: 64-token spans, or natural spans cut after sentence ends and line breaks and merged to at least 32 tokens (median 46). The proponent QLD masks the query's top 1% of training tokens by span score, about 369 whole 64-token spans or 413 whole natural spans; the control retrains without a random 1% of tokens.
 
 .. list-table::
    :header-rows: 1
    :widths: 40 30 30
 
    * - Method
-     - Natural pieces [95% CI]
-     - 64-token windows [95% CI]
+     - Proponent QLD, natural spans [95% CI]
+     - Proponent QLD, 64-token spans [95% CI]
    * - MAGIC
      - 0.239 [0.226, 0.253]
      - 0.226 [0.214, 0.240]
-   * - EK-FAC + ASTRA
+   * - EKFAC + ASTRA
      - 0.153 [0.140, 0.168]
      - 0.147 [0.133, 0.161]
-   * - EK-FAC
+   * - EKFAC
      - 0.135 [0.121, 0.149]
      - 0.129 [0.116, 0.143]
 
-Configs and per-query statistics are in `examples/compare_wikitext/chunks <https://github.com/EleutherAI/bergson/tree/main/examples/compare_wikitext/chunks>`_.
+Configs and per-query statistics are in `examples/gpt2_wikitext_leaderboard/spans <https://github.com/EleutherAI/bergson/tree/main/examples/gpt2_wikitext_leaderboard/spans>`_.
 
 Notes
 -----
