@@ -157,14 +157,15 @@ class DataStream:
         return self.collate(self.batch_rows(i))
 
     def full_batch(self, i: int) -> dict:
-        """Batch ``i`` with every rank's rows; involves no collective."""
+        """Batch ``i`` with every rank's rows. Doesn't communicate with other
+        ranks."""
         if i < 0 or i >= len(self):
             raise IndexError("DataStream index out of range")
         return self.collate(self.all_batch_rows(i), sync_max_len=False)
 
     def collate(self, indices: list[int], sync_max_len: bool = True) -> dict:
-        """The model inputs and example weights of dataset rows ``indices``.
-        ``sync_max_len`` pads to the longest sequence across ranks."""
+        """Model inputs and example weights for dataset rows ``indices``. When
+        ``sync_max_len`` is True, pads to the longest sequence across ranks."""
         batch = self.dataset[indices]
         x, y, shift_loss_mask, _ = pad_and_tensor(
             batch["input_ids"],

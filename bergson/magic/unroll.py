@@ -10,9 +10,7 @@ second moments (``gam``, ``nu``)::
 
 where ``P_t`` is the AdamW preconditioner, ``R_t`` its derivative in the second
 moment, ``g_t`` the batch gradient and ``G_t`` the Gauss-Newton matrix of the
-batch loss. Each step's weights and moments are replayed from the run's
-checkpoints with :meth:`Trainer.step`, data-parallel across ranks; each rank
-then carries its own queries through the whole batch.
+batch loss.
 """
 
 import os
@@ -96,7 +94,7 @@ def _gauss_newton_and_scores(
     bf16: bool,
     timings: dict[str, float] | None = None,
 ) -> list[Tensor]:
-    """``G_t z`` over ``batch``; adds ``<z, dg_t/dw>`` to ``scores``."""
+    """Returns ``G_t z`` over ``batch`` and adds ``<z, dg_t/dw>`` to ``scores``."""
     nq = z[0].shape[0]
 
     def clock() -> float:
@@ -138,7 +136,7 @@ def _gauss_newton_and_scores(
         pj = (p * jv).sum(-1)
         valid = (y != -100).to(dtype)
 
-        # Per-token <grad of the loss, z>; the weights' graph maps it onto documents
+        # Per-token <grad of the loss, z>
         jy = jv.gather(-1, y.clamp_min(0)[None, ..., None].expand(nq, -1, -1, 1))
         dots = valid * (pj - jy.squeeze(-1)) / denom
         t_scores = clock()
@@ -147,7 +145,7 @@ def _gauss_newton_and_scores(
             scores[..., q] += g
         t_vjp = clock()
 
-        # Gauss-Newton cotangent at the logits: the softmax Hessian times J z
+        # The softmax Hessian times J z
         scale = (w.detach() * valid / denom)[None, ..., None]
         u = jv.sub_(pj[..., None]).mul_(p).mul_(scale)
         del jv, p, pj
@@ -181,14 +179,14 @@ def unroll_scores(
     bf16: bool = False,
     debug: bool = False,
 ) -> Tensor:
-    """Unrolled Gauss-Newton scores, ``[*data.weights.shape, len(queries)]``.
+    """Unrolled Gauss-Newton scores with shape
+    ``[*data.weights.shape, len(queries)]``.
 
-    ``queries`` are this rank's query gradients; every rank replays the
-    trajectory together and scores its own queries against every document.
+    ``queries`` are this rank's query gradients, scored against every document.
     ``state`` must be the final state of the run whose checkpoints are in
-    ``ckpt_dir``; it is walked back through the trajectory and restored.
-    Scores are loss-signed like MAGIC's. ``debug`` prints every rank's time
-    per phase of each step.
+    ``ckpt_dir``, and is restored before returning. Scores are loss-signed like
+    MAGIC's. When ``debug`` is True, each rank logs its time per phase of each
+    step.
     """
     model = trainer.model
     b1, b2 = betas
@@ -201,8 +199,7 @@ def unroll_scores(
             torch.cuda.synchronize(device)
         return time.monotonic()
 
-    # launch_distributed_run swallows the other ranks' stdout, so debug
-    # timings also go to one file per rank beside the checkpoints.
+    # Other ranks' stdout isn't shown, so also log to a file per rank.
     log = None
     if debug:
         log_path = os.path.join(os.path.dirname(ckpt_dir), f"unroll_rank{rank}.log")

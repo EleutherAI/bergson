@@ -7,23 +7,24 @@ from ..config.config import ValidationConfig
 
 @dataclass
 class UnrollConfig(Serializable):
-    """Unrolled Gauss-Newton attribution: the AdamW training run differentiated
-    backward with each step's loss Hessian replaced by its Gauss-Newton matrix
-    on the batch, keeping only the weights of the linear layers."""
+    """Config for unrolled Gauss-Newton attribution, which backpropagates through
+    the AdamW training run on the weights of the linear layers with each step's
+    loss Hessian replaced by its Gauss-Newton matrix."""
 
     enabled: bool = False
+    """Whether to compute unrolled Gauss-Newton scores instead of MAGIC scores."""
 
     query_batch_size: int = 8
-    """Queries carried backward together; each group replays the trajectory once."""
+    """Number of queries each rank scores per pass back through the run."""
 
     micro_batch_size: int = 4
-    """Documents per Gauss-Newton forward on each rank."""
+    """Batch size when computing Gauss-Newton products on each rank."""
 
     tf32: bool = True
-    """TF32 matmuls in the Gauss-Newton products."""
+    """Whether to use TF32 matmuls in the Gauss-Newton products."""
 
     bf16: bool = False
-    """Autocast the Gauss-Newton products to bf16."""
+    """Whether to autocast the Gauss-Newton products to bf16."""
 
 
 @dataclass
@@ -37,6 +38,7 @@ class MagicConfig(ValidationConfig):
     """Whether to delete all but the last checkpoint during the backward pass."""
 
     unroll: UnrollConfig = field(default_factory=UnrollConfig)
+    """Configuration for unrolled Gauss-Newton attribution."""
 
     attribute_tokens: bool = False
     """Whether to compute attribution scores per token (instead of per sequence);
@@ -57,7 +59,7 @@ class MagicConfig(ValidationConfig):
             if self.fsdp or self.optimizer != "adamw" or self.max_grad_norm:
                 raise ValueError("unroll supports AdamW without fsdp or clipping.")
             if self.attribute_tokens:
-                raise ValueError("unroll scores whole documents.")
+                raise ValueError("unroll does not support attribute_tokens.")
         if self.query.aggregation == "none" and self.query.contrast is not None:
             raise ValueError(
                 "query.contrast subtracts one aggregated query from another; "

@@ -351,10 +351,11 @@ def compute_per_query_unrolled_scores(
     padding: Padding,
     schedule,
 ) -> torch.Tensor:
-    """Per-query unrolled Gauss-Newton scores. The queries are dealt round-robin
-    to the ranks, ``unroll.query_batch_size`` per rank per pass back through
-    the trajectory; each rank writes its queries to
-    ``<run_path>/per_query/q{i}.pt``."""
+    """Per-query unrolled Gauss-Newton scores.
+
+    Each rank scores ``unroll.query_batch_size`` of its queries per pass and
+    writes them to ``<run_path>/per_query/q{i}.pt``.
+    """
     device = stream.weights.device
     scores_dir = os.path.join(run_cfg.run_path, "per_query")
     if global_rank == 0:
@@ -380,7 +381,7 @@ def compute_per_query_unrolled_scores(
 
         queries = []
         for qi in range(num_query_docs):
-            # Gradients are a collective; every rank takes part, then keeps its own.
+            # Every rank computes every query gradient and keeps its own.
             if (qi // world_size) // size != p:
                 continue
             one = query_dataset.select([qi])
@@ -795,7 +796,7 @@ def worker(
         )
 
         if run_cfg.unroll.enabled:
-            # One query: rank 0 carries it through the shared replay.
+            # Rank 0 scores the query.
             unrolled = unroll_scores(
                 trainer,
                 ckpts_path,
