@@ -330,9 +330,9 @@ def unroll_kwargs(run_cfg: "MagicConfig", schedule) -> dict:
         eps_root=run_cfg.eps_root,
         weight_decay=run_cfg.weight_decay,
         grad_accum_steps=run_cfg.grad_accum_steps,
-        micro_batch_size=run_cfg.unroll.micro_batch_size,
-        tf32=run_cfg.unroll.tf32,
-        bf16=run_cfg.unroll.bf16,
+        micro_batch_size=run_cfg.gauss_newton.micro_batch_size,
+        tf32=run_cfg.gauss_newton.tf32,
+        bf16=run_cfg.gauss_newton.bf16,
         debug=run_cfg.debug,
     )
 
@@ -353,7 +353,7 @@ def compute_per_query_unrolled_scores(
 ) -> torch.Tensor:
     """Per-query unrolled Gauss-Newton scores.
 
-    Each rank scores ``unroll.query_batch_size`` of its queries per pass and
+    Each rank scores ``gauss_newton.query_batch_size`` of its queries per pass and
     writes them to ``<run_path>/per_query/q{i}.pt``.
     """
     device = stream.weights.device
@@ -368,7 +368,7 @@ def compute_per_query_unrolled_scores(
 
     names = unrolled_names(model, fwd_state.params)
     mine = list(range(global_rank, num_query_docs, world_size))
-    size = run_cfg.unroll.query_batch_size
+    size = run_cfg.gauss_newton.query_batch_size
     passes = -(-max(1, -(-num_query_docs // world_size)) // size)
     for p in range(passes):
         group = mine[p * size : (p + 1) * size]
@@ -760,7 +760,7 @@ def worker(
             global_rank,
             padding,
         )
-        if run_cfg.unroll.enabled:
+        if run_cfg.curvature == "gauss_newton":
             scores = compute_per_query_unrolled_scores(*args, schedule)
         else:
             scores = compute_per_query_magic_scores(*args)
@@ -780,7 +780,7 @@ def worker(
         # Sanity check
         if not isinstance(run_cfg, MagicConfig):
             raise RuntimeError("run_cfg must be a MagicConfig to compute scores")
-        if run_cfg.save_mode == "interval" and not run_cfg.unroll.enabled:
+        if run_cfg.save_mode == "interval" and run_cfg.curvature == "exact":
             raise ValueError("save_mode='interval' not supported for MAGIC attribution")
 
         stream.requires_grad = True
@@ -795,7 +795,7 @@ def worker(
             torch.zeros_like(stream.weights),
         )
 
-        if run_cfg.unroll.enabled:
+        if run_cfg.curvature == "gauss_newton":
             # Rank 0 scores the query.
             unrolled = unroll_scores(
                 trainer,

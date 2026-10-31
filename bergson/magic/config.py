@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Literal
 
 from simple_parsing import Serializable, field
 
@@ -6,13 +7,8 @@ from ..config.config import ValidationConfig
 
 
 @dataclass
-class UnrollConfig(Serializable):
-    """Config for unrolled Gauss-Newton attribution, which backpropagates through
-    the AdamW training run on the weights of the linear layers with each step's
-    loss Hessian replaced by its Gauss-Newton matrix."""
-
-    enabled: bool = False
-    """Whether to compute unrolled Gauss-Newton scores instead of MAGIC scores."""
+class GaussNewtonConfig(Serializable):
+    """Settings for ``curvature: gauss_newton``."""
 
     query_batch_size: int = 8
     """Number of queries each rank scores per pass back through the run."""
@@ -37,8 +33,14 @@ class MagicConfig(ValidationConfig):
     cleanup_ckpts: bool = True
     """Whether to delete all but the last checkpoint during the backward pass."""
 
-    unroll: UnrollConfig = field(default_factory=UnrollConfig)
-    """Configuration for unrolled Gauss-Newton attribution."""
+    curvature: Literal["exact", "gauss_newton"] = "exact"
+    """Curvature of each training step in the backward pass. ``exact``
+    differentiates through the step (MAGIC). ``gauss_newton`` replaces the
+    step's loss Hessian with its Gauss-Newton matrix and backpropagates on the
+    weights of the linear layers only, replaying the AdamW run from its
+    checkpoints (unrolled Gauss-Newton)."""
+
+    gauss_newton: GaussNewtonConfig = field(default_factory=GaussNewtonConfig)
 
     attribute_tokens: bool = False
     """Whether to compute attribution scores per token (instead of per sequence);
@@ -55,11 +57,15 @@ class MagicConfig(ValidationConfig):
         super().__post_init__()
         if self.per_token:
             self.attribute_tokens = True
-        if self.unroll.enabled:
+        if self.curvature == "gauss_newton":
             if self.fsdp or self.optimizer != "adamw" or self.max_grad_norm:
-                raise ValueError("unroll supports AdamW without fsdp or clipping.")
+                raise ValueError(
+                    "curvature='gauss_newton' supports AdamW without fsdp or clipping."
+                )
             if self.attribute_tokens:
-                raise ValueError("unroll does not support attribute_tokens.")
+                raise ValueError(
+                    "curvature='gauss_newton' does not support attribute_tokens."
+                )
         if self.query.aggregation == "none" and self.query.contrast is not None:
             raise ValueError(
                 "query.contrast subtracts one aggregated query from another; "

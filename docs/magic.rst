@@ -30,9 +30,9 @@ Usage
 Unrolled Gauss-Newton
 ---------------------
 
-``--unroll.enabled true`` backpropagates through the AdamW run on the weights of the linear layers only, with each step's loss Hessian replaced by the Gauss-Newton matrix :math:`J^\top \nabla^2 \ell J` of the batch loss. The weights and Adam moments of each step are replayed from the run's checkpoints.
+``--curvature gauss_newton`` backpropagates through the AdamW run on the weights of the linear layers only, with each step's loss Hessian replaced by the Gauss-Newton matrix :math:`J^\top \nabla^2 \ell J` of the batch loss. The weights and Adam moments of each step are replayed from the run's checkpoints.
 
-Each rank scores ``unroll.query_batch_size`` of its queries per pass back through the run. ``unroll.micro_batch_size`` sets the batch size of the Gauss-Newton products.
+Each rank scores ``gauss_newton.query_batch_size`` of its queries per pass back through the run. ``gauss_newton.micro_batch_size`` sets the batch size of the Gauss-Newton products.
 
 Unrolled Gauss-Newton supports AdamW without gradient clipping or FSDP. With ``--debug true`` each rank writes its time per phase of each step to ``<run_path>/unroll_rank{rank}.log``.
 

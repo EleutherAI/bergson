@@ -11,8 +11,7 @@ steps:
       run_path: runs/compare_wikitext/unrolled_gauss_newton
       model: gpt2
       resume: true
-      unroll:
-        enabled: true
+      curvature: gauss_newton
 
       data:
         dataset: EleutherAI/bergson-wikitext-512-chunks

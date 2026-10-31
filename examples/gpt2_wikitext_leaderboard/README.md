@@ -44,7 +44,7 @@ Every method scores the same 50 test chunks (`test[0:50]`). We report the QLD an
 
 ## Notes on the Methods
 
-Unrolled Gauss-Newton is `unrolled_gauss_newton.yaml`, which replays the `1_magic.yaml` run from its checkpoints with `unroll.enabled`.
+Unrolled Gauss-Newton is `unrolled_gauss_newton.yaml`, which replays the `1_magic.yaml` run from its checkpoints with `curvature: gauss_newton`.
 
 MAGIC (cross-seed) applies the seed-42 MAGIC scores to retrains with seed 43 (different data order and dropout): its LDS uses the same 100 subsets retrained at seed 43 and its QLD retrains the proponent filters at seed 43.
 
