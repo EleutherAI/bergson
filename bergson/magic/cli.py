@@ -381,7 +381,7 @@ def compute_per_query_unrolled_scores(
 
         queries = []
         for qi in range(num_query_docs):
-            # Every rank computes every query gradient and keeps its own.
+            # Gradients are a collective; every rank takes part, then keeps its own.
             if (qi // world_size) // size != p:
                 continue
             one = query_dataset.select([qi])

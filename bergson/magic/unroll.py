@@ -10,7 +10,9 @@ second moments (``gam``, ``nu``)::
 
 where ``P_t`` is the AdamW preconditioner, ``R_t`` its derivative in the second
 moment, ``g_t`` the batch gradient and ``G_t`` the Gauss-Newton matrix of the
-batch loss.
+batch loss. Each step's weights and moments are replayed from the run's
+checkpoints with :meth:`Trainer.step`, data-parallel across ranks; each rank
+then carries its own queries through the whole batch.
 """
 
 import os
@@ -136,7 +138,7 @@ def _gauss_newton_and_scores(
         pj = (p * jv).sum(-1)
         valid = (y != -100).to(dtype)
 
-        # Per-token <grad of the loss, z>
+        # Per-token <grad of the loss, z>; the weights' graph maps it onto documents
         jy = jv.gather(-1, y.clamp_min(0)[None, ..., None].expand(nq, -1, -1, 1))
         dots = valid * (pj - jy.squeeze(-1)) / denom
         t_scores = clock()
@@ -145,7 +147,7 @@ def _gauss_newton_and_scores(
             scores[..., q] += g
         t_vjp = clock()
 
-        # The softmax Hessian times J z
+        # Gauss-Newton cotangent at the logits: the softmax Hessian times J z
         scale = (w.detach() * valid / denom)[None, ..., None]
         u = jv.sub_(pj[..., None]).mul_(p).mul_(scale)
         del jv, p, pj
@@ -199,7 +201,8 @@ def unroll_scores(
             torch.cuda.synchronize(device)
         return time.monotonic()
 
-    # Other ranks' stdout isn't shown, so also log to a file per rank.
+    # launch_distributed_run swallows the other ranks' stdout, so debug
+    # timings also go to one file per rank beside the checkpoints.
     log = None
     if debug:
         log_path = os.path.join(os.path.dirname(ckpt_dir), f"unroll_rank{rank}.log")
