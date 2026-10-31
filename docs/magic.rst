@@ -30,7 +30,11 @@ Usage
 Unrolled Gauss-Newton
 ---------------------
 
-``--unroll.enabled true`` scores with a linearised backward through the AdamW run on the weights of the linear layers. Walking the trajectory backward, each step carries the query loss's cotangents on those weights and on Adam's two moments; the step's weights and moments are replayed from the run's checkpoints, and its curvature is the Gauss-Newton matrix :math:`J^\top \nabla^2 \ell J` of the batch loss, applied with a Jacobian-vector and a vector-Jacobian product through the model. Each rank carries its own queries (``unroll.query_batch_size`` per pass) through the shared replay against every document of the batch; TF32 matmuls are on by default (``unroll.tf32``) and ``unroll.micro_batch_size`` sets the documents per forward. AdamW only, without gradient clipping or FSDP. With ``--debug true`` every rank writes its time per phase of each step to ``<run_path>/unroll_rank{rank}.log``.
+``--unroll.enabled true`` backpropagates through the AdamW run on the weights of the linear layers only, with each step's loss Hessian replaced by the Gauss-Newton matrix :math:`J^\top \nabla^2 \ell J` of the batch loss. The weights and Adam moments of each step are replayed from the run's checkpoints.
+
+Each rank scores ``unroll.query_batch_size`` of its queries per pass back through the run. ``unroll.micro_batch_size`` sets the batch size of the Gauss-Newton products.
+
+Unrolled Gauss-Newton supports AdamW without gradient clipping or FSDP. With ``--debug true`` each rank writes its time per phase of each step to ``<run_path>/unroll_rank{rank}.log``.
 
 Contrastive queries
 -------------------
