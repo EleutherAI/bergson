@@ -904,6 +904,10 @@ class ScoreConfig(Serializable):
     ``output`` costs one forward-mode pass per query column, so aggregate the
     query when you can, and needs an unprojected query and dot-product scoring."""
 
+    device_map_auto: bool = False
+    """Split the model's layers across every visible GPU in one process, for a
+    model too large for one GPU. Requires ``token_influence='output'``."""
+
     candidates: CandidateConfig = field(default_factory=CandidateConfig)
     """Score only the rows an earlier run ranked highest. The store then has one
     row per candidate; ``candidates.npy`` beside it holds their training rows."""

@@ -30,6 +30,18 @@ def check_output_influence_supported(
         )
 
 
+def check_on_gpus(model: PreTrainedModel | PeftModel):
+    """Raise if part of the model is offloaded to the CPU or disk."""
+    offloaded = {"cpu", "disk"} & set(getattr(model, "hf_device_map", {}).values())
+    # Offloading reloads each weight before its module runs, which would replace
+    # the weight that carries the query direction.
+    if offloaded and torch.cuda.is_available():
+        raise ValueError(
+            f"token_influence='output' can't score a model offloaded to "
+            f"{', '.join(sorted(offloaded))}. Use more GPUs or a lower precision."
+        )
+
+
 def query_directions(
     model: PreTrainedModel | PeftModel,
     query_grads_t: dict[str, Tensor],
@@ -41,8 +53,9 @@ def query_directions(
     ``[grad_dim, num_queries]`` query block, laid out ``[out, in]`` with the
     bias as a trailing column when the module's bias is collected. Only
     modules in both the query and ``target_info`` are scored, as with gradients.
-    Returns ``(block, weight name, bias name, transposed)`` per module, where
-    ``transposed`` marks layers that store their weight ``[in, out]``.
+    Returns ``(block, weight name, bias name, transposed)`` per module, with the
+    block on the weight's device, where ``transposed`` marks layers that store
+    their weight ``[in, out]``.
     """
     param_names = {id(p): name for name, p in model.named_parameters()}
     directions = []
@@ -84,7 +97,12 @@ def query_directions(
             if param is not None:
                 seen.add(param)
         directions.append(
-            (block, weight_name, bias_name, LayerAdapter.weight_transposed(module))
+            (
+                block.to(module.weight.device),
+                weight_name,
+                bias_name,
+                LayerAdapter.weight_transposed(module),
+            )
         )
     if not directions:
         raise ValueError("The query has no modules in common with the scored ones.")
