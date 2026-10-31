@@ -120,6 +120,12 @@ def approx_unrolling_pipeline(
         approx_unrolling_cfg
     )
 
+    if index_cfg.loss_reduction == "mean":
+        logger.warning(
+            "loss_reduction='mean' detected. We strongly recommend using "
+            "loss_reduction='sum' with SOURCE."
+        )
+
     logger.info("=" * 70)
     logger.info(f"approximate unrolling pipeline -> {index_cfg.run_path}")
     logger.info(f"  base model        : {index_cfg.model}")
