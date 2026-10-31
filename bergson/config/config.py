@@ -983,6 +983,12 @@ class HessianConfig(Serializable):
     """Fit the factored methods in this many module groups, one pass per group,
     merging the shard files afterwards; raise it when the factors do not fit."""
 
+    local_factor_memory: float = 0.2
+    """Fraction of each GPU's memory for K-FAC factors of modules every rank
+    keeps, smallest modules first. Each rank accumulates those from its own
+    positions and sends them to their owners once, at the end; the other
+    modules' positions go to their owners every step."""
+
 
 @dataclass
 class AstraConfig(Serializable):

@@ -446,16 +446,23 @@ def collect_hessians(
         "processor": GradientProcessor(include_bias=index_cfg.include_bias),
         "dtype": hessian_dtype,
     }
+    local_bytes = 0.0
+    if torch.cuda.is_available():
+        total = torch.cuda.get_device_properties(torch.cuda.current_device())
+        local_bytes = hessian_cfg.local_factor_memory * total.total_memory
     desc = f"Approximating Hessians with {hessian_cfg.method}"
     if ev_correction:
         collector = LambdaCollector(
             **collector_args,
+            local_bytes=local_bytes,
             eigen_path=eigen_path,
             output_subdir=output_subdir,
             num_documents=num_documents,
             eigenvectors=eigenvectors,
         )
         desc += " (eigenvalue correction)"
+    elif hessian_cfg.method == "kfac":
+        collector = CovarianceCollector(**collector_args, local_bytes=local_bytes)
     else:
         collector = HESSIAN_APPROXIMATIONS[hessian_cfg.method](**collector_args)
 

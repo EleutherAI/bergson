@@ -1,3 +1,6 @@
+from collections import deque
+from typing import Callable
+
 import torch
 import torch.distributed as dist
 from jaxtyping import Float
@@ -52,18 +55,62 @@ def gather_batch_shapes(*sizes: int, device: str | torch.device) -> list[list[in
     return gathered.view(dist.get_world_size(), len(sizes)).tolist()
 
 
-def gather_to_owner(x: Tensor, rows: int, owner: int) -> Tensor | None:
-    """Stack every rank's ``x`` on ``owner``, each padded with zero rows to
-    ``rows`` so the ranks send the same shape; ``None`` on the other ranks."""
-    padded = x.new_zeros(rows, *x.shape[1:])
-    padded[: x.shape[0]] = x
-    if dist.get_rank() != owner:
-        dist.gather(padded, dst=owner)
-        return None
+def local_modules(sizes: dict[str, int], budget: float) -> set[str]:
+    """The modules whose factors every rank keeps, smallest first while their
+    ``sizes`` in bytes fit in ``budget``. Every rank computes the same set."""
+    kept, used = set(), 0
+    for name in sorted(sizes, key=lambda n: (sizes[n], n)):
+        if used + sizes[name] > budget:
+            break
+        kept.add(name)
+        used += sizes[name]
+    return kept
 
-    stacked = padded.new_empty(dist.get_world_size() * rows, *x.shape[1:])
-    dist.gather(padded, list(stacked.split(rows)), dst=owner)
-    return stacked
+
+class OwnerGathers:
+    """Gathers of every rank's rows to a module's owner, sent without waiting
+    for them to arrive, so ranks don't stop for each other at every module.
+
+    Each gather's ``then`` runs on the owner with the stacked rows, in the
+    order the gathers were sent. At most ``max_bytes`` of rows wait at once."""
+
+    def __init__(self, max_bytes: int = 1 << 30):
+        self.max_bytes = max_bytes
+        self.pending: deque = deque()
+        self.bytes = 0
+
+    def send(
+        self, x: Tensor, rows: int, owner: int, then: Callable[[Tensor], None]
+    ) -> None:
+        """Send ``x`` padded with zero rows to ``rows``, so the ranks send the
+        same shape."""
+        padded = x.new_zeros(rows, *x.shape[1:])
+        padded[: x.shape[0]] = x
+        stacked = None
+        if dist.get_rank() == owner:
+            stacked = padded.new_empty(dist.get_world_size() * rows, *x.shape[1:])
+            work = dist.gather(
+                padded, list(stacked.split(rows)), dst=owner, async_op=True
+            )
+        else:
+            work = dist.gather(padded, dst=owner, async_op=True)
+        nbytes = padded.nbytes + (stacked.nbytes if stacked is not None else 0)
+        self.pending.append((work, padded, stacked, then, nbytes))
+        self.bytes += nbytes
+        while self.bytes > self.max_bytes and len(self.pending) > 1:
+            self._finish()
+
+    def flush(self) -> None:
+        """Wait for every gather sent and run the owners' ``then``."""
+        while self.pending:
+            self._finish()
+
+    def _finish(self) -> None:
+        work, _, stacked, then, nbytes = self.pending.popleft()
+        work.wait()
+        self.bytes -= nbytes
+        if stacked is not None:
+            then(stacked)
 
 
 def owned_to_row_shards(

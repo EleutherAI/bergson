@@ -1,6 +1,7 @@
 import gc
 import os
 from dataclasses import dataclass
+from typing import Callable
 
 import torch
 import torch.distributed as dist
@@ -12,13 +13,15 @@ from tqdm import tqdm
 
 from bergson.collector.collector import HookCollectorBase
 from bergson.hessians.sharded_computation import (
+    OwnerGathers,
     ShardedMul,
     assign_module_owners,
     gather_batch_shapes,
-    gather_to_owner,
+    local_modules,
     owned_to_row_shards,
     shard_bounds,
 )
+from bergson.moe import ExpertLinear
 from bergson.utils.logger import get_logger
 from bergson.utils.utils import (
     assert_type,
@@ -86,8 +89,11 @@ class LambdaCollector(HookCollectorBase):
 
     Distributed, each module belongs to the rank that owned its covariances,
     which takes its full eigenvectors from ``eigenvectors`` or joins them from
-    every rank's shard, and receives every rank's positions for it; teardown
-    saves the usual row shards.
+    every rank's shard. Every rank keeps the eigenvectors and corrections of the
+    modules in ``local``, from their owners, summing its own positions and
+    sending the sums to the owners at teardown; owners receive every rank's
+    positions for the other modules each step. Teardown saves the usual row
+    shards.
     """
 
     path: str
@@ -109,6 +115,10 @@ class LambdaCollector(HookCollectorBase):
     """The activation and gradient eigenvectors of the modules this rank owns,
     in full, as returned by :func:`eigendecompose_owned`. Read from the shard
     files when not given."""
+
+    local_bytes: float = 0
+    """Bytes of eigenvectors and corrections each rank may keep, smallest
+    modules first."""
 
     def setup(self) -> None:
         """Load eigenvectors and initialize storage."""
@@ -157,6 +167,8 @@ class LambdaCollector(HookCollectorBase):
         row shards every rank wrote unless they were passed in."""
         self.owners = assign_module_owners(self.target_info, self.world_size)
         owned = [name for name, owner in self.owners.items() if owner == self.rank]
+        self.gathers = OwnerGathers()
+        self._batch_shapes: list[list[int]] | None = None
 
         def load(subdir: str) -> dict[str, Tensor]:
             files = [
@@ -185,30 +197,69 @@ class LambdaCollector(HookCollectorBase):
             name: (out_dim, in_dim + collect_bias)
             for name, (_, (out_dim, in_dim), collect_bias) in self.target_info.items()
         }
+        itemsize = torch.empty((), dtype=self.dtype).element_size()
+        self.local = local_modules(
+            {
+                name: (i**2 + o**2 + o * i) * itemsize
+                for name, (o, i) in self.correction_shapes.items()
+            },
+            self.local_bytes,
+        )
+        # The owners send the kept modules' eigenvectors to every rank
+        for name in sorted(self.local):
+            owner = self.owners[name]
+            o, i = self.correction_shapes[name]
+            for vectors, size in ((self.eigen_a, i), (self.eigen_g, o)):
+                if owner != self.rank:
+                    vectors[name] = torch.empty(
+                        size, size, device=self.device, dtype=self.dtype
+                    )
+                dist.broadcast(vectors[name], src=owner)
         # Every owned module has a correction to send at teardown, even one whose
         # hooks never ran.
         self.eigenvalue_corrections = {
             name: torch.zeros(
                 self.correction_shapes[name], device=self.device, dtype=self.dtype
             )
-            for name in owned
+            for name in {*owned, *self.local}
         }
 
-    def _gather_rotated(self, x: Tensor, eigenvectors: dict[str, Tensor], name: str):
-        """Every rank's ``x`` [N, S, D] rotated by ``name``'s eigenvectors, as one
-        [N_r, S_r, D] tensor per rank on the owner; ``None`` elsewhere."""
-        # Per module, since fused MoE experts see their own [N, S].
+    def with_batch(self, collection_mask: Tensor | None = None):
+        super().with_batch(collection_mask)
+        if self.owners is not None and collection_mask is not None:
+            # Every module but a fused MoE expert sees the batch's [N, S]
+            self._batch_shapes = gather_batch_shapes(
+                *collection_mask.shape, device=collection_mask.device
+            )
+        return self
+
+    def _send_rotated(
+        self,
+        module: nn.Module,
+        x: Tensor,
+        eigenvectors: dict[str, Tensor],
+        then: Callable[[list[Tensor]], None],
+    ):
+        """Send every rank's ``x`` [N, S, D] to ``module``'s owner, which calls
+        ``then`` with them rotated by its eigenvectors, one [N_r, S_r, D] tensor
+        per rank."""
         assert self.owners is not None
-        shapes = gather_batch_shapes(*x.shape[:2], device=x.device)
+        name = assert_type(str, module._name)
+        shapes = self._batch_shapes
+        if shapes is None or isinstance(module, ExpertLinear):
+            shapes = gather_batch_shapes(*x.shape[:2], device=x.device)
         rows = max(n * s for n, s in shapes)
-        stacked = gather_to_owner(x.flatten(0, 1), rows, self.owners[name])
-        if stacked is None:
-            return None
-        rotated = stacked.to(self.dtype) @ eigenvectors[name]
-        return [
-            rotated[r * rows : r * rows + n * s].view(n, s, -1)
-            for r, (n, s) in enumerate(shapes)
-        ]
+
+        def rotate(stacked: Tensor):
+            rotated = stacked.to(self.dtype) @ eigenvectors[name]
+            then(
+                [
+                    rotated[r * rows : r * rows + n * s].view(n, s, -1)
+                    for r, (n, s) in enumerate(shapes)
+                ]
+            )
+
+        self.gathers.send(x.flatten(0, 1), rows, self.owners[name], rotate)
 
     def forward_hook(self, module: nn.Module, a: Tensor) -> None:
         """Transform activations using eigenvectors and cache."""
@@ -220,8 +271,16 @@ class LambdaCollector(HookCollectorBase):
         if module._collect_bias:
             a = torch.cat([a, a.new_ones(*a.shape[:-1], 1)], dim=-1)  # [N, S, I+1]
 
+        if self.owners is not None and name in self.local:
+            self.transformed_a_cache[name] = a.to(self.dtype) @ self.eigen_a[name]
+            return
         if self.owners is not None:
-            self.transformed_a_cache[name] = self._gather_rotated(a, self.eigen_a, name)
+            self._send_rotated(
+                module,
+                a,
+                self.eigen_a,
+                lambda rotated: self.transformed_a_cache.__setitem__(name, rotated),
+            )
             return
 
         # Transform: a @ eigen_a
@@ -237,16 +296,29 @@ class LambdaCollector(HookCollectorBase):
         name = assert_type(str, module._name)
         # g shape: [N, S, O]
 
-        if self.owners is not None:
-            rotated_g = self._gather_rotated(g, self.eigen_g, name)
+        if self.owners is not None and name in self.local:
             rotated_a = self.transformed_a_cache.pop(name)
-            if rotated_g is None:
-                return
-            # Square each document's rotated gradient and sum, as below.
-            for a_r, g_r in zip(rotated_a, rotated_g):
-                self.eigenvalue_corrections[name].add_(
-                    (torch.einsum("N S I, N S O -> N O I", a_r, g_r) ** 2).sum(dim=0)
+            rotated_g = g.to(self.dtype) @ self.eigen_g[name]
+            self.eigenvalue_corrections[name].add_(
+                (torch.einsum("N S I, N S O -> N O I", rotated_a, rotated_g) ** 2).sum(
+                    dim=0
                 )
+            )
+            return
+        if self.owners is not None:
+
+            def correct(rotated_g: list[Tensor]):
+                # The activations were sent first, so they have arrived
+                rotated_a = self.transformed_a_cache.pop(name)
+                # Square each document's rotated gradient and sum, as below.
+                for a_r, g_r in zip(rotated_a, rotated_g):
+                    self.eigenvalue_corrections[name].add_(
+                        (torch.einsum("N S I, N S O -> N O I", a_r, g_r) ** 2).sum(
+                            dim=0
+                        )
+                    )
+
+            self._send_rotated(module, g, self.eigen_g, correct)
             return
 
         # Transform: g @ eigen_g
@@ -281,6 +353,13 @@ class LambdaCollector(HookCollectorBase):
 
     def teardown(self) -> None:
         """Save eigenvalue corrections to disk."""
+        if self.owners is not None:
+            self.gathers.flush()
+            for name in sorted(self.local):
+                owner = self.owners[name]
+                dist.reduce(self.eigenvalue_corrections[name], dst=owner)
+                if owner != self.rank:
+                    del self.eigenvalue_corrections[name]
         output_path = os.path.join(self.path, self.output_subdir)
         os.makedirs(output_path, exist_ok=True)
 
