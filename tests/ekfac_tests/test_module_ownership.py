@@ -187,9 +187,10 @@ def write_eigenvectors(root: Path, world_size: int):
             save_file(shard, str(root / sub / f"shard_{rank}.safetensors"))
 
 
-def fit_small(rank: int, world_size: int, port: int, root: str):
-    """Covariances and eigenvalue corrections over ``world_size`` gloo ranks, or
-    over every rank's batches in one process when ``world_size`` is 1."""
+def fit_small(rank: int, world_size: int, port: int, root: str, local_bytes: float):
+    """Covariances and eigenvalue corrections over ``world_size`` gloo ranks,
+    each keeping ``local_bytes`` of factors, or over every rank's batches in
+    one process when ``world_size`` is 1."""
     if world_size > 1:
         dist.init_process_group(
             "gloo",
@@ -213,10 +214,15 @@ def fit_small(rank: int, world_size: int, port: int, root: str):
                 dtype=torch.float64,
                 processor=processor,
                 eigen_path=eigen_path,
+                local_bytes=local_bytes,
             )
             if ev_correction
             else CovarianceCollector(
-                model=network, path=out, dtype=torch.float64, processor=processor
+                model=network,
+                path=out,
+                dtype=torch.float64,
+                processor=processor,
+                local_bytes=local_bytes,
             )
         )
         run_batches(collector, batches)
@@ -227,7 +233,12 @@ def fit_small(rank: int, world_size: int, port: int, root: str):
         dist.destroy_process_group()
 
 
-def test_gloo_ranks_match_one_process_on_cpu(tmp_path: Path, monkeypatch):
+# Every module gathered to its owner, the smallest kept on every rank (two
+# modules' covariances and one's corrections), and every module kept
+@pytest.mark.parametrize("local_bytes", [0, 1000, float("inf")])
+def test_gloo_ranks_match_one_process_on_cpu(
+    tmp_path: Path, monkeypatch, local_bytes: float
+):
     # Collectors place their factors on the GPU when one is visible, and gloo
     # can't gather CUDA tensors.
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
@@ -236,8 +247,12 @@ def test_gloo_ranks_match_one_process_on_cpu(tmp_path: Path, monkeypatch):
     with socket.socket() as s:
         s.bind(("", 0))
         port = s.getsockname()[1]
-    mp.spawn(fit_small, args=(1, port, str(tmp_path)), nprocs=1)
-    mp.spawn(fit_small, args=(CPU_RANKS, port, str(tmp_path)), nprocs=CPU_RANKS)
+    mp.spawn(fit_small, args=(1, port, str(tmp_path), 0), nprocs=1)
+    mp.spawn(
+        fit_small,
+        args=(CPU_RANKS, port, str(tmp_path), local_bytes),
+        nprocs=CPU_RANKS,
+    )
 
     for sub in (
         "activation_sharded",
