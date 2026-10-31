@@ -9,7 +9,7 @@ import torch
 import torch.distributed as dist
 from datasets import Dataset
 
-from bergson.data import compute_num_token_grads, span_rows
+from bergson.data import compute_num_token_grads, get_span_rows
 from bergson.utils.utils import convert_dtype_to_np, numpy_to_tensor, tensor_to_numpy
 
 
@@ -243,7 +243,7 @@ class MemmapTokenScoreWriter(ScoreWriter):
     ):
         """A span store over ``data``'s ``span_column``. ``shift`` is the token
         influence's, as :mod:`bergson.spans` describes."""
-        counts, spans = span_rows(data, span_column, shift)
+        counts, spans = get_span_rows(data, span_column, shift)
         return cls(path, counts, num_scores, spans=spans, **kwargs)
 
     def __call__(self, indices: list[int], scores: torch.Tensor, query_offset: int = 0):

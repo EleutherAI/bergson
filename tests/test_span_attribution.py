@@ -16,7 +16,7 @@ from bergson import (
 from bergson.collector.gradient_collectors import GradientCollector
 from bergson.config import CandidateConfig, IndexConfig, PreprocessConfig, ScoreConfig
 from bergson.config.config import DataConfig
-from bergson.data import load_scores, span_rows
+from bergson.data import get_span_rows, load_scores
 from bergson.score.score import score_dataset
 from bergson.score.score_writer import MemmapTokenScoreWriter
 from bergson.score.scorer import Scorer
@@ -70,13 +70,13 @@ def test_span_rows_validates_and_skips_short_documents():
     ds = Dataset.from_dict(
         {"input_ids": [[1] * 6, [1]], "length": [6, 1], "span_starts": [[0, 3], [0]]}
     )
-    np.testing.assert_array_equal(span_rows(ds, "span_starts")[0], [2, 0])
+    np.testing.assert_array_equal(get_span_rows(ds, "span_starts")[0], [2, 0])
 
     gapped = ds.remove_columns("span_starts").add_column(
         "span_starts", [[2, 5], [0]], new_fingerprint="gap"
     )
     with pytest.raises(ValueError, match="belong to no span"):
-        span_rows(gapped, "span_starts")
+        get_span_rows(gapped, "span_starts")
 
 
 def test_attribute_tokens_and_span_column_conflict():
@@ -231,7 +231,7 @@ def test_span_scores_sum_their_token_scores(tmp_path: Path, model, span_dataset)
     assert spans.is_written()
     assert spans.spans is not None
     np.testing.assert_array_equal(
-        spans.spans, span_rows(span_dataset, "span_starts")[1]
+        spans.spans, get_span_rows(span_dataset, "span_starts")[1]
     )
 
     for doc in range(len(span_dataset)):

@@ -64,7 +64,7 @@ def compute_num_token_grads(data: Dataset) -> np.ndarray:
     return np.maximum(lengths - 1, 0)
 
 
-def span_rows(
+def get_span_rows(
     data: Dataset, span_column: str, shift: int = 0
 ) -> tuple[np.ndarray, np.ndarray]:
     """Each example's span count, and every span's ``[lo, hi)`` range of

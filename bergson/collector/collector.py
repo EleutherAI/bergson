@@ -28,7 +28,7 @@ from transformers import PreTrainedModel
 
 from bergson.collector.projection_matrix import random_matrix
 from bergson.config import AttentionConfig, HessianConfig, IndexConfig
-from bergson.data import compute_num_token_grads, pad_and_tensor, span_rows
+from bergson.data import compute_num_token_grads, get_span_rows, pad_and_tensor
 from bergson.gradients import (
     AdafactorNormalizer,
     AdamNormalizer,
@@ -91,7 +91,7 @@ class HookCollectorBase(ContextDecorator, ABC):
     """When True, compute per-position gradients instead of per-example."""
 
     span_column: str | None = None
-    """Compute gradients for continugous spans within each document when span 
+    """Compute gradients for continugous spans within each document when span
     starting indices are defined in this dataset column."""
 
     lo: float = float("-inf")
@@ -436,7 +436,7 @@ class HookCollectorBase(ContextDecorator, ABC):
             return int(compute_num_token_grads(data).sum())
         if self.attribute_spans:
             column = assert_type(str, self.span_column)
-            return int(span_rows(data, column)[0].sum())
+            return int(get_span_rows(data, column)[0].sum())
         return len(data)
 
     def with_batch(

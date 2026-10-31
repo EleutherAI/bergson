@@ -10,7 +10,7 @@ from .data import (
     compute_num_token_grads,
     create_index,
     create_token_index,
-    span_rows,
+    get_span_rows,
 )
 from .hessians.preconditioner import Preconditioner, load_preconditioner
 from .process_grads import normalize_flat_grad
@@ -112,7 +112,7 @@ class Builder:
             if span_column is None:
                 self.num_token_grads = compute_num_token_grads(data)
             else:
-                self.num_token_grads, spans = span_rows(data, span_column)
+                self.num_token_grads, spans = get_span_rows(data, span_column)
             if path is not None:
                 self.grad_buffer, self.offsets = create_token_index(
                     path,
