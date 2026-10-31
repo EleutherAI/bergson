@@ -147,35 +147,22 @@ class EkfacApplicator:
             o_dims = {n: f.get_slice(n).get_shape()[1] for n in names}
         return names, o_dims, i_dims
 
-    def _projection(
-        self,
-        name: str,
-        role: Literal["left", "right"],
-        n: int,
-        dtype: torch.dtype,
-        device: torch.device,
-    ) -> torch.Tensor:
-        """Module ``name``'s ``[p, n]`` ``role`` projection matrix."""
-        return create_module_projection_matrix(
-            name,
-            role,
-            self.cfg.projection_dim,
-            n,
-            dtype,
-            device,
-            self.cfg.projection_type,
-            self.cfg.projection_scale,
-            self.cfg.projection_seed,
-        )
-
     def _build_preconditioner(self, modules: list[str] | None):
         """The preconditioner chain for ``modules`` (all when ``None``)."""
         chain: list = []
         if self.project_factors:
 
             def projection(name, role, n):
-                return self._projection(
-                    name, role, n, torch.float32, torch.device(self.device)
+                return create_module_projection_matrix(
+                    name,
+                    role,
+                    self.cfg.projection_dim,
+                    n,
+                    torch.float32,
+                    torch.device(self.device),
+                    self.cfg.projection_type,
+                    self.cfg.projection_scale,
+                    self.cfg.projection_seed,
                 )
 
             return chain, FactoredPreconditioner.from_projected_path(
