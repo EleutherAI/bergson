@@ -95,7 +95,9 @@ Compress Gradients
            projection_dim: 64
          hessian_cfg: {method: kfac}
 
-The Kronecker factors are projected with the same matrices as the gradients, and the inverse of :math:`(P_l G P_l^\top) \otimes (P_r A P_r^\top)` is applied to the projected query, where :math:`G` and :math:`A` are the gradient and activation factors. The damping is relative to the mean eigenvalue of the projected factors. ``projection_target: global`` isn't supported, and EK-FAC (``ev_correction``) doesn't support projection.
+The Kronecker factors are projected with the same matrices as the gradients, and the inverse of :math:`(P_l G P_l^\top) \otimes (P_r A P_r^\top)` is applied to the projected query, where :math:`G` and :math:`A` are the gradient and activation factors. The damping is relative to the mean eigenvalue of the projected factors.
+
+``projection_target: global`` isn't supported. EKFAC (``ev_correction``) doesn't support projection.
 
 Method details
 --------------
