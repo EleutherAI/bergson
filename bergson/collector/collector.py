@@ -91,8 +91,8 @@ class HookCollectorBase(ContextDecorator, ABC):
     """When True, compute per-position gradients instead of per-example."""
 
     span_column: str | None = None
-    """Compute gradients for continugous spans within each document when spans
-    are defined in a dataset column."""
+    """Compute gradients for continugous spans within each document when span 
+    starting indices are defined in this dataset column."""
 
     lo: float = float("-inf")
     """Lower clamp bound for gradients. May be narrowed in subclass ``setup()``."""
