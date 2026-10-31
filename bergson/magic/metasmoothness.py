@@ -135,8 +135,7 @@ def metasmoothness_worker(
             grad_accum_steps=run_cfg.grad_accum_steps,
         )
 
-        # Every rank keeps its own parameters. Under fsdp those are disjoint
-        # shards, and the score reduces across them, so all ranks take part.
+        # Under fsdp each rank holds a disjoint shard of the parameters.
         sharded = any(isinstance(p, DTensor) for p in fwd_state.params.values())
         theta = torch.cat(
             [
@@ -147,14 +146,14 @@ def metasmoothness_worker(
                 for p in fwd_state.params.values()
             ]
         )
-        # Shards are small; a replicated vector does not need to sit in VRAM.
+        # Move unsharded parameters to the CPU to save VRAM.
         thetas.append(theta if sharded else theta.cpu())
 
         if global_rank == 0:
             print(f"[metasmoothness] finished training {k + 1}/3 (w = 1 + {k}*h*v)")
 
         if k == 0 and run_cfg.save_models:
-            # Gathering shards is a collective; rank 0 writes.
+            # Gather on every rank, save on rank 0.
             with fwd_state.activate(model), torch.no_grad():
                 state = full_state_dict(model)
             if global_rank == 0:
@@ -169,7 +168,7 @@ def metasmoothness_worker(
             del state
         del trainer, fwd_state, model
 
-    # Both reductions are collectives, so they run on every rank.
+    # Score on every rank since the reductions are collectives.
     score = metasmoothness_score(*thetas, reduce=sharded)
     movement = total_movement_l1(thetas[0], thetas[2], reduce=sharded)
 

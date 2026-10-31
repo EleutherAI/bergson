@@ -561,7 +561,7 @@ def worker(
         and run_cfg.method.start != 0
     )
     if run_cfg.save_models and not trails_slice:
-        # Gathering shards is a collective; rank 0 writes.
+        # Gather on every rank, save on rank 0.
         with fwd_state.activate(model), torch.no_grad():
             state = full_state_dict(model)
         if global_rank == 0:

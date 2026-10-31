@@ -932,7 +932,7 @@ def validate_scores(
         fwd_state = run_retrain(trainer, fwd_state, stream, run_cfg, f"subset_{i}")
 
         if save_models:
-            # Gathering shards is a collective; rank 0 writes.
+            # Gather on every rank, save on rank 0.
             with fwd_state.activate(model), torch.no_grad():
                 state = full_state_dict(model)
             if global_rank == 0:
