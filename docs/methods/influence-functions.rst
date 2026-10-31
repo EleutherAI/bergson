@@ -42,7 +42,7 @@ Enable it in the CLI or in a YAML in the ``influence`` command, by setting ``hes
 
 Setting ``astra.solver: cg`` enables an alternative to the canonical ASTRA implementation that uses the CG solver (preconditioned conjugate gradients) on one batch of ``batch_size`` documents.
 
-Keep the solve with the lowest final objective across seeds.
+The ASTRA solver learning rate should be tuned to minimize solver error. If you use multiple solver seeds, use the seed with the lowest final objective.
 
 See ``examples/replications/bae_approx_unrolling_source_replication/wikitext_gpt2_astra.yaml`` and ``examples/gpt2_wikitext_leaderboard/ekfac_astra_cg.yaml``.
 
