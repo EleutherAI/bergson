@@ -226,20 +226,21 @@ class Astra:
     ):
         if inversion_cfg.inversion not in ("damped_inverse", "absolute_damped_inverse"):
             raise ValueError(
-                "ASTRA needs inversion='damped_inverse' or "
-                "'absolute_damped_inverse'."
+                "ASTRA needs inversion='damped_inverse' or 'absolute_damped_inverse'."
             )
 
         self.paths = paths
         self.cfg = astra_cfg
         self.logger = get_logger("Astra")
         self.device = device
+        self.store_device = "cpu" if astra_cfg.factors_on_cpu else device
 
         self.preconditioner = FactoredPreconditioner.from_path(
             paths.hessian_path,
             inversion_cfg=inversion_cfg,
             ev_correction=ev_correction,
-            device=self.device,
+            device=self.store_device,
+            compute_device=self.device if astra_cfg.factors_on_cpu else None,
         )
         self.names = list(self.preconditioner.lambdas)
         self.damping = {
@@ -247,7 +248,7 @@ class Astra:
             * (
                 1.0
                 if inversion_cfg.inversion == "absolute_damped_inverse"
-                else lam.mean()
+                else lam.to(device).mean()
             )
             for n, lam in self.preconditioner.lambdas.items()
         }
@@ -285,7 +286,8 @@ class Astra:
                 : self.cfg.batch_size
             ].tolist()
             return self._cg(q, x, row, indices)
-        buf = {n: torch.zeros_like(x[n]) for n in self.names}
+        q = {n: q[n].to(self.store_device) for n in self.names}
+        buf = {n: torch.zeros_like(q[n]) for n in self.names}
         lr = self.cfg.lr
         for step in range(self.cfg.num_steps):
             if step > 0 and step % self.cfg.lr_decay_interval == 0:
@@ -294,23 +296,24 @@ class Astra:
                 : self.cfg.batch_size
             ].tolist()
             hx = self.hvp(x, indices)
-            residual = {
-                n: (hx[n] + self.damping[n] * x[n] - q[n])[None] for n in self.names
-            }
             if step % 50 == 0 or step == self.cfg.num_steps - 1:
                 objective = torch.stack(
                     [
-                        (x[n] @ (hx[n] + self.damping[n] * x[n])) / 2 - x[n] @ q[n]
+                        (x[n] @ (hx[n] + self.damping[n] * x[n])) / 2
+                        - x[n] @ q[n].to(self.device)
                         for n in self.names
                     ]
                 ).sum()
                 self.logger.info(
                     f"query {row} step {step}: objective {objective.item():.6g}"
                 )
-            direction = self.preconditioner.apply(residual)
             for n in self.names:
-                buf[n].mul_(self.cfg.momentum).add_(direction[n][0])
-                x[n].sub_(buf[n], alpha=lr)
+                residual = hx.pop(n) + self.damping[n] * x[n] - q[n].to(self.device)
+                direction = self.preconditioner.apply({n: residual[None]})[n][0]
+                velocity = buf[n].to(self.device).mul_(self.cfg.momentum)
+                velocity.add_(direction)
+                x[n].sub_(velocity, alpha=lr)
+                buf[n] = velocity.to(self.store_device)
         return x
 
     def _damped_product(

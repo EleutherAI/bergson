@@ -1009,6 +1009,11 @@ class AstraConfig(Serializable):
     """Overrides ``index_cfg.loss_reduction`` in the Hessian-vector products.
     Used to replicate ASTRA; its theoretical interpretation is unclear."""
 
+    factors_on_cpu: bool = False
+    """Hold the Kronecker factors in CPU memory and move each module's to the GPU
+    only to precondition it, lowering peak GPU memory for slower steps. ``sgd`` also
+    holds the query and momentum there."""
+
     lr: float = 0.01
     """Step size. Too large a step diverges; tune it by the logged objective."""
 
