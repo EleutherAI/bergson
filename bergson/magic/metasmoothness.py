@@ -44,7 +44,7 @@ def metasmoothness_score(
 
     ``sign(theta_2h - theta_h) . diag(d / |d|_1) . sign(theta_h - theta0)``
     with ``d = |theta_2h - theta0|`` (Def. 2 of arXiv 2503.13751; the ``/h``
-    factors cancel inside ``sign``).
+    factors cancel inside ``sign``). Sums across ranks when ``reduce`` is True.
     """
     d = (theta_2h - theta0).abs()
     s1 = torch.sign(theta_h - theta0)
@@ -61,7 +61,10 @@ def metasmoothness_score(
 def total_movement_l1(
     theta0: torch.Tensor, theta_2h: torch.Tensor, *, reduce: bool = False
 ) -> float:
-    """``|theta_2h - theta0|_1``, summed across shards when ``reduce``."""
+    """Return the L1 distance between ``theta0`` and ``theta_2h``.
+
+    Sums across ranks when ``reduce`` is True.
+    """
     moved = (theta_2h - theta0).abs().sum()
     if reduce:
         dist.all_reduce(moved)

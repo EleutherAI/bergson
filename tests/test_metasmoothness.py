@@ -193,11 +193,7 @@ def _shard_score_worker(rank, world_size, port, thetas, out):
 
 
 def test_sharded_score_matches_unsharded():
-    """Reducing over disjoint shards reproduces the whole-vector score.
-
-    This is what lets metasmoothness run under fsdp, where each rank only holds
-    its own slice of the parameters.
-    """
+    """Reducing over disjoint shards reproduces the whole-vector score."""
     import torch.multiprocessing as mp
 
     from bergson.magic.metasmoothness import metasmoothness_score

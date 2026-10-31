@@ -127,9 +127,9 @@ def shallow_copy(tensor_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor
 def full_state_dict(model: torch.nn.Module) -> dict[str, torch.Tensor]:
     """Gather a model's state dict into plain CPU tensors under its original names.
 
-    ``simple_fsdp`` leaves each weight as a ``Shard(0)`` DTensor registered at
-    ``parametrizations.<name>.original``; gathering it is a collective, so
-    call this on every rank. Tied weights stay one tensor.
+    ``simple_fsdp`` registers each sharded weight at
+    ``parametrizations.<name>.original``. Must be called on every rank. Tied
+    weights stay one tensor.
     """
     seen: dict[int, torch.Tensor] = {}
     result: dict[str, torch.Tensor] = {}
