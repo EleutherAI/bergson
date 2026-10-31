@@ -1,6 +1,15 @@
 # CHANGELOG
 
 
+## v2.7.0 (2026-10-31)
+
+### Features
+
+- Invert the Kronecker factors in the projected space
+  ([#543](https://github.com/EleutherAI/bergson/pull/543),
+  [`dd3b38f`](https://github.com/EleutherAI/bergson/commit/dd3b38f48a97d500515df5d2c1ef57401c96f332))
+
+
 ## v2.6.0 (2026-10-31)
 
 ### Features
