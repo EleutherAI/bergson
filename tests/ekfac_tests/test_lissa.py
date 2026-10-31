@@ -46,7 +46,8 @@ def test_lissa_reaches_the_damped_solution():
         x = torch.tensor(data["input_ids"])
         return functional_call(model, params, (x,)).logits[:, :-1]
 
-    theta = torch.cat([product._to_flat(n, product.params) for n in names])
+    params = dict(model.named_parameters())
+    theta = torch.cat([product._to_flat(n, params) for n in names])
     jac = jacrev(logits)(theta).flatten(0, 1)
     probs = torch.softmax(logits(theta), -1).flatten(0, 1)
     out_hessian = torch.diag_embed(probs) - probs[:, :, None] * probs[:, None, :]
