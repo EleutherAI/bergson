@@ -1,7 +1,8 @@
 import gc
 import os
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import nullcontext
 from dataclasses import dataclass
 
 import torch
@@ -409,25 +410,32 @@ def eigendecompose_owned(
         leave=False,
     )
 
-    def decompose(keys: list[str]):
-        for key in keys:
-            covariance = covariances.pop(key)
-            count = _module_count(key, total_processed, num_positions)
-            values, vectors = _eigh(key, covariance, count.to(covariance.device), dtype)
-            del covariance
-            eigenvectors[key] = vectors
-            eigenvalues[key] = values
-            progress.update()
+    def decompose(device: torch.device, keys: list[str]):
+        # Threads start on the default device.
+        with torch.cuda.device(device) if device.type == "cuda" else nullcontext():
+            for key in keys:
+                covariance = covariances.pop(key)
+                count = _module_count(key, total_processed, num_positions)
+                values, vectors = _eigh(
+                    key, covariance, count.to(covariance.device), dtype
+                )
+                del covariance
+                eigenvectors[key] = vectors
+                eigenvalues[key] = values
+                progress.update()
 
     # When the model is split across GPUs each covariance is on its module's
     # GPU, so decompose the ones on each GPU in their own thread.
     by_device = defaultdict(list)
     for key, covariance in covariances.items():
         by_device[covariance.device].append(key)
-    with ThreadPoolExecutor(max(len(by_device), 1)) as pool:
-        for done in [pool.submit(decompose, keys) for keys in by_device.values()]:
-            done.result()
-    progress.close()
+    try:
+        with ThreadPoolExecutor(max(len(by_device), 1)) as pool:
+            futures = [pool.submit(decompose, *item) for item in by_device.items()]
+            for future in as_completed(futures):
+                future.result()
+    finally:
+        progress.close()
 
     shards = eigenvectors
     value_shards = {key: values.cpu() for key, values in eigenvalues.items()}
