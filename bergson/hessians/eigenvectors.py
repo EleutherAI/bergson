@@ -323,16 +323,16 @@ def compute_eigendecomposition(
     covariance_path: str,
     total_processed: int | Tensor,
     num_positions: dict[str, int] | None = None,
+    all_gpus: bool = False,
 ) -> dict[str, Tensor]:
     """Eigendecompose the covariances saved under ``covariance_path`` (Eq. 18).
 
     Each covariance belongs to one rank, chosen to balance the O(d³) cost, which
-    joins it from every rank's row shard. In a single process that sees several
-    GPUs, the covariances are spread over the GPUs instead and each GPU
-    decomposes its own in a thread, one at a time, so the eigendecomposition
-    gets a whole GPU. Each covariance is divided by its entry in
-    ``num_positions``, the positions it summed, when given, else by
-    ``total_processed``.
+    joins it from every rank's row shard. With ``all_gpus``, a single process
+    spreads the covariances over every visible GPU instead, and each GPU
+    decomposes its own in a thread, one at a time. Each covariance is divided
+    by its entry in ``num_positions``, the positions it summed, when given,
+    else by ``total_processed``.
 
     Saves this rank's row shard of every eigenvector matrix under the
     ``eigen_`` sibling of ``covariance_path``, and returns this rank's row shard
@@ -360,7 +360,7 @@ def compute_eigendecomposition(
         }
         owned = assignment[rank]
         devices = [torch.device(get_device(rank))]
-    elif torch.cuda.device_count() > 1:
+    elif all_gpus and torch.cuda.device_count() > 1:
         devices = [torch.device("cuda", i) for i in range(torch.cuda.device_count())]
     else:
         devices = [torch.device(get_device(0))]

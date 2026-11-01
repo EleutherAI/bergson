@@ -142,3 +142,30 @@ def test_fresh_fit_keeps_files_and_ignores_old_markers(tmp_path: Path, monkeypat
     out = approximate_hessians(cfg, hessian_cfg(1))
     assert [name for _, name in steps][0] == "covariances"
     assert (Path(out) / "config.yaml").read_text() == "saved by the caller"
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_reloaded_model_keeps_the_fresh_adapter(tmp_path: Path, monkeypatch):
+    """The correction pass runs the same randomly initialized adapter as the
+    covariance pass, though the model is reloaded in between."""
+    adapters = []
+
+    def record(model, *args, **kwargs):
+        adapters.append(
+            {
+                name: p.detach().cpu().clone()
+                for name, p in model.named_parameters()
+                if "lora_" in name
+            }
+        )
+        return COLLECT(model, *args, **kwargs)
+
+    monkeypatch.setattr(hessian_approximations, "collect_hessians", record)
+    cfg = index_cfg(tmp_path / "run")
+    cfg.peft_init_kwargs = "r=4,target_modules=query_key_value|dense"
+    approximate_hessians(cfg, hessian_cfg(1))
+
+    covariance_pass, correction_pass = adapters
+    assert covariance_pass and covariance_pass.keys() == correction_pass.keys()
+    for name, weight in covariance_pass.items():
+        torch.testing.assert_close(correction_pass[name], weight, msg=name)

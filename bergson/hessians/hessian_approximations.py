@@ -12,6 +12,7 @@ from typing import Callable
 import torch
 import torch.distributed as dist
 from datasets import Dataset
+from peft import PeftModel, get_peft_model_state_dict, set_peft_model_state_dict
 from safetensors import safe_open
 from safetensors.torch import save_file
 from transformers import PreTrainedModel
@@ -238,6 +239,8 @@ def approximate_hessians(
     if not resume and index_cfg.distributed.rank == 0:
         for marker in index_cfg.partial_run_path.rglob(f"*{DONE_SUFFIX}"):
             marker.unlink()
+        for counts in index_cfg.partial_run_path.rglob("num_positions.json"):
+            counts.unlink()
     index_cfg.partial_run_path.mkdir(parents=True, exist_ok=True)
 
     ds, _ = setup_data_pipeline(index_cfg)
@@ -350,18 +353,13 @@ def hessian_worker(
             for i, group in enumerate(partitions)
         ]
 
-    # Handed over rather than kept here, so the fit can free it while it
-    # eigendecomposes, and reload it after.
-    loaded = [model]
+    # Passed without keeping a reference here, so the fit can free the model
+    # while it eigendecomposes.
+    handed_over = [model]
     del model
-
-    def load_model() -> PreTrainedModel:
-        if loaded:
-            return loaded.pop()
-        return setup_model_and_peft(index_cfg)[0]  # type: ignore
-
     fit_factored_hessians(
-        load_model,
+        handed_over.pop(),
+        lambda: setup_model_and_peft(index_cfg)[0],  # type: ignore
         ds,
         index_cfg,
         hessian_cfg,
@@ -377,7 +375,8 @@ def hessian_worker(
 
 
 def fit_factored_hessians(
-    load_model: Callable[[], PreTrainedModel],
+    model: PreTrainedModel,
+    reload_model: Callable[[], PreTrainedModel],
     data: Dataset,
     index_cfg: IndexConfig,
     hessian_cfg: HessianConfig,
@@ -395,14 +394,17 @@ def fit_factored_hessians(
        eigendecomposition of a large covariance can need most of a GPU.
     3. For EK-FAC, collect each group's eigenvalue corrections.
 
-    ``load_model`` returns the model for phases 1 and 3, loading it if needed.
+    ``reload_model`` loads the model again for phase 3, which gets the adapter
+    weights of ``model``, as a fresh adapter's initialization is random.
     """
-    model: PreTrainedModel | None = None
+    adapter = None
 
     def get_model() -> PreTrainedModel:
         nonlocal model
         if model is None:
-            model = load_model()
+            model = reload_model()
+            if adapter is not None:
+                set_peft_model_state_dict(model, adapter)
         return model
 
     def collect(modules: set[str] | None, path: str, **kwargs) -> HookCollectorBase:
@@ -442,6 +444,10 @@ def fit_factored_hessians(
     if not do_eigendecomposition:
         return
 
+    if isinstance(model, PeftModel):
+        adapter = {
+            k: v.detach().cpu() for k, v in get_peft_model_state_dict(model).items()
+        }
     model = None
     _release_device_memory()
     total_processed = torch.load(
@@ -458,7 +464,11 @@ def fit_factored_hessians(
                 num_positions = json.load(f)
         eigenvalues = [
             compute_eigendecomposition(
-                os.path.join(path, sub), total_processed, num_positions
+                os.path.join(path, sub),
+                total_processed,
+                num_positions,
+                # With the model split across GPUs, the fit has them all.
+                all_gpus=index_cfg.distributed.device_map_auto,
             )
             for sub in ("activation_sharded", "gradient_sharded")
         ]

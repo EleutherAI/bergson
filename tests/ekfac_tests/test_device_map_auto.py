@@ -113,8 +113,14 @@ def test_split_pipeline_matches_one_gpu(tmp_path: Path, aggregation: str):
     np.testing.assert_allclose(split, expected, rtol=1e-4, atol=1e-6)
 
 
-def test_model_freed_while_eigendecomposing(tmp_path: Path, monkeypatch):
-    """The eigendecomposition gets the GPUs without the model's weights."""
+class Interrupted(Exception):
+    pass
+
+
+@pytest.mark.parametrize("resume", [False, True])
+def test_model_freed_while_eigendecomposing(tmp_path: Path, monkeypatch, resume):
+    """The eigendecomposition gets the GPUs without the model's weights, also
+    when a resumed fit starts at it."""
     eigendecompose = hessian_approximations.compute_eigendecomposition
     allocated = []
 
@@ -123,16 +129,25 @@ def test_model_freed_while_eigendecomposing(tmp_path: Path, monkeypatch):
             torch.cuda.memory_allocated(i) for i in range(torch.cuda.device_count())
         )
 
+    def interrupt(*args, **kwargs):
+        raise Interrupted
+
     def record(*args, **kwargs):
         allocated.append(total_allocated())
         return eigendecompose(*args, **kwargs)
 
-    monkeypatch.setattr(hessian_approximations, "compute_eigendecomposition", record)
     cfg = _index_cfg(tmp_path, DistributedConfig(device_map_auto=True))
     model, _ = setup_model_and_peft(cfg)
     weight_bytes = sum(p.numel() * p.element_size() for p in model.parameters())
     del model
+    if resume:
+        monkeypatch.setattr(
+            hessian_approximations, "compute_eigendecomposition", interrupt
+        )
+        with pytest.raises(Interrupted):
+            approximate_hessians(cfg, HESSIAN_CFG)
     gc.collect()
     before = total_allocated()
-    approximate_hessians(cfg, HESSIAN_CFG)
+    monkeypatch.setattr(hessian_approximations, "compute_eigendecomposition", record)
+    approximate_hessians(cfg, HESSIAN_CFG, resume=resume)
     assert allocated and max(allocated) - before < weight_bytes / 10

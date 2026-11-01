@@ -31,8 +31,6 @@ class CovarianceCollector(HookCollectorBase):
 
     Distributed, each module's covariances belong to one rank, which receives
     every rank's positions for that module; teardown saves the usual row shards.
-    Teardown leaves the covariances this rank owns, in full, on its device in
-    ``A_cov_dict`` and ``S_cov_dict`` for the eigendecomposition.
 
     ``num_positions`` counts the positions each module's covariances summed,
     across all ranks after teardown. It is ``total_processed`` for a dense

@@ -245,6 +245,7 @@ def test_kfac_normalizes_experts_by_their_routed_positions(tmp_path):
     index_cfg.partial_run_path.mkdir(parents=True)
     path = str(tmp_path / "hessian")
     fit_factored_hessians(
+        model,
         lambda: model,
         data,
         index_cfg,
