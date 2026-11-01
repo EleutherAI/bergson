@@ -266,14 +266,16 @@ class Astra:
         )
         self.num_docs = len(data)
 
-    def _read_row(self, mmap: np.memmap, offsets, row: int) -> dict[str, Tensor]:
+    def _read_row(
+        self, mmap: np.memmap, offsets, row: int, device: str | None = None
+    ) -> dict[str, Tensor]:
         with warnings.catch_warnings():
             warnings.filterwarnings(
                 "ignore", message="The given NumPy array is not writable"
             )
             return {
                 n: numpy_to_tensor(mmap[row, slice(*offsets[n])]).to(
-                    self.device, torch.float32
+                    device or self.device, torch.float32
                 )
                 for n in self.names
             }
@@ -373,7 +375,9 @@ class Astra:
             shape=init.shape,
         )
         for row in rows:
-            q = self._read_row(query, query_offsets, row)
+            # SGD reads the query where it keeps it, so no copy stays on the GPU
+            q_device = self.store_device if self.cfg.solver == "sgd" else self.device
+            q = self._read_row(query, query_offsets, row, q_device)
             x = self._read_row(init, offsets, row)
             x = self.refine(q, x, row)
             # Under FSDP every rank refines every row to the same solution
