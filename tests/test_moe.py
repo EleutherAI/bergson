@@ -245,14 +245,13 @@ def test_kfac_normalizes_experts_by_their_routed_positions(tmp_path):
     index_cfg.partial_run_path.mkdir(parents=True)
     path = str(tmp_path / "hessian")
     fit_factored_hessians(
-        model,
+        lambda: model,
         data,
         index_cfg,
         HessianConfig(method="kfac", ev_correction=True, use_dataset_labels=True),
-        target_modules=None,
+        groups=[(None, path)],
         attention_cfgs={},
         batches=[[i] for i in range(num_documents)],
-        path=path,
         do_eigendecomposition=True,
     )
 

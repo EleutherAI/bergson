@@ -1,6 +1,4 @@
-import gc
 import os
-from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -87,10 +85,9 @@ class LambdaCollector(HookCollectorBase):
     Transforms activations and gradients using precomputed eigenvectors,
     then computes outer products for diagonal correction terms.
 
-    Distributed, each module belongs to the rank that owned its covariances,
-    which takes its full eigenvectors from ``eigenvectors`` or joins them from
-    every rank's shard, and receives every rank's positions for it; teardown
-    saves the usual row shards.
+    Distributed, each module belongs to one rank, which joins its full
+    eigenvectors from every rank's shard and receives every rank's positions
+    for it; teardown saves the usual row shards.
     """
 
     path: str
@@ -107,11 +104,6 @@ class LambdaCollector(HookCollectorBase):
 
     num_documents: int = 1
     """Divides the summed corrections into a mean over documents."""
-
-    eigenvectors: tuple[dict[str, Tensor], dict[str, Tensor]] | None = None
-    """The activation and gradient eigenvectors of the modules this rank owns,
-    in full, as returned by :func:`eigendecompose_owned`. Read from the shard
-    files when not given."""
 
     def setup(self) -> None:
         """Load eigenvectors and initialize storage."""
@@ -130,25 +122,23 @@ class LambdaCollector(HookCollectorBase):
             self._setup_owned(eigen_src)
             return
 
-        if self.eigenvectors is None:
-            self.eigenvectors = tuple(
-                load_file(
-                    os.path.join(eigen_src, subdir, f"shard_{self.rank}.safetensors")
-                )
-                for subdir in ("eigen_activation_sharded", "eigen_gradient_sharded")
-            )
         # Each on its module's device, in the accumulation dtype.
         self.eigen_a, self.eigen_g = (
             {
                 k: vectors[k].to(self.target_info[k][0], self.dtype)
                 for k in self.target_info
             }
-            for vectors in self.eigenvectors
+            for vectors in (
+                load_file(
+                    os.path.join(eigen_src, subdir, f"shard_{self.rank}.safetensors")
+                )
+                for subdir in ("eigen_activation_sharded", "eigen_gradient_sharded")
+            )
         )
 
     def _setup_owned(self, eigen_src: str) -> None:
         """Load the full eigenvectors of the modules this rank owns, joining the
-        row shards every rank wrote unless they were passed in."""
+        row shards every rank wrote."""
         self.owners = assign_module_owners(self.target_info, self.world_size)
         owned = [name for name, owner in self.owners.items() if owner == self.rank]
 
@@ -167,14 +157,8 @@ class LambdaCollector(HookCollectorBase):
                 for name, rows in full.items()
             }
 
-        if self.eigenvectors is not None:
-            self.eigen_a, self.eigen_g = (
-                {name: vectors[name].to(self.device, self.dtype) for name in owned}
-                for vectors in self.eigenvectors
-            )
-        else:
-            self.eigen_a = load("eigen_activation_sharded")
-            self.eigen_g = load("eigen_gradient_sharded")
+        self.eigen_a = load("eigen_activation_sharded")
+        self.eigen_g = load("eigen_gradient_sharded")
         self.correction_shapes = {
             name: (out_dim, in_dim + collect_bias)
             for name, (_, (out_dim, in_dim), collect_bias) in self.target_info.items()
@@ -298,43 +282,6 @@ class LambdaCollector(HookCollectorBase):
         self.eigenvalue_corrections.clear()
 
 
-def _compute_full_matrix(
-    name: str,
-    shard_path: str | os.PathLike,
-    rank: int,
-    world_size: int,
-) -> Tensor:
-    """
-    Load a full matrix from sharded covariance files.
-    Needed to compute eigendecomposition.
-    """
-    files = os.listdir(shard_path)
-    assert (
-        len(files) == world_size
-    ), f"Expected {world_size} shards, found {len(files)} in {shard_path}"
-
-    device = get_device(rank)
-    full_matrix = None
-
-    if world_size == 1:
-        full_path_rank = os.path.join(shard_path, "shard_0.safetensors")
-        with safe_open(full_path_rank, framework="pt", device=device) as f:
-            full_matrix = f.get_tensor(name)
-    else:
-        full_matrix_list = []
-        for shard_id in range(world_size):
-            shard_path_rank = os.path.join(shard_path, f"shard_{shard_id}.safetensors")
-            with safe_open(shard_path_rank, framework="pt", device=device) as f:
-                local_matrix = f.get_tensor(name)
-
-            full_matrix_list.append(local_matrix)
-
-        # Concatenate all shards to form the full matrix
-        full_matrix = torch.cat(full_matrix_list, dim=0)
-
-    return full_matrix
-
-
 def _eigh(
     key: str, matrix: Tensor, total_processed: Tensor, dtype: torch.dtype
 ) -> tuple[Tensor, Tensor]:
@@ -372,193 +319,114 @@ def _module_count(
     return torch.tensor(max(num_positions[key], 1), device=total_processed.device)
 
 
-def eigendecompose_owned(
-    covariances: dict[str, Tensor],
-    shapes: dict[str, tuple[int, ...]],
-    owners: dict[str, int] | None,
+def compute_eigendecomposition(
+    covariance_path: str,
     total_processed: int | Tensor,
-    output_path: str,
-    dtype: torch.dtype,
     num_positions: dict[str, int] | None = None,
-) -> tuple[dict[str, Tensor], dict[str, Tensor]]:
-    """Eigendecompose the covariances this rank owns, in full, from memory.
+) -> dict[str, Tensor]:
+    """Eigendecompose the covariances saved under ``covariance_path`` (Eq. 18).
 
-    ``owners`` maps every module in ``shapes`` to its rank, or is ``None`` in a
-    single process. Saves this rank's row shard of every module's eigenvectors
-    to ``output_path`` in ``dtype``, the layout :func:`compute_eigendecomposition`
-    writes.
+    Each covariance belongs to one rank, chosen to balance the O(d³) cost, which
+    joins it from every rank's row shard. In a single process that sees several
+    GPUs, the covariances are spread over the GPUs instead and each GPU
+    decomposes its own in a thread, one at a time, so the eigendecomposition
+    gets a whole GPU. Each covariance is divided by its entry in
+    ``num_positions``, the positions it summed, when given, else by
+    ``total_processed``.
 
-    Each covariance is divided by its module's entry in ``num_positions``, the
-    positions it summed, when given, else by ``total_processed``. The two differ
-    for an MoE expert, which only sums the positions routed to it.
-
-    Returns the eigenvectors of the modules this rank owns, in full, on their
-    covariances' devices, and this rank's row shard of every module's eigenvalues on
-    the CPU. Empties ``covariances`` as it goes, so each covariance is freed once
-    its eigenvectors exist.
+    Saves this rank's row shard of every eigenvector matrix under the
+    ``eigen_`` sibling of ``covariance_path``, and returns this rank's row shard
+    of every module's eigenvalues on the CPU.
     """
-    rank = dist.get_rank() if owners is not None else 0
-    device = get_device(rank)
-    total_processed = torch.as_tensor(total_processed, device=device)
+    distributed = dist.is_initialized()
+    rank = dist.get_rank() if distributed else 0
+    world_size = dist.get_world_size() if distributed else 1
+    files = [
+        os.path.join(covariance_path, f"shard_{r}.safetensors")
+        for r in range(world_size)
+    ]
+
+    with safe_open(files[0], framework="pt") as f:
+        keys = list(f.keys())
+        dtype = f.get_tensor(keys[0]).dtype if keys else torch.float32
+        dims = {key: f.get_slice(key).get_shape()[-1] for key in keys}
+
+    owned = keys
+    owners = None
+    if distributed:
+        assignment = fair_distribute_by_cost(dims, world_size)
+        owners = {
+            key: r for r, ranks_keys in enumerate(assignment) for key in ranks_keys
+        }
+        owned = assignment[rank]
+        devices = [torch.device(get_device(rank))]
+    elif torch.cuda.device_count() > 1:
+        devices = [torch.device("cuda", i) for i in range(torch.cuda.device_count())]
+    else:
+        devices = [torch.device(get_device(0))]
+    per_device = fair_distribute_by_cost({k: dims[k] for k in owned}, len(devices))
 
     eigenvectors: dict[str, Tensor] = {}
     eigenvalues: dict[str, Tensor] = {}
     progress = tqdm(
-        total=len(covariances),
+        total=len(owned),
         desc=f"Rank {rank}: Computing eigenvectors",
         position=rank,
         leave=False,
     )
 
-    def decompose(device: torch.device, keys: list[str]):
+    def decompose(device: torch.device, device_keys: list[str]):
         # Threads start on the default device.
         with torch.cuda.device(device) if device.type == "cuda" else nullcontext():
-            for key in keys:
-                covariance = covariances.pop(key)
-                count = _module_count(key, total_processed, num_positions)
-                values, vectors = _eigh(
-                    key, covariance, count.to(covariance.device), dtype
+            for key in device_keys:
+                rows = []
+                for path in files:
+                    with safe_open(path, framework="pt", device="cpu") as f:
+                        rows.append(f.get_tensor(key))
+                matrix = torch.cat(rows).to(device)
+                del rows
+                count = _module_count(
+                    key, torch.as_tensor(total_processed, device=device), num_positions
                 )
-                del covariance
-                eigenvectors[key] = vectors
-                eigenvalues[key] = values
+                values, vectors = _eigh(key, matrix, count, dtype)
+                del matrix
+                eigenvectors[key] = vectors.cpu()
+                eigenvalues[key] = values.cpu()
+                del values, vectors
                 progress.update()
 
-    # When the model is split across GPUs each covariance is on its module's
-    # GPU, so decompose the ones on each GPU in their own thread.
-    by_device = defaultdict(list)
-    for key, covariance in covariances.items():
-        by_device[covariance.device].append(key)
-    gpus = [device for device in by_device if device.type == "cuda"]
-    if gpus:
+    if devices[0].type == "cuda":
         # PyTorch loads its GPU linear algebra library on first use, which isn't
         # thread safe.
-        torch.linalg.eigh(torch.eye(2, device=gpus[0]))
+        torch.linalg.eigh(torch.eye(2, device=devices[0]))
     try:
-        with ThreadPoolExecutor(max(len(by_device), 1)) as pool:
-            futures = [pool.submit(decompose, *item) for item in by_device.items()]
+        with ThreadPoolExecutor(len(devices)) as pool:
+            futures = [
+                pool.submit(decompose, device, device_keys)
+                for device, device_keys in zip(devices, per_device)
+            ]
             for future in as_completed(futures):
                 future.result()
     finally:
         progress.close()
 
-    shards = eigenvectors
-    value_shards = {key: values.cpu() for key, values in eigenvalues.items()}
+    value_shards = eigenvalues
     if owners is not None:
-        shards = owned_to_row_shards(eigenvectors, shapes, owners, dtype, device)
+        device = devices[0]
+        eigenvectors = owned_to_row_shards(
+            eigenvectors, {k: (m, m) for k, m in dims.items()}, owners, dtype, device
+        )
         value_shards = owned_to_row_shards(
-            eigenvalues,
-            {key: shape[:1] for key, shape in shapes.items()},
-            owners,
-            dtype,
-            device,
+            eigenvalues, {k: (m,) for k, m in dims.items()}, owners, dtype, device
         )
 
+    output_path = os.path.join(
+        os.path.dirname(covariance_path), "eigen_" + os.path.basename(covariance_path)
+    )
     os.makedirs(output_path, exist_ok=True)
-    save_file(shards, os.path.join(output_path, f"shard_{rank}.safetensors"))
+    save_file(eigenvectors, os.path.join(output_path, f"shard_{rank}.safetensors"))
     get_logger().info(f"Saved eigenvectors to {output_path}")
-    return eigenvectors, value_shards
-
-
-def compute_eigendecomposition(
-    covariance_path: str,
-    total_processed: int | Tensor,
-) -> dict[str, Tensor]:
-    """
-    Compute eigendecomposition from covariance matrices (Eq. 18 from paper).
-
-    The function discovers keys from shard metadata (fast, no tensor loading).
-    Keys are distributed across workers, and full matrices are reconstructed
-    via _compute_full_matrix(). Output sharding is inferred from the
-    eigenvector shapes.
-
-    Args:
-        covariance_path: Full path to the covariance sharded directory.
-        total_processed: Number of samples used to compute covariance.
-
-    Returns:
-        Per-key eigenvalue shards (rows per shard_bounds) on CPU. The
-        eigenvectors are written to disk; the eigenvalues are returned so
-        callers (e.g. `save_uncorrected_eigenvalues`) can use them without
-        reloading.
-    """
-    rank = dist.get_rank() if dist.is_initialized() else 0
-    world_size = dist.get_world_size() if dist.is_initialized() else 1
-    device = get_device(rank)
-
-    # Handle total_processed as tensor if needed
-    if isinstance(total_processed, int):
-        total_processed = torch.tensor(total_processed, device=device)
-    else:
-        total_processed = total_processed.to(device)
-
-    # Discover keys and dimensions from shard metadata
-    first_shard_path = os.path.join(covariance_path, "shard_0.safetensors")
-    with safe_open(first_shard_path, framework="pt") as f:
-        all_keys = list(f.keys())
-        original_dtype = f.get_tensor(all_keys[0]).dtype
-        # Get dimensions for fair distribution (columns not sharded, shape[-1]=d)
-        key_dimensions = {key: f.get_tensor(key).shape[-1] for key in all_keys}
-
-    # Distribute keys fairly based on O(d³) eigendecomposition cost
-    all_assignments = fair_distribute_by_cost(key_dimensions, world_size)
-    keys_for_this_rank = all_assignments[rank]
-
-    covariance_eigenvectors: dict[str, Tensor] = {}
-    covariance_eigenvalues: dict[str, Tensor] = {}
-
-    for key in tqdm(
-        keys_for_this_rank,
-        disable=False,
-        desc=f"Rank {rank}: Computing eigenvectors",
-        position=rank,
-        leave=False,
-    ):
-        matrix = _compute_full_matrix(
-            name=key,
-            shard_path=covariance_path,
-            rank=rank,
-            world_size=world_size,
-        )
-
-        eigenvalues, eigenvectors = _eigh(key, matrix, total_processed, original_dtype)
-        del matrix
-        covariance_eigenvectors[key] = eigenvectors.cpu()
-        covariance_eigenvalues[key] = eigenvalues.cpu()
-
-    covariance_eigenvectors = _gather_and_shard_along_dim_0(
-        input_dict=covariance_eigenvectors,
-        full_shape_per_key={k: (m, m) for k, m in key_dimensions.items()},
-        dtype=original_dtype,  # type: ignore
-        rank=rank,
-        world_size=world_size,
-        device=device,
-    )
-    covariance_eigenvalues = _gather_and_shard_along_dim_0(
-        input_dict=covariance_eigenvalues,
-        full_shape_per_key={k: (m,) for k, m in key_dimensions.items()},
-        dtype=original_dtype,  # type: ignore
-        rank=rank,
-        world_size=world_size,
-        device=device,
-    )
-
-    # Generic output path by adding eigen_prefix to the path
-    dirname = os.path.dirname(covariance_path)
-    basename = os.path.basename(covariance_path)
-    output_path = os.path.join(dirname, "eigen_" + basename)
-
-    os.makedirs(output_path, exist_ok=True)
-    save_file(
-        covariance_eigenvectors,
-        os.path.join(output_path, f"shard_{rank}.safetensors"),
-    )
-
-    gc.collect()
-
-    get_logger().info(f"Saved eigenvectors to {output_path}")
-
-    return covariance_eigenvalues
+    return value_shards
 
 
 def save_uncorrected_eigenvalues(
@@ -655,39 +523,3 @@ def save_uncorrected_eigenvalues(
     save_file(factor_eig_g, os.path.join(factor_g_dir, f"shard_{rank}.safetensors"))
 
     get_logger().info(f"Saved uncorrected eigenvalues to {out_dir}")
-
-
-def _gather_and_shard_along_dim_0(
-    input_dict: dict[str, Tensor],
-    full_shape_per_key: dict[str, tuple[int, ...]],
-    dtype: torch.dtype,
-    rank: int,
-    world_size: int,
-    device: str,
-) -> dict[str, Tensor]:
-    """
-    Gather per-key tensors across ranks via all-reduce, then re-shard along
-    dim 0. Used for both the eigenvector matrix `[m, m]` and the 1D
-    eigenvalue array `[m]`.
-    """
-    if world_size == 1:
-        return input_dict
-
-    # Free tensors held only by reference cycles before the gathers allocate
-    gc.collect()
-    result_dict: dict[str, Tensor] = {}
-    for key, full_shape in full_shape_per_key.items():
-        if key in input_dict:
-            tensor = input_dict[key].to(device=device, dtype=dtype)
-        else:
-            tensor = torch.zeros(full_shape, device=device, dtype=dtype)
-
-        dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
-
-        start_row, end_row = shard_bounds(full_shape[0], rank, world_size)
-        shard = tensor[start_row:end_row].contiguous()
-        result_dict[key] = shard.to(device="cpu")
-
-        del tensor
-
-    return result_dict

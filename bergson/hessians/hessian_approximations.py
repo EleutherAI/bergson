@@ -7,13 +7,13 @@ from collections import defaultdict
 from contextlib import ExitStack
 from dataclasses import asdict
 from pathlib import Path
+from typing import Callable
 
 import torch
 import torch.distributed as dist
 from datasets import Dataset
 from safetensors import safe_open
 from safetensors.torch import save_file
-from torch import Tensor
 from transformers import PreTrainedModel
 
 from bergson.collector.collector import (
@@ -32,7 +32,6 @@ from bergson.hessians.autocorrelation import (
 from bergson.hessians.eigenvectors import (
     LambdaCollector,
     compute_eigendecomposition,
-    eigendecompose_owned,
     save_uncorrected_eigenvalues,
 )
 from bergson.hessians.kfac import CovarianceCollector
@@ -254,6 +253,7 @@ def approximate_hessians(
     if rank == 0:
         for marker in index_cfg.partial_run_path.glob(f"*{DONE_SUFFIX}"):
             marker.unlink()
+        (index_cfg.partial_run_path / "num_positions.json").unlink(missing_ok=True)
         shutil.move(index_cfg.partial_run_path, index_cfg.run_path)
 
     return index_cfg.run_path
@@ -334,78 +334,165 @@ def hessian_worker(
         )
         return
 
-    kwargs = {
-        "model": model,
-        "data": ds,
-        "index_cfg": index_cfg,
-        "hessian_cfg": hessian_cfg,
-        "attention_cfgs": attention_cfgs,
-        "batches": batches,
-        "do_eigendecomposition": do_eigendecomposition,
-    }
-
-    if hessian_cfg.module_partitions == 1:
-        fit_factored_hessians(
-            **kwargs,
-            target_modules=target_modules,
-            path=str(index_cfg.partial_run_path),
+    groups: list[tuple[set[str] | None, str]] = [
+        (target_modules, str(index_cfg.partial_run_path))
+    ]
+    if hessian_cfg.module_partitions > 1:
+        target_info = HookCollectorBase.discover_targets(
+            model.base_model,  # type: ignore
+            target_modules,
+            index_cfg.include_bias,
+            index_cfg.filter_modules,
         )
-        return
+        partitions = balanced_partitions(target_info, hessian_cfg.module_partitions)
+        groups = [
+            (set(group), os.path.join(index_cfg.partial_run_path, f"partition_{i}"))
+            for i, group in enumerate(partitions)
+        ]
 
-    target_info = HookCollectorBase.discover_targets(
-        model.base_model,  # type: ignore
-        target_modules,
-        index_cfg.include_bias,
-        index_cfg.filter_modules,
+    # Handed over rather than kept here, so the fit can free it while it
+    # eigendecomposes, and reload it after.
+    loaded = [model]
+    del model
+
+    def load_model() -> PreTrainedModel:
+        if loaded:
+            return loaded.pop()
+        return setup_model_and_peft(index_cfg)[0]  # type: ignore
+
+    fit_factored_hessians(
+        load_model,
+        ds,
+        index_cfg,
+        hessian_cfg,
+        groups=groups,
+        attention_cfgs=attention_cfgs,
+        batches=batches,
+        do_eigendecomposition=do_eigendecomposition,
     )
-    groups = balanced_partitions(target_info, hessian_cfg.module_partitions)
-    for i, group in enumerate(groups):
-        print(f"Fitting module partition {i + 1}/{len(groups)} ({len(group)} modules)")
-        fit_factored_hessians(
-            **kwargs,
-            target_modules=set(group),
-            path=os.path.join(index_cfg.partial_run_path, f"partition_{i}"),
-        )
 
-    rank = dist.get_rank() if dist.is_initialized() else 0
-    merge_partitions(index_cfg.partial_run_path, len(groups), rank)
+    if len(groups) > 1:
+        rank = dist.get_rank() if dist.is_initialized() else 0
+        merge_partitions(index_cfg.partial_run_path, len(groups), rank)
 
 
 def fit_factored_hessians(
-    model: PreTrainedModel,
+    load_model: Callable[[], PreTrainedModel],
     data: Dataset,
     index_cfg: IndexConfig,
     hessian_cfg: HessianConfig,
     *,
-    target_modules: set[str] | None,
+    groups: list[tuple[set[str] | None, str]],
     attention_cfgs: dict[str, AttentionConfig],
     batches: list[list[int]],
-    path: str,
     do_eigendecomposition: bool,
 ):
-    """Fit the covariances of ``target_modules``, eigendecompose them and, for
-    EK-FAC, collect the eigenvalue corrections, writing everything under ``path``.
-    Skips each of the two passes over the data that already finished there."""
-    if target_modules is not None:
-        attention_cfgs = {
-            k: v for k, v in attention_cfgs.items() if k in target_modules
-        }
+    """Fit the factors of each ``(target_modules, path)`` group, writing them
+    under its path, in three phases that each skip the groups they finished:
 
-    kwargs = {
-        "model": model,
-        "data": data,
-        "index_cfg": index_cfg,
-        "hessian_cfg": hessian_cfg,
-        "target_modules": target_modules,
-        "attention_cfgs": attention_cfgs,
-        "batches": batches,
-        "path": path,
+    1. Collect each group's covariances, which are saved to disk.
+    2. Eigendecompose them from the files with the model freed, since one
+       eigendecomposition of a large covariance can need most of a GPU.
+    3. For EK-FAC, collect each group's eigenvalue corrections.
+
+    ``load_model`` returns the model for phases 1 and 3, loading it if needed.
+    """
+    model: PreTrainedModel | None = None
+
+    def get_model() -> PreTrainedModel:
+        nonlocal model
+        if model is None:
+            model = load_model()
+        return model
+
+    def collect(modules: set[str] | None, path: str, **kwargs) -> HookCollectorBase:
+        return collect_hessians(
+            get_model(),
+            data,
+            index_cfg,
+            batches=batches,
+            target_modules=modules,
+            attention_cfgs=(
+                attention_cfgs
+                if modules is None
+                else {k: v for k, v in attention_cfgs.items() if k in modules}
+            ),
+            hessian_cfg=hessian_cfg,
+            path=path,
+            **kwargs,
+        )
+
+    setups = {
+        path: _fit_setup(index_cfg, hessian_cfg, modules) for modules, path in groups
     }
+    rank = dist.get_rank() if dist.is_initialized() else 0
 
-    # A resumed fit may only reuse passes run with what decides the factors.
+    for modules, path in groups:
+        if _pass_done(path, "covariances", setups[path]):
+            continue
+        collector = collect(modules, path)
+        if isinstance(collector, CovarianceCollector) and rank == 0:
+            # An MoE expert's covariances sum only the positions routed to it.
+            with open(os.path.join(path, "num_positions.json"), "w") as f:
+                json.dump(collector.num_positions, f)
+        del collector
+        _release_device_memory()
+        _mark_pass_done(path, "covariances", setups[path])
+
+    if not do_eigendecomposition:
+        return
+
+    model = None
+    _release_device_memory()
+    total_processed = torch.load(
+        f"{index_cfg.partial_run_path}/total_processed.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    for _, path in groups:
+        if _pass_done(path, "eigenbasis", setups[path]):
+            continue
+        num_positions = None
+        if os.path.exists(os.path.join(path, "num_positions.json")):
+            with open(os.path.join(path, "num_positions.json")) as f:
+                num_positions = json.load(f)
+        eigenvalues = [
+            compute_eigendecomposition(
+                os.path.join(path, sub), total_processed, num_positions
+            )
+            for sub in ("activation_sharded", "gradient_sharded")
+        ]
+        save_uncorrected_eigenvalues(
+            partial_run_path=path,
+            eigenvalues_a=eigenvalues[0],
+            eigenvalues_g=eigenvalues[1],
+            total_processed=total_processed,
+            rank=rank,
+            world_size=dist.get_world_size() if dist.is_initialized() else 1,
+            num_documents=len(data),
+            num_positions=num_positions,
+        )
+        del eigenvalues
+        _release_device_memory()
+        _mark_pass_done(path, "eigenbasis", setups[path])
+
+    if not hessian_cfg.ev_correction:
+        return
+    for modules, path in groups:
+        if _pass_done(path, "corrections", setups[path]):
+            continue
+        collect(modules, path, ev_correction=True, num_documents=len(data))
+        _release_device_memory()
+        _mark_pass_done(path, "corrections", setups[path])
+
+
+def _fit_setup(
+    index_cfg: IndexConfig, hessian_cfg: HessianConfig, modules: set[str] | None
+) -> dict:
+    """What decides a group's factors, which a resumed fit must match."""
     setup = {
         "world_size": dist.get_world_size() if dist.is_initialized() else 1,
-        "modules": sorted(target_modules) if target_modules is not None else None,
+        "modules": sorted(modules) if modules is not None else None,
         "index_cfg": {
             k: getattr(index_cfg, k)
             for k in ("model", "revision", "precision", "filter_modules")
@@ -414,102 +501,7 @@ def fit_factored_hessians(
         "hessian_cfg": asdict(hessian_cfg),
     }
     # As it reads back from a marker.
-    setup = json.loads(json.dumps(setup, default=str))
-
-    # When the first pass was skipped, the correction pass reads the eigenvectors
-    # from their files.
-    eigenvectors = None
-    if not _pass_done(path, "eigenbasis", setup):
-        eigenvectors = fit_eigenbasis(kwargs, do_eigendecomposition)
-        _mark_pass_done(path, "eigenbasis", setup)
-
-    if do_eigendecomposition and hessian_cfg.ev_correction:
-        if not _pass_done(path, "corrections", setup):
-            collect_hessians(
-                **kwargs,
-                ev_correction=True,
-                num_documents=len(data),
-                eigenvectors=eigenvectors,
-            )
-            _release_device_memory()
-            _mark_pass_done(path, "corrections", setup)
-
-
-def fit_eigenbasis(
-    kwargs: dict, do_eigendecomposition: bool
-) -> tuple[dict[str, Tensor], dict[str, Tensor]] | None:
-    """Collect the covariances and, when ``do_eigendecomposition``, save their
-    eigenvectors and eigenvalues. Returns the eigenvectors this rank owns, when
-    they're still in memory."""
-    index_cfg, data, path = kwargs["index_cfg"], kwargs["data"], kwargs["path"]
-    collector = collect_hessians(**kwargs)
-    if not do_eigendecomposition and isinstance(collector, CovarianceCollector):
-        # Only the eigendecomposition reads the covariances kept in memory.
-        collector.A_cov_dict.clear()
-        collector.S_cov_dict.clear()
-    _release_device_memory()
-
-    dist.barrier() if dist.is_initialized() else None
-
-    rank = dist.get_rank() if dist.is_initialized() else 0
-    world_size = dist.get_world_size() if dist.is_initialized() else 1
-
-    if not do_eigendecomposition:
-        return None
-
-    total_processed = torch.load(
-        f"{index_cfg.partial_run_path}/total_processed.pt",
-        map_location="cpu",
-        weights_only=False,
-    )
-
-    eigenvectors = None
-    num_positions = None
-    if isinstance(collector, CovarianceCollector):
-        num_positions = collector.num_positions
-        # Each rank still holds the covariances it owns, so skip the files.
-        eigenvectors_a, eigenvalues_a = eigendecompose_owned(
-            collector.A_cov_dict,
-            collector.A_shapes,
-            collector.owners,
-            total_processed,
-            os.path.join(path, "eigen_activation_sharded"),
-            collector.dtype,
-            num_positions=num_positions,
-        )
-        eigenvectors_g, eigenvalues_g = eigendecompose_owned(
-            collector.S_cov_dict,
-            collector.S_shapes,
-            collector.owners,
-            total_processed,
-            os.path.join(path, "eigen_gradient_sharded"),
-            collector.dtype,
-            num_positions=num_positions,
-        )
-        eigenvectors = (eigenvectors_a, eigenvectors_g)
-    else:
-        eigenvalues_a = compute_eigendecomposition(
-            os.path.join(path, "activation_sharded"),
-            total_processed=total_processed,
-        )
-        eigenvalues_g = compute_eigendecomposition(
-            os.path.join(path, "gradient_sharded"),
-            total_processed=total_processed,
-        )
-
-    dist.barrier() if dist.is_initialized() else None
-
-    save_uncorrected_eigenvalues(
-        partial_run_path=path,
-        eigenvalues_a=eigenvalues_a,
-        eigenvalues_g=eigenvalues_g,
-        total_processed=total_processed,
-        rank=rank,
-        world_size=world_size,
-        num_documents=len(data),
-        num_positions=num_positions,
-    )
-    return eigenvectors
+    return json.loads(json.dumps(setup, default=str))
 
 
 def _release_device_memory():
@@ -534,13 +526,12 @@ def collect_hessians(
     output_subdir: str = "eigenvalue_correction_sharded",
     path: str | None = None,
     num_documents: int = 1,
-    eigenvectors: tuple[dict[str, Tensor], dict[str, Tensor]] | None = None,
 ) -> HookCollectorBase:
     """
     Compute Hessian approximations using the hooks specified in the collector.
     If ev_correction is True, uses LambdaCollector to compute eigenvalue corrections.
-    ``path`` overrides where the collector writes. ``eigenvectors`` are passed to
-    the LambdaCollector. Returns the finished collector.
+    ``path`` overrides where the collector writes. Returns the finished
+    collector.
     """
 
     hessian_dtype = convert_precision_to_torch(hessian_cfg.hessian_dtype)
@@ -561,7 +552,6 @@ def collect_hessians(
             eigen_path=eigen_path,
             output_subdir=output_subdir,
             num_documents=num_documents,
-            eigenvectors=eigenvectors,
         )
         desc += " (eigenvalue correction)"
     else:

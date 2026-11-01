@@ -1,6 +1,7 @@
 """Splitting the model's layers across GPUs in one process must give the same
 factors and scores as running it on one GPU."""
 
+import gc
 import os
 from dataclasses import replace
 from pathlib import Path
@@ -21,6 +22,7 @@ from bergson.config import (
     ScoreConfig,
 )
 from bergson.data import load_scores
+from bergson.hessians import hessian_approximations
 from bergson.hessians.hessian_approximations import (
     FACTOR_SUBDIRS,
     approximate_hessians,
@@ -109,3 +111,28 @@ def test_split_pipeline_matches_one_gpu(tmp_path: Path, aggregation: str):
     expected = run("one", DistributedConfig(nproc_per_node=1))
     split = run("split", DistributedConfig(device_map_auto=True))
     np.testing.assert_allclose(split, expected, rtol=1e-4, atol=1e-6)
+
+
+def test_model_freed_while_eigendecomposing(tmp_path: Path, monkeypatch):
+    """The eigendecomposition gets the GPUs without the model's weights."""
+    eigendecompose = hessian_approximations.compute_eigendecomposition
+    allocated = []
+
+    def total_allocated() -> int:
+        return sum(
+            torch.cuda.memory_allocated(i) for i in range(torch.cuda.device_count())
+        )
+
+    def record(*args, **kwargs):
+        allocated.append(total_allocated())
+        return eigendecompose(*args, **kwargs)
+
+    monkeypatch.setattr(hessian_approximations, "compute_eigendecomposition", record)
+    cfg = _index_cfg(tmp_path, DistributedConfig(device_map_auto=True))
+    model, _ = setup_model_and_peft(cfg)
+    weight_bytes = sum(p.numel() * p.element_size() for p in model.parameters())
+    del model
+    gc.collect()
+    before = total_allocated()
+    approximate_hessians(cfg, HESSIAN_CFG)
+    assert allocated and max(allocated) - before < weight_bytes / 10
