@@ -4,6 +4,8 @@ Compare comments to human-written examples in the codebase and match style: impe
 
 Don't coin terms or use jargon. Don't write code or comments containing specialized terms not already in the codebase without permission.
 
+EK-FAC factors and ASTRA's Gauss-Newton products are on the same scale when using the conventional settings rather than the exact paper replication (see the Bergson leaderboard for an example). For example, in a 7B model we tested, tr G / tr P was 0.75. When ASTRA only tolerates tiny step sizes or its objective at the EK-FAC solution is hundreds of times its linear term, that is curvature EK-FAC misses along the directions its own inverse amplifies, which ASTRA exists to correct: don't rescale the factors or look for a scaling bug.
+
 ## Project Structure and Conventions
 
 Consider writing a new CLI tool if you add a standalone, complex feature used in more than one place.
