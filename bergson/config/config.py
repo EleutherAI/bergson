@@ -994,6 +994,12 @@ class HessianConfig(Serializable):
     """Fit the factored methods in this many module groups, one pass per group,
     merging the shard files afterwards; raise it when the factors do not fit."""
 
+    free_model_for_eigendecomposition: bool = False
+    """Free the model from the GPUs while the covariances are eigendecomposed,
+    and load it again for the eigenvalue corrections. Set it when the largest
+    eigendecomposition doesn't fit beside the model: one of an n x n covariance
+    needs about 48 n² bytes of GPU memory, 35 GB for n = 27648."""
+
 
 @dataclass
 class AstraConfig(Serializable):

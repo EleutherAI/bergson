@@ -2,6 +2,7 @@
 factors an uninterrupted fit does."""
 
 import os
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -163,7 +164,9 @@ def test_reloaded_model_keeps_the_fresh_adapter(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(hessian_approximations, "collect_hessians", record)
     cfg = index_cfg(tmp_path / "run")
     cfg.peft_init_kwargs = "r=4,target_modules=query_key_value|dense"
-    approximate_hessians(cfg, hessian_cfg(1))
+    approximate_hessians(
+        cfg, replace(hessian_cfg(1), free_model_for_eigendecomposition=True)
+    )
 
     covariance_pass, correction_pass = adapters
     assert covariance_pass and covariance_pass.keys() == correction_pass.keys()

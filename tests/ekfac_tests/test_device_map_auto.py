@@ -119,8 +119,9 @@ class Interrupted(Exception):
 
 @pytest.mark.parametrize("resume", [False, True])
 def test_model_freed_while_eigendecomposing(tmp_path: Path, monkeypatch, resume):
-    """The eigendecomposition gets the GPUs without the model's weights, also
-    when a resumed fit starts at it."""
+    """With free_model_for_eigendecomposition, the eigendecomposition gets the
+    GPUs without the model's weights, also when a fit that ran without it
+    resumes at the eigendecomposition."""
     eigendecompose = hessian_approximations.compute_eigendecomposition
     allocated = []
 
@@ -149,5 +150,24 @@ def test_model_freed_while_eigendecomposing(tmp_path: Path, monkeypatch, resume)
     gc.collect()
     before = total_allocated()
     monkeypatch.setattr(hessian_approximations, "compute_eigendecomposition", record)
-    approximate_hessians(cfg, HESSIAN_CFG, resume=resume)
+    approximate_hessians(
+        cfg,
+        replace(HESSIAN_CFG, free_model_for_eigendecomposition=True),
+        resume=resume,
+    )
     assert allocated and max(allocated) - before < weight_bytes / 10
+
+
+def test_model_kept_by_default(tmp_path: Path, monkeypatch):
+    load = hessian_approximations.setup_model_and_peft
+    loads = []
+
+    def count(*args, **kwargs):
+        loads.append(1)
+        return load(*args, **kwargs)
+
+    monkeypatch.setattr(hessian_approximations, "setup_model_and_peft", count)
+    approximate_hessians(
+        _index_cfg(tmp_path, DistributedConfig(device_map_auto=True)), HESSIAN_CFG
+    )
+    assert len(loads) == 1

@@ -390,12 +390,12 @@ def fit_factored_hessians(
     under its path, in three phases that each skip the groups they finished:
 
     1. Collect each group's covariances, which are saved to disk.
-    2. Eigendecompose them from the files with the model freed, since one
-       eigendecomposition of a large covariance can need most of a GPU.
+    2. Eigendecompose them from the files, with the model freed when
+       ``hessian_cfg.free_model_for_eigendecomposition`` is set.
     3. For EK-FAC, collect each group's eigenvalue corrections.
 
-    ``reload_model`` loads the model again for phase 3, which gets the adapter
-    weights of ``model``, as a fresh adapter's initialization is random.
+    ``reload_model`` loads a freed model again for phase 3, which gets the
+    adapter weights of ``model``, as a fresh adapter's initialization is random.
     """
     adapter = None
 
@@ -444,11 +444,12 @@ def fit_factored_hessians(
     if not do_eigendecomposition:
         return
 
-    if isinstance(model, PeftModel):
-        adapter = {
-            k: v.detach().cpu() for k, v in get_peft_model_state_dict(model).items()
-        }
-    model = None
+    if hessian_cfg.free_model_for_eigendecomposition:
+        if isinstance(model, PeftModel):
+            adapter = {
+                k: v.detach().cpu() for k, v in get_peft_model_state_dict(model).items()
+            }
+        model = None
     _release_device_memory()
     total_processed = torch.load(
         f"{index_cfg.partial_run_path}/total_processed.pt",
@@ -508,7 +509,13 @@ def _fit_setup(
             for k in ("model", "revision", "precision", "filter_modules")
         },
         "data": asdict(index_cfg.data),
-        "hessian_cfg": asdict(hessian_cfg),
+        # Freeing the model doesn't change the factors, so a fit that ran out of
+        # memory can resume with it set.
+        "hessian_cfg": {
+            k: v
+            for k, v in asdict(hessian_cfg).items()
+            if k != "free_model_for_eigendecomposition"
+        },
     }
     # As it reads back from a marker.
     return json.loads(json.dumps(setup, default=str))
