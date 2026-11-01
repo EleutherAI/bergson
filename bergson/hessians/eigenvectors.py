@@ -1,5 +1,7 @@
 import gc
 import os
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 import torch
@@ -400,20 +402,32 @@ def eigendecompose_owned(
 
     eigenvectors: dict[str, Tensor] = {}
     eigenvalues: dict[str, Tensor] = {}
-    for key in tqdm(
-        list(covariances),
+    progress = tqdm(
+        total=len(covariances),
         desc=f"Rank {rank}: Computing eigenvectors",
         position=rank,
         leave=False,
-    ):
-        covariance = covariances.pop(key)
-        # On the covariance's device, which is its module's when the model is
-        # split across GPUs.
-        count = _module_count(key, total_processed, num_positions)
-        values, vectors = _eigh(key, covariance, count.to(covariance.device), dtype)
-        del covariance
-        eigenvectors[key] = vectors
-        eigenvalues[key] = values
+    )
+
+    def decompose(keys: list[str]):
+        for key in keys:
+            covariance = covariances.pop(key)
+            count = _module_count(key, total_processed, num_positions)
+            values, vectors = _eigh(key, covariance, count.to(covariance.device), dtype)
+            del covariance
+            eigenvectors[key] = vectors
+            eigenvalues[key] = values
+            progress.update()
+
+    # When the model is split across GPUs each covariance is on its module's
+    # GPU, so decompose the ones on each GPU in their own thread.
+    by_device = defaultdict(list)
+    for key, covariance in covariances.items():
+        by_device[covariance.device].append(key)
+    with ThreadPoolExecutor(max(len(by_device), 1)) as pool:
+        for done in [pool.submit(decompose, keys) for keys in by_device.values()]:
+            done.result()
+    progress.close()
 
     shards = eigenvectors
     value_shards = {key: values.cpu() for key, values in eigenvalues.items()}
