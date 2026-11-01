@@ -2,6 +2,7 @@
 factors and scores as running it on one GPU."""
 
 import os
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -56,14 +57,15 @@ def test_model_is_split(tmp_path: Path):
     assert len({p.device for p in model.parameters()}) > 1
 
 
-def test_split_fit_matches_one_gpu(tmp_path: Path):
+@pytest.mark.parametrize("partitions", [1, 2])
+def test_split_fit_matches_one_gpu(tmp_path: Path, partitions: int):
     one = approximate_hessians(
         _index_cfg(tmp_path / "one", DistributedConfig(nproc_per_node=1)),
         HESSIAN_CFG,
     )
     split = approximate_hessians(
         _index_cfg(tmp_path / "split", DistributedConfig(device_map_auto=True)),
-        HESSIAN_CFG,
+        replace(HESSIAN_CFG, module_partitions=partitions),
     )
     for sub in FACTOR_SUBDIRS:
         if not os.path.exists(os.path.join(one, sub)):

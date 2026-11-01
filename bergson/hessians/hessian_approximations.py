@@ -3,6 +3,7 @@ import json
 import os
 import shutil
 import warnings
+from collections import defaultdict
 from contextlib import ExitStack
 from dataclasses import asdict
 from pathlib import Path
@@ -36,6 +37,7 @@ from bergson.hessians.eigenvectors import (
 )
 from bergson.hessians.kfac import CovarianceCollector
 from bergson.hessians.shampoo import ShampooCollector
+from bergson.hessians.sharded_computation import assign_module_owners
 from bergson.hessians.tkfac import TraceCovarianceCollector
 from bergson.utils.utils import (
     convert_precision_to_torch,
@@ -111,6 +113,29 @@ def partition_modules(names: list[str], num_partitions: int) -> list[list[str]]:
         groups.append(names[start:end])
         start = end
     return groups
+
+
+def balanced_partitions(
+    target_info: dict[str, tuple[torch.device, torch.Size, bool]],
+    num_partitions: int,
+) -> list[list[str]]:
+    """Split the modules into ``num_partitions`` groups whose factors take about
+    the same memory on each device, so a group spreads over every GPU when the
+    model is split across them. Each group keeps the modules' order."""
+    if num_partitions < 1:
+        raise ValueError(f"module_partitions must be >= 1, got {num_partitions}")
+    num_partitions = min(num_partitions, len(target_info))
+    by_device = defaultdict(dict)
+    for name, info in target_info.items():
+        by_device[info[0]][name] = info
+    group_of = {}
+    for modules in by_device.values():
+        group_of.update(assign_module_owners(modules, num_partitions))
+    groups = [
+        [name for name in target_info if group_of[name] == i]
+        for i in range(num_partitions)
+    ]
+    return [group for group in groups if group]
 
 
 def merge_files(files: list[str], out_path: str):
@@ -333,7 +358,7 @@ def hessian_worker(
         index_cfg.include_bias,
         index_cfg.filter_modules,
     )
-    groups = partition_modules(list(target_info), hessian_cfg.module_partitions)
+    groups = balanced_partitions(target_info, hessian_cfg.module_partitions)
     for i, group in enumerate(groups):
         print(f"Fitting module partition {i + 1}/{len(groups)} ({len(group)} modules)")
         fit_factored_hessians(

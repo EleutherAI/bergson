@@ -21,8 +21,30 @@ from bergson.hessians.apply_hessian import EkfacApplicator, EkfacConfig
 from bergson.hessians.hessian_approximations import (
     FACTOR_SUBDIRS,
     approximate_hessians,
+    balanced_partitions,
     partition_modules,
 )
+
+
+def test_balanced_partitions_spread_each_device():
+    def info(device: str, dim: int):
+        return (torch.device(device), torch.Size([dim, dim]), False)
+
+    # Two layers on two devices, each with one big module and three small ones.
+    target_info = {
+        f"layer{layer}.{name}": info(f"cuda:{layer}", dim)
+        for layer in range(2)
+        for name, dim in (("big", 8), ("a", 4), ("b", 4), ("c", 4))
+    }
+    groups = balanced_partitions(target_info, 2)
+    assert sorted(sum(groups, [])) == sorted(target_info)
+    for layer in range(2):
+        on_device = [[n for n in g if n.startswith(f"layer{layer}.")] for g in groups]
+        # The big module alone balances the three small ones on its device.
+        assert sorted(len(g) for g in on_device) == [1, 3]
+    # Each group keeps the modules' order.
+    order = list(target_info)
+    assert all(g == sorted(g, key=order.index) for g in groups)
 
 
 def test_partition_modules_contiguous():
