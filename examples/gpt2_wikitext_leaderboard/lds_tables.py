@@ -41,6 +41,7 @@ LABELS = {
         "[Qwen3-Embedding-8B](https://huggingface.co/spaces/mteb/leaderboard)"
         " semantic search"
     ),
+    "llm_judge": "[Qwen3-8B](https://huggingface.co/Qwen/Qwen3-8B) LLM judge",
 }
 
 

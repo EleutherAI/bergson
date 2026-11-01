@@ -28,6 +28,7 @@ Every method scores the same 50 test chunks (`test[0:50]`). We report the QLD an
 | TrackStar (no optimizer correction, projection 64) | 0.045 | [0.036, 0.055] | 0.276 | [0.252, 0.299] | 0.280 | -0.017 | 0.487 | 42/50 |
 | KFAC (projection 64) | 0.045 | [0.036, 0.055] | 0.244 | [0.216, 0.270] | 0.244 | -0.060 | 0.445 | 36/50 |
 | TrackStar (Adam, projection 64) | 0.043 | [0.034, 0.052] | 0.242 | [0.216, 0.267] | 0.249 | -0.072 | 0.392 | 36/50 |
+| [Qwen3-8B](https://huggingface.co/Qwen/Qwen3-8B) LLM judge | 0.042 | [0.031, 0.054] | 0.109 | [0.073, 0.143] | 0.082 | -0.100 | 0.470 | 11/50 |
 | TrackStar (no optimizer correction, projection 32) | 0.035 | [0.027, 0.044] | 0.194 | [0.171, 0.216] | 0.195 | -0.098 | 0.455 | 25/50 |
 | TrackStar (Adam, projection 32) | 0.032 | [0.025, 0.041] | 0.182 | [0.156, 0.209] | 0.191 | -0.074 | 0.458 | 24/50 |
 | TRAK (8-model ensemble) | 0.032 | [0.024, 0.040] | 0.138 | [0.111, 0.165] | 0.141 | -0.131 | 0.430 | 13/50 |
@@ -61,7 +62,7 @@ TRAK follows Park et al. (2023): eight GPT-2 models trained on independent rando
 
 Gradient cosine similarity is `gradient_cosine.yaml`: bergson `build` of the query gradients and `score` of the training chunks, unprojected and unit-normalized with no Hessian, so each score is the cosine between a training chunk's gradient and a query's over the attributed modules. Projected gradient cosine similarity (the projected steps of the same yaml) is the same with the gradients random-projected per module first, i.e. TrackStar without preconditioning. Gradient dot product is `gradient_dot.yaml`: the gradient cosine pipeline without unit normalization, so each score is the raw inner product of a training chunk's gradient and a query's.
 
-The five gradient-free baselines come from `examples/gpt2_wikitext_leaderboard/gradient_free_baselines` run with `--bank runs/compare_wikitext/random --query_split "test[0:50]"`: BM25 lexical overlap (`bm25_baseline.py`), semantic search with `jinaai/jina-embeddings-v5-text-small` (`semantic_baseline.py`) and with `Qwen/Qwen3-Embedding-8B` (`qwen3_baseline.py`), cosine similarity between mean Gemma Scope 2 SAE features of `google/gemma-3-27b-pt` after layer 31 (`sae_baseline.py`), and cosine similarity between the mean-pooled input activations of the attributed linear modules, per-module L2-normalized and concatenated (`activation_baseline.py`). The activation covariance preconditioner rows multiply each module's pooled activations by (A + 0.1 mean(eig A) I)^-1/2 before normalizing, with A the module's activation factor from `ekfac.yaml` (`--hessian runs/compare_wikitext/ekfac/hessian/kfac`), and the projected row then applies bergson's per-module random projection to 64 dimensions (`--projection_dim 64`).
+The six gradient-free baselines come from `examples/gpt2_wikitext_leaderboard/gradient_free_baselines` run with `--bank runs/compare_wikitext/random --query_split "test[0:50]"`: BM25 lexical overlap (`bm25_baseline.py`), semantic search with `jinaai/jina-embeddings-v5-text-small` (`semantic_baseline.py`) and with `Qwen/Qwen3-Embedding-8B` (`qwen3_baseline.py`), cosine similarity between mean Gemma Scope 2 SAE features of `google/gemma-3-27b-pt` after layer 31 (`sae_baseline.py`), cosine similarity between the mean-pooled input activations of the attributed linear modules, per-module L2-normalized and concatenated (`activation_baseline.py`), and an LLM judge (`llm_judge_baseline.py`) that asks `Qwen/Qwen3-8B` (thinking disabled) whether training on a chunk would make a language model better at predicting the query and scores the pair by the log-odds of its first answer token, log p(Yes) - log p(No). The activation covariance preconditioner rows multiply each module's pooled activations by (A + 0.1 mean(eig A) I)^-1/2 before normalizing, with A the module's activation factor from `ekfac.yaml` (`--hessian runs/compare_wikitext/ekfac/hessian/kfac`), and the projected row then applies bergson's per-module random projection to 64 dimensions (`--projection_dim 64`).
 
 ## Reproducibility
 
@@ -92,20 +93,20 @@ bergson examples/gpt2_wikitext_leaderboard/gradient_cosine.yaml # full and proje
 bergson examples/gpt2_wikitext_leaderboard/gradient_dot.yaml    # unnormalized gradient dot products
 bergson examples/gpt2_wikitext_leaderboard/magic_seed43.yaml
 bergson examples/gpt2_wikitext_leaderboard/metasmoothness.yaml
-for b in bm25 semantic qwen3 sae activation; do   # writes baselines/${b}_scores/scores
+for b in bm25 semantic qwen3 sae activation llm_judge; do   # writes baselines/${b}_scores/scores
   python -m examples.gpt2_wikitext_leaderboard.gradient_free_baselines.${b}_baseline --bank runs/compare_wikitext/random --query_split "test[0:50]" --out runs/compare_wikitext/baselines
 done
 for p in 0 64; do   # writes baselines/activation_ekfac_scores and baselines/activation_ekfac_p64_scores
   python -m examples.gpt2_wikitext_leaderboard.gradient_free_baselines.activation_baseline --bank runs/compare_wikitext/random --query_split "test[0:50]" --out runs/compare_wikitext/baselines --hessian runs/compare_wikitext/ekfac/hessian/kfac --projection_dim $p
 done
-for f in magic magic_seed43 ekfac lissa ekfac_astra_cg ekfac_astra_exact_replication ekfac_astra kfac kfac_p64 shampoo trak_ens gradient_dot trackstar trackstar_adam source gradient_cosine bm25 semantic qwen3 sae activation activation_ekfac activation_ekfac_p64; do
+for f in magic magic_seed43 ekfac lissa ekfac_astra_cg ekfac_astra_exact_replication ekfac_astra kfac kfac_p64 shampoo trak_ens gradient_dot trackstar trackstar_adam source gradient_cosine bm25 semantic qwen3 sae activation activation_ekfac activation_ekfac_p64 llm_judge; do
   bergson examples/gpt2_wikitext_leaderboard/filters/filter_$f.yaml
 done
 python examples/gpt2_wikitext_leaderboard/lds_from_bank.py --validation runs/compare_wikitext/random/validation.csv --out runs/compare_wikitext/lds_magic.json
 python examples/gpt2_wikitext_leaderboard/lds_from_bank.py --validation runs/compare_wikitext/magic_seed43/validation.csv --out runs/compare_wikitext/lds_magic_seed43.json
 for m in ekfac lissa ekfac_astra_cg ekfac_astra_exact_replication ekfac_astra kfac kfac_p64 shampoo trackstar_p16 trackstar_p32 trackstar_p64 trackstar_adam_p16 trackstar_adam_p32 trackstar_adam_p64 gradient_cosine gradient_cosine_projected gradient_dot; do python examples/gpt2_wikitext_leaderboard/lds_from_bank.py --sign grad --scores runs/compare_wikitext/$m/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_$m.json; done
 python examples/gpt2_wikitext_leaderboard/lds_from_bank.py --sign grad --scores runs/compare_wikitext/trak/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_trak_ens.json
-for b in bm25 semantic qwen3 sae activation activation_ekfac activation_ekfac_p64; do python examples/gpt2_wikitext_leaderboard/lds_from_bank.py --sign loss --scores runs/compare_wikitext/baselines/${b}_scores/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_$b.json; done
+for b in bm25 semantic qwen3 sae activation activation_ekfac activation_ekfac_p64 llm_judge; do python examples/gpt2_wikitext_leaderboard/lds_from_bank.py --sign loss --scores runs/compare_wikitext/baselines/${b}_scores/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_$b.json; done
 for m in source source_adam; do python examples/gpt2_wikitext_leaderboard/lds_from_bank.py --sign loss --scores runs/compare_wikitext/$m/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_$m.json; done
 python examples/gpt2_wikitext_leaderboard/qld_from_filters.py runs/compare_wikitext runs/compare_wikitext/random
 python examples/gpt2_wikitext_leaderboard/lds_tables.py runs/compare_wikitext
