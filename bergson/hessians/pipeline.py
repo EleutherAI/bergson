@@ -17,7 +17,7 @@ from ..config.config_io import save_run_config
 from ..data import create_index, load_gradients
 from ..distributed import launch_distributed_run
 from ..score.score import score_dataset
-from ..utils.step_state import partial_path, prepare_step, promote_step
+from ..utils.step_state import partial_path, prepare_step, promote_step, step_state
 from ..utils.worker_utils import validate_run_path
 from .apply_hessian import EkfacConfig, apply_worker
 from .astra import AstraPaths, astra_worker
@@ -110,15 +110,18 @@ def hessian_pipeline(
 
     # ── Step 2: Fit Hessian factors on training data ──────────────────────
     print(f"Step 2/4: Fitting {method} factors on training data...")
-    if not _step_complete(f"{hessian_path}/{method}", resume):
+    fit_path = f"{hessian_path}/{method}"
+    # An interrupted fit picks up from the passes it finished.
+    resume_fit = resume and step_state(fit_path) == "partial"
+    if resume_fit or not _step_complete(fit_path, resume):
         with _timed("step2_fit_hessian", durations):
             hessian_index_cfg = deepcopy(index_cfg)
             # approximate_hessians writes to this exact path; step 3 reads it
             # back from `{hessian_path}/{method}`.
-            hessian_index_cfg.run_path = f"{hessian_path}/{method}"
+            hessian_index_cfg.run_path = fit_path
             _validate(hessian_index_cfg)
 
-            approximate_hessians(hessian_index_cfg, hessian_cfg)
+            approximate_hessians(hessian_index_cfg, hessian_cfg, resume=resume_fit)
 
     # ── Step 3: Apply inverse Hessian to the mean query gradient ──────────
     print(f"Step 3/4: Applying {method} inverse Hessian to mean query gradient...")

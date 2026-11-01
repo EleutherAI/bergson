@@ -63,6 +63,22 @@ FACTOR_SUBDIRS = (
 """Factor stores under a Hessian run path, one ``shard_{rank}.safetensors`` each."""
 
 
+DONE_SUFFIX = ".done"
+"""Marks a finished pass of a fit, so a resumed fit can skip it."""
+
+
+def _pass_done(path: str, name: str) -> bool:
+    return os.path.exists(os.path.join(path, name + DONE_SUFFIX))
+
+
+def _mark_pass_done(path: str, name: str):
+    """Record that every rank finished the pass ``name`` under ``path``."""
+    if dist.is_initialized():
+        dist.barrier()
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        open(os.path.join(path, name + DONE_SUFFIX), "w").close()
+
+
 def partition_modules(names: list[str], num_partitions: int) -> list[list[str]]:
     """Split ``names`` into ``num_partitions`` contiguous groups of near-equal size."""
     if num_partitions < 1:
@@ -122,6 +138,7 @@ def approximate_hessians(
     hessian_cfg: HessianConfig,
     *,
     do_eigendecomposition: bool = True,
+    resume: bool = False,
 ) -> str:
     """
     Approximate Hessian matrices using KFAC or EKFAC.
@@ -142,6 +159,9 @@ def approximate_hessians(
     do_eigendecomposition : bool
         If True (default), compute the eigendecomposition of the covariance
         matrices. Not needed when doing approximate unrolling
+    resume : bool
+        Keep what an interrupted fit left in ``index_cfg.partial_run_path`` and
+        skip the passes it finished, rather than starting over.
 
     Returns
     -------
@@ -166,6 +186,8 @@ def approximate_hessians(
 
     if index_cfg.debug:
         setup_reproducibility()
+    if not resume and index_cfg.partial_run_path.exists():
+        shutil.rmtree(index_cfg.partial_run_path)
     index_cfg.partial_run_path.mkdir(parents=True, exist_ok=True)
 
     ds, _ = setup_data_pipeline(index_cfg)
@@ -179,6 +201,8 @@ def approximate_hessians(
 
     rank = index_cfg.distributed.rank
     if rank == 0:
+        for marker in index_cfg.partial_run_path.glob(f"*{DONE_SUFFIX}"):
+            marker.unlink()
         shutil.move(index_cfg.partial_run_path, index_cfg.run_path)
 
     return index_cfg.run_path
@@ -309,7 +333,8 @@ def fit_factored_hessians(
     do_eigendecomposition: bool,
 ):
     """Fit the covariances of ``target_modules``, eigendecompose them and, for
-    EK-FAC, collect the eigenvalue corrections, writing everything under ``path``."""
+    EK-FAC, collect the eigenvalue corrections, writing everything under ``path``.
+    Skips each of the two passes over the data that already finished there."""
     if target_modules is not None:
         attention_cfgs = {
             k: v for k, v in attention_cfgs.items() if k in target_modules
@@ -326,6 +351,32 @@ def fit_factored_hessians(
         "path": path,
     }
 
+    # When the first pass was skipped, the correction pass reads the eigenvectors
+    # from their files.
+    eigenvectors = None
+    if not _pass_done(path, "eigenbasis"):
+        eigenvectors = fit_eigenbasis(kwargs, do_eigendecomposition)
+        _mark_pass_done(path, "eigenbasis")
+
+    if do_eigendecomposition and hessian_cfg.ev_correction:
+        if not _pass_done(path, "corrections"):
+            collect_hessians(
+                **kwargs,
+                ev_correction=True,
+                num_documents=len(data),
+                eigenvectors=eigenvectors,
+            )
+            _release_device_memory()
+            _mark_pass_done(path, "corrections")
+
+
+def fit_eigenbasis(
+    kwargs: dict, do_eigendecomposition: bool
+) -> tuple[dict[str, Tensor], dict[str, Tensor]] | None:
+    """Collect the covariances and, when ``do_eigendecomposition``, save their
+    eigenvectors and eigenvalues. Returns the eigenvectors this rank owns, when
+    they're still in memory."""
+    index_cfg, data, path = kwargs["index_cfg"], kwargs["data"], kwargs["path"]
     collector = collect_hessians(**kwargs)
     if not do_eigendecomposition and isinstance(collector, CovarianceCollector):
         # Only the eigendecomposition reads the covariances kept in memory.
@@ -339,7 +390,7 @@ def fit_factored_hessians(
     world_size = dist.get_world_size() if dist.is_initialized() else 1
 
     if not do_eigendecomposition:
-        return
+        return None
 
     total_processed = torch.load(
         f"{index_cfg.partial_run_path}/total_processed.pt",
@@ -393,15 +444,7 @@ def fit_factored_hessians(
         num_documents=len(data),
         num_positions=num_positions,
     )
-
-    if hessian_cfg.ev_correction:
-        collect_hessians(
-            **kwargs,
-            ev_correction=True,
-            num_documents=len(data),
-            eigenvectors=eigenvectors,
-        )
-        _release_device_memory()
+    return eigenvectors
 
 
 def _release_device_memory():

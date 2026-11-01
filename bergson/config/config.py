@@ -1096,7 +1096,8 @@ class HessianPipelineConfig:
     """Refine the inverse-Hessian-vector products iteratively before scoring."""
 
     resume: bool = False
-    """Skip pipeline steps whose output directory already exists."""
+    """Skip pipeline steps whose output directory already exists, and resume an
+    interrupted Hessian fit from the passes over the data it finished."""
 
 
 @dataclass
