@@ -429,6 +429,11 @@ def eigendecompose_owned(
     by_device = defaultdict(list)
     for key, covariance in covariances.items():
         by_device[covariance.device].append(key)
+    gpus = [device for device in by_device if device.type == "cuda"]
+    if gpus:
+        # PyTorch loads its GPU linear algebra library on first use, which isn't
+        # thread safe.
+        torch.linalg.eigh(torch.eye(2, device=gpus[0]))
     try:
         with ThreadPoolExecutor(max(len(by_device), 1)) as pool:
             futures = [pool.submit(decompose, *item) for item in by_device.items()]
