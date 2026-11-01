@@ -1,8 +1,11 @@
 import gc
+import json
 import os
 import shutil
 import warnings
 from contextlib import ExitStack
+from dataclasses import asdict
+from pathlib import Path
 
 import torch
 import torch.distributed as dist
@@ -67,16 +70,33 @@ DONE_SUFFIX = ".done"
 """Marks a finished pass of a fit, so a resumed fit can skip it."""
 
 
-def _pass_done(path: str, name: str) -> bool:
-    return os.path.exists(os.path.join(path, name + DONE_SUFFIX))
+def _pass_done(path: str, name: str, setup: dict) -> bool:
+    """Whether the pass ``name`` under ``path`` finished with the same ``setup``.
+    Rank 0 decides for every rank, so they all skip the same passes."""
+    done = [False]
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        marker = os.path.join(path, name + DONE_SUFFIX)
+        if os.path.exists(marker):
+            with open(marker) as f:
+                saved = json.load(f)
+            if saved != setup:
+                raise ValueError(
+                    f"{marker} was written by a fit set up as {saved}, not "
+                    f"{setup}. Rerun without resume to start the fit over."
+                )
+            done = [True]
+    if dist.is_initialized():
+        dist.broadcast_object_list(done, src=0)
+    return done[0]
 
 
-def _mark_pass_done(path: str, name: str):
+def _mark_pass_done(path: str, name: str, setup: dict):
     """Record that every rank finished the pass ``name`` under ``path``."""
     if dist.is_initialized():
         dist.barrier()
     if not dist.is_initialized() or dist.get_rank() == 0:
-        open(os.path.join(path, name + DONE_SUFFIX), "w").close()
+        with open(os.path.join(path, name + DONE_SUFFIX), "w") as f:
+            json.dump(setup, f)
 
 
 def partition_modules(names: list[str], num_partitions: int) -> list[list[str]]:
@@ -129,6 +149,10 @@ def merge_partitions(run_path: str | os.PathLike, num_partitions: int, rank: int
 
     dist.barrier() if dist.is_initialized() else None
     if rank == 0:
+        # A partition deleted only in part must not look finished to a resume.
+        for d in part_dirs:
+            for marker in Path(d).glob(f"*{DONE_SUFFIX}"):
+                marker.unlink()
         for d in part_dirs:
             shutil.rmtree(d)
 
@@ -186,8 +210,10 @@ def approximate_hessians(
 
     if index_cfg.debug:
         setup_reproducibility()
-    if not resume and index_cfg.partial_run_path.exists():
-        shutil.rmtree(index_cfg.partial_run_path)
+    # Callers may already have saved files here, such as the run's config.
+    if not resume and index_cfg.distributed.rank == 0:
+        for marker in index_cfg.partial_run_path.rglob(f"*{DONE_SUFFIX}"):
+            marker.unlink()
     index_cfg.partial_run_path.mkdir(parents=True, exist_ok=True)
 
     ds, _ = setup_data_pipeline(index_cfg)
@@ -351,15 +377,29 @@ def fit_factored_hessians(
         "path": path,
     }
 
+    # A resumed fit may only reuse passes run with what decides the factors.
+    setup = {
+        "world_size": dist.get_world_size() if dist.is_initialized() else 1,
+        "modules": sorted(target_modules) if target_modules is not None else None,
+        "index_cfg": {
+            k: getattr(index_cfg, k)
+            for k in ("model", "revision", "precision", "filter_modules")
+        },
+        "data": asdict(index_cfg.data),
+        "hessian_cfg": asdict(hessian_cfg),
+    }
+    # As it reads back from a marker.
+    setup = json.loads(json.dumps(setup, default=str))
+
     # When the first pass was skipped, the correction pass reads the eigenvectors
     # from their files.
     eigenvectors = None
-    if not _pass_done(path, "eigenbasis"):
+    if not _pass_done(path, "eigenbasis", setup):
         eigenvectors = fit_eigenbasis(kwargs, do_eigendecomposition)
-        _mark_pass_done(path, "eigenbasis")
+        _mark_pass_done(path, "eigenbasis", setup)
 
     if do_eigendecomposition and hessian_cfg.ev_correction:
-        if not _pass_done(path, "corrections"):
+        if not _pass_done(path, "corrections", setup):
             collect_hessians(
                 **kwargs,
                 ev_correction=True,
@@ -367,7 +407,7 @@ def fit_factored_hessians(
                 eigenvectors=eigenvectors,
             )
             _release_device_memory()
-            _mark_pass_done(path, "corrections")
+            _mark_pass_done(path, "corrections", setup)
 
 
 def fit_eigenbasis(
