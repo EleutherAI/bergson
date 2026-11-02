@@ -429,8 +429,16 @@ def fit_factored_hessians(
     }
     rank = dist.get_rank() if dist.is_initialized() else 0
 
-    for modules, path in groups:
-        if _pass_done(path, "covariances", setups[path]):
+    def finished(i: int, path: str, step: str) -> bool:
+        """Whether group ``i`` already did ``step``, logging either way."""
+        done = _pass_done(path, step, setups[path])
+        if rank == 0:
+            state = "already done" if done else "running"
+            print(f"Module group {i + 1}/{len(groups)}, {step}: {state}")
+        return done
+
+    for i, (modules, path) in enumerate(groups):
+        if finished(i, path, "covariances"):
             continue
         collector = collect(modules, path)
         if isinstance(collector, CovarianceCollector) and rank == 0:
@@ -456,8 +464,8 @@ def fit_factored_hessians(
         map_location="cpu",
         weights_only=False,
     )
-    for _, path in groups:
-        if _pass_done(path, "eigenbasis", setups[path]):
+    for i, (_, path) in enumerate(groups):
+        if finished(i, path, "eigenbasis"):
             continue
         num_positions = None
         if os.path.exists(os.path.join(path, "num_positions.json")):
@@ -489,8 +497,8 @@ def fit_factored_hessians(
 
     if not hessian_cfg.ev_correction:
         return
-    for modules, path in groups:
-        if _pass_done(path, "corrections", setups[path]):
+    for i, (modules, path) in enumerate(groups):
+        if finished(i, path, "corrections"):
             continue
         collect(modules, path, ev_correction=True, num_documents=len(data))
         _release_device_memory()
