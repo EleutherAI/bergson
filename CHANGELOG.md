@@ -1,6 +1,15 @@
 # CHANGELOG
 
 
+## v2.8.0 (2026-11-02)
+
+### Features
+
+- Hold ASTRA's factors on CPU to lower peak GPU memory
+  ([#594](https://github.com/EleutherAI/bergson/pull/594),
+  [`4ae5509`](https://github.com/EleutherAI/bergson/commit/4ae5509afda836fbaa151bc63e530ef08b6a68da))
+
+
 ## v2.7.0 (2026-10-31)
 
 ### Features
