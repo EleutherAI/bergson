@@ -58,9 +58,8 @@ Load the gradients:
    methods/influence-functions
    methods/trackstar
    methods/trak
-   methods/source
    methods/magic
-   methods/gnh-unroll
+   methods/approximate_unrolling
 
 .. toctree::
    :maxdepth: 2

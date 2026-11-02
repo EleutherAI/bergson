@@ -13,7 +13,7 @@ The commands fall into four groups:
 autocorrelation) independently of per-example gradient collection, and ``mix`` combines two autocorrelation hessians into one. See :doc:`building_blocks`.
 
 **Method pipelines** — ``trackstar``, ``influence``, and ``approxunrolling`` orchestrate
-building blocks into end-to-end attribution recipes (see :doc:`methods/trackstar`, :doc:`methods/influence-functions`, and :doc:`methods/source`). ``magic`` attributes by backpropagating through training (see :doc:`methods/magic`), and ``gnh-unroll`` approximates it with a Gauss-Newton curvature at each step (see :doc:`methods/gnh-unroll`).
+building blocks into end-to-end attribution recipes (see :doc:`methods/trackstar`, :doc:`methods/influence-functions`, and :doc:`methods/approximate_unrolling`). ``magic`` attributes by backpropagating through training (see :doc:`methods/magic`), and ``gnh-unroll`` approximates it with a Gauss-Newton curvature at each step (see :doc:`methods/approximate_unrolling`).
 
 **Training & evaluation** — ``train`` trains a model with the Bergson trainer; ``metasmoothness``, ``validate``, and ``recall`` evaluate training runs and attribution scores (see :doc:`training` and :doc:`evaluation`).
 
