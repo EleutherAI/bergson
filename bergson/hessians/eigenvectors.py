@@ -226,7 +226,12 @@ class LambdaCollector(HookCollectorBase):
             a = torch.cat([a, a.new_ones(*a.shape[:-1], 1)], dim=-1)  # [N, S, I+1]
 
         if self.owners is not None:
-            self.transformed_a_cache[name] = self._gather_rotated(a, self.eigen_a, name)
+            rotated = self._gather_rotated(a, self.eigen_a, name)
+            if rotated is not None and self.offload_activations:
+                # Every rank's rotated activations stay cached until the backward
+                # hook; with long sequences several modules' worth won't fit
+                rotated = [x.to("cpu") for x in rotated]
+            self.transformed_a_cache[name] = rotated
             return
 
         # Transform: a @ eigen_a
@@ -235,7 +240,9 @@ class LambdaCollector(HookCollectorBase):
         )  # shape [N, S, I]
 
         # Cache for use in backward pass
-        self.transformed_a_cache[name] = transformed
+        self.transformed_a_cache[name] = (
+            transformed.to("cpu") if self.offload_activations else transformed
+        )
 
     def backward_hook(self, module: nn.Module, g: Tensor) -> None:
         """Transform gradients and compute eigenvalue corrections."""
@@ -250,7 +257,7 @@ class LambdaCollector(HookCollectorBase):
             # Square each document's rotated gradient and sum, as below.
             for a_r, g_r in zip(rotated_a, rotated_g):
                 rotated = self._pair_gradients(
-                    torch.einsum("N S I, N S O -> N O I", a_r, g_r)
+                    torch.einsum("N S I, N S O -> N O I", a_r.to(g_r.device), g_r)
                 )
                 self.eigenvalue_corrections[name].add_((rotated**2).sum(dim=0))
             return
@@ -263,7 +270,9 @@ class LambdaCollector(HookCollectorBase):
         # Compute outer product: sum_n (transformed_a_n^T @ transformed_g_n)
         # Einstein notation: [N, S, I] x [N, S, O] -> [N, O, I]
         transformed_grad_shard = torch.einsum(
-            "N S I, N S O -> N O I", self.transformed_a_cache[name], transformed_g
+            "N S I, N S O -> N O I",
+            self.transformed_a_cache[name].to(transformed_g.device),
+            transformed_g,
         )
 
         # Square and sum over batch
