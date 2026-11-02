@@ -853,7 +853,7 @@ class Trainer:
                 must match for the replay to be faithful. When > 1 the traced
                 step uses the two-stage micro-VJP (`Trainer.metagrad_step`).
             double_backward_batch_size: Max sequences per double-backward graph in the
-                micro-VJP; see `TrainingConfig.double_backward_batch_size`.
+                micro-VJP; see `MagicConfig.double_backward_batch_size`.
             state_prefix: Filename prefix for the saved backward state.
 
         Returns:
