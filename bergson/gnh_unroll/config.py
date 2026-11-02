@@ -27,6 +27,10 @@ class GnhUnrollConfig(TrainingConfig):
     graph over its sequences, so this bounds the backward's peak memory.
     Exact under any split."""
 
+    attribute_tokens: bool = False
+    """Whether to compute attribution scores per token (instead of per sequence);
+    the same toggle as ``IndexConfig.attribute_tokens``."""
+
     def __post_init__(self):
         super().__post_init__()
         if self.fsdp or self.optimizer != "adamw" or self.max_grad_norm:

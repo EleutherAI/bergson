@@ -27,13 +27,13 @@ from ..magic.cli import (
     attach_doc_ids_if_missing,
     attach_example_ids,
     compute_query_gradients,
+    save_magic_scores,
     shuffled_epochs,
 )
 from ..magic.data_stream import DataStream, Padding, pad_dataset_to_batch_size
 from ..magic.fsdp import full_state_dict
 from ..magic.score_plot import plot_score_trajectory
 from ..magic.trainer import Trainer, TrainerState, prepare_trainer, write_lr_history
-from ..score.score_writer import save_sequence_scores
 from ..utils.logging import wandb_log_fn
 from ..utils.utils import dist_backend, dist_device_id, get_device, get_device_index
 from ..utils.worker_utils import setup_data_pipeline
@@ -194,12 +194,20 @@ def worker(
     train_dataset, num_train_docs, padding = pad_dataset_to_batch_size(
         train_dataset, run_cfg.batch_size, num_train_docs, "Train", global_rank
     )
+    if run_cfg.attribute_tokens:
+        seq_len = run_cfg.data.chunk_length
+        if seq_len <= 0:
+            seq_len = max(train_dataset["length"])
+        # One weight row per example; the pad rows share one synthetic row.
+        w_shape = (max(train_dataset["example_ids"]) + 1, seq_len)
+    else:
+        w_shape = (num_train_docs,)
     stream = DataStream(
         train_dataset,
         run_cfg.batch_size,
         device=device,
         input_key=run_cfg.data.prompt_column,
-        weight_shape=(num_train_docs,),
+        weight_shape=w_shape,
     )
     padding.zero_weights(stream.weights.data)
 
@@ -345,14 +353,19 @@ def worker(
     if global_rank == 0:
         print(f"Baseline loss: {baseline}")
         print(f"Score summary: {describe(scores.flatten())}")
-        path = Path(run_cfg.run_path) / "scores"
-        save_sequence_scores(path, scores.float().numpy())
-        print(f"Saved attribution scores to {path}")
-        plot_score_trajectory(
-            scores.float().numpy(),
-            run_cfg.batch_size,
-            Path(run_cfg.run_path) / "score_vs_step.png",
+        save_magic_scores(
+            run_cfg.run_path,
+            scores,
+            train_dataset,
+            padding,
+            run_cfg.attribute_tokens,
         )
+        if not run_cfg.attribute_tokens:
+            plot_score_trajectory(
+                scores.float().numpy(),
+                run_cfg.batch_size,
+                Path(run_cfg.run_path) / "score_vs_step.png",
+            )
 
 
 def run_gnh_unroll(run_cfg: GnhUnrollConfig):
