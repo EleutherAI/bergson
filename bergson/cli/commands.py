@@ -9,7 +9,7 @@ corresponding CLI entrypoint.
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import ClassVar, cast
 
 from simple_parsing import Serializable
 from simple_parsing.helpers.serialization import register_decoding_fn
@@ -36,6 +36,7 @@ from ..config.config import (
 from ..config.config_io import save_run_config
 from ..config.validation import LDSConfig, migrate_query_config
 from ..diagnose import DiagnoseConfig, diagnose
+from ..gnh_unroll.cli import GnhUnrollConfig, run_gnh_unroll
 from ..hessians.hessian_approximations import approximate_hessians
 from ..magic import MagicConfig, run_magic
 from ..magic.metasmoothness import run_metasmoothness
@@ -195,6 +196,37 @@ class Lissa(Serializable):
         )
 
 
+def validate_run_scores(cfg: ValidationConfig):
+    """Run ``validate`` on ``<run_path>/scores`` with ``cfg``'s training options."""
+    run_path = Path(cfg.run_path)
+    base = run_path / "retrained" / "base"
+    shared = {
+        k: v
+        for k, v in cfg.to_dict().items()
+        if k in ValidationConfig.__dataclass_fields__
+    }
+    Validate.from_dict(
+        shared
+        | {
+            "scores": str(run_path / "scores"),
+            "baseline_model": str(base) if base.exists() else "",
+            "resume": True,
+        }
+    ).execute()
+    # The validation step wrote its own config over this run's.
+    save_run_config(cfg, run_path)
+
+
+@dataclass
+class GnhUnroll(GnhUnrollConfig):
+    """Run unrolled Gauss-Newton attribution through an AdamW training run."""
+
+    cli_name: ClassVar[str] = "gnh-unroll"
+
+    def execute(self):
+        run_gnh_unroll(self)
+
+
 @dataclass
 class Magic(MagicConfig):
     """Run MAGIC attribution."""
@@ -202,26 +234,8 @@ class Magic(MagicConfig):
     def execute(self):
         """Run MAGIC attribution, then validate the scores unless skipped."""
         run_magic(self)
-        if self.skip_validation:
-            return
-
-        run_path = Path(self.run_path)
-        base = run_path / "retrained" / "base"
-        shared = {
-            k: v
-            for k, v in self.to_dict().items()
-            if k in ValidationConfig.__dataclass_fields__
-        }
-        Validate.from_dict(
-            shared
-            | {
-                "scores": str(run_path / "scores"),
-                "baseline_model": str(base) if base.exists() else "",
-                "resume": True,
-            }
-        ).execute()
-        # The validation step wrote its own config over this run's.
-        save_run_config(self, run_path)
+        if not self.skip_validation:
+            validate_run_scores(self)
 
 
 @dataclass

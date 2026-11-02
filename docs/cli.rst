@@ -5,7 +5,7 @@ Bergson exposes all functionality through subcommands of the ``bergson`` CLI:
 
 .. code-block:: bash
 
-   bergson {build,query,score,hessian,mix,trackstar,influence,approxunrolling,magic,train,metasmoothness,validate,recall,test_model_configuration} [OPTIONS]
+   bergson {build,query,score,hessian,mix,trackstar,influence,approxunrolling,magic,gnh-unroll,train,metasmoothness,validate,recall,test_model_configuration} [OPTIONS]
 
 The commands fall into four groups:
 
@@ -13,7 +13,7 @@ The commands fall into four groups:
 autocorrelation) independently of per-example gradient collection, and ``mix`` combines two autocorrelation hessians into one. See :doc:`building_blocks`.
 
 **Method pipelines** — ``trackstar``, ``influence``, and ``approxunrolling`` orchestrate
-building blocks into end-to-end attribution recipes (see :doc:`methods/trackstar`, :doc:`methods/influence-functions`, and :doc:`methods/source`). ``magic`` attributes by backpropagating through training (see :doc:`methods/magic`).
+building blocks into end-to-end attribution recipes (see :doc:`methods/trackstar`, :doc:`methods/influence-functions`, and :doc:`methods/source`). ``magic`` attributes by backpropagating through training (see :doc:`methods/magic`), and ``gnh-unroll`` approximates it with a Gauss-Newton curvature at each step (see :doc:`methods/gnh-unroll`).
 
 **Training & evaluation** — ``train`` trains a model with the Bergson trainer; ``metasmoothness``, ``validate``, and ``recall`` evaluate training runs and attribution scores (see :doc:`training` and :doc:`evaluation`).
 
@@ -188,6 +188,25 @@ configuration.
        --query.split "train[:8]"
 
 See ``examples/tiny_method_demonstrations/magic_gpt2_wikitext_tiny.yaml`` for a complete run
+configuration.
+
+.. autoclass:: bergson.__main__.GnhUnroll
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+**Example:**
+
+.. code-block:: bash
+
+   bergson gnh-unroll runs/my-gnh-unroll \
+       --checkpoints runs/my-magic/checkpoints \
+       --model EleutherAI/pythia-14m \
+       --data.dataset NeelNanda/pile-10k \
+       --query.dataset NeelNanda/pile-10k \
+       --query.split "train[:8]"
+
+See ``examples/gpt2_wikitext_leaderboard/unrolled_gauss_newton.yaml`` for a complete run
 configuration.
 
 Training & Evaluation

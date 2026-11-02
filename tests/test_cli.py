@@ -12,6 +12,7 @@ from .cli_command import bergson_cmd, bergson_env
 SUBCOMMANDS = [
     "build",
     "ekfac",
+    "gnh-unroll",
     "hessian",
     "influence",
     "magic",

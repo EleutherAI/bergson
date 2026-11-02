@@ -623,7 +623,9 @@ def worker(
 
     # A contrast set turns the query into ``loss(query) - loss(contrast)``:
     # subtract its aggregated gradient and baseline loss.
-    contrast_stream = build_contrast_stream(run_cfg, get_device(rank), global_rank)
+    contrast_stream = build_contrast_stream(
+        run_cfg, run_cfg.query, get_device(rank), global_rank
+    )
     if contrast_stream is not None:
         contrast_grads, contrast_baseline = compute_query_gradients(
             fwd_state,
