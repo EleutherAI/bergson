@@ -13,6 +13,13 @@ class MagicConfig(ValidationConfig):
     cleanup_ckpts: bool = True
     """Whether to delete all but the last checkpoint during the backward pass."""
 
+    double_backward_batch_size: int | None = None
+    """Max sequences per double-backward graph in the micro-batched backward
+    (requires ``grad_accum_steps > 1``). The graph retains several vocab-sized
+    tensors per sequence, so it dominates the backward's peak memory. Exact
+    under any split; ignored under dropout (``train_mode``), where the replay
+    must reuse the forward's micro-batches."""
+
     attribute_tokens: bool = False
     """Whether to compute attribution scores per token (instead of per sequence);
     the same toggle as ``IndexConfig.attribute_tokens``."""
@@ -26,6 +33,11 @@ class MagicConfig(ValidationConfig):
 
     def __post_init__(self):
         super().__post_init__()
+        if self.data.span_column:
+            raise ValueError(
+                "MAGIC does not support data.span_column; attribute_tokens and sum "
+                "each span's rows, which gives the same scores."
+            )
         if self.per_token:
             self.attribute_tokens = True
         if self.query.aggregation == "none" and self.query.contrast is not None:

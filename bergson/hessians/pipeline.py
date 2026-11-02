@@ -69,6 +69,11 @@ def hessian_pipeline(
             "only ever fits and applies a factored (kfac/tkfac/shampoo) "
             "Hessian."
         )
+    if index_cfg.projection_dim > 0 and index_cfg.projection_target == "global":
+        raise ValueError(
+            "projection_target='global' is not supported with Kronecker-factored "
+            "Hessians; the factors are projected per module."
+        )
 
     run_path = index_cfg.run_path
     method = hessian_cfg.method
@@ -94,11 +99,9 @@ def hessian_pipeline(
         print(f"  using the existing query index at {query_path}")
     elif not _step_complete(query_path, resume):
         with _timed("step1_build_query", durations):
-            # The preconditioner keys on module names, so the query stays
-            # uncompressed; only its output is randomly down-projected.
+            # The factors are projected to match the query.
             query_cfg = deepcopy(index_cfg)
             query_cfg.run_path = query_path
-            query_cfg.projection_dim = 0
             _validate(query_cfg)
             build_query(query_cfg, query_set_cfg, PreprocessConfig())
 

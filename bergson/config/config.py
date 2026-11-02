@@ -77,6 +77,12 @@ class DataConfig(Serializable):
     """When positive, concatenate and chunk the documents into fixed-length token
     sequences of this length. Incompatible with truncation and format_template."""
 
+    span_column: str | None = None
+    """Optional column containing a list of span start positions for each document
+    in a pre-tokenized dataset. When present continuous spans of tokens are attributed
+    instead of documents. Start positions must be increasing and begin
+    at 0. Incompatible with ``chunk_length``."""
+
     def __post_init__(self):
         if self.reward_column and self.advantage_column:
             raise ValueError(
@@ -88,6 +94,10 @@ class DataConfig(Serializable):
             if self.format_template:
                 raise ValueError(
                     "chunk_length and format_template cannot both be specified"
+                )
+            if self.span_column:
+                raise ValueError(
+                    "chunk_length and span_column cannot both be specified"
                 )
 
 
@@ -471,13 +481,6 @@ class TrainingConfig(AttributionConfig, Serializable):
     Under dropout, changing this changes the shapes the masks are drawn for, so
     trajectories are not identical across values."""
 
-    double_backward_batch_size: int | None = None
-    """Max sequences per double-backward graph in the micro-batched backward
-    (requires ``grad_accum_steps > 1``). The graph retains several vocab-sized
-    tensors per sequence, so it dominates the backward's peak memory. Exact
-    under any split; ignored under dropout (``train_mode``), where the replay
-    must reuse the forward's micro-batches."""
-
     resume: bool = False
     """Resume a previously interrupted run from the last checkpoint."""
 
@@ -715,6 +718,14 @@ class IndexConfig(AttributionConfig, Serializable):
     modules: list[str] = field(default_factory=list)
     """Modules to use for the query. If empty, all modules will be used."""
 
+    def __post_init__(self):
+        super().__post_init__()
+        if self.attribute_tokens and self.data.span_column:
+            raise ValueError(
+                "attribute_tokens and data.span_column both set a gradient row's "
+                "unit; pick per-token or per-span attribution."
+            )
+
     @property
     def partial_run_path(self) -> Path:
         """Temporary path to use while writing build artifacts."""
@@ -894,15 +905,16 @@ class ScoreConfig(Serializable):
     capability (e.g. in influence functions). False for unrolled
     differentiation."""
 
-    token_influence: Literal["gradient", "output"] = "gradient"
-    """What each row scores with ``attribute_tokens``. ``gradient`` scores row
-    ``t`` by the per-token gradient at position ``t``, which is position ``t``'s
-    effect on the loss of every later token. ``output`` scores row ``t`` by the
-    loss on token ``t + 1`` alone, the output token influence of Grosse et al.
-    (2023). Both kinds of row sum to the per-example score, so without
-    ``attribute_tokens``, ``output`` only changes how that score is computed.
-    ``output`` costs one forward-mode pass per query column, so aggregate the
-    query when you can, and needs an unprojected query and dot-product scoring."""
+    token_influence: Literal["gradient", "output"] = "output"
+    """What each row scores with ``attribute_tokens``. ``output`` scores row
+    ``t`` by the loss on token ``t + 1`` alone, the output token influence of
+    Grosse et al. (2023). ``gradient`` scores row ``t`` by the per-token
+    gradient at position ``t``, which is position ``t``'s effect on the loss of
+    every later token. Both kinds of row sum to the per-example score, so
+    without ``attribute_tokens`` or ``data.span_column`` the setting has no
+    effect and the gradient path scores each example. ``output`` costs one
+    forward-mode pass per query column, so aggregate the query when you can,
+    and needs an unprojected query and dot-product scoring."""
 
     candidates: CandidateConfig = field(default_factory=CandidateConfig)
     """Score only the rows an earlier run ranked highest. The store then has one
@@ -1017,6 +1029,11 @@ class AstraConfig(Serializable):
     loss_reduction: Literal["mean", "sum"] | None = None
     """Overrides ``index_cfg.loss_reduction`` in the Hessian-vector products.
     Used to replicate ASTRA; its theoretical interpretation is unclear."""
+
+    factors_on_cpu: bool = False
+    """Hold the Kronecker factors in CPU memory and move each module's to the GPU
+    only to precondition it, lowering peak GPU memory for slower steps. ``sgd`` also
+    holds the query and momentum there."""
 
     lr: float = 0.01
     """Step size. Too large a step diverges; tune it by the logged objective."""

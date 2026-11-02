@@ -21,7 +21,7 @@ The eigenvalue math lives in :mod:`bergson.hessians.inversion`.
 import os
 from glob import glob
 from pathlib import Path
-from typing import Iterable, Protocol, runtime_checkable
+from typing import Callable, Iterable, Literal, Protocol, runtime_checkable
 
 import torch
 import torch.distributed as dist
@@ -167,6 +167,7 @@ class FactoredPreconditioner:
         factor_eig_a: dict[str, Tensor] | None = None,
         factor_eig_g: dict[str, Tensor] | None = None,
         sharded: bool = True,
+        compute_device: str | torch.device | None = None,
     ):
         if inversion_cfg is not None and apply_fn is not None:
             raise ValueError("Pass either inversion_cfg or apply_fn, not both.")
@@ -180,6 +181,8 @@ class FactoredPreconditioner:
         self.apply_fn = apply_fn
         self.power = power
         self.shard_computer = ShardedMul(sharded=sharded)
+        # Where apply() works, when the factors are held on another device.
+        self.compute_device = compute_device
         # Per-step debug logs are off by default; consumer code may raise this
         # logger to DEBUG to surface the apply's progress trace.
         self.logger = get_logger("FactoredPreconditioner")
@@ -194,9 +197,11 @@ class FactoredPreconditioner:
         power: float = -1.0,
         ev_correction: bool = False,
         device: str | torch.device = "cpu",
+        compute_device: str | torch.device | None = None,
     ) -> "FactoredPreconditioner":
         """Load the full factors (concatenating any shards); each rank applies
-        them locally."""
+        them locally. ``compute_device`` applies them there one module at a time,
+        so that only one module's factors leave ``device``."""
 
         def load(sub):
             return _load_full(hessian_path, sub, device)
@@ -209,13 +214,68 @@ class FactoredPreconditioner:
             # So load a single shard rather than concatenating across shards.
             return _load_shard(hessian_path, sub, 0, device)
 
-        return cls._from_loaded(
+        preconditioner = cls._from_loaded(
             load,
             load_replicated,
             inversion_cfg,
             apply_fn,
             power,
             ev_correction,
+            sharded=False,
+        )
+        preconditioner.compute_device = compute_device
+        return preconditioner
+
+    @classmethod
+    def from_projected_path(
+        cls,
+        hessian_path: str | Path,
+        projection: Callable[[str, Literal["left", "right"], int], Tensor],
+        *,
+        inversion_cfg: InversionConfig | None = None,
+        device: str | torch.device = "cpu",
+        modules: Iterable[str] | None = None,
+    ) -> "FactoredPreconditioner":
+        """Load the factors and project them so the inverse applies to
+        ``[p, p]`` projected gradients.
+
+        ``projection(name, role, n)`` returns module ``name``'s ``[p, n]``
+        ``left`` (gradient factor) or ``right`` (activation factor) projection
+        matrix.
+        """
+
+        def project(vectors: Tensor, values: Tensor, P: Tensor):
+            rotated = P.to(torch.float64) @ vectors.to(torch.float64)
+            factor = (rotated * values.to(torch.float64).clamp_min(0)) @ rotated.T
+            return torch.linalg.eigh(factor)
+
+        eigen_a = _load_full(hessian_path, "eigen_activation_sharded", device, modules)
+        eigen_g = _load_full(hessian_path, "eigen_gradient_sharded", device, modules)
+        values_a = _load_shard(hessian_path, "factor_eig_a", 0, device, modules)
+        values_g = _load_full(hessian_path, "factor_eig_g", device, modules)
+
+        projected_a, projected_g, lambdas, factor_a, factor_g = {}, {}, {}, {}, {}
+        for name in list(eigen_a):
+            q_a, q_g = eigen_a.pop(name), eigen_g.pop(name)
+            lam_a, vec_a = project(
+                q_a, values_a[name], projection(name, "right", q_a.shape[0])
+            )
+            lam_g, vec_g = project(
+                q_g, values_g[name], projection(name, "left", q_g.shape[0])
+            )
+            projected_a[name] = vec_a.to(torch.float32)
+            projected_g[name] = vec_g.to(torch.float32)
+            factor_a[name] = lam_a.to(torch.float32)
+            factor_g[name] = lam_g.to(torch.float32)
+            lambdas[name] = torch.outer(lam_g, lam_a).to(torch.float32)
+
+        return cls(
+            projected_a,
+            projected_g,
+            lambdas,
+            inversion_cfg=inversion_cfg,
+            factor_eig_a=factor_a,
+            factor_eig_g=factor_g,
             sharded=False,
         )
 
@@ -292,7 +352,7 @@ class FactoredPreconditioner:
         distributed). The inverse eigenvalues are computed from this rank's shard
         plus the globally-reduced means, then applied across shards in-place.
         """
-        lam = self.lambdas[name]
+        lam = self.lambdas[name].to(g.device)
         o, i = g.shape[1], lam.shape[1]
         if self.apply_fn is not None:
             inverse_eigvals = self.apply_fn(lam)
@@ -340,10 +400,11 @@ class FactoredPreconditioner:
                 out[name] = flat
                 continue
 
-            q_a = self.eigen_a[name]
-            q_g = self.eigen_g[name]
+            device = self.compute_device or self.eigen_a[name].device
+            q_a = self.eigen_a[name].to(device)
+            q_g = self.eigen_g[name].to(device)
             o, i = q_g.shape[1], q_a.shape[1]
-            g = flat.to(q_a.device, torch.float32).view(-1, o, i)
+            g = flat.to(device, torch.float32).view(-1, o, i)
 
             # Forward rotation: G' = Q_G^T @ G @ Q_A
             g = self.shard_computer._matmul(vector_nsa=g, matrix_cb=q_a)
@@ -574,11 +635,14 @@ def load_preconditioner(
 
 
 def _load_full(
-    hessian_path: str | Path, subdir: str, device: str | torch.device
+    hessian_path: str | Path,
+    subdir: str,
+    device: str | torch.device,
+    modules: Iterable[str] | None = None,
 ) -> dict[str, Tensor]:
     """Load every ``shard_*.safetensors`` under ``hessian_path/subdir`` onto
     ``device`` and concatenate each key along dim 0, reconstructing the full
-    per-module tensors in fp32.
+    per-module tensors in fp32, restricted to ``modules`` when given.
 
     The shards were written by row-splitting dim 0 with ``shard_bounds`` (rank 0
     takes the remainder), so concatenating in rank order is exact regardless of
@@ -593,7 +657,13 @@ def _load_full(
     if not shards:
         raise FileNotFoundError(f"No shard_*.safetensors found in {shard_dir}")
 
-    loaded = [load_file(s, device=str(device)) for s in shards]
+    if modules is None:
+        loaded = [load_file(s, device=str(device)) for s in shards]
+    else:
+        loaded = []
+        for s in shards:
+            with safe_open(s, framework="pt", device=str(device)) as f:
+                loaded.append({k: f.get_tensor(k) for k in modules})
     keys = loaded[0].keys()
     return {
         name: torch.cat([shard[name] for shard in loaded], dim=0).to(torch.float32)

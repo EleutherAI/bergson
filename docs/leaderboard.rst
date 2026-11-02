@@ -54,6 +54,9 @@ Indicative performance of data attribution methods in the finetuning regime.
    * - Activation similarity (activation covariance preconditioner, projection 64)
      - 0.055 [0.043, 0.069]
      - 0.152 [0.116, 0.187]
+   * - `Gemma Scope 2 <https://huggingface.co/google/gemma-scope-2-27b-pt>`_ SAE feature similarity
+     - 0.053 [0.040, 0.067]
+     - 0.165 [0.129, 0.200]
    * - `Qwen3-Embedding-8B <https://huggingface.co/spaces/mteb/leaderboard>`_ semantic search
      - 0.049 [0.038, 0.061]
      - 0.132 [0.093, 0.169]
@@ -66,6 +69,9 @@ Indicative performance of data attribution methods in the finetuning regime.
    * - TrackStar (no optimizer correction, projection 64)
      - 0.045 [0.036, 0.055]
      - 0.276 [0.252, 0.299]
+   * - KFAC (projection 64)
+     - 0.045 [0.036, 0.055]
+     - 0.244 [0.216, 0.270]
    * - TrackStar (Adam, projection 64)
      - 0.043 [0.034, 0.052]
      - 0.242 [0.216, 0.267]
@@ -78,9 +84,6 @@ Indicative performance of data attribution methods in the finetuning regime.
    * - TRAK (8-model ensemble)
      - 0.032 [0.024, 0.040]
      - 0.138 [0.111, 0.165]
-   * - KFAC (projection 64)
-     - 0.023 [0.016, 0.032]
-     - 0.103 [0.076, 0.128]
    * - SOURCE
      - 0.022 [0.017, 0.027]
      - 0.165 [0.138, 0.191]
@@ -139,12 +142,38 @@ Per-token attribution scores, which attribute each training token's loss term, e
      - 0.119 [0.112, 0.125]
    * - Activation similarity (activation covariance preconditioner)
      - 0.073 [0.056, 0.092]
+   * - Gemma Scope 2 SAE feature similarity
+     - 0.047 [0.037, 0.058]
    * - Activation similarity
      - 0.028 [0.018, 0.039]
    * - Qwen3-Embedding-8B semantic search
      - 0.008 [0.006, 0.010]
 
 Configs and per-query statistics are in `examples/gpt2_wikitext_leaderboard/tokens <https://github.com/EleutherAI/bergson/tree/main/examples/gpt2_wikitext_leaderboard/tokens>`_.
+
+Per-span
+--------
+
+Per-span scores sum each method's per-token scores over spans of each training chunk: 64-token spans, or natural spans cut after sentence ends and line breaks and merged to at least 32 tokens (median 46). The proponent QLD masks the query's top 1% of training tokens by span score, about 369 whole 64-token spans or 413 whole natural spans; the control retrains without a random 1% of tokens.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 30 30
+
+   * - Method
+     - Proponent QLD, natural spans [95% CI]
+     - Proponent QLD, 64-token spans [95% CI]
+   * - MAGIC
+     - 0.239 [0.226, 0.253]
+     - 0.226 [0.214, 0.240]
+   * - EKFAC + ASTRA
+     - 0.153 [0.140, 0.168]
+     - 0.147 [0.133, 0.161]
+   * - EKFAC
+     - 0.135 [0.121, 0.149]
+     - 0.129 [0.116, 0.143]
+
+Configs and per-query statistics are in `examples/gpt2_wikitext_leaderboard/spans <https://github.com/EleutherAI/bergson/tree/main/examples/gpt2_wikitext_leaderboard/spans>`_.
 
 Notes
 -----
@@ -183,6 +212,9 @@ Gradient similarity
 
 Semantic search
    A baseline that uses a model optimized to retrieve documents with a similar meaning to the query document.
+
+SAE feature similarity
+   A baseline that compares documents by the mean of a sparse autoencoder's features on a large language model's residual stream, here the Gemma Scope 2 SAE at layer 31 of Gemma 3 27B.
 
 BM25
    A baseline that retrieve documents with words matching those in the query document.

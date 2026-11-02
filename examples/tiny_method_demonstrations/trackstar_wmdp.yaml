@@ -1,7 +1,6 @@
 # Score pile-10k against mean WMDP-bio gradients via the trackstar pipeline.
 
-# Equivalent of examples/trackstar_wmdp.py — fits
-# autocorrelation hessians on both query and value datasets (capped at the
+# Fits autocorrelation hessians on both query and value datasets (capped at the
 # first 10k samples each via stats_sample_size), mixes them, builds a query
 # gradient index over wmdp-bio, and scores every pile-10k example.
 

@@ -1,7 +1,7 @@
 """Per-token scores for the gradient-free baselines.
 
     python examples/gpt2_wikitext_leaderboard/tokens/token_baselines.py \
-        {activation,activation_ekfac,bm25,qwen3} <out> [--shard i --num_shards n]
+        {activation,activation_ekfac,bm25,qwen3,sae} <out> [--shard i --num_shards n]
         [--merge]
 
 Row ``t`` of a chunk scores the loss on token ``t + 1``, as in the forward-mode
@@ -19,6 +19,9 @@ rows of the gradient methods, and a chunk's rows add up to its document score
   ``k``'s hidden state embeds the prefix up to token ``k``; token ``k``'s share is
   the change in the prefix embedding's cosine when it is appended, mapped to the
   GPT-2 tokens covering its characters.
+- sae: a document's pooled Gemma Scope 2 SAE features are a mean over Gemma tokens,
+  so token ``k``'s share of the cosine is mapped to the GPT-2 tokens covering its
+  characters.
 
 The first token of a chunk has no loss row, so its share is dropped. Shards write
 ``<out>/shard_<i>.npy``; ``--merge`` writes ``<out>/scores`` in the layout of a
@@ -170,6 +173,29 @@ def qwen3_rows(queries, shard):
     return out
 
 
+def sae_rows(queries, shard):
+    from examples.gpt2_wikitext_leaderboard.gradient_free_baselines import (
+        sae_baseline,
+    )
+
+    sae = sae_baseline.GemmaSAE()
+    q = torch.nn.functional.normalize(sae.pooled(queries, 1), dim=-1)
+    out = []
+    for text, spans in zip(shard, gpt2_spans(shard)):
+        [(x, offsets)] = sae.residuals([text])
+        f = sae.encode(x)
+        share = ((f @ q.T).double() / (len(f) * f.mean(0).norm())).cpu().numpy()
+        rows = np.zeros((len(spans), len(queries)))
+        last = None
+        for k, (s, e) in enumerate(offsets):
+            if e > s:
+                last = (s, e)
+            if last is not None:  # special tokens join the token before them
+                spread(rows, spans, *last, -share[k])
+        out.append(rows)
+    return out
+
+
 def merge(args, train, queries):
     from bergson.data import load_scores
     from bergson.score.score_writer import save_token_scores
@@ -197,7 +223,8 @@ def merge(args, train, queries):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument(
-        "method", choices=["activation", "activation_ekfac", "bm25", "qwen3"]
+        "method",
+        choices=["activation", "activation_ekfac", "bm25", "qwen3", "sae"],
     )
     p.add_argument("out", type=Path)
     p.add_argument("--shard", type=int, default=0)
@@ -218,8 +245,10 @@ def main():
         rows = activation_rows(queries, shard, RUNS / "ekfac" / "hessian" / "kfac")
     elif args.method == "bm25":
         rows = bm25_rows(train, queries, idx)
-    else:
+    elif args.method == "qwen3":
         rows = qwen3_rows(queries, shard)
+    else:
+        rows = sae_rows(queries, shard)
     out = np.empty(len(rows), dtype=object)
     out[:] = rows
     np.save(args.out / f"shard_{args.shard}.npy", out, allow_pickle=True)

@@ -7,6 +7,7 @@ Text similarity baselines evaluated by mean LDS over 50 test queries.
 - `activation_baseline.py` — activation similarity: each doc is the mean-pooled input activation to every linear matrix of the model, L2-normalized per matrix and concatenated, then cosine similarity; `--hessian` whitens each matrix's pooled activations by its EK-FAC activation factor and `--projection_dim` projects them with bergson's per-module random projection.
 - `semantic_baseline.py` — semantic search with `jinaai/jina-embeddings-v5-text-small` (asymmetric retrieval query/document prompts; `--model` to swap, e.g. `jinaai/jina-embeddings-v3`).
 - `qwen3_baseline.py` — semantic search with `Qwen/Qwen3-Embedding-8B`, a SOTA decoder embedder (`--model` to swap).
+- `sae_baseline.py` — sparse autoencoder feature similarity: each doc is the mean of its Gemma Scope 2 residual-stream SAE features (`google/gemma-scope-2-27b-pt`, `resid_post/layer_31_width_262k_l0_medium`) on `google/gemma-3-27b-pt`, then cosine similarity (`--sae_id` to swap).
 
 Each produces a `[num_train_docs, num_queries]` score matrix.
 
@@ -20,6 +21,7 @@ python -m examples.gpt2_wikitext_leaderboard.gradient_free_baselines.dsir_baseli
 python -m examples.gpt2_wikitext_leaderboard.gradient_free_baselines.activation_baseline  --bank runs/retrain_bank_path
 python -m examples.gpt2_wikitext_leaderboard.gradient_free_baselines.semantic_baseline    --bank runs/retrain_bank_path
 python -m examples.gpt2_wikitext_leaderboard.gradient_free_baselines.qwen3_baseline       --bank runs/retrain_bank_path
+python -m examples.gpt2_wikitext_leaderboard.gradient_free_baselines.sae_baseline         --bank runs/retrain_bank_path
 ```
 
 Omit `--bank` to use the leaderboard's bank (`runs/compare_wikitext/random`, built by `../1_magic.yaml` if missing). `--query_split` sets the query set (default `test[0:50]`, the leaderboard's), `--out` the output dir (default `runs/gradient_free_baselines/`).

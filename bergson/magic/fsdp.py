@@ -1,3 +1,4 @@
+import re
 from collections import defaultdict
 from typing import TypeVar
 
@@ -120,4 +121,24 @@ def shallow_copy(tensor_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor
 
         result[path] = seen[tid]
 
+    return result
+
+
+def full_state_dict(model: torch.nn.Module) -> dict[str, torch.Tensor]:
+    """Gather a model's state dict into plain CPU tensors under its original names.
+
+    ``simple_fsdp`` registers each sharded weight at
+    ``parametrizations.<name>.original``. Must be called on every rank. Tied
+    weights stay one tensor.
+    """
+    seen: dict[int, torch.Tensor] = {}
+    result: dict[str, torch.Tensor] = {}
+    for key, t in model.state_dict(keep_vars=True).items():
+        key = re.sub(r"parametrizations\.([^.]+)\.original$", r"\1", key)
+        local = t.to_local() if isinstance(t, DTensor) else t
+        ptr = local.data_ptr()
+        if ptr not in seen:
+            full = t.full_tensor() if isinstance(t, DTensor) else t
+            seen[ptr] = full.detach().cpu()
+        result[key] = seen[ptr]
     return result

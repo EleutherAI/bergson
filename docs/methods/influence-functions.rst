@@ -42,6 +42,10 @@ Enable it in the CLI or in a YAML in the ``influence`` command, by setting ``hes
 
 Setting ``astra.solver: cg`` enables an alternative to the canonical ASTRA implementation that uses the CG solver (preconditioned conjugate gradients) on one batch of ``batch_size`` documents.
 
+The ASTRA solver learning rate should be tuned to minimize solver error. If you use multiple solver seeds, use the seed with the lowest final objective.
+
+Setting ``astra.factors_on_cpu: true`` holds the Kronecker factors in CPU memory and preconditions one module at a time, for models where the factors and the model don't fit on one GPU together.
+
 See ``examples/replications/bae_approx_unrolling_source_replication/wikitext_gpt2_astra.yaml`` and ``examples/gpt2_wikitext_leaderboard/ekfac_astra_cg.yaml``.
 
 Rerank Candidates
@@ -66,7 +70,7 @@ To perform reranking for a query, add a second step to the bergson YAML with the
              top_k: 1000
          ...
 
-The candidates are the union over the earlier run's query columns of each column's ``top_k`` rows (or ``fraction``) at the ``direction`` end. ``scores`` may also be the CSV written by ``bergson query --record``, whose ``Top`` (or ``Bottom``) rows per query are the candidates, the first ``top_k`` of each when set. The Hessian is still fitted on the whole training set. The store has one row per candidate in training order; ``candidates.npy`` beside it holds their training rows, which ``load_scores`` returns as ``candidates``.
+The candidates are the union over the earlier run's query columns of each column's ``top_k`` rows (or ``fraction``) at the ``direction`` end. ``scores`` may also be the CSV written by ``bergson query --record``, whose ``Top`` (or ``Bottom``) rows per query are the candidates, the first ``top_k`` of each when set. The Hessian is still fitted on the whole training set. The store has one row per candidate in training order; ``candidates.npy`` beside it holds their training rows, which ``load_scores`` returns as ``candidates``. With ``data.span_column``, each candidate gets its block of span rows.
 
 See ``examples/pretraining_scale_attribution/query_and_rerank.yaml``.
 
@@ -75,28 +79,55 @@ Attribute Tokens
 
 With ``attribute_tokens``, ``score_cfg.token_influence`` on ``score`` or ``influence`` chooses what each per-token row scores. Both kinds of row sum to the per-example score.
 
-* ``gradient`` (the default) scores row ``t`` by the per-token gradient at position ``t``. This is the simpler tokenwise attribution of `Studying Large Language Model Generalization with Influence Functions <https://arxiv.org/abs/2308.03296>`_ (Grosse et al., 2023, Eq. 31). Row ``t`` is position ``t``'s effect on the loss of every later token, since later tokens attend to it, so it isn't the influence of any one token.
-* ``output`` scores row ``t`` by the loss on token ``t + 1`` alone, which is the term that loss masking removes. This is the paper's output token influence (Appendix B.1, Eq. 36). Rows without a label are zero.
+* ``output`` (the default) scores row ``t`` by the loss on token ``t + 1`` alone, which is the term that loss masking removes. This is the output token influence of `Studying Large Language Model Generalization with Influence Functions <https://arxiv.org/abs/2308.03296>`_ (Grosse et al., 2023, Appendix B.1, Eq. 36). Rows without a label are zero.
+* ``gradient`` scores row ``t`` by the per-token gradient at position ``t``. This is the paper's simpler tokenwise attribution (Eq. 31). Row ``t`` is position ``t``'s effect on the loss of every later token, since later tokens attend to it, so it isn't the influence of any one token.
 
-The paper estimates output token influence by moving the weights a small step along the query and comparing each token's loss before and after. Bergson computes the rate of change exactly instead, with one forward-mode pass (a Jacobian-vector product) per query column that covers every token in the batch, so aggregate the query when you can. Without ``attribute_tokens``, ``output`` gives the same per-example scores as ``gradient`` by a different computation.
+The paper estimates output token influence by moving the weights a small step along the query and comparing each token's loss before and after. Bergson computes the rate of change exactly instead, with one forward-mode pass (a Jacobian-vector product) per query column that covers every token in the batch, so aggregate the query when you can. Without ``attribute_tokens`` or ``data.span_column`` the setting has no effect: both give the same per-example scores, which the cheaper gradient path computes.
 
 ``output`` needs an unprojected query (``projection_dim: 0``) and dot-product scoring, and doesn't support ``loss_fn: kl``, ``optimizer_state``, ``split_attention_modules``, quantized models, FSDP, or fused MoE experts. The fused attention kernels don't implement forward-mode derivatives, so the model is loaded with eager attention. The run saves ``data.hf`` with each example's loss, as the gradient path does, but not ``total_processed.pt``, which only Hessian fitting reads.
+
+Span attribution
+----------------
+
+A midpoint between attributing tokens and attributing documents is attributing contiguous spans of tokens within documents.
+
+Attribute spans by pre-tokenizing your dataset, defining your desired spans over each row in a dataset column, and passing the name of the column to Bergson with ``data.span_column``. This column must hold each document's span start positions, which could mark a sentence, a paragraph or a fixed-width window. The starts must be increasing and begin at 0, so the spans partition the document:
+
+.. code-block:: yaml
+
+   steps:
+     - score:
+         index_cfg:
+           data:
+             dataset: my_pretokenized_dataset
+             span_column: span_starts     # e.g. [0, 46, 91, ...] per document
+         score_cfg:
+           query_path: runs/ekfac/kfac_query
+
+The column must be generated outside Bergson. You can generate fixed windows with a ``map``:
+
+.. code-block:: python
+
+   ds = ds.map(lambda row: {"span_starts": list(range(0, len(row["input_ids"]), 64))})
+
+The cost of span attribution is the same as token attribution when ``score_cfg.token_influence`` is ``output``, and between per-token and per-document attribution when ``score_cfg.token_influence`` is ``gradient``. Unevenly chunked spans cost a little more than even ones because each batch of spans is padded. A span's attribution score is the sum of its per-token scores.
 
 Compress Gradients
 ------------------
 
-``index_cfg.projection_dim`` randomly down-projects the gradients before they are scored. ``projection_target: per_module`` compresses each module's gradient to its own ``[projection_dim, projection_dim]`` block; ``global`` compresses the whole gradient to one ``[projection_dim]`` vector:
+``index_cfg.projection_dim`` randomly down-projects the gradients before they are scored, compressing each module's gradient to its own ``[projection_dim, projection_dim]`` block:
 
 .. code-block:: yaml
 
    steps:
      - influence:
          index_cfg:
-           projection_dim: 4096
-           projection_target: global
+           projection_dim: 64
          hessian_cfg: {method: kfac}
 
-The factored preconditioners apply :math:`H^{-1}` to the unprojected query and down-project the result to match the index. EK-FAC (``ev_correction``) doesn't support projection.
+The Kronecker factors are projected with the same matrices as the gradients, and the inverse of :math:`(P_l G P_l^\top) \otimes (P_r A P_r^\top)` is applied to the projected query, where :math:`G` and :math:`A` are the gradient and activation factors. The damping is relative to the mean eigenvalue of the projected factors.
+
+``projection_target: global`` isn't supported. EKFAC (``ev_correction``) doesn't support projection.
 
 Method details
 --------------

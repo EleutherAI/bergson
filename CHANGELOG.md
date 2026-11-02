@@ -1,6 +1,54 @@
 # CHANGELOG
 
 
+## v2.8.0 (2026-11-02)
+
+### Features
+
+- Hold ASTRA's factors on CPU to lower peak GPU memory
+  ([#594](https://github.com/EleutherAI/bergson/pull/594),
+  [`4ae5509`](https://github.com/EleutherAI/bergson/commit/4ae5509afda836fbaa151bc63e530ef08b6a68da))
+
+
+## v2.7.0 (2026-10-31)
+
+### Features
+
+- Invert the Kronecker factors in the projected space
+  ([#543](https://github.com/EleutherAI/bergson/pull/543),
+  [`dd3b38f`](https://github.com/EleutherAI/bergson/commit/dd3b38f48a97d500515df5d2c1ef57401c96f332))
+
+
+## v2.6.0 (2026-10-31)
+
+### Features
+
+- Add a Gemma Scope 2 SAE feature similarity baseline
+  ([#579](https://github.com/EleutherAI/bergson/pull/579),
+  [`25a5f48`](https://github.com/EleutherAI/bergson/commit/25a5f4832144fc7faef20e23494152f800dbb1c8))
+
+
+## v2.5.4 (2026-10-31)
+
+### Bug Fixes
+
+- ASTRA under FSDP ([#588](https://github.com/EleutherAI/bergson/pull/588),
+  [`320cedb`](https://github.com/EleutherAI/bergson/commit/320cedb97fc9c5abe02403053b405304ce5ea0b8))
+
+### Documentation
+
+- Keep the ASTRA solve with the lowest final objective
+  ([#590](https://github.com/EleutherAI/bergson/pull/590),
+  [`9248ff2`](https://github.com/EleutherAI/bergson/commit/9248ff27a631bb964124eaee7afe9f31b3abd473))
+
+- Note module batching for influence function Hessians
+  ([#592](https://github.com/EleutherAI/bergson/pull/592),
+  [`2508f72`](https://github.com/EleutherAI/bergson/commit/2508f72120135323a558e6e62f4bf6f1d9aa81d1))
+
+- Tune the ASTRA lr on the query ([#587](https://github.com/EleutherAI/bergson/pull/587),
+  [`f39b22e`](https://github.com/EleutherAI/bergson/commit/f39b22ed9a4e7a85619fe122f7a09cf4504fdb15))
+
+
 ## v2.5.3 (2026-10-29)
 
 ### Bug Fixes
