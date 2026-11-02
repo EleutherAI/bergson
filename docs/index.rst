@@ -60,6 +60,7 @@ Load the gradients:
    methods/trak
    methods/source
    methods/magic
+   methods/gnh-unroll
 
 .. toctree::
    :maxdepth: 2

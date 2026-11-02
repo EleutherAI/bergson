@@ -92,12 +92,17 @@ def _write(
         yaml.safe_dump(doc, f, sort_keys=False)
 
 
+def command_name(command_cls: type) -> str:
+    """The subcommand and ``steps:`` key of ``command_cls``."""
+    return getattr(command_cls, "cli_name", command_cls.__name__.lower())
+
+
 def save_run_config(command: Any, run_path: str | Path):
     """Write a one-step ``config.yaml`` for ``command`` into ``run_dir``.
 
     It can be run using ``bergson <run_path>/config.yaml``.
     """
-    step = {(type(command).__name__).lower(): command.to_dict()}
+    step = {command_name(type(command)): command.to_dict()}
     _write([step], Path(run_path) / CONFIG_FILENAME)
 
 

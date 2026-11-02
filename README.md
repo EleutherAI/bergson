@@ -30,6 +30,7 @@ Indicative performance of select data attribution methods in the finetuning regi
 | Method | QLD | LDS | Per-token QLD |
 |:---|:---:|:---:|:---:|
 | MAGIC | 0.100 [0.090, 0.112] | 0.931 [0.925, 0.936] | 1.375 [1.348, 1.403] |
+| Unrolled Gauss-Newton | 0.084 [0.072, 0.096] | 0.819 [0.806, 0.829] | – |
 | EKFAC + CG | 0.077 [0.066, 0.089] | 0.685 [0.664, 0.702] | 1.014 [0.986, 1.043] |
 | SOURCE (Adam, EKFAC) | 0.071 [0.060, 0.084] | 0.473 [0.446, 0.498] | 0.908 [0.877, 0.942] |
 | EKFAC | 0.070 [0.058, 0.082] | 0.454 [0.426, 0.479] | 0.863 [0.833, 0.894] |
@@ -51,6 +52,8 @@ Results with 95% confidence intervals for GPT-2 finetuned on 4 epochs of the Wik
 **Note: unrolled differentiation efficacy is proportional to [metasmoothness](https://bergson.readthedocs.io/en/latest/methods/magic.html#smoothness), which is low in some settings, including early pretraining steps. Check your run's estimated metasmoothness with `bergson metasmoothness`.**
 
 `bergson approxunrolling` is an approximation of `bergson magic` that uses a handful of training checkpoints to run the multi-step SOURCE attribution pipeline. This is roughly equivalent to an influence function averaged over several checkpoints.
+
+`bergson gnh-unroll` is an alternative approximation of `bergson magic` that backpropagates through the training process, but considers only linear layers and replaces each step's Hessian with a Gauss-Newton matrix, enabling query batching and cheaper scoring.
 
 To build a train‑time gradient store, use our HF Trainer callback. This will incur a ~17% performance overhead.
 

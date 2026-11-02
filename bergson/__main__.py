@@ -1,16 +1,22 @@
 import os
 import sys
 from dataclasses import dataclass
-from typing import Union, get_args
+from typing import Union
 
-from simple_parsing import ArgumentParser, ConflictResolution
+from simple_parsing import ArgumentParser, ConflictResolution, subparsers
 
-from bergson.config.config_io import parse_steps, read_config, save_pipeline_config
+from bergson.config.config_io import (
+    command_name,
+    parse_steps,
+    read_config,
+    save_pipeline_config,
+)
 
 from .cli.commands import (
     ApproxUnrolling,
     Build,
     Ekfac,
+    GnhUnroll,
     Hessian,
     Influence,
     Lissa,
@@ -28,15 +34,13 @@ from .cli.commands import (
     Validate,
 )
 
-
-@dataclass
-class Main:
-    """Routes to the subcommands."""
-
-    command: Union[
+COMMANDS: dict[str, type] = {
+    command_name(cls): cls
+    for cls in (
         ApproxUnrolling,
         Build,
         Ekfac,
+        GnhUnroll,
         Hessian,
         Influence,
         Lissa,
@@ -52,7 +56,36 @@ class Main:
         Train,
         Test_Model_Configuration,
         Validate,
-    ]
+    )
+}
+"""Subcommands of ``bergson`` and ``steps:`` keys of a config YAML by name."""
+
+
+@dataclass
+class Main:
+    """Routes to the subcommands."""
+
+    command: Union[
+        ApproxUnrolling,
+        Build,
+        Ekfac,
+        GnhUnroll,
+        Hessian,
+        Influence,
+        Lissa,
+        Magic,
+        Metasmoothness,
+        Mix,
+        Query,
+        Recall,
+        Reduce,
+        Score,
+        Trackstar,
+        Trak,
+        Train,
+        Test_Model_Configuration,
+        Validate,
+    ] = subparsers(COMMANDS)
 
     def execute(self):
         """Run the script."""
@@ -99,9 +132,6 @@ def main():
     """
     args = sys.argv[1:]
 
-    command_classes = get_args(Main.__dataclass_fields__["command"].type)
-    command_registry = {cls.__name__.lower(): cls for cls in command_classes}
-
     # Config-file mode: accept a YAML file as the sole argument.
     # Leading command words (e.g. `bergson build run/config.yaml`) are ignored.
     config_path: str | None = None
@@ -116,7 +146,7 @@ def main():
         if not os.path.isfile(config_path):
             raise SystemExit(f"bergson: no such config file: {config_path}")
 
-        run_config(config_path, command_registry)
+        run_config(config_path, COMMANDS)
         return
 
     # CLI-flag mode: argparse-style flag parsing.

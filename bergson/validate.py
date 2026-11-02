@@ -31,7 +31,7 @@ from transformers.utils.logging import (
     set_verbosity_error as hf_set_verbosity_error,
 )
 
-from .config.config import ValidationConfig
+from .config.config import QuerySetConfig, TrainingConfig, ValidationConfig
 from .config.config_io import get_config_field, save_run_config
 from .config.validation import (
     ControlsConfig,
@@ -231,12 +231,15 @@ def mean_query_loss(
 
 
 def build_contrast_stream(
-    run_cfg: ValidationConfig, device: torch.device | str, rank: int
+    run_cfg: TrainingConfig,
+    query: QuerySetConfig,
+    device: torch.device | str,
+    rank: int,
 ) -> DataStream | None:
     """The ``query.contrast`` stream, padded like the query stream, or None."""
-    if run_cfg.query.contrast is None:
+    if query.contrast is None:
         return None
-    ds, n = setup_data_pipeline(run_cfg, run_cfg.query.contrast)
+    ds, n = setup_data_pipeline(run_cfg, query.contrast)
     ds, n, padding = pad_dataset_to_batch_size(
         ds, run_cfg.batch_size, n, "Contrast", rank
     )
@@ -244,7 +247,7 @@ def build_contrast_stream(
         ds,
         run_cfg.batch_size,
         device=device,
-        input_key=run_cfg.query.contrast.prompt_column,
+        input_key=query.contrast.prompt_column,
         weight_shape=(n,),
     )
     padding.zero_weights(stream.weights.data)
@@ -1107,7 +1110,7 @@ def evaluate_retrained(
         weight_shape=(query_n,),
     )
     query_padding.zero_weights(query_stream.weights.data)
-    contrast_stream = build_contrast_stream(run_cfg, device, 0)
+    contrast_stream = build_contrast_stream(run_cfg, run_cfg.query, device, 0)
 
     hf_disable_pbar()
     hf_set_verbosity_error()
