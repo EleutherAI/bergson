@@ -5,17 +5,18 @@ from dataclasses import dataclass
 import torch
 import torch.distributed as dist
 import torch.nn as nn
-from safetensors.torch import save_file
 from torch import Tensor
 
 from bergson.collector.collector import HookCollectorBase
 from bergson.hessians.sharded_computation import (
+    BackgroundSaves,
     OwnerGathers,
     ShardedMul,
     assign_module_owners,
     gather_batch_shapes,
     local_modules,
     owned_to_row_shards,
+    save_shards,
 )
 from bergson.utils.utils import assert_type
 
@@ -49,6 +50,9 @@ class CovarianceCollector(HookCollectorBase):
     path: str
     local_bytes: float = 0
     """Bytes of covariances each rank may keep, smallest modules first."""
+    saves: BackgroundSaves | None = None
+    """Thread the shards are saved on; without one, teardown saves them
+    before it returns."""
 
     def setup(self) -> None:
         """Initialize covariance storage dictionaries."""
@@ -191,7 +195,9 @@ class CovarianceCollector(HookCollectorBase):
                 )
             else:
                 shards = covariances
-            save_file(shards, os.path.join(path, f"shard_{self.rank}.safetensors"))
+            save_shards(
+                shards, os.path.join(path, f"shard_{self.rank}.safetensors"), self.saves
+            )
             del shards
 
         if dist.is_initialized():

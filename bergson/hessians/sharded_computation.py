@@ -1,6 +1,8 @@
+import threading
 from collections import deque
 from typing import Callable
 
+import safetensors.torch
 import torch
 import torch.distributed as dist
 from jaxtyping import Float
@@ -119,12 +121,25 @@ def owned_to_row_shards(
     owners: dict[str, int],
     dtype: torch.dtype,
     device: str | torch.device,
+    max_bytes: int = 1 << 30,
 ) -> dict[str, Tensor]:
     """This rank's row shard of every matrix, on the CPU, from ``owned``, the
-    matrices this rank owns in full. One matrix at a time is sent from its owner,
-    which sends each rank only its rows."""
+    matrices this rank owns in full. Each owner sends every rank its rows, in
+    scatters sent without waiting for them to arrive, with at most ``max_bytes``
+    of rows waiting at once."""
     rank, world_size = dist.get_rank(), dist.get_world_size()
-    shards = {}
+    shards: dict[str, Tensor] = {}
+    pending: deque = deque()
+    waiting = 0
+
+    def finish():
+        nonlocal waiting
+        name, work, received, _, nbytes = pending.popleft()
+        work.wait()
+        waiting -= nbytes
+        start, end = shard_bounds(shapes[name][0], rank, world_size)
+        shards[name] = received[: end - start].cpu()
+
     for name, shape in shapes.items():
         owner = owners[name]
         # Rank 0's shard is the largest; the others are padded to its size so
@@ -142,11 +157,60 @@ def owned_to_row_shards(
                         [block, block.new_zeros(rows - len(block), *shape[1:])]
                     )
                 blocks.append(block)
-        dist.scatter(received, blocks, src=owner)
-        start, end = shard_bounds(shape[0], rank, world_size)
-        shards[name] = received[: end - start].cpu()
-        del received, blocks
+        work = dist.scatter(received, blocks, src=owner, async_op=True)
+        # The blocks stay referenced until their scatter has read them.
+        pending.append((name, work, received, blocks, received.nbytes))
+        waiting += received.nbytes
+        while waiting > max_bytes and len(pending) > 1:
+            finish()
+    while pending:
+        finish()
     return shards
+
+
+class BackgroundSaves:
+    """Files written on a thread, so the fit goes on while the disk works.
+
+    ``save`` serializes the tensors at once, which holds the interpreter for
+    the copy, and writes the bytes on the thread, which releases it."""
+
+    def __init__(self):
+        self.threads: list[threading.Thread] = []
+        self.errors: list[BaseException] = []
+
+    def save(self, tensors: dict[str, Tensor], path: str) -> None:
+        data = safetensors.torch.save(
+            {k: v.cpu().contiguous() for k, v in tensors.items()}
+        )
+
+        def write():
+            try:
+                with open(path, "wb") as f:
+                    f.write(data)
+            except BaseException as e:
+                self.errors.append(e)
+
+        thread = threading.Thread(target=write, daemon=True)
+        thread.start()
+        self.threads.append(thread)
+
+    def wait(self) -> None:
+        """Wait for every file, raising the first error a write hit."""
+        for thread in self.threads:
+            thread.join()
+        self.threads.clear()
+        if self.errors:
+            raise self.errors[0]
+
+
+def save_shards(
+    tensors: dict[str, Tensor], path: str, saves: BackgroundSaves | None
+) -> None:
+    """Save ``tensors`` to ``path`` on ``saves``' thread, or now when none is given."""
+    if saves is None:
+        safetensors.torch.save_file(tensors, path)
+    else:
+        saves.save(tensors, path)
 
 
 class ShardedMul:

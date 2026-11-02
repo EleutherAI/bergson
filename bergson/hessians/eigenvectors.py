@@ -13,12 +13,14 @@ from tqdm import tqdm
 
 from bergson.collector.collector import HookCollectorBase
 from bergson.hessians.sharded_computation import (
+    BackgroundSaves,
     OwnerGathers,
     ShardedMul,
     assign_module_owners,
     gather_batch_shapes,
     local_modules,
     owned_to_row_shards,
+    save_shards,
     shard_bounds,
 )
 from bergson.moe import ExpertLinear
@@ -123,6 +125,10 @@ class LambdaCollector(HookCollectorBase):
     local_bytes: float = 0
     """Bytes of eigenvectors and corrections each rank may keep, smallest
     modules first; in one process, bytes of corrections kept on the device."""
+
+    saves: BackgroundSaves | None = None
+    """Thread the shards are saved on; without one, teardown saves them
+    before it returns."""
 
     def setup(self) -> None:
         """Load eigenvectors and initialize storage."""
@@ -395,9 +401,10 @@ class LambdaCollector(HookCollectorBase):
                 self.dtype,
                 self.device,
             )
-        save_file(
+        save_shards(
             {k: (v / self.num_documents).cpu() for k, v in corrections.items()},
             os.path.join(output_path, f"shard_{self.rank}.safetensors"),
+            self.saves,
         )
         self.transformed_a_cache.clear()
         self.eigenvalue_corrections.clear()
@@ -485,13 +492,14 @@ def eigendecompose_owned(
     output_path: str,
     dtype: torch.dtype,
     num_positions: dict[str, int] | None = None,
+    saves: BackgroundSaves | None = None,
 ) -> tuple[dict[str, Tensor], dict[str, Tensor]]:
     """Eigendecompose the covariances this rank owns, in full, from memory.
 
     ``owners`` maps every module in ``shapes`` to its rank, or is ``None`` in a
     single process. Saves this rank's row shard of every module's eigenvectors
     to ``output_path`` in ``dtype``, the layout :func:`compute_eigendecomposition`
-    writes.
+    writes, on ``saves``' thread when given.
 
     Each covariance is divided by its module's entry in ``num_positions``, the
     positions it summed, when given, else by ``total_processed``. The two differ
@@ -532,7 +540,7 @@ def eigendecompose_owned(
         )
 
     os.makedirs(output_path, exist_ok=True)
-    save_file(shards, os.path.join(output_path, f"shard_{rank}.safetensors"))
+    save_shards(shards, os.path.join(output_path, f"shard_{rank}.safetensors"), saves)
     get_logger().info(f"Saved eigenvectors to {output_path}")
     return eigenvectors, value_shards
 
@@ -647,6 +655,7 @@ def save_uncorrected_eigenvalues(
     world_size: int,
     num_documents: int = 1,
     num_positions: dict[str, int] | None = None,
+    saves: BackgroundSaves | None = None,
 ) -> None:
     """Take sharded eigenvalues_a and eigenvalues_g. Computes the sharded
     outer product by keeping eigenvalues_g in its sharded form and gathering
@@ -724,12 +733,17 @@ def save_uncorrected_eigenvalues(
         factor_eig_a[key] = (eigenvalue_a_full * scale).to(device="cpu").contiguous()
         factor_eig_g[key] = (eigenvalue_g_shard * scale).to(device="cpu").contiguous()
 
-    save_file(
+    save_shards(
         outer_product_sharded,
         os.path.join(out_dir, f"shard_{rank}.safetensors"),
+        saves,
     )
-    save_file(factor_eig_a, os.path.join(factor_a_dir, f"shard_{rank}.safetensors"))
-    save_file(factor_eig_g, os.path.join(factor_g_dir, f"shard_{rank}.safetensors"))
+    save_shards(
+        factor_eig_a, os.path.join(factor_a_dir, f"shard_{rank}.safetensors"), saves
+    )
+    save_shards(
+        factor_eig_g, os.path.join(factor_g_dir, f"shard_{rank}.safetensors"), saves
+    )
 
     get_logger().info(f"Saved uncorrected eigenvalues to {out_dir}")
 
