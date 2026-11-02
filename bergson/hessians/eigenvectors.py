@@ -236,8 +236,12 @@ class LambdaCollector(HookCollectorBase):
             for name in {*owned, *self.local}
         }
 
-    def with_batch(self, collection_mask: Tensor | None = None):
-        super().with_batch(collection_mask)
+    def with_batch(
+        self,
+        collection_mask: Tensor | None = None,
+        spans: tuple[Tensor, Tensor] | None = None,
+    ):
+        super().with_batch(collection_mask, spans)
         if self.owners is not None and collection_mask is not None:
             # Every module but a fused MoE expert sees the batch's [N, S]
             self._batch_shapes = gather_batch_shapes(
