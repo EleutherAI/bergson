@@ -247,7 +247,7 @@ def test_gloo_ranks_match_one_process_on_cpu(
     with socket.socket() as s:
         s.bind(("", 0))
         port = s.getsockname()[1]
-    mp.spawn(fit_small, args=(1, port, str(tmp_path), 0), nprocs=1)
+    mp.spawn(fit_small, args=(1, port, str(tmp_path), local_bytes), nprocs=1)
     mp.spawn(
         fit_small,
         args=(CPU_RANKS, port, str(tmp_path), local_bytes),

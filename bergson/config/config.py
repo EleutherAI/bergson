@@ -988,7 +988,9 @@ class HessianConfig(Serializable):
     use to run faster. Each GPU keeps its own copy of as many modules' factors
     as fit, smallest first, and exchanges data every step only for the rest.
     Lower it if the fit runs out of memory (0 keeps no copies); raise it if
-    memory is spare and the fit is slow. The fitted factors are the same."""
+    memory is spare and the fit is slow. The fitted factors are the same. On
+    one GPU, an EK-FAC fit keeps as many modules' eigenvalue corrections as fit
+    within it on the GPU and sums the rest on the CPU."""
 
 
 @dataclass

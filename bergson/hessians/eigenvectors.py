@@ -94,6 +94,10 @@ class LambdaCollector(HookCollectorBase):
     sending the sums to the owners at teardown; owners receive every rank's
     positions for the other modules each step. Teardown saves the usual row
     shards.
+
+    In one process, the corrections of the modules in ``local`` stay on the
+    device; the others are summed on the CPU, moved to the device and back at
+    every step.
     """
 
     path: str
@@ -118,7 +122,7 @@ class LambdaCollector(HookCollectorBase):
 
     local_bytes: float = 0
     """Bytes of eigenvectors and corrections each rank may keep, smallest
-    modules first."""
+    modules first; in one process, bytes of corrections kept on the device."""
 
     def setup(self) -> None:
         """Load eigenvectors and initialize storage."""
@@ -130,6 +134,10 @@ class LambdaCollector(HookCollectorBase):
         # Initialize accumulators
         self.eigenvalue_corrections = {}
         self.transformed_a_cache = {}
+        self.correction_shapes = {
+            name: (out_dim, in_dim + collect_bias)
+            for name, (_, (out_dim, in_dim), collect_bias) in self.target_info.items()
+        }
         # Each module's owning rank; None in a single process.
         self.owners: dict[str, int] | None = None
 
@@ -142,25 +150,33 @@ class LambdaCollector(HookCollectorBase):
                 {k: v.to(self.device, self.dtype) for k, v in vectors.items()}
                 for vectors in self.eigenvectors
             )
-            return
+        else:
+            self.eigen_a = load_file(
+                os.path.join(
+                    eigen_src,
+                    f"eigen_activation_sharded/shard_{self.rank}.safetensors",
+                ),
+                device=self.device,
+            )
+            self.eigen_g = load_file(
+                os.path.join(
+                    eigen_src, f"eigen_gradient_sharded/shard_{self.rank}.safetensors"
+                ),
+                device=self.device,
+            )
+            # Cast eigenvectors once so the rotations run in the accumulation dtype.
+            self.eigen_a = {k: v.to(self.dtype) for k, v in self.eigen_a.items()}
+            self.eigen_g = {k: v.to(self.dtype) for k, v in self.eigen_g.items()}
 
-        # Load precomputed eigenvectors
-        self.eigen_a = load_file(
-            os.path.join(
-                eigen_src, f"eigen_activation_sharded/shard_{self.rank}.safetensors"
-            ),
-            device=self.device,
+        itemsize = torch.empty((), dtype=self.dtype).element_size()
+        self.local = local_modules(
+            {name: o * i * itemsize for name, (o, i) in self.correction_shapes.items()},
+            self.local_bytes,
         )
-        self.eigen_g = load_file(
-            os.path.join(
-                eigen_src, f"eigen_gradient_sharded/shard_{self.rank}.safetensors"
-            ),
-            device=self.device,
-        )
-
-        # Cast eigenvectors once so the rotations run in the accumulation dtype.
-        self.eigen_a = {k: v.to(self.dtype) for k, v in self.eigen_a.items()}
-        self.eigen_g = {k: v.to(self.dtype) for k, v in self.eigen_g.items()}
+        for name in self.local:
+            self.eigenvalue_corrections[name] = torch.zeros(
+                self.correction_shapes[name], device=self.device, dtype=self.dtype
+            )
 
     def _setup_owned(self, eigen_src: str) -> None:
         """Load the full eigenvectors of the modules this rank owns, joining the
@@ -193,10 +209,6 @@ class LambdaCollector(HookCollectorBase):
         else:
             self.eigen_a = load("eigen_activation_sharded")
             self.eigen_g = load("eigen_gradient_sharded")
-        self.correction_shapes = {
-            name: (out_dim, in_dim + collect_bias)
-            for name, (_, (out_dim, in_dim), collect_bias) in self.target_info.items()
-        }
         itemsize = torch.empty((), dtype=self.dtype).element_size()
         self.local = local_modules(
             {
@@ -335,7 +347,11 @@ class LambdaCollector(HookCollectorBase):
         # Square and sum over batch
         transformed_grad = (transformed_grad_shard**2).sum(dim=0)
 
-        # Accumulate (with CPU offloading for memory efficiency)
+        if name in self.local:
+            self.eigenvalue_corrections[name].add_(transformed_grad)
+            return
+
+        # Summed on the CPU, past the device's budget
         if name not in self.eigenvalue_corrections:
             self.eigenvalue_corrections[name] = transformed_grad.to(device="cpu")
         else:
@@ -376,7 +392,7 @@ class LambdaCollector(HookCollectorBase):
                 self.device,
             )
         save_file(
-            {k: v / self.num_documents for k, v in corrections.items()},
+            {k: (v / self.num_documents).cpu() for k, v in corrections.items()},
             os.path.join(output_path, f"shard_{self.rank}.safetensors"),
         )
         self.transformed_a_cache.clear()
