@@ -18,7 +18,7 @@ from bergson.collector.collector import (
     fwd_bwd_hessian_factory,
 )
 from bergson.config.config import AttentionConfig, HessianConfig, IndexConfig
-from bergson.data import allocate_batches
+from bergson.data import allocate_batches, allocate_dpo_batches
 from bergson.distributed import init_dist, launch_distributed_run
 from bergson.gradients import GradientProcessor
 from bergson.hessians.autocorrelation import (
@@ -226,7 +226,14 @@ def hessian_worker(
     attention_cfgs = {
         module: index_cfg.attention for module in index_cfg.split_attention_modules
     }
-    batches = allocate_batches(ds["length"][:], index_cfg.token_batch_size)
+    if index_cfg.loss_fn == "dpo":
+        batches = allocate_dpo_batches(
+            ds["length"][:],
+            index_cfg.token_batch_size,
+            max_batch_size=index_cfg.max_batch_size,
+        )
+    else:
+        batches = allocate_batches(ds["length"][:], index_cfg.token_batch_size)
 
     # The autocorrelation Hessian is a dense gradient Gram, one per module or
     # one over the global projection, so it computes in one pass and skips the
@@ -310,6 +317,8 @@ def fit_factored_hessians(
 ):
     """Fit the covariances of ``target_modules``, eigendecompose them and, for
     EK-FAC, collect the eigenvalue corrections, writing everything under ``path``."""
+    # Averages are per document, or per pair with DPO
+    num_documents = len(data) // 2 if index_cfg.loss_fn == "dpo" else len(data)
     if target_modules is not None:
         attention_cfgs = {
             k: v for k, v in attention_cfgs.items() if k in target_modules
@@ -390,7 +399,7 @@ def fit_factored_hessians(
         total_processed=total_processed,
         rank=rank,
         world_size=world_size,
-        num_documents=len(data),
+        num_documents=num_documents,
         num_positions=num_positions,
     )
 
@@ -398,7 +407,7 @@ def fit_factored_hessians(
         collect_hessians(
             **kwargs,
             ev_correction=True,
-            num_documents=len(data),
+            num_documents=num_documents,
             eigenvectors=eigenvectors,
         )
         _release_device_memory()
@@ -454,6 +463,7 @@ def collect_hessians(
             output_subdir=output_subdir,
             num_documents=num_documents,
             eigenvectors=eigenvectors,
+            is_dpo=index_cfg.loss_fn == "dpo",
         )
         desc += " (eigenvalue correction)"
     else:

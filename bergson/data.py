@@ -1,3 +1,4 @@
+import dataclasses
 import heapq
 import json
 import math
@@ -908,6 +909,28 @@ def tokenize(
     )
     if args.truncation and max_length is not None:
         kwargs["max_length"] = max_length
+    if args.completion_column and args.rejected_column:
+        # Tokenize the chosen and rejected completions separately, for
+        # expand_dpo_dataset to lay out as paired rows.
+        chosen = tokenize(
+            batch,
+            args=dataclasses.replace(args, rejected_column=""),
+            tokenizer=tokenizer,
+            max_length=max_length,
+        )
+        rejected = tokenize(
+            batch,
+            args=dataclasses.replace(
+                args, completion_column=args.rejected_column, rejected_column=""
+            ),
+            tokenizer=tokenizer,
+            max_length=max_length,
+        )
+        return {
+            f"{side}_{field}": encoding[field]
+            for side, encoding in (("chosen", chosen), ("rejected", rejected))
+            for field in ("input_ids", "labels", "length")
+        }
     if args.completion_column:
         # We're dealing with a prompt-completion dataset
         convos = [
@@ -995,6 +1018,83 @@ def tokenize(
         labels_list.append(labels)
 
     return dict(**encodings, labels=labels_list)
+
+
+DPO_COLUMNS = tuple(
+    f"{side}_{field}"
+    for side in ("chosen", "rejected")
+    for field in ("input_ids", "labels", "length")
+)
+
+
+def expand_dpo_dataset(ds: Dataset) -> Dataset:
+    """Lay out a paired dataset as its chosen rows followed by its rejected rows.
+
+    ``ds`` holds one row per pair with the columns ``tokenize`` writes when
+    ``rejected_column`` is set. The result has ``2 * len(ds)`` rows with the usual
+    ``input_ids``, ``labels`` and ``length`` columns: row ``i`` is pair ``i``'s
+    chosen completion and row ``len(ds) + i`` its rejected one. Every row keeps
+    its pair's other columns and a ``pair_index``; ``reference_chosen_logps`` and
+    ``reference_rejected_logps`` become each row's ``reference_logps``.
+    """
+    missing = set(DPO_COLUMNS).difference(ds.column_names)
+    if missing:
+        raise ValueError(f"DPO dataset is missing columns: {sorted(missing)}")
+    references = {"reference_chosen_logps", "reference_rejected_logps"}
+    has_references = bool(references.intersection(ds.column_names))
+    if has_references and not references.issubset(ds.column_names):
+        raise ValueError("DPO reference log probabilities need both sides")
+
+    shared = [
+        name
+        for name in ds.column_names
+        if name not in DPO_COLUMNS and name not in references
+    ]
+    n = len(ds)
+    columns: dict[str, list] = {name: [] for name in shared}
+    columns.update(input_ids=[], labels=[], length=[], pair_index=[], dpo_side=[])
+    if has_references:
+        columns["reference_logps"] = []
+    for side in ("chosen", "rejected"):
+        for field in ("input_ids", "labels", "length"):
+            columns[field].extend(ds[f"{side}_{field}"])
+        columns["pair_index"].extend(range(n))
+        columns["dpo_side"].extend([side] * n)
+        for name in shared:
+            columns[name].extend(ds[name])
+        if has_references:
+            columns["reference_logps"].extend(ds[f"reference_{side}_logps"])
+    return Dataset.from_dict(columns)
+
+
+def allocate_dpo_batches(
+    doc_lengths: list[int],
+    N: int,
+    seed: int = 42,
+    max_batch_size: int | None = None,
+) -> list[list[int]]:
+    """Allocate batches of whole pairs from a dataset laid out by
+    ``expand_dpo_dataset``.
+
+    Each batch lists its pairs' chosen rows followed by the same pairs' rejected
+    rows. A pair is sized by its longer side and takes two rows of the batch, so
+    pairs are allocated with half of the token and document budgets.
+    """
+    if len(doc_lengths) % 2:
+        raise ValueError(
+            f"DPO dataset must have an even number of rows, got {len(doc_lengths)}"
+        )
+    num_pairs = len(doc_lengths) // 2
+    pair_lengths = [
+        max(doc_lengths[i], doc_lengths[num_pairs + i]) for i in range(num_pairs)
+    ]
+    pair_batches = allocate_batches(
+        pair_lengths,
+        N // 2,
+        seed=seed,
+        max_batch_size=max_batch_size // 2 if max_batch_size else None,
+    )
+    return [list(batch) + [i + num_pairs for i in batch] for batch in pair_batches]
 
 
 def tokenize_and_chunk(

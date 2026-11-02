@@ -29,6 +29,7 @@ from transformers import PreTrainedModel
 from bergson.collector.projection_matrix import random_matrix
 from bergson.config import AttentionConfig, HessianConfig, IndexConfig
 from bergson.data import compute_num_token_grads, get_span_rows, pad_and_tensor
+from bergson.dpo import dpo_ggn_surrogate, dpo_losses, sequence_log_probs
 from bergson.gradients import (
     AdafactorNormalizer,
     AdamNormalizer,
@@ -37,9 +38,12 @@ from bergson.gradients import (
     OuterProductGradients,
 )
 from bergson.moe import ExpertLinear
+from bergson.score.output_model import TOKEN_LOSS_REQUEST
 from bergson.spans import span_gather
+from bergson.utils.activation_offload import save_activations_on_cpu
 from bergson.utils.logger import get_logger
 from bergson.utils.peft import set_peft_enabled
+from bergson.utils.recompute import IN_RECOMPUTE
 from bergson.utils.utils import assert_type
 
 
@@ -105,6 +109,9 @@ class HookCollectorBase(ContextDecorator, ABC):
 
     save_dtype: torch.dtype = torch.float32
     """Dtype gradients are cast to on the way out. Set in subclass ``setup()``."""
+
+    offload_activations: bool = False
+    """Keep each module's cached activations on CPU until its backward hook."""
 
     logger = get_logger("HookCollectorBase", level="INFO")
 
@@ -511,10 +518,25 @@ class HookCollectorBase(ContextDecorator, ABC):
 
     def _process_input(self, module: nn.Module, inp: tuple, _):
         """Internal forward hook that extracts input and delegates to subclass."""
+        # A checkpointed sublayer runs its forward again in the backward pass;
+        # its activations were already cached by the first call
+        if IN_RECOMPUTE.get():
+            return
         x = inp[0].detach()
         assert x.ndim == 3, f"Expected input of shape [N, S, I], got {x.shape}"
 
         self.forward_hook(module, x)
+
+        # Keep one cached activation per call, so a module called more than once
+        # in a forward pass gives each backward hook its own call's activation
+        if hasattr(module, "_inputs"):
+            if not hasattr(module, "_inputs_stack"):
+                module._inputs_stack = []
+            cached = module._inputs
+            if self.offload_activations:
+                cached = cached.to("cpu")
+            module._inputs_stack.append(cached)
+            del module._inputs
 
     def _process_grad(self, module: nn.Module, _, grad_out):
         """Internal backward hook that extracts gradient and delegates to subclass."""
@@ -526,15 +548,23 @@ class HookCollectorBase(ContextDecorator, ABC):
 
         g = grad_out[0].detach()  # [N, S, O]
 
-        self.backward_hook(module, g)
-        if hasattr(module, "_inputs"):
-            del module._inputs
+        stack = getattr(module, "_inputs_stack", None)
+        if stack is not None:
+            if not stack:
+                raise RuntimeError(f"No cached activation for {module._name}")
+            # Backward visits the calls in reverse order
+            module._inputs = stack.pop().to(g.device)
+        try:
+            self.backward_hook(module, g)
+        finally:
+            if hasattr(module, "_inputs"):
+                del module._inputs
 
     def __exit__(self, exc_type, exc, tb):
         """Clean up hooks and allow subclass cleanup."""
         # Clean up temporary attributes
         for layer in self.model.modules():
-            for attr in ("_inputs", "_name", "_positions"):
+            for attr in ("_inputs", "_inputs_stack", "_name", "_positions"):
                 if hasattr(layer, attr):
                     delattr(layer, attr)
 
@@ -767,6 +797,7 @@ class CollectorComputer:
 
         # Collector
         self.collector = collector
+        self.collector.offload_activations = cfg.offload_activations
 
         # Other
         self.cfg = cfg
@@ -860,6 +891,11 @@ class CollectorComputer:
                         if self.cfg.profile
                         else nullcontext()
                     ),
+                    (
+                        save_activations_on_cpu()
+                        if self.cfg.offload_activations
+                        else nullcontext()
+                    ),
                 ):
                     losses = self.forward_backward(self.model, x, y, batch)
 
@@ -908,6 +944,81 @@ def token_losses(
     ).reshape_as(labels)
 
 
+def streams_token_losses(model: nn.Module, loss_fn: str) -> bool:
+    """Whether the model's output layer returns per-token losses for ``loss_fn``
+    (see ``install_output_loss_head``)."""
+    return getattr(model, "_bergson_output_loss_head", False) and loss_fn in (
+        "ce",
+        "dpo",
+    )
+
+
+def streamed_token_losses(
+    model: nn.Module, x: Tensor, y: Tensor, label_smoothing: float = 0.0
+) -> Tensor:
+    """Per-token CE losses ``[batch, seq - 1]`` from an output layer installed with
+    ``install_output_loss_head``, without forming the full logits."""
+    request = TOKEN_LOSS_REQUEST.set((y, label_smoothing))
+    try:
+        return model(x).logits
+    finally:
+        TOKEN_LOSS_REQUEST.reset(request)
+
+
+def model_sequence_log_probs(
+    model: nn.Module, x: Tensor, y: Tensor, reduction: str
+) -> Tensor:
+    """Each sequence's log probability of its labelled tokens, summed or averaged
+    over them."""
+    if streams_token_losses(model, "dpo"):
+        losses = streamed_token_losses(model, x, y)
+        if reduction == "mean":
+            return -losses.sum(1) / (y[:, 1:] != -100).sum(1)
+        return -losses.sum(1)
+    return sequence_log_probs(model(x).logits, y, reduction=reduction)
+
+
+def reference_log_probs(
+    model: nn.Module, x: Tensor, y: Tensor, batch: dict, reduction: str
+) -> Tensor:
+    """The reference model's sequence log probabilities for DPO: the batch's
+    ``reference_logps`` column, or else the PEFT model with its adapter disabled."""
+    if "reference_logps" in batch:
+        return torch.as_tensor(batch["reference_logps"], device=x.device)
+    if not isinstance(model, PeftModel):
+        raise ValueError(
+            "DPO needs a reference_logps column unless the model is a PEFT model"
+        )
+    with torch.inference_mode():
+        set_peft_enabled(model, False)
+        try:
+            return sequence_log_probs(model(x).logits, y, reduction=reduction)
+        finally:
+            set_peft_enabled(model, True)
+
+
+def example_weights(cfg: IndexConfig, batch: dict, losses: Tensor) -> Tensor:
+    """The per-example loss weights from ``cfg.example_weight_column``, one per
+    pair for DPO."""
+    if cfg.example_weight_column not in batch:
+        raise ValueError(f"Missing example weight column {cfg.example_weight_column}")
+    weights = torch.as_tensor(
+        batch[cfg.example_weight_column], device=losses.device, dtype=losses.dtype
+    )
+    if weights.ndim != 1 or not torch.isfinite(weights).all() or (weights < 0).any():
+        raise ValueError("Example weights must be finite and nonnegative")
+    if cfg.loss_fn == "dpo":
+        pairs = losses.numel()
+        if weights.numel() != 2 * pairs or not torch.equal(
+            weights[:pairs], weights[pairs:]
+        ):
+            raise ValueError("A pair's chosen and rejected rows need the same weight")
+        weights = weights[:pairs]
+    elif weights.numel() != losses.numel():
+        raise ValueError("Example weights must match the batch")
+    return weights
+
+
 def fwd_bwd_factory(cfg: IndexConfig) -> Callable:
     """
     Create a forward/backward function based on the configuration.
@@ -915,29 +1026,41 @@ def fwd_bwd_factory(cfg: IndexConfig) -> Callable:
     Args:
         cfg: IndexConfig that specifies:
             - cfg.loss_fn: "kl" for KL divergence (requires PEFT model),
-              "log_odds" for the negative label log-odds, else cross-entropy.
+              "log_odds" for the negative label log-odds, "dpo" for the DPO loss
+              of preference pairs, else cross-entropy.
             - cfg.loss_reduction: Either "mean" to average over tokens, or "sum" for
-              summed loss.
+              summed loss. For DPO it reduces each sequence's log probability.
 
     Returns:
         A callable fwd_bwd(model, x, y, batch) -> Tensor that performs a forward pass
         and backward pass, returning the per-sample losses.
         Args:
             model: The model to run forward/backward on.
-            x: Padded input token ids tensor of shape [batch_size, seq_len].
+            x: Padded input token ids tensor of shape [batch_size, seq_len]. For
+                DPO the chosen rows come first, followed by their rejected rows.
             y: Padded label tensor of shape [batch_size, seq_len] with -100 for padding.
-            batch: Original batch dict, used only for "advantage" if present.
-        Returns a tensor of shape [batch_size] with one loss value per sample.
+            batch: Original batch dict, for "advantage", the example weights and
+                the DPO "reference_logps" if present.
+        Returns a tensor with one loss value per sample, or per pair for DPO.
     """
 
     def fwd_bwd(model, x: Tensor, y: Tensor, batch: dict):
-        logits = model(x).logits[:, :-1]
         masks = y[:, 1:] != -100
         denoms = (
             masks.sum(dim=1, dtype=model.dtype) if cfg.loss_reduction == "mean" else 1.0
         )
 
-        if cfg.loss_fn == "kl":
+        if cfg.loss_fn == "dpo":
+            if len(x) % 2:
+                raise ValueError("DPO batches need each pair's chosen and rejected row")
+            log_probs = model_sequence_log_probs(model, x, y, cfg.loss_reduction)
+            references = reference_log_probs(model, x, y, batch, cfg.loss_reduction)
+            if references.shape != log_probs.shape:
+                raise ValueError("reference_logps needs one value per row")
+            losses = dpo_losses(log_probs, references.to(log_probs.dtype), cfg.dpo_beta)
+
+        elif cfg.loss_fn == "kl":
+            logits = model(x).logits[:, :-1]
             with torch.inference_mode():
                 set_peft_enabled(model, False)
                 ref_lps = torch.log_softmax(model(x).logits[:, :-1], dim=-1)
@@ -952,10 +1075,19 @@ def fwd_bwd_factory(cfg: IndexConfig) -> Callable:
                 losses *= torch.tensor(batch["advantage"], device=losses.device)
 
         else:
-            losses = token_losses(cfg.loss_fn, logits, y[:, 1:], cfg.label_smoothing)
+            if streams_token_losses(model, cfg.loss_fn):
+                losses = streamed_token_losses(model, x, y, cfg.label_smoothing)
+            else:
+                logits = model(x).logits[:, :-1]
+                losses = token_losses(
+                    cfg.loss_fn, logits, y[:, 1:], cfg.label_smoothing
+                )
             losses = losses.sum(1) / denoms
             if "advantage" in batch:
                 losses *= torch.tensor(batch["advantage"], device=losses.device)
+
+        if cfg.example_weight_column:
+            losses = losses * example_weights(cfg, batch, losses)
 
         losses.sum().backward()
         model.zero_grad()
@@ -968,17 +1100,41 @@ def fwd_bwd_factory(cfg: IndexConfig) -> Callable:
 def fwd_bwd_hessian_factory(
     index_cfg: IndexConfig, hessian_cfg: HessianConfig
 ) -> Callable:
+    if index_cfg.example_weight_column:
+        raise ValueError("The Hessian is fit on unweighted training examples")
+
     def fwd_bwd_hessian(model, x: Tensor, y: Tensor, batch: dict):
-        logits = model(x).logits[:, :-1]
         masks = y[:, 1:] != -100
         denoms = (
             masks.sum(dim=1, dtype=model.dtype)
             if index_cfg.loss_reduction == "mean"
             else 1.0
         )
+        if index_cfg.loss_fn == "dpo":
+            if "reference_logps" not in batch:
+                raise ValueError("The DPO Hessian needs a reference_logps column")
+            if len(x) % 2:
+                raise ValueError("DPO batches need each pair's chosen and rejected row")
+            log_probs = model_sequence_log_probs(model, x, y, index_cfg.loss_reduction)
+            references = torch.as_tensor(
+                batch["reference_logps"], device=x.device, dtype=log_probs.dtype
+            )
+            # Each pair's gradient outer product of this scalar is the Gauss-Newton
+            # Hessian of its DPO loss: the margin's, weighted by sigmoid'(margin)
+            dpo_ggn_surrogate(
+                log_probs, references, index_cfg.dpo_beta
+            ).sum().backward()
+            model.zero_grad()
+            return dpo_losses(log_probs.detach(), references, index_cfg.dpo_beta)
+
         if hessian_cfg.use_dataset_labels:
-            losses = token_losses(index_cfg.loss_fn, logits, y[:, 1:])
+            if streams_token_losses(model, index_cfg.loss_fn):
+                losses = streamed_token_losses(model, x, y)
+            else:
+                logits = model(x).logits[:, :-1]
+                losses = token_losses(index_cfg.loss_fn, logits, y[:, 1:])
         else:
+            logits = model(x).logits[:, :-1]
             with torch.no_grad():
                 probs = F.softmax(logits, dim=-1)
                 sampled_tokens = torch.multinomial(

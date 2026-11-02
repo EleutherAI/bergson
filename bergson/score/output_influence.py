@@ -1,12 +1,15 @@
 import torch
+import torch.nn.functional as F
 from peft import PeftModel
 from torch import Tensor
 from torch.func import functional_call, jvp
 from transformers import PreTrainedModel
 
-from bergson.collector.collector import token_losses
+from bergson.collector.collector import streams_token_losses, token_losses
 from bergson.config.config import IndexConfig, PreprocessConfig
+from bergson.dpo import dpo_margin
 from bergson.gradients import LayerAdapter
+from bergson.score.output_model import TOKEN_LOSS_REQUEST
 
 
 def check_output_influence_supported(
@@ -118,6 +121,9 @@ def output_token_influence(
     directions: list[tuple[Tensor, str, str | None, bool]],
     cfg: IndexConfig,
     advantage: list[float] | None = None,
+    *,
+    reference_logps: list[float] | None = None,
+    lengths: list[int] | None = None,
 ) -> tuple[Tensor, Tensor]:
     """Return how fast each loss term changes as the weights move along each
     query, ``[N, S - 1, num_queries]``, and each document's loss, ``[N]``.
@@ -127,20 +133,51 @@ def output_token_influence(
     gradient's dot product with the query, and its loss is the one
     ``fwd_bwd_factory`` returns. ``torch.func.jvp`` computes the rates in one
     forward pass per query.
+
+    With ``loss_fn='dpo'`` the rows are each pair's chosen row followed by its
+    rejected row, as ``fwd_bwd_factory`` takes them, with ``reference_logps``
+    for every row. A pair's token entries sum to its gradient's dot product with
+    the query, and its loss is returned for both of its rows. ``lengths`` runs
+    each row on its own unpadded tokens.
     """
+    dpo = cfg.loss_fn == "dpo"
     masks = y[:, 1:] != -100
     weights = torch.ones_like(masks, dtype=torch.float32)
     if cfg.loss_reduction == "mean":
         weights = weights / masks.sum(dim=1, keepdim=True).clamp_min(1)
-    if advantage is not None:
+    if advantage is not None and not dpo:
         weights = weights * torch.tensor(advantage, device=y.device).unsqueeze(1)
+    if dpo:
+        if len(x) % 2 or reference_logps is None:
+            raise ValueError("DPO needs whole pairs and their reference_logps")
+        references = torch.tensor(reference_logps, device=y.device, dtype=torch.float32)
 
     params = {name: p.detach() for name, p in model.named_parameters()}
     num_queries = directions[0][0].shape[1]
+    streamed = streams_token_losses(model, "dpo" if dpo else cfg.loss_fn)
+
+    def row_losses(moved: dict[str, Tensor], inputs: Tensor, labels: Tensor) -> Tensor:
+        if streamed:
+            request = TOKEN_LOSS_REQUEST.set((labels, cfg.label_smoothing))
+            try:
+                return functional_call(model, moved, (inputs,)).logits.float()
+            finally:
+                TOKEN_LOSS_REQUEST.reset(request)
+        logits = functional_call(model, moved, (inputs,)).logits[:, :-1].float()
+        loss_fn = "ce" if dpo else cfg.loss_fn
+        return token_losses(loss_fn, logits, labels[:, 1:], cfg.label_smoothing)
 
     def losses(moved: dict[str, Tensor]) -> Tensor:
-        logits = functional_call(model, moved, (x,)).logits[:, :-1].float()
-        return token_losses(cfg.loss_fn, logits, y[:, 1:], cfg.label_smoothing)
+        if lengths is None:
+            return row_losses(moved, x, y)
+        rows = [
+            F.pad(
+                row_losses(moved, x[i : i + 1, :n], y[i : i + 1, :n]),
+                (0, x.shape[1] - n),
+            )
+            for i, n in enumerate(lengths)
+        ]
+        return torch.cat(rows)
 
     scores = []
     doc_losses = weights.new_zeros(len(weights))
@@ -148,8 +185,19 @@ def output_token_influence(
         for q in range(num_queries):
             direction = query_direction(directions, params, q)
             moved = {name: params[name] for name in direction}
-            result = jvp(losses, (moved,), (direction,))
-            scores.append(result[1].float() * weights)
-            # The losses themselves are the same for every query column.
-            doc_losses = (result[0].float() * weights).sum(dim=1)
+            terms, rates = jvp(losses, (moved,), (direction,))
+            rates = rates.float() * weights
+            if dpo:
+                # The pair loss -log sigmoid(margin) changes by -sigmoid(-margin)
+                # times the margin, which moves by beta times the chosen log
+                # probability's change minus the rejected one's
+                log_probs = -(terms.float() * weights).sum(dim=1)
+                margin = dpo_margin(log_probs, references, cfg.dpo_beta)
+                factor = cfg.dpo_beta * torch.sigmoid(-margin)
+                rates = rates * torch.cat((factor, -factor))[:, None]
+                doc_losses = F.softplus(-margin).repeat(2)
+            else:
+                # The losses themselves are the same for every query column.
+                doc_losses = (terms.float() * weights).sum(dim=1)
+            scores.append(rates)
     return torch.stack(scores, dim=-1), doc_losses

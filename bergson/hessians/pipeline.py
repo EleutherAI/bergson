@@ -3,6 +3,7 @@ import shutil
 import time
 from contextlib import contextmanager
 from copy import deepcopy
+from pathlib import Path
 
 from ..build import build_query
 from ..cli.commands import Score
@@ -23,16 +24,32 @@ from .apply_hessian import EkfacConfig, apply_worker
 from .astra import AstraPaths, astra_worker
 from .hessian_approximations import approximate_hessians
 
+PROVENANCE_FILENAME = "provenance.json"
 
-def _step_complete(path: str, resume: bool) -> bool:
+
+def _step_complete(path: str, resume: bool, provenance: dict | None = None) -> bool:
     """Whether the step writing to `path` is already done and can be skipped.
 
-    Clears any interrupted ``.part`` output so the step restarts cleanly.
+    Clears any interrupted ``.part`` output so the step restarts cleanly. A
+    completed step is only reused if it was written with the same provenance.
     """
     if prepare_step(path, resume=resume):
         return False
+    if provenance is not None:
+        saved = Path(path) / PROVENANCE_FILENAME
+        if not saved.exists() or json.loads(saved.read_text()) != provenance:
+            raise ValueError(
+                f"The completed step at {path} was written with other inputs; "
+                "remove it or use a new run path."
+            )
     print(f"  Skipping (already complete at {path})")
     return True
+
+
+def _record_provenance(path: str, provenance: dict | None) -> None:
+    """Save the provenance beside a completed step's output."""
+    if provenance is not None:
+        (Path(path) / PROVENANCE_FILENAME).write_text(json.dumps(provenance, indent=2))
 
 
 @contextmanager
@@ -78,10 +95,15 @@ def hessian_pipeline(
     run_path = index_cfg.run_path
     method = hessian_cfg.method
     query_path = f"{run_path}/query"
-    hessian_path = f"{run_path}/hessian"
+    hessian_path = hessian_pipeline_cfg.hessian_run_path or f"{run_path}/hessian"
     transformed_query_path = f"{run_path}/{method}_query"
     scores_path = f"{run_path}/scores"
     resume = hessian_pipeline_cfg.resume
+    provenance = (
+        json.loads(Path(hessian_pipeline_cfg.provenance_path).read_text())
+        if hessian_pipeline_cfg.provenance_path
+        else None
+    )
 
     def _validate(cfg: IndexConfig):
         if resume and cfg.partial_run_path.exists():
@@ -97,17 +119,18 @@ def hessian_pipeline(
     if query_set_cfg.path:
         query_path = query_set_cfg.path
         print(f"  using the existing query index at {query_path}")
-    elif not _step_complete(query_path, resume):
+    elif not _step_complete(query_path, resume, provenance):
         with _timed("step1_build_query", durations):
             # The factors are projected to match the query.
-            query_cfg = deepcopy(index_cfg)
+            query_cfg = query_index_config(index_cfg, hessian_pipeline_cfg)
             query_cfg.run_path = query_path
             _validate(query_cfg)
             build_query(query_cfg, query_set_cfg, PreprocessConfig())
+            _record_provenance(query_path, provenance)
 
     # ── Step 2: Fit Hessian factors on training data ──────────────────────
     print(f"Step 2/4: Fitting {method} factors on training data...")
-    if not _step_complete(f"{hessian_path}/{method}", resume):
+    if not _step_complete(f"{hessian_path}/{method}", resume, provenance):
         with _timed("step2_fit_hessian", durations):
             hessian_index_cfg = deepcopy(index_cfg)
             # approximate_hessians writes to this exact path; step 3 reads it
@@ -116,10 +139,11 @@ def hessian_pipeline(
             _validate(hessian_index_cfg)
 
             approximate_hessians(hessian_index_cfg, hessian_cfg)
+            _record_provenance(f"{hessian_path}/{method}", provenance)
 
     # ── Step 3: Apply inverse Hessian to the mean query gradient ──────────
     print(f"Step 3/4: Applying {method} inverse Hessian to mean query gradient...")
-    if not _step_complete(transformed_query_path, resume):
+    if not _step_complete(transformed_query_path, resume, provenance):
         hessian_method_path = f"{hessian_path}/{method}"
         # Written to .part and promoted below, so an interrupted apply reruns.
         ekfac_cfg = EkfacConfig(
@@ -143,6 +167,7 @@ def hessian_pipeline(
         )
         if index_cfg.distributed.rank == 0:
             promote_step(transformed_query_path)
+            _record_provenance(transformed_query_path, provenance)
 
     astra_cfg = hessian_pipeline_cfg.astra
     if astra_cfg.num_steps > 0:
@@ -157,8 +182,13 @@ def hessian_pipeline(
                     query_path,
                     transformed_query_path,
                     astra_query_path,
+                    f"{hessian_path}/{method}",
                 )
         transformed_query_path = astra_query_path
+
+    if hessian_pipeline_cfg.skip_scoring:
+        print(f"Done! Transformed query saved to: {transformed_query_path}")
+        return
 
     # ── Step 4: Score training examples ───────────────────────────────────
     print("Step 4/4: Scoring training data against transformed query...")
@@ -181,6 +211,21 @@ def hessian_pipeline(
         print(f"Step timings (s): {durations} | total {total:.1f}s")
 
 
+def query_index_config(
+    index_cfg: IndexConfig, hessian_pipeline_cfg: HessianPipelineConfig
+) -> IndexConfig:
+    """``index_cfg`` with the query's own loss settings, where they are set."""
+    query_cfg = deepcopy(index_cfg)
+    if hessian_pipeline_cfg.query_loss_fn is not None:
+        query_cfg.loss_fn = hessian_pipeline_cfg.query_loss_fn
+    if hessian_pipeline_cfg.query_loss_reduction is not None:
+        query_cfg.loss_reduction = hessian_pipeline_cfg.query_loss_reduction
+    if hessian_pipeline_cfg.query_dpo_beta is not None:
+        query_cfg.dpo_beta = hessian_pipeline_cfg.query_dpo_beta
+    query_cfg.example_weight_column = hessian_pipeline_cfg.query_weight_column
+    return query_cfg
+
+
 def _run_astra(
     index_cfg: IndexConfig,
     hessian_cfg: HessianConfig,
@@ -188,6 +233,7 @@ def _run_astra(
     query_path: str,
     init_path: str,
     out_path: str,
+    hessian_method_path: str | None = None,
 ):
     """Refine the solutions in ``init_path`` and write them to ``out_path``."""
     if index_cfg.distributed.nnode > 1:
@@ -205,7 +251,8 @@ def _run_astra(
     paths = AstraPaths(
         query_path=query_path,
         init_path=init_path,
-        hessian_path=f"{index_cfg.run_path}/hessian/{hessian_cfg.method}",
+        hessian_path=hessian_method_path
+        or f"{index_cfg.run_path}/hessian/{hessian_cfg.method}",
         run_path=str(part),
     )
     launch_distributed_run(

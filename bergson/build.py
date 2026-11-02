@@ -14,7 +14,7 @@ from bergson.config.config import (
     PreprocessConfig,
     QuerySetConfig,
 )
-from bergson.data import allocate_batches, load_gradients
+from bergson.data import allocate_batches, allocate_dpo_batches, load_gradients
 from bergson.distributed import (
     DIST_TIMEOUT,
     cap_world_size_to_dataset,
@@ -108,7 +108,8 @@ def build_worker(
         "preprocess_cfg": preprocess_cfg,
     }
 
-    batches = allocate_batches(
+    allocate = allocate_dpo_batches if index_cfg.loss_fn == "dpo" else allocate_batches
+    batches = allocate(
         ds["length"][:],
         index_cfg.token_batch_size,
         max_batch_size=index_cfg.max_batch_size,

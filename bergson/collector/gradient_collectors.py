@@ -12,6 +12,7 @@ from torch import Tensor
 from bergson.builder import Builder
 from bergson.collector.collector import HookCollectorBase
 from bergson.config import IndexConfig, PreprocessConfig
+from bergson.dpo import combine_pair_gradients, combine_pair_outer_products
 from bergson.gradients import OuterProductGradients
 from bergson.score.scorer import Scorer
 from bergson.utils.utils import get_gradient_dtype
@@ -72,8 +73,21 @@ class GradientCollector(HookCollectorBase):
         self.lo = torch.finfo(self.save_dtype).min
         self.hi = torch.finfo(self.save_dtype).max
 
+        # With DPO the data holds each pair's chosen and rejected rows, laid out
+        # by expand_dpo_dataset, and each pair gets one gradient
+        self.is_dpo = self.cfg.loss_fn == "dpo"
+        if self.is_dpo:
+            if len(self.data) % 2:
+                raise ValueError("DPO data needs a rejected row for each chosen row")
+            if self.attribute_tokens or self.attribute_spans:
+                raise ValueError("DPO gradients are per pair, not per token or span")
+        self.num_gradients = len(self.data) // 2 if self.is_dpo else len(self.data)
+        row_data = (
+            self.data.select(range(self.num_gradients)) if self.is_dpo else self.data
+        )
+
         self.per_doc_losses = torch.full(
-            (len(self.data),),
+            (self.num_gradients,),
             device=self.model.device,
             dtype=torch.float32,
             fill_value=0.0,
@@ -85,7 +99,7 @@ class GradientCollector(HookCollectorBase):
         if self.save_index:
             grad_sizes = {name: math.prod(s) for name, s in self.shapes().items()}
             self.builder = Builder(
-                self.data,
+                row_data,
                 grad_sizes,
                 self.save_dtype,
                 self.preprocess_cfg,
@@ -101,6 +115,13 @@ class GradientCollector(HookCollectorBase):
         """Compute the per-sample gradient and store it for the index."""
         name: str = module._name  # type: ignore[assignment]
         grads = self._module_gradient(module, g)
+        if self.is_dpo:
+            # Sum each pair's chosen and rejected rows, whose gradients already
+            # carry the signs of the DPO loss
+            if isinstance(grads, OuterProductGradients):
+                grads = combine_pair_outer_products(grads)
+            else:
+                grads = combine_pair_gradients(grads)
 
         if self.accumulate_global_projection(name, grads):
             return
@@ -114,7 +135,9 @@ class GradientCollector(HookCollectorBase):
             return
 
         P = self._materialize_gradient(grads)
-        if self.save_index and self.preprocess_cfg.aggregation == "none":
+        if self.cfg.offload_gradients:
+            self.mod_grads[name] = P.to(device="cpu", dtype=self.save_dtype)
+        elif self.save_index and self.preprocess_cfg.aggregation == "none":
             # Asynchronously move the gradient to CPU and convert to the final
             # dtype
             self.mod_grads[name] = P.to(
@@ -129,6 +152,14 @@ class GradientCollector(HookCollectorBase):
         assert losses is not None, "losses must be provided in kwargs"
 
         self.finalize_global_projection()
+
+        if self.is_dpo:
+            # A batch lists its pairs' chosen rows, whose indices are the pair
+            # indices, and then their rejected rows
+            half = len(indices) // 2
+            if len(indices) % 2 or any(i >= self.num_gradients for i in indices[:half]):
+                raise ValueError("DPO batches must list chosen rows, then rejected")
+            indices = list(indices[:half])
 
         if self.builder:
             self.builder(indices, self.mod_grads)
@@ -161,6 +192,8 @@ class GradientCollector(HookCollectorBase):
                     ]
                 )
             else:
+                if self.is_dpo:
+                    self.data = self.data.select(range(self.num_gradients))
                 if self.cfg.drop_columns:
                     self.data = self.data.remove_columns(["input_ids"])
 

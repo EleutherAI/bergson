@@ -11,6 +11,7 @@ from torch import Tensor
 from tqdm import tqdm
 
 from bergson.collector.collector import HookCollectorBase
+from bergson.dpo import combine_pair_gradients
 from bergson.hessians.sharded_computation import (
     ShardedMul,
     assign_module_owners,
@@ -104,6 +105,10 @@ class LambdaCollector(HookCollectorBase):
 
     num_documents: int = 1
     """Divides the summed corrections into a mean over documents."""
+
+    is_dpo: bool = False
+    """Whether batches hold DPO pairs, each pair's chosen rows followed by its
+    rejected rows, whose gradients are summed before they are squared."""
 
     eigenvectors: tuple[dict[str, Tensor], dict[str, Tensor]] | None = None
     """The activation and gradient eigenvectors of the modules this rank owns,
@@ -244,9 +249,10 @@ class LambdaCollector(HookCollectorBase):
                 return
             # Square each document's rotated gradient and sum, as below.
             for a_r, g_r in zip(rotated_a, rotated_g):
-                self.eigenvalue_corrections[name].add_(
-                    (torch.einsum("N S I, N S O -> N O I", a_r, g_r) ** 2).sum(dim=0)
+                rotated = self._pair_gradients(
+                    torch.einsum("N S I, N S O -> N O I", a_r, g_r)
                 )
+                self.eigenvalue_corrections[name].add_((rotated**2).sum(dim=0))
             return
 
         # Transform: g @ eigen_g
@@ -261,7 +267,9 @@ class LambdaCollector(HookCollectorBase):
         )
 
         # Square and sum over batch
-        transformed_grad = (transformed_grad_shard**2).sum(dim=0)
+        transformed_grad = (self._pair_gradients(transformed_grad_shard) ** 2).sum(
+            dim=0
+        )
 
         # Accumulate (with CPU offloading for memory efficiency)
         if name not in self.eigenvalue_corrections:
@@ -274,6 +282,11 @@ class LambdaCollector(HookCollectorBase):
             self.eigenvalue_corrections[name] = self.eigenvalue_corrections[name].to(
                 device="cpu", non_blocking=False
             )
+
+    def _pair_gradients(self, gradients: Tensor) -> Tensor:
+        """With DPO, sum each pair's chosen and rejected document gradients, so
+        the squares keep the products between them."""
+        return combine_pair_gradients(gradients) if self.is_dpo else gradients
 
     def process_batch(self, indices: list[int], **kwargs) -> None:
         """No per-batch processing needed for lambda collection."""

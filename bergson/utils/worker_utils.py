@@ -32,6 +32,7 @@ from bergson.config.config import (
     ModelConfig,
 )
 from bergson.data import (
+    expand_dpo_dataset,
     load_data_string,
     tokenize,
     tokenize_and_chunk,
@@ -39,7 +40,12 @@ from bergson.data import (
 from bergson.format import apply_format
 from bergson.gradients import GradientProcessor, Normalizer
 from bergson.moe import expand_moe
+from bergson.score.output_model import (
+    install_output_loss_head,
+    register_efficient_attention,
+)
 from bergson.utils import assert_type, get_layer_list, weighted_causal_lm_ce
+from bergson.utils.recompute import checkpoint_attentions, checkpoint_mlps
 from bergson.utils.utils import get_device, simple_parse_kwargs_string
 
 BIG_NUM = np.iinfo(np.int64).max
@@ -215,6 +221,8 @@ def setup_model_and_peft(
     assert base_model_path is not None
 
     model_kwargs.update(simple_parse_kwargs_string(cfg.model_kwargs))
+    if model_kwargs.get("attn_implementation") == "bergson_efficient_sdpa":
+        register_efficient_attention()
 
     if meta_init:
         config = AutoConfig.from_pretrained(
@@ -261,6 +269,13 @@ def setup_model_and_peft(
             autocast_adapter_dtype=False,
         )
         target_modules = extract_peft_target_modules(model)  # type: ignore
+
+    if getattr(cfg, "stream_output_loss", False):
+        install_output_loss_head(model, checkpoint_reverse=True)
+    if getattr(cfg, "checkpoint_mlp", False):
+        checkpoint_mlps(model)
+    if getattr(cfg, "checkpoint_attention", False):
+        checkpoint_attentions(model)
 
     # Configure gradients
     model.requires_grad_(False)
@@ -423,7 +438,9 @@ def setup_data_pipeline(
             truncation=data_cfg.truncation,
         )
 
-    if not ds.column_names or "input_ids" not in ds.column_names:
+    # Pre-tokenized DPO datasets hold the chosen_* and rejected_* columns
+    is_pairs = "chosen_input_ids" in ds.column_names
+    if not is_pairs and (not ds.column_names or "input_ids" not in ds.column_names):
         ds = ds.map(
             tokenize,
             batched=True,
@@ -433,6 +450,9 @@ def setup_data_pipeline(
                 max_length=max_length,
             ),
         )
+
+    if "chosen_input_ids" in ds.column_names:
+        ds = expand_dpo_dataset(ds)
 
     # Pre-tokenized datasets may carry only `input_ids`, but batch allocation
     # needs a `length` column.
@@ -488,7 +508,9 @@ def setup_data_pipeline(
         ds = filter_by_max_tokens(ds, cfg)
 
     # Remove extraneous columns
-    keep = {"length", "input_ids", "labels"}
+    keep = {"length", "input_ids", "labels", "pair_index", "reference_logps"}
+    if getattr(cfg, "example_weight_column", ""):
+        keep.add(cfg.example_weight_column)
     if value_column:
         keep.add("advantage")
     if data_cfg.span_column:

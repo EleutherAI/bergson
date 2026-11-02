@@ -15,6 +15,7 @@ from bergson.config.config import IndexConfig, PreprocessConfig, ScoreConfig
 from bergson.config.config_io import load_subconfig
 from bergson.data import (
     allocate_batches,
+    allocate_dpo_batches,
     column_offsets,
     load_gradients,
     pad_and_tensor,
@@ -37,6 +38,7 @@ from bergson.score.output_influence import (
     output_token_influence,
     query_directions,
 )
+from bergson.score.output_model import register_output_attention
 from bergson.score.score_writer import (
     MemmapSequenceScoreWriter,
     MemmapTokenScoreWriter,
@@ -343,11 +345,14 @@ def score_worker(
     )
     score_device = torch.device(get_device(local_rank))
 
-    kwargs["batches"] = allocate_batches(
+    allocate = allocate_dpo_batches if index_cfg.loss_fn == "dpo" else allocate_batches
+    kwargs["batches"] = allocate(
         ds["length"][:],
         index_cfg.token_batch_size,
         max_batch_size=index_cfg.max_batch_size,
     )
+    # With DPO the scores have one row per pair, each pair's chosen row
+    scored_rows = ds.select(range(len(ds) // 2)) if index_cfg.loss_fn == "dpo" else ds
 
     with open(Path(score_cfg.query_path) / "info.json") as f:
         num_queries = json.load(f)["num_grads"]
@@ -365,7 +370,7 @@ def score_worker(
     for query_range in query_ranges:
         kwargs["scorer"] = create_scorer(
             index_cfg.partial_run_path,
-            ds,
+            scored_rows,
             score_cfg,
             preprocess_cfg,
             device=score_device,
@@ -409,7 +414,15 @@ def output_influence_worker(
 
     span_column = index_cfg.data.span_column
     # The fused attention kernels don't implement forward-mode derivatives.
-    model, target_modules = setup_model_and_peft(index_cfg, attn_implementation="eager")
+    # chunked_attention does, without the dense mask of eager attention.
+    if index_cfg.stream_output_loss:
+        register_output_attention()
+    model, target_modules = setup_model_and_peft(
+        index_cfg,
+        attn_implementation=(
+            "bergson_output_jvp" if index_cfg.stream_output_loss else "eager"
+        ),
+    )
     # Dropout would give each query column its own random model.
     model.eval()
     # Saves the processor config beside the scores, as score_worker does.
@@ -442,7 +455,8 @@ def output_influence_worker(
     )
 
     per_doc_losses = torch.zeros(len(ds), device=device, dtype=torch.float32)
-    batches = allocate_batches(
+    allocate = allocate_dpo_batches if index_cfg.loss_fn == "dpo" else allocate_batches
+    batches = allocate(
         ds["length"][:],
         index_cfg.token_batch_size,
         max_batch_size=index_cfg.max_batch_size,
@@ -456,7 +470,13 @@ def output_influence_worker(
             sync_max_len=False,
         )
         rates, losses = output_token_influence(
-            model, x, y, directions, index_cfg, batch.get("advantage")
+            model,
+            x,
+            y,
+            directions,
+            index_cfg,
+            batch.get("advantage"),
+            reference_logps=batch.get("reference_logps"),
         )
         per_doc_losses[indices] = losses
         # Row t of a ragged store is the loss on token t + 1.

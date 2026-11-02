@@ -44,6 +44,11 @@ class DataConfig(Serializable):
     completion_column: str = ""
     """Optional column in the dataset that contains the completions."""
 
+    rejected_column: str = ""
+    """Optional column containing rejected completions. With ``completion_column``
+    holding the chosen completions, tokenizes chosen and rejected separately for
+    ``loss_fn='dpo'``."""
+
     conversation_column: str = ""
     """Optional column in the dataset that contains the conversation."""
 
@@ -678,8 +683,18 @@ class IndexConfig(AttributionConfig, Serializable):
     Note: Untested with the AdamW eps_root in the bergson trainer -
     consider setting this to 0 when using optimizer normalization."""
 
-    loss_fn: Literal["ce", "kl", "log_odds"] = "ce"
-    """Loss function to use."""
+    loss_fn: Literal["ce", "kl", "log_odds", "dpo"] = "ce"
+    """Loss function to use. ``dpo`` scores preference pairs: each batch holds
+    the chosen rows followed by their rejected rows, and each pair gets one
+    gradient."""
+
+    dpo_beta: float = 0.1
+    """Inverse temperature of the DPO loss. Only used when loss_fn='dpo'."""
+
+    example_weight_column: str = ""
+    """Optional column of nonnegative per-example loss weights. With DPO the
+    weight is per pair, so the chosen and rejected rows must carry the same
+    value."""
 
     loss_reduction: Literal["mean", "sum"] = "sum"
     """How the per-token losses of a document are reduced before the backward
@@ -717,6 +732,25 @@ class IndexConfig(AttributionConfig, Serializable):
     different padding lengths when using optimized attention backends.
     Run `bergson test_model_configuration` to check whether your model
     needs this."""
+
+    offload_gradients: bool = False
+    """Move each module's collected gradient to CPU as soon as it is computed."""
+
+    offload_activations: bool = False
+    """Keep the activations saved for the backward pass on CPU during
+    collection, copying each back when its gradient is computed."""
+
+    checkpoint_attention: bool = False
+    """Recompute the attention blocks of OLMo3 models in the backward pass
+    instead of storing their activations."""
+
+    checkpoint_mlp: bool = False
+    """Recompute the MLP blocks of OLMo3 models in the backward pass instead of
+    storing their activations."""
+
+    stream_output_loss: bool = False
+    """Compute the CE and DPO token losses from the output layer in chunks of
+    tokens, so the full logits are never stored."""
 
     attribute_tokens: bool = False
     """Whether to compute per-token gradients instead of per-example.
@@ -852,6 +886,10 @@ class PreprocessConfig(Serializable):
     """Method for aggregating the gradients. In score, only query
     gradients will be aggregated."""
 
+    aggregation_device: Literal["cuda", "cpu"] = "cuda"
+    """Where the aggregated gradient is accumulated. ``cpu`` avoids holding a
+    full-model gradient on the GPU."""
+
     normalize_aggregated_grad: bool = False
     """Whether to unit normalize the aggregated gradient. This has
     no effect on future relative score rankings but does affect score
@@ -926,6 +964,10 @@ class ScoreConfig(Serializable):
     candidates: CandidateConfig = field(default_factory=CandidateConfig)
     """Score only the rows an earlier run ranked highest. The store then has one
     row per candidate; ``candidates.npy`` beside it holds their training rows."""
+
+    output_compute_precision: Literal["fp32", "bf16"] = "fp32"
+    """Precision of the matrix products in ``token_influence='output'``. The
+    parameters, query, losses and scores stay in the model's precision."""
 
 
 @dataclass
@@ -1102,6 +1144,31 @@ class HessianPipelineConfig:
 
     astra: AstraConfig = field(default_factory=AstraConfig)
     """Refine the inverse-Hessian-vector products iteratively before scoring."""
+
+    query_loss_fn: Literal["ce", "kl", "log_odds", "dpo"] | None = None
+    """Loss of the query gradients. ``None`` uses the training ``loss_fn``."""
+
+    query_loss_reduction: Literal["mean", "sum"] | None = None
+    """Token reduction of the query loss. ``None`` uses the training setting."""
+
+    query_dpo_beta: float | None = None
+    """``dpo_beta`` of the query loss when it is DPO. ``None`` uses the training
+    value."""
+
+    query_weight_column: str = ""
+    """Column of per-query loss weights; the training rows stay unweighted."""
+
+    hessian_run_path: str = ""
+    """Directory of the fitted Hessian, so several query losses can share one
+    fit. Defaults to a directory inside the run path."""
+
+    provenance_path: str = ""
+    """JSON file describing the model and data. Each completed step keeps a copy,
+    and a step is only reused if its copy matches."""
+
+    skip_scoring: bool = False
+    """Stop after the Hessian is applied to the query, so prepared queries can
+    share one scoring pass."""
 
     resume: bool = False
     """Skip pipeline steps whose output directory already exists."""
