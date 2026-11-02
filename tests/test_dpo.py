@@ -1,5 +1,6 @@
 """DPO gradients are per pair: they match autograd of each pair's DPO loss."""
 
+import json
 import math
 from dataclasses import dataclass, field
 
@@ -11,8 +12,23 @@ from transformers import AutoConfig, AutoModelForCausalLM
 
 from bergson.collector.collector import CollectorComputer
 from bergson.collector.gradient_collectors import GradientCollector
-from bergson.config import IndexConfig
-from bergson.data import allocate_dpo_batches, expand_dpo_dataset, pad_and_tensor
+from bergson.config import (
+    DataConfig,
+    HessianConfig,
+    HessianPipelineConfig,
+    IndexConfig,
+    PreprocessConfig,
+    QuerySetConfig,
+    ScoreConfig,
+)
+from bergson.data import (
+    allocate_dpo_batches,
+    column_offsets,
+    expand_dpo_dataset,
+    load_gradients,
+    load_scores,
+    pad_and_tensor,
+)
 from bergson.dpo import (
     combine_pair_gradients,
     combine_pair_outer_products,
@@ -21,6 +37,7 @@ from bergson.dpo import (
     dpo_margin,
 )
 from bergson.gradients import GradientProcessor, OuterProductGradients
+from bergson.hessians.pipeline import hessian_pipeline
 from bergson.score.output_influence import output_token_influence, query_directions
 
 BETA = 5.0
@@ -254,3 +271,100 @@ def test_dpo_output_token_influence_sums_to_pair_gradient(unpadded: bool):
         torch.testing.assert_close(
             losses[pair].double(), loss.detach(), rtol=1e-5, atol=1e-7
         )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_dpo_hessian_pipeline_scores_pairs(tmp_path):
+    """Fit EK-FAC on DPO pairs, transform an NLL query and score the pairs: each
+    pair's score is the transformed query's dot product with its DPO gradient."""
+    generator = torch.Generator().manual_seed(0)
+
+    def rows(lengths, prompt=3):
+        ids = [
+            torch.randint(10, 1000, (n,), generator=generator).tolist() for n in lengths
+        ]
+        return ids, [[-100] * prompt + seq[prompt:] for seq in ids]
+
+    chosen_ids, chosen_labels = rows([12, 9, 15, 11, 8, 14])
+    rejected_ids, rejected_labels = rows([10, 13, 9, 12, 15, 7])
+    pairs = Dataset.from_dict(
+        {
+            "chosen_input_ids": chosen_ids,
+            "chosen_labels": chosen_labels,
+            "chosen_length": [len(x) for x in chosen_ids],
+            "rejected_input_ids": rejected_ids,
+            "rejected_labels": rejected_labels,
+            "rejected_length": [len(x) for x in rejected_ids],
+            "reference_chosen_logps": [-6.0, -5.5, -7.0, -6.2, -5.8, -6.6],
+            "reference_rejected_logps": [-6.1, -5.0, -6.5, -6.0, -6.4, -6.3],
+        }
+    )
+    pairs.save_to_disk(str(tmp_path / "pairs"))
+    query_ids, query_labels = rows([9, 11, 10])
+    Dataset.from_dict({"input_ids": query_ids, "labels": query_labels}).save_to_disk(
+        str(tmp_path / "query")
+    )
+
+    run = tmp_path / "run"
+    hessian_pipeline(
+        IndexConfig(
+            run_path=str(run),
+            model="EleutherAI/pythia-14m",
+            data=DataConfig(dataset=str(tmp_path / "pairs")),
+            token_batch_size=512,
+            precision="fp32",
+            filter_modules="embed_out",
+            loss_fn="dpo",
+            dpo_beta=BETA,
+            loss_reduction="mean",
+            # The fused attention kernels' fp32 gradients for this model are
+            # too far from autograd's for the comparison below
+            force_math_sdp=True,
+        ),
+        HessianConfig(method="kfac", ev_correction=True),
+        ScoreConfig(batch_size=64),
+        PreprocessConfig(),
+        HessianPipelineConfig(
+            query=QuerySetConfig(dataset=str(tmp_path / "query"), aggregation="mean"),
+            query_loss_fn="ce",
+            query_loss_reduction="mean",
+        ),
+    )
+
+    scores = load_scores(run / "scores")
+    assert len(scores) == len(pairs)
+    with open(run / "kfac_query" / "info.json") as f:
+        grad_sizes = json.load(f)["grad_sizes"]
+    query = torch.from_numpy(load_gradients(run / "kfac_query")[0].astype("float64"))
+
+    model = AutoModelForCausalLM.from_pretrained(
+        "EleutherAI/pythia-14m", torch_dtype=torch.float64
+    )
+    expanded = expand_dpo_dataset(pairs)
+    n = len(pairs)
+    for pair in range(n):
+        log_probs = torch.stack(
+            [
+                _sequence_log_prob(
+                    model, expanded["input_ids"][i], expanded["labels"][i]
+                )
+                for i in (pair, pair + n)
+            ]
+        )
+        references = torch.tensor(
+            [expanded["reference_logps"][pair], expanded["reference_logps"][pair + n]],
+            dtype=torch.float64,
+        )
+        model.zero_grad()
+        dpo_losses(log_probs, references, BETA).sum().backward()
+        products = torch.cat(
+            [
+                query[start:end]
+                * model.base_model.get_submodule(name).weight.grad.flatten()
+                for name, (start, end) in column_offsets(grad_sizes).items()
+            ]
+        )
+        # The fit on six pairs leaves the transformed query poorly conditioned,
+        # so measure the fp32 scoring error against the size of the summed terms
+        error = abs(float(scores.mmap["score_0"][pair]) - float(products.sum()))
+        assert error <= 1e-4 * float(products.abs().sum()) + 1e-8
