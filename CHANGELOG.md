@@ -1,6 +1,14 @@
 # CHANGELOG
 
 
+## v2.9.0 (2026-11-02)
+
+### Features
+
+- Gnh-unroll (novel method) ([#546](https://github.com/EleutherAI/bergson/pull/546),
+  [`9c17a5a`](https://github.com/EleutherAI/bergson/commit/9c17a5ad1c38c7f24643489744075a9252b2fc8f))
+
+
 ## v2.8.0 (2026-11-02)
 
 ### Features
