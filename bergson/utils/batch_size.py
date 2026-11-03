@@ -3,21 +3,20 @@ import gc
 import hashlib
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import torch
 import torch.distributed as dist
 from datasets import Dataset
 from peft import PeftModel
-from transformers import AutoTokenizer, PreTrainedModel
+from transformers import PreTrainedModel
 
 from bergson.collector.collector import fwd_bwd_factory
 from bergson.collector.gradient_collectors import GradientCollector
 from bergson.config.config import AttentionConfig, IndexConfig, PreprocessConfig
 from bergson.data import _allocate_batches_world, pad_and_tensor
 from bergson.gradients import GradientProcessor
-from bergson.utils.worker_utils import max_tokens_for_model
 
 CACHE_PATH = Path(".cache") / "batch_size_cache.jsonl"
 
@@ -47,7 +46,8 @@ def maybe_auto_batch_size(
     preprocess_cfg: PreprocessConfig,
 ) -> None:
     """Set ``cfg.token_batch_size`` to the largest budget whose batches fit, if
-    ``cfg.auto_batch_size``.
+    ``cfg.auto_batch_size``, and ``cfg.max_batch_size`` to the most documents
+    a batch fits if it isn't set.
 
     Every rank probes the same batches and the ranks agree on each result, so
     sharded models and multi-node runs search together.
@@ -63,12 +63,13 @@ def maybe_auto_batch_size(
     if dist.is_initialized():
         dist.broadcast_object_list(found, src=0)
     if found[0] is not None:
-        cfg.token_batch_size = found[0]
-        print(f"Loaded token_batch_size from cache: {found[0]}")
+        cfg.token_batch_size, cfg.max_batch_size = found[0]
+        print(
+            f"Loaded token_batch_size from cache: {cfg.token_batch_size}, "
+            f"max_batch_size: {cfg.max_batch_size}"
+        )
         return
 
-    tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer or cfg.model)
-    max_len = max_tokens_for_model(tokenizer, cfg.model, cfg.revision)
     collector = GradientCollector(
         model=model.base_model,  # type: ignore
         cfg=cfg,
@@ -80,15 +81,17 @@ def maybe_auto_batch_size(
         filter_modules=cfg.filter_modules,
     )
     try:
-        cfg.token_batch_size = determine_batch_size(
-            cfg, model, ds, collector, lengths, max_len
-        )
+        if cfg.max_batch_size is None:
+            cfg.max_batch_size = determine_max_batch_size(
+                cfg, model, ds, collector, lengths
+            )
+        cfg.token_batch_size = determine_batch_size(cfg, model, ds, collector, lengths)
     finally:
         del collector
         _clear_cache()
 
     if rank == 0:
-        _append_to_cache(CACHE_PATH, key, cfg.token_batch_size)
+        _append_to_cache(CACHE_PATH, key, cfg.token_batch_size, cfg.max_batch_size)
 
 
 def determine_batch_size(
@@ -97,37 +100,87 @@ def determine_batch_size(
     ds: Dataset,
     collector: GradientCollector,
     lengths: list[int],
-    max_len: int,
 ) -> int:
     """Find the largest token budget whose batches fit, doubling from the
     longest document and then bisecting."""
-    # Documents longer than the budget can't be batched, and a budget past
-    # the context length is rejected when the data is tokenized
+    # Documents longer than the budget can't be batched. Past the context length
+    # a batch holds several documents, up to ``cfg.max_batch_size`` of them.
     lo = max(lengths)
-    limit = max(lo, min(max_len, sum(lengths)))
+    limit = sum(lengths)
+    if cfg.max_batch_size is not None:
+        limit = min(limit, cfg.max_batch_size * lo)
+    limit = max(lo, limit)
     print(f"Determining token_batch_size in [{lo}, {limit}]...")
-    if not _fits(cfg, model, ds, collector, lengths, lo):
+
+    def fits(n: int) -> bool:
+        print(f"  Testing {n}...", end=" ", flush=True)
+        probes = probe_batches(
+            lengths, n, _world_size(), max_batch_size=cfg.max_batch_size
+        )
+        return _fits(cfg, model, ds, collector, probes)
+
+    if not fits(lo):
         raise RuntimeError(
             f"token_batch_size={lo}, the longest document, does not fit in memory."
         )
+    lo = _search(fits, lo, limit, tolerance=lambda lo: max(256, lo // 16))
 
+    print(f"Optimal token_batch_size: {lo}")
+    return lo
+
+
+def determine_max_batch_size(
+    cfg: IndexConfig,
+    model: PreTrainedModel | PeftModel,
+    ds: Dataset,
+    collector: GradientCollector,
+    lengths: list[int],
+) -> int | None:
+    """Find the most documents a batch fits, from batches of the shortest
+    documents, or None if all of them fit together.
+
+    Each document of a batch keeps its own gradients, so a large token budget
+    can hold more short documents than fit in memory. Capping the count first
+    lets the budget be set by the long documents.
+    """
+    # Batching skips documents shorter than 2 tokens
+    order = [i for i in np.argsort(lengths, kind="stable").tolist() if lengths[i] >= 2]
+    limit = len(order)
+    print(f"Determining max_batch_size in [1, {limit}]...")
+
+    def fits(n: int) -> bool:
+        print(f"  Testing {n} documents...", end=" ", flush=True)
+        return _fits(cfg, model, ds, collector, [order[:n]])
+
+    found = _search(fits, 1, limit, tolerance=lambda lo: max(1, lo // 16))
+    if found == limit:
+        print("All documents fit in one batch, max_batch_size stays unset")
+        return None
+
+    print(f"Optimal max_batch_size: {found}")
+    return found
+
+
+def _search(
+    fits: Callable[[int], bool], lo: int, limit: int, tolerance: Callable[[int], int]
+) -> int:
+    """The largest value in ``[lo, limit]`` that fits to within ``tolerance``,
+    doubling from ``lo``, which fits, and then bisecting."""
     hi = None
     while lo < limit:
         candidate = min(2 * lo, limit)
-        if not _fits(cfg, model, ds, collector, lengths, candidate):
+        if not fits(candidate):
             hi = candidate
             break
         lo = candidate
 
     # lo fits and hi, when set, does not
-    while hi is not None and hi - lo > max(256, lo // 16):
+    while hi is not None and hi - lo > tolerance(lo):
         mid = (lo + hi) // 2
-        if _fits(cfg, model, ds, collector, lengths, mid):
+        if fits(mid):
             lo = mid
         else:
             hi = mid
-
-    print(f"Optimal token_batch_size: {lo}")
     return lo
 
 
@@ -155,26 +208,27 @@ def probe_batches(
     return [max(batches, key=key) for key in keys]
 
 
+def _world_size() -> int:
+    return dist.get_world_size() if dist.is_initialized() else 1
+
+
 def _fits(
     cfg: IndexConfig,
     model: PreTrainedModel | PeftModel,
     ds: Dataset,
     collector: GradientCollector,
-    lengths: list[int],
-    N: int,
+    probes: list[list[int]],
 ) -> bool:
-    """Whether every rank runs the probe batches of budget ``N`` in memory."""
-    world_size = dist.get_world_size() if dist.is_initialized() else 1
+    """Whether every rank runs the ``probes`` batches in memory."""
     device = torch.device(model.device)  # type: ignore[attr-defined]
     fwd_bwd = fwd_bwd_factory(cfg)
 
-    print(f"  Testing {N}...", end=" ", flush=True)
     fits = True
     _clear_cache()
     if device.type == "cuda":
         torch.cuda.set_per_process_memory_fraction(PROBE_MEMORY_FRACTION, device)
     try:
-        for indices in probe_batches(lengths, N, world_size, cfg.max_batch_size):
+        for indices in probes:
             batch = ds[indices]
             x, y, _, collection_mask = pad_and_tensor(
                 batch["input_ids"],
@@ -234,8 +288,11 @@ def _cache_key(
     }
 
 
-def _check_cache(cache_file: Path, key: dict[str, Any]) -> int | None:
-    """The batch size cached under ``key``, the latest if there are several."""
+def _check_cache(
+    cache_file: Path, key: dict[str, Any]
+) -> tuple[int, int | None] | None:
+    """The token budget and document cap cached under ``key``, the latest if
+    there are several."""
     if not cache_file.exists():
         return None
 
@@ -247,14 +304,20 @@ def _check_cache(cache_file: Path, key: dict[str, Any]) -> int | None:
             except json.JSONDecodeError:
                 continue
             if row.get("key") == key:
-                found = row.get("token_batch_size")
+                found = (row["token_batch_size"], row.get("max_batch_size"))
     return found
 
 
-def _append_to_cache(cache_file: Path, key: dict[str, Any], batch_size: int) -> None:
+def _append_to_cache(
+    cache_file: Path, key: dict[str, Any], batch_size: int, max_batch_size: int | None
+) -> None:
     """Append a new row to the JSONL cache file."""
     cache_file.parent.mkdir(parents=True, exist_ok=True)
+    row = {"key": key, "token_batch_size": batch_size, "max_batch_size": max_batch_size}
     with open(cache_file, "a") as f:
-        f.write(json.dumps({"key": key, "token_batch_size": batch_size}) + "\n")
+        f.write(json.dumps(row) + "\n")
 
-    print(f"Cached batch size {batch_size} to {cache_file}")
+    print(
+        f"Cached token_batch_size {batch_size}, max_batch_size {max_batch_size} "
+        f"to {cache_file}"
+    )

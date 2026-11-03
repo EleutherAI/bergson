@@ -7,7 +7,13 @@ import torch
 
 from bergson.config import IndexConfig, PreprocessConfig
 from bergson.data import _allocate_batches_world
-from bergson.utils.batch_size import _cache_key, probe_batches
+from bergson.utils import batch_size
+from bergson.utils.batch_size import (
+    _cache_key,
+    determine_batch_size,
+    determine_max_batch_size,
+    probe_batches,
+)
 
 from .cli_command import bergson_cmd, bergson_env
 
@@ -30,6 +36,37 @@ def test_probe_batches_cover_every_rank():
     assert docs(probes[1]) == max(docs(b) for b in batches)
     # The many-short-documents batch, which a probe of full-length rows misses
     assert docs(probes[1]) == 1024 // 8
+
+
+def test_document_cap_then_budget_above_context(monkeypatch):
+    """Too many short documents for memory cap the batch's document count, and the
+    token budget then grows past the longest document for the long ones."""
+    lengths = [512] * 64 + [8] * 3000
+    # Memory for a batch: 1 unit per padded token plus 100 per document
+    monkeypatch.setattr(
+        batch_size,
+        "_fits",
+        lambda cfg, model, ds, collector, probes: all(
+            len(b) * max(lengths[i] for i in b) + 100 * len(b) <= 20_000 for b in probes
+        ),
+    )
+    cfg = IndexConfig(run_path="a")
+    cap = determine_max_batch_size(cfg, None, None, None, lengths)
+    # 192 documents of 8 tokens use 19,200 units; the search stops within 1/16
+    assert cap is not None and 192 * 15 / 16 <= cap <= 192
+    cfg = replace(cfg, max_batch_size=cap)
+    budget = determine_batch_size(cfg, None, None, None, lengths)
+    # 32 documents of 512 tokens use 19,584 units
+    assert 512 < budget <= 32 * 512
+    assert budget >= 32 * 512 * 15 / 16
+    for b in probe_batches(lengths, budget, 1, cap):
+        assert len(b) <= cap
+
+
+def test_document_cap_unset_when_everything_fits(monkeypatch):
+    monkeypatch.setattr(batch_size, "_fits", lambda *args: True)
+    cfg = IndexConfig(run_path="a")
+    assert determine_max_batch_size(cfg, None, None, None, [1, 5, 9, 12]) is None
 
 
 def test_cache_key_tracks_memory():

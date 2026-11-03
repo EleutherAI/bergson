@@ -108,11 +108,11 @@ def test_long_documents_fail_without_truncation(tmp_path, model, token_batch_siz
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-def test_token_batch_size_exceeds_model_max_length(tmp_path):
-    """token_batch_size > model_max_length raises an error
-    (GPT2 has model_max_length=max_position_embeddings).
+def test_token_batch_size_above_model_max_length(tmp_path):
+    """A token_batch_size above the model's max length is a budget for several
+    documents per batch; each document is still truncated to the max length.
     """
     token_batch_size = GPT2_MAX_POS_EMB * 2
-    doc_tokens = GPT2_MAX_POS_EMB // 2
-    with pytest.raises(ValueError, match="exceeds model max length"):
-        run_pipeline(tmp_path, GPT2, token_batch_size, doc_tokens, truncation=True)
+    doc_tokens = GPT2_MAX_POS_EMB * 3
+    ds = run_pipeline(tmp_path, GPT2, token_batch_size, doc_tokens, truncation=True)
+    assert max(ds["length"]) == GPT2_MAX_POS_EMB
