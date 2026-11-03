@@ -404,6 +404,9 @@ def fit_factored_hessians(
     )
 
     if hessian_cfg.ev_correction:
+        # The factors are on disk before the correction pass, so a crash in it
+        # keeps them for a rerun of that pass alone
+        saves.wait()
         collect_hessians(
             **kwargs,
             ev_correction=True,

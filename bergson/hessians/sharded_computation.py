@@ -190,7 +190,8 @@ class BackgroundSaves:
             except BaseException as e:
                 self.errors.append(e)
 
-        thread = threading.Thread(target=write, daemon=True)
+        # Not a daemon, so a crash elsewhere leaves the file to finish
+        thread = threading.Thread(target=write)
         thread.start()
         self.threads.append(thread)
 
