@@ -653,14 +653,16 @@ class IndexConfig(AttributionConfig, Serializable):
     seed."""
 
     token_batch_size: int = 2048
-    """Batch size in tokens for building the index."""
+    """Batch size in tokens: a batch's longest document times its number of
+    documents."""
 
     max_batch_size: int | None = None
     """Cap the number of documents per batch."""
 
     auto_batch_size: bool = False
-    """Whether to automatically determine the optimal token batch size.
-    Experimental feature only enabled for `build`."""
+    """Whether to automatically determine the optimal token batch size, and
+    ``max_batch_size`` if it isn't set. Experimental feature only enabled for
+    `build`."""
 
     optimizer_state: str = ""
     """Source for optimizer second moments used to normalize gradients.

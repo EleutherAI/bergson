@@ -403,14 +403,9 @@ def setup_data_pipeline(
         )
         return tokenized, len(ds)
 
+    # The budget is per batch: above the context length a batch holds several
+    # documents, each still cut to the context length
     max_token_bz = getattr(cfg, "token_batch_size", BIG_NUM)
-    if BIG_NUM > max_token_bz > max_model_length:
-        raise ValueError(
-            f"Token batch size {max_token_bz} exceeds model max length "
-            f"({max_model_length}). "
-            f"Use --token_batch_size {max_model_length} or smaller."
-        )
-
     max_length = min(max_model_length, max_token_bz)
     remove_columns = set(ds.column_names) if cfg.drop_columns else set()
     tokenize_cfg = data_cfg
