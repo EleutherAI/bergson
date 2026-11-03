@@ -8,7 +8,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 from datasets import Dataset
-from transformers import AutoConfig, AutoModelForCausalLM
+from transformers import AutoConfig, AutoModelForCausalLM, Olmo3Config
 
 from bergson.collector.collector import CollectorComputer
 from bergson.collector.gradient_collectors import GradientCollector
@@ -40,6 +40,7 @@ from bergson.dpo import (
 from bergson.gradients import GradientProcessor, OuterProductGradients
 from bergson.hessians.pipeline import hessian_pipeline
 from bergson.score.output_influence import output_token_influence, query_directions
+from bergson.utils.recompute import checkpoint_attentions, checkpoint_mlps
 
 BETA = 5.0
 
@@ -371,3 +372,63 @@ def test_dpo_hessian_pipeline_scores_pairs(tmp_path):
         # so measure the fp32 scoring error against the size of the summed terms
         error = abs(float(scores.mmap["score_0"][pair]) - float(products.sum()))
         assert error <= 1e-4 * float(products.abs().sum()) + 1e-8
+
+
+def _tiny_olmo3():
+    config = Olmo3Config(
+        vocab_size=128,
+        hidden_size=32,
+        intermediate_size=64,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        max_position_embeddings=64,
+        sliding_window=4,
+        layer_types=["sliding_attention", "full_attention"],
+    )
+    torch.manual_seed(0)
+    return AutoModelForCausalLM.from_config(
+        config, torch_dtype=torch.float64, attn_implementation="sdpa"
+    )
+
+
+def _olmo3_pair_gradients(tmp_path, recompute: bool, offload: bool):
+    model = _tiny_olmo3()
+    if recompute:
+        checkpoint_mlps(model)
+        checkpoint_attentions(model)
+    rows = _pair_rows()
+    cfg = IndexConfig(
+        run_path=str(tmp_path / f"run-{recompute}-{offload}"),
+        loss_fn="dpo",
+        dpo_beta=BETA,
+        loss_reduction="mean",
+        offload_activations=offload,
+    )
+    cfg.partial_run_path.mkdir(parents=True)
+    collector = _KeepGradients(
+        model=model.base_model,
+        data=rows,
+        cfg=cfg,
+        processor=GradientProcessor(),
+        skip_index=True,
+    )
+    CollectorComputer(
+        model=model,
+        data=rows,
+        collector=collector,
+        batches=allocate_dpo_batches(rows["length"], 1000),
+        cfg=cfg,
+    ).run_with_collector_hooks()
+    return collector.kept
+
+
+@pytest.mark.parametrize("offload", [False, True])
+def test_recomputed_sublayers_give_the_same_pair_gradients(tmp_path, offload: bool):
+    expected = _olmo3_pair_gradients(tmp_path, recompute=False, offload=False)
+    actual = _olmo3_pair_gradients(tmp_path, recompute=True, offload=offload)
+    assert actual.keys() == expected.keys()
+    for pair, grads in expected.items():
+        assert actual[pair].keys() == grads.keys()
+        for name, grad in grads.items():
+            torch.testing.assert_close(actual[pair][name], grad, rtol=1e-10, atol=1e-12)

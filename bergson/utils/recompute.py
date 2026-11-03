@@ -6,7 +6,7 @@ from contextvars import ContextVar
 from functools import wraps
 
 import torch.nn as nn
-from torch.utils.checkpoint import checkpoint
+from torch.utils.checkpoint import checkpoint, set_checkpoint_early_stop
 
 IN_RECOMPUTE = ContextVar("bergson_in_recompute", default=False)
 """True while a checkpointed sublayer is being recomputed in the backward pass,
@@ -37,16 +37,21 @@ def _checkpoint_modules(model: nn.Module, class_name: str) -> int:
         def forward(*args, _original=original, **kwargs):
             if kwargs.get("past_key_values") is not None:
                 raise ValueError("Recomputing sublayers requires KV caching disabled")
-            return checkpoint(
-                _original,
-                *args,
-                use_reentrant=False,
-                context_fn=lambda: (nullcontext(), recompute_context()),
-                **kwargs,
-            )
+            # Replay the whole sublayer, so the forward hooks of its last
+            # modules also run again
+            with set_checkpoint_early_stop(False):
+                return checkpoint(
+                    _original,
+                    *args,
+                    use_reentrant=False,
+                    context_fn=lambda: (nullcontext(), recompute_context()),
+                    **kwargs,
+                )
 
         module.forward = forward
         module._bergson_checkpointed = True
+        for submodule in module.modules():
+            submodule._bergson_recomputed = True
         count += 1
     if not count:
         raise ValueError(f"No {class_name} modules found to checkpoint")

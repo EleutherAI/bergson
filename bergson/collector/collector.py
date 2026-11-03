@@ -518,9 +518,13 @@ class HookCollectorBase(ContextDecorator, ABC):
 
     def _process_input(self, module: nn.Module, inp: tuple, _):
         """Internal forward hook that extracts input and delegates to subclass."""
-        # A checkpointed sublayer runs its forward again in the backward pass;
-        # its activations were already cached by the first call
-        if IN_RECOMPUTE.get():
+        # A checkpointed sublayer runs its forward again in the backward pass.
+        # The base forward hook only caches activations, so it caches them then,
+        # just before they are needed; other hooks run in the first call only
+        recomputed = getattr(module, "_bergson_recomputed", False) and (
+            type(self).forward_hook is HookCollectorBase.forward_hook
+        )
+        if IN_RECOMPUTE.get() != recomputed:
             return
         x = inp[0].detach()
         assert x.ndim == 3, f"Expected input of shape [N, S, I], got {x.shape}"
@@ -533,7 +537,7 @@ class HookCollectorBase(ContextDecorator, ABC):
             if not hasattr(module, "_inputs_stack"):
                 module._inputs_stack = []
             cached = module._inputs
-            if self.offload_activations:
+            if self.offload_activations and not recomputed:
                 cached = cached.to("cpu")
             module._inputs_stack.append(cached)
             del module._inputs
