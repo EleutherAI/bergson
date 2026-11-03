@@ -40,7 +40,11 @@ from bergson.dpo import (
 from bergson.gradients import GradientProcessor, OuterProductGradients
 from bergson.hessians.pipeline import hessian_pipeline
 from bergson.score.output_influence import output_token_influence, query_directions
-from bergson.utils.recompute import checkpoint_attentions, checkpoint_mlps
+from bergson.utils.recompute import (
+    checkpoint_attentions,
+    checkpoint_layers,
+    checkpoint_mlps,
+)
 
 BETA = 5.0
 
@@ -392,11 +396,13 @@ def _tiny_olmo3():
     )
 
 
-def _olmo3_pair_gradients(tmp_path, recompute: bool, offload: bool):
+def _olmo3_pair_gradients(tmp_path, recompute: str | None, offload: bool):
     model = _tiny_olmo3()
-    if recompute:
+    if recompute == "sublayers":
         checkpoint_mlps(model)
         checkpoint_attentions(model)
+    elif recompute == "layers":
+        checkpoint_layers(model)
     rows = _pair_rows()
     cfg = IndexConfig(
         run_path=str(tmp_path / f"run-{recompute}-{offload}"),
@@ -423,10 +429,13 @@ def _olmo3_pair_gradients(tmp_path, recompute: bool, offload: bool):
     return collector.kept
 
 
+@pytest.mark.parametrize("recompute", ["sublayers", "layers"])
 @pytest.mark.parametrize("offload", [False, True])
-def test_recomputed_sublayers_give_the_same_pair_gradients(tmp_path, offload: bool):
-    expected = _olmo3_pair_gradients(tmp_path, recompute=False, offload=False)
-    actual = _olmo3_pair_gradients(tmp_path, recompute=True, offload=offload)
+def test_recomputed_layers_give_the_same_pair_gradients(
+    tmp_path, recompute: str, offload: bool
+):
+    expected = _olmo3_pair_gradients(tmp_path, recompute=None, offload=False)
+    actual = _olmo3_pair_gradients(tmp_path, recompute=recompute, offload=offload)
     assert actual.keys() == expected.keys()
     for pair, grads in expected.items():
         assert actual[pair].keys() == grads.keys()

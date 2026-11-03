@@ -748,6 +748,11 @@ class IndexConfig(AttributionConfig, Serializable):
     """Recompute the MLP blocks of OLMo3 models in the backward pass instead of
     storing their activations."""
 
+    checkpoint_layers: bool = False
+    """Recompute the decoder layers of OLMo3 models in the backward pass, which
+    stores only each layer's input. Replaces ``checkpoint_attention`` and
+    ``checkpoint_mlp``."""
+
     stream_output_loss: bool = False
     """Compute the CE and DPO token losses from the output layer in chunks of
     tokens, so the full logits are never stored."""

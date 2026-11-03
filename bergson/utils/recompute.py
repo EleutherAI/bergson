@@ -1,4 +1,4 @@
-"""Recompute OLMo3 sublayers in the backward pass without collecting their
+"""Recompute OLMo3 layers or sublayers in the backward pass without collecting their
 forward statistics twice."""
 
 from contextlib import contextmanager, nullcontext
@@ -68,3 +68,10 @@ def checkpoint_attentions(model: nn.Module) -> int:
     # Replaying attention must never append keys and values to a KV cache
     model.config.use_cache = False
     return _checkpoint_modules(model, "Olmo3Attention")
+
+
+def checkpoint_layers(model: nn.Module) -> int:
+    """Recompute each OLMo3 decoder layer in the backward pass."""
+    # Replaying attention must never append keys and values to a KV cache
+    model.config.use_cache = False
+    return _checkpoint_modules(model, "Olmo3DecoderLayer")

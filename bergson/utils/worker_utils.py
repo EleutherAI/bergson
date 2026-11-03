@@ -45,7 +45,11 @@ from bergson.score.output_model import (
     register_efficient_attention,
 )
 from bergson.utils import assert_type, get_layer_list, weighted_causal_lm_ce
-from bergson.utils.recompute import checkpoint_attentions, checkpoint_mlps
+from bergson.utils.recompute import (
+    checkpoint_attentions,
+    checkpoint_layers,
+    checkpoint_mlps,
+)
 from bergson.utils.utils import get_device, simple_parse_kwargs_string
 
 BIG_NUM = np.iinfo(np.int64).max
@@ -272,6 +276,14 @@ def setup_model_and_peft(
 
     if getattr(cfg, "stream_output_loss", False):
         install_output_loss_head(model, checkpoint_reverse=True)
+    if getattr(cfg, "checkpoint_layers", False):
+        if getattr(cfg, "checkpoint_mlp", False) or getattr(
+            cfg, "checkpoint_attention", False
+        ):
+            raise ValueError(
+                "checkpoint_layers replaces checkpoint_attention and checkpoint_mlp"
+            )
+        checkpoint_layers(model)
     if getattr(cfg, "checkpoint_mlp", False):
         checkpoint_mlps(model)
     if getattr(cfg, "checkpoint_attention", False):
