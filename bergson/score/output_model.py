@@ -101,6 +101,9 @@ def install_output_loss_head(model, chunk_rows: int = 128, checkpoint_reverse=Fa
             with torch.autocast(device_type=hidden.device.type, enabled=False):
                 inputs = selected[start : start + chunk_rows].to(head.weight.dtype)
                 logits = F.linear(inputs, head.weight, head.bias)
+                # Keep at least fp32 losses, as sequence_log_probs does
+                if logits.dtype != torch.float64:
+                    logits = logits.float()
                 chunks.append(
                     F.cross_entropy(
                         logits,
@@ -109,7 +112,11 @@ def install_output_loss_head(model, chunk_rows: int = 128, checkpoint_reverse=Fa
                         label_smoothing=smoothing,
                     )
                 )
-        values = torch.cat(chunks) if chunks else hidden.new_empty(0)
+        values = (
+            torch.cat(chunks)
+            if chunks
+            else hidden.new_empty(0, dtype=torch.promote_types(hidden.dtype, torch.float32))
+        )
         losses = values.new_zeros(labels.numel()).index_copy(0, positions, values)
         return losses.reshape(shape)
 
