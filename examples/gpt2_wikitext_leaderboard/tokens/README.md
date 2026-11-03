@@ -3,6 +3,7 @@ Per-token attribution on the WikiText leaderboard model (the `1_magic.yaml` run 
 | method | proponent QLD | 95% CI | median | min | max | random 1% | queries above random |
 |---|---|---|---|---|---|---|---|
 | MAGIC | 1.375 | [1.348, 1.403] | 1.368 | 1.175 | 1.592 | 0.0004 | 50/50 |
+| Unrolled Gauss-Newton | 1.178 | [1.145, 1.211] | 1.180 | 0.925 | 1.481 | 0.0004 | 50/50 |
 | EKFAC + CG | 1.014 | [0.986, 1.043] | 1.010 | 0.821 | 1.252 | 0.0007 | 50/50 |
 | Eigenvalue-corrected Shampoo | 0.922 | [0.887, 0.957] | 0.922 | 0.671 | 1.270 | 0.0011 | 50/50 |
 | SOURCE (Adam, EKFAC) | 0.908 | [0.877, 0.942] | 0.903 | 0.686 | 1.266 | 0.0004 | 50/50 |
@@ -21,7 +22,7 @@ Per-token attribution on the WikiText leaderboard model (the `1_magic.yaml` run 
 
 Paired over queries, MAGIC exceeds EKFAC + CG by 0.361 [0.342, 0.379] and EKFAC + CG exceeds EKFAC by 0.151 [0.138, 0.165], each on 50 of 50 queries (95% CI from the per-query differences). The 95% CIs in the table are a 10k bootstrap over queries.
 
-`ekfac_tokens.yaml`, `ekfac_astra_cg_tokens.yaml` and `ekfac_astra_tokens.yaml` score the published EKFAC, CG and ASTRA query directions (`../ekfac.yaml`, `../ekfac_astra_cg.yaml`, `../ekfac_astra_scores.yaml`) token by token with `token_influence: output`; `magic_tokens.yaml` resumes the leaderboard trajectory with `attribute_tokens: true`, so its scores are the per-token MAGIC gradient with the four epochs summed onto each chunk. The `filter_*_tokens.yaml` configs are `validate` runs with `method.kind: filter` over the per-token score stores; `exclude_zero_scores` skips the final position of each chunk, which carries no loss.
+`ekfac_tokens.yaml`, `ekfac_astra_cg_tokens.yaml` and `ekfac_astra_tokens.yaml` score the published EKFAC, CG and ASTRA query directions (`../ekfac.yaml`, `../ekfac_astra_cg.yaml`, `../ekfac_astra_scores.yaml`) token by token with `token_influence: output`; `magic_tokens.yaml` resumes the leaderboard trajectory with `attribute_tokens: true`, so its scores are the per-token MAGIC gradient with the four epochs summed onto each chunk. `unrolled_gauss_newton_tokens.yaml` replays the same trajectory with `bergson gnh-unroll` and `attribute_tokens: true`. Its filter removes 23,547 tokens per query. The `filter_*_tokens.yaml` configs are `validate` runs with `method.kind: filter` over the per-token score stores; `exclude_zero_scores` skips the final position of each chunk, which carries no loss.
 
 Every other method's rows are the forward-mode equivalent of its document score: row `t` is the method's share of the chunk's score from the loss on token `t + 1`, and a chunk's rows add up to its score.
 
@@ -41,7 +42,8 @@ bergson examples/gpt2_wikitext_leaderboard/tokens/ekfac_astra_tokens.yaml
 mkdir -p runs/compare_wikitext/tokens/magic_tokens
 cp -r runs/compare_wikitext/random/checkpoints runs/compare_wikitext/random/optimizer.pt runs/compare_wikitext/tokens/magic_tokens/
 bergson examples/gpt2_wikitext_leaderboard/tokens/magic_tokens.yaml
-for f in ekfac ekfac_astra_cg ekfac_astra magic; do
+bergson examples/gpt2_wikitext_leaderboard/tokens/unrolled_gauss_newton_tokens.yaml
+for f in ekfac ekfac_astra_cg ekfac_astra magic unrolled_gauss_newton; do
   bergson examples/gpt2_wikitext_leaderboard/tokens/filter_${f}_tokens.yaml
 done
 python examples/gpt2_wikitext_leaderboard/qld_from_filters.py runs/compare_wikitext/tokens

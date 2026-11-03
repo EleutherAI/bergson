@@ -121,6 +121,8 @@ Per-token attribution scores, which attribute each training token's loss term, e
      - Proponent QLD [95% CI]
    * - MAGIC
      - 1.375 [1.348, 1.403]
+   * - Unrolled Gauss-Newton
+     - 1.178 [1.145, 1.211]
    * - EKFAC + CG
      - 1.014 [0.986, 1.043]
    * - Eigenvalue-corrected Shampoo
