@@ -283,6 +283,19 @@ class LambdaCollector(HookCollectorBase):
 
         self.gathers.send(x.flatten(0, 1), rows, self.owners[name], rotate)
 
+    def _sends_gradients(self, module: nn.Module) -> bool:
+        """Whether ``module``'s owner gets each document's gradient instead of
+        its rows: when the [O, I] gradients of a batch's documents take fewer
+        elements than its rows of activations and gradients, as for a LoRA
+        matrix. Every rank decides alike from the batch's shapes."""
+        if self._batch_shapes is None or isinstance(module, ExpertLinear):
+            return False
+        name = assert_type(str, module._name)
+        o, i = self.correction_shapes[name]
+        docs = max(n for n, _ in self._batch_shapes)
+        rows = max(n * s for n, s in self._batch_shapes)
+        return docs * o * i < rows * (o + i)
+
     def forward_hook(self, module: nn.Module, a: Tensor) -> None:
         """Transform activations using eigenvectors and cache."""
         name = assert_type(str, module._name)
@@ -295,6 +308,10 @@ class LambdaCollector(HookCollectorBase):
 
         if self.owners is not None and name in self.local:
             self.transformed_a_cache[name] = a.to(self.dtype) @ self.eigen_a[name]
+            return
+        if self.owners is not None and self._sends_gradients(module):
+            # Kept for the backward hook; autograd holds this tensor already
+            self.transformed_a_cache[name] = a
             return
         if self.owners is not None:
             self._send_rotated(
@@ -326,6 +343,21 @@ class LambdaCollector(HookCollectorBase):
                     dim=0
                 )
             )
+            return
+        if self.owners is not None and self._sends_gradients(module):
+            a = self.transformed_a_cache.pop(name)
+            # Each document's gradient, [N, O, I], summed in fp32
+            grads = torch.einsum(
+                "N S O, N S I -> N O I", g.to(self.dtype), a.to(self.dtype)
+            )
+            docs = max(n for n, _ in assert_type(list, self._batch_shapes))
+
+            def rotate_and_correct(stacked: Tensor):
+                # Padding documents are zero, so they add nothing.
+                rotated = self.eigen_g[name].mT @ stacked @ self.eigen_a[name]
+                self.eigenvalue_corrections[name].add_((rotated**2).sum(dim=0))
+
+            self.gathers.send(grads, docs, self.owners[name], rotate_and_correct)
             return
         if self.owners is not None:
 
