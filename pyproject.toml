@@ -37,7 +37,7 @@ dependencies = [
     "bitsandbytes",
     "huggingface-hub>=1.13.0",
 ]
-version = "2.9.0"
+version = "2.9.1"
 [project.optional-dependencies]
 dev = [
     "pre-commit",

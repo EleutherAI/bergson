@@ -1,6 +1,15 @@
 # CHANGELOG
 
 
+## v2.9.1 (2026-11-03)
+
+### Bug Fixes
+
+- Allow token budgets above the context length; cap documents per batch in auto_batch_size
+  ([#604](https://github.com/EleutherAI/bergson/pull/604),
+  [`5447f89`](https://github.com/EleutherAI/bergson/commit/5447f8958e62f62aec6185c3fba740d80e788844))
+
+
 ## v2.9.0 (2026-11-02)
 
 ### Features
