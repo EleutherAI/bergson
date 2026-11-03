@@ -14,6 +14,7 @@ from bergson.collector.collector import CollectorComputer
 from bergson.collector.gradient_collectors import GradientCollector
 from bergson.config import (
     DataConfig,
+    DistributedConfig,
     HessianConfig,
     HessianPipelineConfig,
     IndexConfig,
@@ -320,6 +321,8 @@ def test_dpo_hessian_pipeline_scores_pairs(tmp_path):
             # The fused attention kernels' fp32 gradients for this model are
             # too far from autograd's for the comparison below
             force_math_sdp=True,
+            # Six pairs can't be spread over every GPU
+            distributed=DistributedConfig(nproc_per_node=1),
         ),
         HessianConfig(method="kfac", ev_correction=True),
         ScoreConfig(batch_size=64),

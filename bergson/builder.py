@@ -7,6 +7,7 @@ from datasets import Dataset
 
 from .config.config import PreprocessConfig
 from .data import (
+    column_offsets,
     compute_num_token_grads,
     create_index,
     create_token_index,
@@ -166,6 +167,23 @@ class Builder:
         indices: list[int],
         mod_grads: dict[str, torch.Tensor],
     ) -> None:
+        if (
+            self.preprocess_cfg.aggregation != "none"
+            and self.preconditioner is None
+            and not self.preprocess_cfg.unit_normalize
+        ):
+            # Sum each module into its slice, rather than concatenating the
+            # batch's gradients, which for a full model is another copy of them
+            assert self.in_memory_grad_buffer is not None
+            buffer = self.in_memory_grad_buffer[0]
+            for name, (start, end) in column_offsets(self.grad_sizes).items():
+                buffer[start:end] += (
+                    mod_grads[name]
+                    .sum(dim=0)
+                    .to(dtype=buffer.dtype, device=buffer.device)
+                )
+            return
+
         grads = _preprocess(
             mod_grads,
             self.grad_sizes,

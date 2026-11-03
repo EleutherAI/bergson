@@ -125,7 +125,11 @@ def hessian_pipeline(
             query_cfg = query_index_config(index_cfg, hessian_pipeline_cfg)
             query_cfg.run_path = query_path
             _validate(query_cfg)
-            build_query(query_cfg, query_set_cfg, PreprocessConfig())
+            build_query(
+                query_cfg,
+                query_set_cfg,
+                PreprocessConfig(aggregation_device=preprocess_cfg.aggregation_device),
+            )
             _record_provenance(query_path, provenance)
 
     # ── Step 2: Fit Hessian factors on training data ──────────────────────
