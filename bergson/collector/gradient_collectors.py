@@ -135,6 +135,9 @@ class GradientCollector(HookCollectorBase):
             return
 
         P = self._materialize_gradient(grads)
+        if self.builder is not None and self.scorer is None and self.builder.sums_rows:
+            # Keep one row per module rather than a full gradient per pair
+            P = P.sum(dim=0, keepdim=True)
         if self.cfg.offload_gradients:
             self.mod_grads[name] = P.to(device="cpu", dtype=self.save_dtype)
         elif self.save_index and self.preprocess_cfg.aggregation == "none":

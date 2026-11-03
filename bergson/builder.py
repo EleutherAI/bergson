@@ -160,6 +160,16 @@ class Builder:
                 )
             self._scatter_flat = self._scatter_flat_sequences
 
+    @property
+    def sums_rows(self) -> bool:
+        """Whether only the sum of each module's gradients over a batch's rows
+        is needed."""
+        return (
+            self.preprocess_cfg.aggregation != "none"
+            and self.preconditioner is None
+            and not self.preprocess_cfg.unit_normalize
+        )
+
     # ── __call__ ─────────────────────────────────────────────────────────
 
     def __call__(
@@ -167,11 +177,7 @@ class Builder:
         indices: list[int],
         mod_grads: dict[str, torch.Tensor],
     ) -> None:
-        if (
-            self.preprocess_cfg.aggregation != "none"
-            and self.preconditioner is None
-            and not self.preprocess_cfg.unit_normalize
-        ):
+        if self.sums_rows:
             # Sum each module into its slice, rather than concatenating the
             # batch's gradients, which for a full model is another copy of them
             assert self.in_memory_grad_buffer is not None
