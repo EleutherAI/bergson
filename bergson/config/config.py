@@ -996,8 +996,8 @@ class HessianConfig(Serializable):
     merging the shard files afterwards; raise it when the factors do not fit."""
 
     local_factor_memory: float = 0.2
-    """Fraction of each GPU's memory a fit on multiple GPUs uses to keep some 
-    module's factors on-device to avoid gathers and improve speed. Lower to 
+    """Fraction of each GPU's memory a fit on multiple GPUs uses to keep some
+    module's factors on-device to avoid gathers and improve speed. Lower to
     reduce memory usage and raise to increase speed."""
 
 
