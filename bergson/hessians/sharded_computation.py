@@ -1,6 +1,6 @@
 import threading
 from collections import deque
-from typing import Callable
+from typing import Callable, Hashable, TypeVar
 
 import safetensors.torch
 import torch
@@ -9,6 +9,8 @@ from jaxtyping import Float
 from torch import Tensor
 
 from bergson.utils.utils import get_device
+
+K = TypeVar("K", bound=Hashable)
 
 
 def shard_bounds(dim: int, rank: int, world_size: int) -> tuple[int, int]:
@@ -57,9 +59,10 @@ def gather_batch_shapes(*sizes: int, device: str | torch.device) -> list[list[in
     return gathered.view(dist.get_world_size(), len(sizes)).tolist()
 
 
-def local_modules(sizes: dict[str, int], budget: float) -> set[str]:
-    """The modules whose factors every rank keeps, smallest first while their
-    ``sizes`` in bytes fit in ``budget``. Every rank computes the same set."""
+def local_modules(sizes: dict[K, int], budget: float) -> set[K]:
+    """The keys of ``sizes`` whose factors every rank keeps, smallest first
+    while their sizes in bytes fit in ``budget``. Every rank computes the same
+    set."""
     kept, used = set(), 0
     for name in sorted(sizes, key=lambda n: (sizes[n], n)):
         if used + sizes[name] > budget:
