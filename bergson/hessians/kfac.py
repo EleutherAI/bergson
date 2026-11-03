@@ -21,6 +21,24 @@ from bergson.hessians.sharded_computation import (
 from bergson.utils.utils import assert_type
 
 
+def add_gram(out: Tensor, x: Tensor) -> None:
+    """Add ``x^T @ x`` to ``out``.
+
+    On the GPU, bf16 and fp16 rows are multiplied as they are and summed in
+    ``out``'s fp32: every product of two of their values is exact in fp32, so
+    this sums the same products as casting ``x`` to fp32 first, at half-precision
+    speed and without the copy."""
+    if (
+        x.is_cuda
+        and x.dtype in (torch.bfloat16, torch.float16)
+        and out.dtype == torch.float32
+    ):
+        torch.addmm(out, x.mT, x, out_dtype=torch.float32, out=out)
+        return
+    x = x.to(out.dtype)
+    out.addmm_(x.mT, x)
+
+
 @dataclass(kw_only=True)
 class CovarianceCollector(HookCollectorBase):
     """
@@ -146,14 +164,12 @@ class CovarianceCollector(HookCollectorBase):
         """Add ``X^T @ X`` to ``name``'s covariance, where ``X`` stacks every
         rank's ``x``, in the accumulation dtype."""
         if self.owners is None or name in self.local:
-            x = x.to(self.dtype)
-            covariances[name].addmm_(x.mT, x)
+            add_gram(covariances[name], x)
             return
 
         def add(stacked: Tensor):
             # Padding rows are zero, so they add nothing.
-            stacked = stacked.to(self.dtype)
-            covariances[name].addmm_(stacked.mT, stacked)
+            add_gram(covariances[name], stacked)
 
         # Sent in the model's dtype and cast on the owner, which moves less data.
         self.gathers.send(x, self._rows, self.owners[name], add)
