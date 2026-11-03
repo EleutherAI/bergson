@@ -654,7 +654,7 @@ class IndexConfig(AttributionConfig, Serializable):
 
     token_batch_size: int = 2048
     """Batch size in tokens: a batch's longest document times its number of
-    documents. Above the model's max length a batch holds several documents."""
+    documents."""
 
     max_batch_size: int | None = None
     """Cap the number of documents per batch."""
