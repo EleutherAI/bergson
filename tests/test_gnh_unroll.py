@@ -145,3 +145,19 @@ def test_fewer_queries_than_ranks(tmp_path):
     torch.save(queries[0], tmp_path / "query.pt")
     mp.spawn(_sharded_worker, args=(str(tmp_path), 29731), nprocs=2, join=True)
     torch.testing.assert_close(torch.load(tmp_path / "scores.pt"), reference[:, 0])
+
+
+def test_token_scores_sum_to_document_scores(tmp_path):
+    trainer, state, stream, queries = _train(str(tmp_path / "a"))
+    kwargs = dict(lr=lr, betas=BETAS, eps=EPS, eps_root=EPS_ROOT, weight_decay=WD)
+    docs = unroll_scores(trainer, str(tmp_path / "a"), stream, state, queries, **kwargs)
+
+    # One weight per token: row t is the loss on token t + 1.
+    token_stream = DataStream(stream.dataset, 2, weight_shape=(8, 6))
+    tokens = unroll_scores(
+        trainer, str(tmp_path / "a"), token_stream, state, queries, **kwargs
+    )
+
+    assert tokens.shape == (8, 6, 2)
+    assert (tokens[:, -1] == 0).all()
+    torch.testing.assert_close(tokens.sum(1), docs)

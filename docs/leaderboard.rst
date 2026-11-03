@@ -15,12 +15,12 @@ Indicative performance of data attribution methods in the finetuning regime.
    * - MAGIC
      - 0.100 [0.090, 0.112]
      - 0.931 [0.925, 0.936]
-   * - Unrolled Gauss-Newton
-     - 0.084 [0.072, 0.096]
-     - 0.819 [0.806, 0.829]
    * - MAGIC (cross-seed)
      - 0.098 [0.087, 0.110]
      - 0.829 [0.815, 0.840]
+   * - Unrolled Gauss-Newton
+     - 0.084 [0.072, 0.096]
+     - 0.819 [0.806, 0.829]
    * - EKFAC + CG
      - 0.077 [0.066, 0.089]
      - 0.685 [0.664, 0.702]
@@ -121,6 +121,8 @@ Per-token attribution scores, which attribute each training token's loss term, e
      - Proponent QLD [95% CI]
    * - MAGIC
      - 1.375 [1.348, 1.403]
+   * - Unrolled Gauss-Newton
+     - 1.178 [1.145, 1.211]
    * - EKFAC + CG
      - 1.014 [0.986, 1.043]
    * - Eigenvalue-corrected Shampoo
