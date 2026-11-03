@@ -996,13 +996,9 @@ class HessianConfig(Serializable):
     merging the shard files afterwards; raise it when the factors do not fit."""
 
     local_factor_memory: float = 0.2
-    """Fraction of each GPU's memory a K-FAC or EK-FAC fit on several GPUs may
-    use to run faster. Each GPU keeps its own copy of as many modules' factors
-    as fit, smallest first, and exchanges data every step only for the rest.
-    Lower it if the fit runs out of memory (0 keeps no copies); raise it if
-    memory is spare and the fit is slow. The fitted factors are the same. On
-    one GPU, an EK-FAC fit keeps as many modules' eigenvalue corrections as fit
-    within it on the GPU and sums the rest on the CPU."""
+    """Fraction of each GPU's memory a fit on multiple GPUs uses to keep some 
+    module's factors on-device to avoid gathers and improve speed. Lower to 
+    reduce memory usage and raise to increase speed."""
 
 
 @dataclass
