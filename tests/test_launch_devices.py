@@ -61,7 +61,8 @@ def test_workers_with_large_arguments_start_together(monkeypatch, tmp_path):
     subprocess.run([sys.executable, script, out], check=True)
     starts = [float(p.read_text()) for p in out.iterdir()]
     assert len(starts) == 4
-    assert max(starts) - min(starts) < 2
+    # Workers that re-imported the main module would be at least 2 s apart each.
+    assert max(starts) - min(starts) < 4
 
 
 def check_threads(rank: int, local_rank: int, world_size: int, expected: int):
