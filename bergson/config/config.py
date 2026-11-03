@@ -995,10 +995,10 @@ class HessianConfig(Serializable):
     """Fit the factored methods in this many module groups, one pass per group,
     merging the shard files afterwards; raise it when the factors do not fit."""
 
-    local_factor_memory: float = 0.2
+    local_factor_memory: float = 0.0
     """Fraction of each GPU's memory a fit on multiple GPUs uses to keep some
-    module's factors on-device to avoid gathers and improve speed. Lower to
-    reduce memory usage and raise to increase speed."""
+    module's factors on-device to avoid gathers and improve speed. Raise to
+    increase speed (0.2 is a reasonable value) and lower to reduce memory usage."""
 
 
 @dataclass
