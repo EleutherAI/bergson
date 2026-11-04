@@ -1,4 +1,4 @@
-Trackstar
+TrackStar
 =========
 
 ``trackstar`` is a high-level pipeline for the TrackStar influence method. The pipeline computes and mixes hessian preconditioners, then scores queries on the fly, following the methodology described in
