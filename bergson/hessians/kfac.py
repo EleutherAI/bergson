@@ -21,22 +21,34 @@ from bergson.hessians.sharded_computation import (
 from bergson.utils.utils import assert_type
 
 
-def add_gram(out: Tensor, x: Tensor) -> None:
-    """Add ``x^T @ x`` to ``out``.
+def add_gram(out: Tensor, x: Tensor, block: int = 1024) -> None:
+    """Add the upper triangle of ``x^T @ x`` to ``out``, by row blocks of
+    ``block`` rows; :func:`mirror_upper` fills in the lower triangle.
 
     On the GPU, bf16 and fp16 rows are multiplied as they are and summed in
     ``out``'s fp32: every product of two of their values is exact in fp32, so
     this sums the same products as casting ``x`` to fp32 first, at half-precision
     speed and without the copy."""
-    if (
+    if not (
         x.is_cuda
         and x.dtype in (torch.bfloat16, torch.float16)
         and out.dtype == torch.float32
     ):
-        torch.addmm(out, x.mT, x, out_dtype=torch.float32, out=out)
-        return
-    x = x.to(out.dtype)
-    out.addmm_(x.mT, x)
+        x = x.to(out.dtype)
+    for start in range(0, x.shape[1], block):
+        end = min(start + block, x.shape[1])
+        rows = out[start:end, start:]
+        if x.dtype == out.dtype:
+            rows.addmm_(x[:, start:end].mT, x[:, start:])
+        else:
+            torch.addmm(
+                rows, x[:, start:end].mT, x[:, start:], out_dtype=out.dtype, out=rows
+            )
+
+
+def mirror_upper(out: Tensor) -> None:
+    """Copy ``out``'s upper triangle into its lower triangle."""
+    out.copy_(out.triu() + out.triu(1).mT)
 
 
 @dataclass(kw_only=True)
@@ -251,6 +263,10 @@ class CovarianceCollector(HookCollectorBase):
         """Save covariance matrices to disk."""
         if self.owners is not None:
             self.gathers.flush()
+        for covariances in (self.A_cov_dict, self.S_cov_dict):
+            for covariance in covariances.values():
+                mirror_upper(covariance)
+        if self.owners is not None:
             for name, kind in sorted(self.local):
                 if kind == "A" and name in self.aliases:
                     continue
