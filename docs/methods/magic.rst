@@ -122,6 +122,7 @@ MAGIC is valid when the model training function you differentiate through is smo
 
 * Use the Muon optimizer
 * Increase batch size
+* Lower the learning rate
 * Scale model outputs down
 * Clip gradients
 * Pre-activation batch norm
