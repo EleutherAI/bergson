@@ -19,7 +19,7 @@ from bergson.config import (
     ScoreConfig,
 )
 from bergson.data import load_gradients
-from bergson.hessians.astra import Astra, GaussNewtonProduct
+from bergson.hessians.astra import Astra, AstraPaths, GaussNewtonProduct
 from bergson.hessians.pipeline import _run_astra, hessian_pipeline
 from bergson.utils.logger import get_logger
 
@@ -130,6 +130,101 @@ def test_cg_reaches_the_damped_solution():
     x = astra.refine(dense(q), dense(torch.zeros(dim, dtype=torch.float64)), 0)
     actual = torch.cat([x[n] for n in names])
     assert (actual - expected).norm() / expected.norm() < 1e-6
+
+
+def _tiny_sgd(
+    cfg: AstraConfig, checkpoint_path: str | None = None, damping: float = 0.1
+):
+    """An ``sgd`` Astra on a one-layer GPT-2 with an identity preconditioner,
+    and a query for it."""
+    torch.manual_seed(0)
+    model = GPT2LMHeadModel(
+        GPT2Config(
+            vocab_size=11,
+            n_positions=8,
+            n_embd=8,
+            n_layer=1,
+            n_head=2,
+            attn_implementation="eager",
+        )
+    ).double()
+    model.eval().requires_grad_(False)
+    data = Dataset.from_dict({"input_ids": torch.randint(11, (6, 5)).tolist()})
+    names = ["h.0.attn.c_proj", "h.0.mlp.c_fc"]
+    astra = Astra.__new__(Astra)
+    astra.cfg = cfg
+    astra.paths = AstraPaths("query", "init", "hessian", "run", checkpoint_path)
+    astra.names, astra.num_docs = names, len(data)
+    astra.hvp = GaussNewtonProduct(model, data, IndexConfig(run_path=""), names)
+    astra.damping = {n: damping for n in names}
+    astra.preconditioner = _Identity()
+    astra.logger = get_logger("Astra")
+    astra.device = astra.store_device = "cpu"
+    sizes = {"h.0.attn.c_proj": 8 * 8, "h.0.mlp.c_fc": 32 * 8}
+    q = {n: torch.randn(sizes[n], dtype=torch.float64) for n in names}
+    return astra, q
+
+
+def _zeros(q: dict[str, Tensor]) -> dict[str, Tensor]:
+    return {n: torch.zeros_like(v) for n, v in q.items()}
+
+
+def test_sgd_resumes_from_saved_state(tmp_path):
+    """A solve stopped at a save and rerun ends where an unbroken solve does."""
+    cfg = AstraConfig(num_steps=12, batch_size=3, lr=0.05, lr_decay_interval=5)
+    astra, q = _tiny_sgd(cfg)
+    expected = astra.refine(q, _zeros(q), 0)
+
+    saving = replace(cfg, checkpoint_interval=4)
+    astra, q = _tiny_sgd(replace(saving, num_steps=8), str(tmp_path))
+    astra.refine(q, _zeros(q), 0)
+    assert (tmp_path / "query_0.pt").exists()
+
+    # Stops at the save: the saved solution comes back without a step
+    astra, q = _tiny_sgd(replace(saving, num_steps=8), str(tmp_path))
+    stopped = astra.refine(q, _zeros(q), 0)
+    assert torch.load(tmp_path / "query_0.pt")["step"] == 8
+
+    astra, q = _tiny_sgd(saving, str(tmp_path))
+    actual = astra.refine(q, _zeros(q), 0)
+    for n in q:
+        torch.testing.assert_close(actual[n], expected[n], rtol=0, atol=0)
+        assert not torch.equal(stopped[n], expected[n])
+
+
+def test_sgd_ignores_state_saved_with_other_settings(tmp_path):
+    cfg = AstraConfig(num_steps=6, batch_size=3, lr=0.05, checkpoint_interval=3)
+    astra, q = _tiny_sgd(cfg, str(tmp_path))
+    astra.refine(q, _zeros(q), 0)
+
+    astra, q = _tiny_sgd(replace(cfg, lr=0.01), str(tmp_path))
+    assert astra._load_state(0) is None
+
+
+def test_sgd_stops_once_the_objective_stalls():
+    """On a well-conditioned problem the solve stops early, close to where an
+    unbroken solve ends."""
+    cfg = AstraConfig(num_steps=500, batch_size=6, lr=0.05, momentum=0.0)
+    stopping = replace(cfg, early_stop_window=10, early_stop_tol=1e-4)
+    astra, q = _tiny_sgd(stopping, damping=10.0)
+    calls = []
+    hvp = astra.hvp
+    astra.hvp = lambda v, indices: calls.append(1) or hvp(v, indices)
+    stopped = astra.refine(q, _zeros(q), 0)
+    assert 20 <= len(calls) < cfg.num_steps
+
+    astra, q = _tiny_sgd(cfg, damping=10.0)
+    full = astra.refine(q, _zeros(q), 0)
+    num = sum((stopped[n] - full[n]).norm() ** 2 for n in q) ** 0.5
+    den = sum(full[n].norm() ** 2 for n in q) ** 0.5
+    assert num / den < 1e-3
+
+
+def test_cg_rejects_checkpoints_and_early_stopping():
+    with pytest.raises(ValueError):
+        AstraConfig(solver="cg", checkpoint_interval=10)
+    with pytest.raises(ValueError):
+        AstraConfig(solver="cg", early_stop_window=10)
 
 
 @pytest.fixture(scope="module")

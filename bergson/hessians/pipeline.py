@@ -3,6 +3,7 @@ import shutil
 import time
 from contextlib import contextmanager
 from copy import deepcopy
+from pathlib import Path
 
 from ..build import build_query
 from ..cli.commands import Score
@@ -207,6 +208,7 @@ def _run_astra(
         init_path=init_path,
         hessian_path=f"{index_cfg.run_path}/hessian/{hessian_cfg.method}",
         run_path=str(part),
+        checkpoint_path=f"{out_path}.checkpoints",
     )
     launch_distributed_run(
         "astra",
@@ -221,3 +223,5 @@ def _run_astra(
         index_cfg.distributed,
     )
     promote_step(out_path)
+    if Path(paths.checkpoint_path).is_dir():
+        shutil.rmtree(paths.checkpoint_path)

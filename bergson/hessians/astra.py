@@ -42,6 +42,10 @@ class AstraPaths:
     run_path: str
     """Where the refined solutions are written, in ``init_path``'s layout."""
 
+    checkpoint_path: str | None = None
+    """Where each query's ``sgd`` state is saved every ``checkpoint_interval``
+    steps."""
+
 
 class GaussNewtonProduct:
     """Gauss-Newton Hessian-vector products of the training loss, over
@@ -290,8 +294,15 @@ class Astra:
             return self._cg(q, x, row, indices)
         q = {n: q[n].to(self.store_device) for n in self.names}
         buf = {n: torch.zeros_like(q[n]) for n in self.names}
-        lr = self.cfg.lr
-        for step in range(self.cfg.num_steps):
+        lr, start, objectives = self.cfg.lr, 0, []
+        state = self._load_state(row)
+        if state is not None:
+            start, lr, objectives = state["step"], state["lr"], state["objectives"]
+            gen.set_state(state["generator"])
+            x = {n: state["x"][n].to(x[n]) for n in self.names}
+            buf = {n: state["momentum"][n].to(buf[n]) for n in self.names}
+            self.logger.info(f"query {row}: resuming from step {start}")
+        for step in range(start, self.cfg.num_steps):
             if step > 0 and step % self.cfg.lr_decay_interval == 0:
                 lr *= self.cfg.lr_decay
             indices = torch.randperm(self.num_docs, generator=gen)[
@@ -305,9 +316,8 @@ class Astra:
                     for n in self.names
                 ]
             ).sum()
-            self.logger.info(
-                f"query {row} step {step}: objective {objective.item():.6g}"
-            )
+            objectives.append(objective.item())
+            self.logger.info(f"query {row} step {step}: objective {objectives[-1]:.6g}")
             for n in self.names:
                 residual = hx.pop(n) + self.damping[n] * x[n] - q[n].to(self.device)
                 direction = self.preconditioner.apply({n: residual[None]})[n][0]
@@ -315,7 +325,67 @@ class Astra:
                 velocity.add_(direction)
                 x[n].sub_(velocity, alpha=lr)
                 buf[n] = velocity.to(self.store_device)
+            if self._stalled(objectives):
+                self.logger.info(
+                    f"query {row}: objective stopped falling at step {step}"
+                )
+                break
+            interval = self.cfg.checkpoint_interval
+            if interval and (step + 1) % interval == 0:
+                self._save_state(row, step + 1, x, buf, lr, gen, objectives)
         return x
+
+    def _stalled(self, objectives: list[float]) -> bool:
+        """Whether the mean objective over the last window fell by no more than
+        ``early_stop_tol`` of the mean over the window before."""
+        w = self.cfg.early_stop_window
+        if not w or len(objectives) < 2 * w:
+            return False
+        before, last = np.mean(objectives[-2 * w : -w]), np.mean(objectives[-w:])
+        return before - last <= self.cfg.early_stop_tol * abs(before)
+
+    def _settings(self) -> dict:
+        """Settings a saved state must share to be resumed."""
+        keep = ("solver", "loss_reduction", "lr", "momentum", "batch_size")
+        keep += ("lr_decay", "lr_decay_interval", "seed")
+        return {k: getattr(self.cfg, k) for k in keep} | {
+            "query_path": str(self.paths.query_path),
+            "init_path": str(self.paths.init_path),
+            "damping": {n: float(d) for n, d in self.damping.items()},
+        }
+
+    def _state_file(self, row: int) -> Path | None:
+        if not self.cfg.checkpoint_interval or not self.paths.checkpoint_path:
+            return None
+        return Path(self.paths.checkpoint_path) / f"query_{row}.pt"
+
+    def _save_state(self, row, step, x, buf, lr, gen, objectives):
+        path = self._state_file(row)
+        if path is None or self.hvp.rank != 0:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        state = {
+            "step": step,
+            "x": {n: x[n].cpu() for n in self.names},
+            "momentum": {n: buf[n].cpu() for n in self.names},
+            "lr": lr,
+            "generator": gen.get_state(),
+            "objectives": objectives,
+            "settings": self._settings(),
+        }
+        tmp = path.with_suffix(".tmp")
+        torch.save(state, tmp)
+        tmp.replace(path)
+
+    def _load_state(self, row: int) -> dict | None:
+        path = self._state_file(row)
+        if path is None or not path.exists():
+            return None
+        state = torch.load(path)
+        if state["settings"] != self._settings():
+            self.logger.warning(f"query {row}: {path} has other settings; ignoring it")
+            return None
+        return state
 
     def _damped_product(
         self, v: dict[str, Tensor], indices: list[int]
