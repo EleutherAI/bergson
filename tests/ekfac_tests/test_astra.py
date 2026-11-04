@@ -253,78 +253,68 @@ def kfac_run(tmp_path_factory):
     return index_cfg, hessian_cfg
 
 
-def _sharded(index_cfg: IndexConfig, fsdp: bool) -> IndexConfig:
-    """``index_cfg`` over FSDP on two GPUs, or in this process without it."""
-    if not fsdp:
-        return index_cfg
-    return replace(
-        index_cfg, fsdp=True, distributed=DistributedConfig(nproc_per_node=2)
-    )
+@pytest.fixture(scope="module")
+def solve(kfac_run):
+    """Refine the queries once per solver, FSDP and factor placement: over FSDP
+    on two GPUs or in this process, with the factors on the GPU or the CPU."""
+    index_cfg, hessian_cfg = kfac_run
+    run, cache = index_cfg.run_path, {}
+
+    def refine(solver: str, fsdp: bool, on_cpu: bool) -> Tensor:
+        if (solver, fsdp, on_cpu) not in cache:
+            out = f"{run}/astra_{solver}_{fsdp}_{on_cpu}"
+            cfg = index_cfg
+            if fsdp:
+                cfg = replace(
+                    cfg, fsdp=True, distributed=DistributedConfig(nproc_per_node=2)
+                )
+            astra_cfg = AstraConfig(
+                num_steps=4,
+                solver=solver,
+                batch_size=5,
+                micro_batch_size=2,
+                lr=1e-4,
+                factors_on_cpu=on_cpu,
+            )
+            _run_astra(
+                cfg,
+                hessian_cfg,
+                HessianPipelineConfig(astra=astra_cfg),
+                f"{run}/query",
+                f"{run}/kfac_query",
+                out,
+            )
+            cache[solver, fsdp, on_cpu] = torch.from_numpy(
+                load_gradients(out).astype("float32")
+            )
+        return cache[solver, fsdp, on_cpu]
+
+    init = torch.from_numpy(load_gradients(f"{run}/kfac_query").astype("float32"))
+    return refine, init
 
 
 @requires_multi_gpu
 @pytest.mark.parametrize("solver", ["sgd", "cg"])
-def test_astra_under_fsdp_matches_unsharded(kfac_run, solver):
+def test_astra_under_fsdp_matches_unsharded(solve, solver):
     """ASTRA over FSDP-sharded weights on two ranks refines the queries to the
     solutions it reaches with one process holding the whole model, with the
     ranks' shares of a 5-document batch split unevenly."""
-    index_cfg, hessian_cfg = kfac_run
-    run = index_cfg.run_path
-    pipeline_cfg = HessianPipelineConfig(
-        astra=AstraConfig(
-            num_steps=4, solver=solver, batch_size=5, micro_batch_size=2, lr=1e-4
-        ),
-    )
-    solutions = {}
-    for fsdp in (False, True):
-        out = f"{run}/astra_{solver}_{fsdp}"
-        _run_astra(
-            _sharded(index_cfg, fsdp),
-            hessian_cfg,
-            pipeline_cfg,
-            f"{run}/query",
-            f"{run}/kfac_query",
-            out,
-        )
-        solutions[fsdp] = torch.from_numpy(load_gradients(out).astype("float32"))
-
-    init = torch.from_numpy(load_gradients(f"{run}/kfac_query").astype("float32"))
-    moved = (solutions[False] - init).norm()
+    refine, init = solve
+    unsharded, sharded = refine(solver, False, False), refine(solver, True, False)
+    moved = (unsharded - init).norm()
     assert moved > 0
     # The ranks sum the documents in another order, which moves a product
     # about as much as changing its micro-batch size does
-    assert (solutions[True] - solutions[False]).norm() < 1e-2 * moved
+    assert (sharded - unsharded).norm() < 1e-2 * moved
 
 
 @requires_multi_gpu
 @pytest.mark.parametrize("solver", ["sgd", "cg"])
 @pytest.mark.parametrize("fsdp", [False, True])
-def test_astra_factors_on_cpu_matches_gpu_factors(kfac_run, solver, fsdp):
+def test_astra_factors_on_cpu_matches_gpu_factors(solve, solver, fsdp):
     """Holding the factors in CPU memory doesn't change the solutions."""
-    index_cfg, hessian_cfg = kfac_run
-    run = index_cfg.run_path
-    solutions = {}
-    for on_cpu in (False, True):
-        out = f"{run}/astra_on_cpu_{solver}_{fsdp}_{on_cpu}"
-        _run_astra(
-            _sharded(index_cfg, fsdp),
-            hessian_cfg,
-            HessianPipelineConfig(
-                astra=AstraConfig(
-                    num_steps=4,
-                    solver=solver,
-                    batch_size=5,
-                    lr=1e-4,
-                    factors_on_cpu=on_cpu,
-                ),
-            ),
-            f"{run}/query",
-            f"{run}/kfac_query",
-            out,
-        )
-        solutions[on_cpu] = torch.from_numpy(load_gradients(out).astype("float32"))
-
-    init = torch.from_numpy(load_gradients(f"{run}/kfac_query").astype("float32"))
-    moved = (solutions[False] - init).norm()
+    refine, init = solve
+    on_gpu, on_cpu = refine(solver, fsdp, False), refine(solver, fsdp, True)
+    moved = (on_gpu - init).norm()
     assert moved > 0
-    assert (solutions[True] - solutions[False]).norm() < 1e-5 * moved
+    assert (on_cpu - on_gpu).norm() < 1e-5 * moved
