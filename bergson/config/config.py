@@ -1048,22 +1048,16 @@ class AstraConfig(Serializable):
     """Seeds the training batches, which are drawn separately for each query."""
 
     checkpoint_interval: int = 0
-    """Steps between saves of each query's ``sgd`` state. A rerun with the same
+    """Steps between saves of each query's solver state. A rerun with the same
     settings resumes from the latest save, and a rerun with ``num_steps`` at or
     below the saved step writes the saved solution. 0 saves nothing."""
 
     early_stop_window: int = 0
-    """Stop a query's ``sgd`` once the mean objective over the last
-    ``early_stop_window`` steps is no more than ``early_stop_tol`` of its
-    magnitude below the mean over the window before. 0 runs every step."""
+    """Stop a query once the mean objective over the last ``early_stop_window``
+    steps is no more than ``early_stop_tol`` of its magnitude below the mean
+    over the window before. 0 runs every step."""
 
     early_stop_tol: float = 0.01
-
-    def __post_init__(self):
-        if self.solver == "cg" and (self.checkpoint_interval or self.early_stop_window):
-            raise ValueError(
-                "checkpoint_interval and early_stop_window apply to solver='sgd'."
-            )
 
 
 @dataclass

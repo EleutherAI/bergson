@@ -132,11 +132,11 @@ def test_cg_reaches_the_damped_solution():
     assert (actual - expected).norm() / expected.norm() < 1e-6
 
 
-def _tiny_sgd(
+def _tiny_astra(
     cfg: AstraConfig, checkpoint_path: str | None = None, damping: float = 0.1
 ):
-    """An ``sgd`` Astra on a one-layer GPT-2 with an identity preconditioner,
-    and a query for it."""
+    """An Astra on a one-layer GPT-2 with an identity preconditioner, and a
+    query for it."""
     torch.manual_seed(0)
     model = GPT2LMHeadModel(
         GPT2Config(
@@ -169,62 +169,58 @@ def _zeros(q: dict[str, Tensor]) -> dict[str, Tensor]:
     return {n: torch.zeros_like(v) for n, v in q.items()}
 
 
-def test_sgd_resumes_from_saved_state(tmp_path):
+@pytest.mark.parametrize("solver", ["sgd", "cg"])
+def test_solve_resumes_from_saved_state(tmp_path, solver):
     """A solve stopped at a save and rerun ends where an unbroken solve does."""
-    cfg = AstraConfig(num_steps=12, batch_size=3, lr=0.05, lr_decay_interval=5)
-    astra, q = _tiny_sgd(cfg)
+    cfg = AstraConfig(
+        num_steps=12, solver=solver, batch_size=3, lr=0.05, lr_decay_interval=5
+    )
+    astra, q = _tiny_astra(cfg)
     expected = astra.refine(q, _zeros(q), 0)
 
     saving = replace(cfg, checkpoint_interval=4)
-    astra, q = _tiny_sgd(replace(saving, num_steps=8), str(tmp_path))
+    astra, q = _tiny_astra(replace(saving, num_steps=8), str(tmp_path))
     astra.refine(q, _zeros(q), 0)
-    assert (tmp_path / "query_0.pt").exists()
-
-    # Stops at the save: the saved solution comes back without a step
-    astra, q = _tiny_sgd(replace(saving, num_steps=8), str(tmp_path))
-    stopped = astra.refine(q, _zeros(q), 0)
     assert torch.load(tmp_path / "query_0.pt")["step"] == 8
 
-    astra, q = _tiny_sgd(saving, str(tmp_path))
+    # A rerun that stops at the save returns the saved solution without a step
+    astra, q = _tiny_astra(replace(saving, num_steps=8), str(tmp_path))
+    stopped = astra.refine(q, _zeros(q), 0)
+
+    astra, q = _tiny_astra(saving, str(tmp_path))
     actual = astra.refine(q, _zeros(q), 0)
     for n in q:
         torch.testing.assert_close(actual[n], expected[n], rtol=0, atol=0)
         assert not torch.equal(stopped[n], expected[n])
 
 
-def test_sgd_ignores_state_saved_with_other_settings(tmp_path):
+def test_solve_ignores_state_saved_with_other_settings(tmp_path):
     cfg = AstraConfig(num_steps=6, batch_size=3, lr=0.05, checkpoint_interval=3)
-    astra, q = _tiny_sgd(cfg, str(tmp_path))
+    astra, q = _tiny_astra(cfg, str(tmp_path))
     astra.refine(q, _zeros(q), 0)
 
-    astra, q = _tiny_sgd(replace(cfg, lr=0.01), str(tmp_path))
+    astra, q = _tiny_astra(replace(cfg, lr=0.01), str(tmp_path))
     assert astra._load_state(0) is None
 
 
-def test_sgd_stops_once_the_objective_stalls():
+@pytest.mark.parametrize("solver", ["sgd", "cg"])
+def test_solve_stops_once_the_objective_stalls(solver):
     """On a well-conditioned problem the solve stops early, close to where an
     unbroken solve ends."""
-    cfg = AstraConfig(num_steps=500, batch_size=6, lr=0.05, momentum=0.0)
+    cfg = AstraConfig(num_steps=500, solver=solver, batch_size=6, lr=0.05, momentum=0.0)
     stopping = replace(cfg, early_stop_window=10, early_stop_tol=1e-4)
-    astra, q = _tiny_sgd(stopping, damping=10.0)
+    astra, q = _tiny_astra(stopping, damping=10.0)
     calls = []
     hvp = astra.hvp
     astra.hvp = lambda v, indices: calls.append(1) or hvp(v, indices)
     stopped = astra.refine(q, _zeros(q), 0)
     assert 20 <= len(calls) < cfg.num_steps
 
-    astra, q = _tiny_sgd(cfg, damping=10.0)
+    astra, q = _tiny_astra(cfg, damping=10.0)
     full = astra.refine(q, _zeros(q), 0)
     num = sum((stopped[n] - full[n]).norm() ** 2 for n in q) ** 0.5
     den = sum(full[n].norm() ** 2 for n in q) ** 0.5
     assert num / den < 1e-3
-
-
-def test_cg_rejects_checkpoints_and_early_stopping():
-    with pytest.raises(ValueError):
-        AstraConfig(solver="cg", checkpoint_interval=10)
-    with pytest.raises(ValueError):
-        AstraConfig(solver="cg", early_stop_window=10)
 
 
 @pytest.fixture(scope="module")

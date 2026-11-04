@@ -43,7 +43,7 @@ class AstraPaths:
     """Where the refined solutions are written, in ``init_path``'s layout."""
 
     checkpoint_path: str | None = None
-    """Where each query's ``sgd`` state is saved every ``checkpoint_interval``
+    """Where each query's solver state is saved every ``checkpoint_interval``
     steps."""
 
 
@@ -332,7 +332,15 @@ class Astra:
                 break
             interval = self.cfg.checkpoint_interval
             if interval and (step + 1) % interval == 0:
-                self._save_state(row, step + 1, x, buf, lr, gen, objectives)
+                self._save_state(
+                    row,
+                    step + 1,
+                    objectives,
+                    x=x,
+                    momentum=buf,
+                    lr=lr,
+                    generator=gen.get_state(),
+                )
         return x
 
     def _stalled(self, objectives: list[float]) -> bool:
@@ -359,20 +367,15 @@ class Astra:
             return None
         return Path(self.paths.checkpoint_path) / f"query_{row}.pt"
 
-    def _save_state(self, row, step, x, buf, lr, gen, objectives):
+    def _save_state(self, row: int, step: int, objectives: list[float], **values):
+        """Save a query's solver state, with each dict of tensors moved to the CPU."""
         path = self._state_file(row)
         if path is None or self.hvp.rank != 0:
             return
         path.parent.mkdir(parents=True, exist_ok=True)
-        state = {
-            "step": step,
-            "x": {n: x[n].cpu() for n in self.names},
-            "momentum": {n: buf[n].cpu() for n in self.names},
-            "lr": lr,
-            "generator": gen.get_state(),
-            "objectives": objectives,
-            "settings": self._settings(),
-        }
+        state = {"step": step, "objectives": objectives, "settings": self._settings()}
+        for k, v in values.items():
+            state[k] = {n: v[n].cpu() for n in self.names} if isinstance(v, dict) else v
         tmp = path.with_suffix(".tmp")
         torch.save(state, tmp)
         tmp.replace(path)
@@ -405,15 +408,24 @@ class Astra:
         self, q: dict[str, Tensor], x: dict[str, Tensor], row: int, indices: list[int]
     ):
         """Preconditioned conjugate gradients on the documents ``indices``."""
-        ax = self._damped_product(x, indices)
-        r = {n: q[n] - ax[n] for n in self.names}
-        z = self._precondition(r)
-        p = {n: z[n].clone() for n in self.names}
-        rz = self._dot(r, z)
-        for step in range(self.cfg.num_steps):
+        state = self._load_state(row)
+        if state is not None:
+            start, objectives, rz = state["step"], state["objectives"], state["rz"]
+            x, r, p = (
+                {n: state[k][n].to(x[n]) for n in self.names}
+                for k in ("x", "residual", "direction")
+            )
+            self.logger.info(f"query {row}: resuming from step {start}")
+        else:
+            ax = self._damped_product(x, indices)
+            r = {n: q[n] - ax[n] for n in self.names}
+            z = self._precondition(r)
+            p = {n: z[n].clone() for n in self.names}
+            rz, start, objectives = self._dot(r, z), 0, []
+        for step in range(start, self.cfg.num_steps):
             # With r = q - (H_B + D) x, the objective is -(q + r)^T x / 2.
-            objective = -(self._dot(q, x) + self._dot(r, x)) / 2
-            self.logger.info(f"query {row} step {step}: objective {objective:.6g}")
+            objectives.append(-(self._dot(q, x) + self._dot(r, x)) / 2)
+            self.logger.info(f"query {row} step {step}: objective {objectives[-1]:.6g}")
             ap = self._damped_product(p, indices)
             pap = self._dot(p, ap)
             if pap <= 0:
@@ -425,8 +437,21 @@ class Astra:
                 r[n].sub_(ap[n], alpha=alpha)
             z = self._precondition(r)
             rz, rz_old = self._dot(r, z), rz
+            if rz == 0:
+                self.logger.info(f"query {row}: residual reached 0 at step {step}")
+                break
             for n in self.names:
                 p[n] = z[n] + (rz / rz_old) * p[n]
+            if self._stalled(objectives):
+                self.logger.info(
+                    f"query {row}: objective stopped falling at step {step}"
+                )
+                break
+            interval = self.cfg.checkpoint_interval
+            if interval and (step + 1) % interval == 0:
+                self._save_state(
+                    row, step + 1, objectives, x=x, residual=r, direction=p, rz=rz
+                )
         return x
 
     def run(self, rows: range):
