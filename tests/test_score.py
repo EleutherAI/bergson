@@ -857,6 +857,39 @@ def test_score_nearest_sequence_writer(tmp_path: Path, dataset):
         assert json.load(f)["num_scores"] == 1
 
 
+def test_bf16_scorer_stores_fp32_scores(tmp_path: Path, dataset):
+    """A bf16 scorer keeps the scores it sums in fp32 when writing them."""
+    grad_sizes = {"mod_a": 4, "mod_b": 3}
+    num_q = 2
+    rng = torch.Generator().manual_seed(0)
+    raw = {m: torch.randn(num_q, s, generator=rng) for m, s in grad_sizes.items()}
+    q_path = _write_query_index(tmp_path / "q", raw, PreprocessConfig(), num_q)
+
+    scorer = create_scorer(
+        path=tmp_path / "scores",
+        data=dataset,
+        score_cfg=ScoreConfig(query_path=str(q_path)),
+        preprocess_cfg=PreprocessConfig(),
+        device=torch.device("cpu"),
+        dtype=torch.bfloat16,
+    )
+    batch = {
+        m: torch.randn(len(dataset), s, generator=rng) for m, s in grad_sizes.items()
+    }
+    expected = scorer.score({k: v.clone() for k, v in batch.items()})
+    assert expected.dtype == torch.float32
+
+    scorer(list(range(len(dataset))), {k: v.clone() for k, v in batch.items()})
+    scorer.writer.flush()
+    for q in range(num_q):
+        got = np.asarray(scorer.writer.scores[f"score_{q}"])
+        assert got.dtype == np.float32
+        torch.testing.assert_close(torch.from_numpy(got.copy()), expected[:, q])
+
+    with open(tmp_path / "scores" / "info.json") as f:
+        assert json.load(f)["dtype"]["formats"][0] == "float32"
+
+
 def test_score_nearest_token_writer(tmp_path: Path, dataset):
     """The per-token writer path must work with score='nearest' too."""
     grad_sizes = {"mod_a": 4}

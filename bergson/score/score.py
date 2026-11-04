@@ -236,6 +236,8 @@ def create_scorer(
             "over all queries, which per-chunk passes would compute wrongly."
         )
 
+    # Store at least fp32 scores, since they are summed in fp32
+    write_dtype = torch.promote_types(dtype, torch.float32)
     num_queries = len(query_grads[score_cfg.modules[0]])
     if score_cfg.score == "nearest":
         # 'nearest' maxes over all queries, producing a single column.
@@ -249,17 +251,19 @@ def create_scorer(
             num_scores,
             span_column,
             TOKEN_INFLUENCE_SHIFT[score_cfg.token_influence],
-            dtype=dtype,
+            dtype=write_dtype,
         )
     elif attribute_tokens:
         writer = MemmapTokenScoreWriter.from_dataset(
             path,
             data,
             num_scores,
-            dtype=dtype,
+            dtype=write_dtype,
         )
     else:
-        writer = MemmapSequenceScoreWriter(path, len(data), num_scores, dtype=dtype)
+        writer = MemmapSequenceScoreWriter(
+            path, len(data), num_scores, dtype=write_dtype
+        )
 
     return Scorer(
         query_grads=query_grads,
