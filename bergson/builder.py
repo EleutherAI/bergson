@@ -6,8 +6,17 @@ import torch.distributed as dist
 from datasets import Dataset
 
 from .config.config import PreprocessConfig
-from .data import compute_num_token_grads, create_index, create_token_index
-from .hessians.preconditioner import Preconditioner, load_preconditioner
+from .data import (
+    column_offsets,
+    compute_num_token_grads,
+    create_index,
+    create_token_index,
+)
+from .hessians.preconditioner import (
+    JointDensePreconditioner,
+    Preconditioner,
+    load_preconditioner,
+)
 from .process_grads import normalize_flat_grad
 from .utils.utils import convert_dtype_to_np, current_device, tensor_to_numpy
 
@@ -83,6 +92,15 @@ class Builder:
             device=device,
         )
 
+        # Without a whole-gradient step, each module's gradients can be added to
+        # the aggregate as soon as they exist, so no batch of them is kept.
+        self.streaming = (
+            preprocess_cfg.aggregation != "none"
+            and not preprocess_cfg.unit_normalize
+            and not isinstance(self.preconditioner, JointDensePreconditioner)
+        )
+        self.offsets_by_module = column_offsets(grad_sizes)
+
         # ── Aggregation buffer (sequence-level only) ─────────────────────
         if preprocess_cfg.aggregation != "none":
             np_dtype = np.float32
@@ -143,6 +161,21 @@ class Builder:
         indices: list[int],
         mod_grads: dict[str, torch.Tensor],
     ) -> None:
+        if self.preprocess_cfg.aggregation != "none":
+            if self.streaming:
+                for name, g in mod_grads.items():
+                    self.accumulate(name, g)
+                return
+            if self.preconditioner is not None:
+                mod_grads = self.preconditioner.apply(mod_grads)
+            if self.preprocess_cfg.unit_normalize:
+                sq_norms = sum(g.float().pow(2).sum(dim=-1) for g in mod_grads.values())
+                scale = sq_norms.clamp_min_(_EPS_SQ).rsqrt().unsqueeze(1)
+                mod_grads = {name: g * scale for name, g in mod_grads.items()}
+            for name in self.grad_sizes:
+                self._add(name, mod_grads[name])
+            return
+
         grads = _preprocess(
             mod_grads,
             self.grad_sizes,
@@ -150,17 +183,24 @@ class Builder:
             self.preprocess_cfg.unit_normalize,
         )
 
-        if self.preprocess_cfg.aggregation != "none":
-            assert self.in_memory_grad_buffer is not None
-            self.in_memory_grad_buffer[0] += grads.sum(dim=0).to(
-                dtype=torch.float32, device=self.in_memory_grad_buffer.device
-            )
-            return
-
         if torch.cuda.is_available():
             torch.cuda.synchronize()
 
         self._scatter_flat(indices, grads)
+
+    def accumulate(self, name: str, g: torch.Tensor) -> None:
+        """Add one module's gradients for a batch to the aggregate."""
+        assert self.streaming, "accumulate needs a builder that streams"
+        if self.preconditioner is not None:
+            g = self.preconditioner.apply({name: g})[name]
+        self._add(name, g)
+
+    def _add(self, name: str, g: torch.Tensor) -> None:
+        assert self.in_memory_grad_buffer is not None
+        lo, hi = self.offsets_by_module[name]
+        self.in_memory_grad_buffer[0, lo:hi] += g.sum(dim=0).to(
+            dtype=torch.float32, device=self.in_memory_grad_buffer.device
+        )
 
     # ── Scatter strategies ───────────────────────────────────────────────
 

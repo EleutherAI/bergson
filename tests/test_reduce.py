@@ -130,3 +130,32 @@ def test_in_memory_reduce(tmp_path: Path, model, dataset):
     ).run_with_collector_hooks(desc="In-memory reduce")
 
     assert all(len(collector.gradients[name]) == 1 for name in collector.gradients)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.parametrize("unit_normalize", [False, True])
+def test_aggregate_matches_per_example_gradients(
+    tmp_path: Path, model, dataset, unit_normalize: bool
+):
+    """The mean query equals the mean of the per-example gradients, whether each
+    module is added as its gradients arrive or after the whole gradient, which
+    unit normalization needs."""
+    model.cuda()
+
+    def collect(name: str, aggregation: str) -> torch.Tensor:
+        cfg = IndexConfig(run_path=str(tmp_path / name), token_batch_size=1024)
+        collect_gradients(
+            model=model,
+            data=dataset,
+            processor=GradientProcessor(),
+            cfg=cfg,
+            preprocess_cfg=PreprocessConfig(
+                aggregation=aggregation, unit_normalize=unit_normalize
+            ),
+        )
+        ds = load_gradient_dataset(cfg.partial_run_path)
+        return torch.tensor(ds["gradients"][:])
+
+    rows = collect("rows", "none")
+    mean = collect("mean", "mean")
+    torch.testing.assert_close(mean[0], rows.mean(dim=0))

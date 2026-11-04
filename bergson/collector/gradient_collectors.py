@@ -112,7 +112,9 @@ class GradientCollector(HookCollectorBase):
             return
 
         P = self._materialize_gradient(grads)
-        if self.save_index and self.preprocess_cfg.aggregation == "none":
+        if self.builder is not None and self.builder.streaming:
+            self.builder.accumulate(name, P.to(dtype=self.save_dtype))
+        elif self.save_index and self.preprocess_cfg.aggregation == "none":
             # Asynchronously move the gradient to CPU and convert to the final
             # dtype
             self.mod_grads[name] = P.to(
