@@ -12,6 +12,9 @@ Run each config with `PYTHONPATH=$PWD python -m bergson <config>`, in order:
 | 3 | `wikitext_gpt2_ekfac.yaml` | EK-FAC influence scores at the final checkpoint |
 | 4 | `wikitext_gpt2_retrain.yaml` | 100 models retrained on random halves of the training data + EK-FAC LDS |
 | 5 | `wikitext_gpt2_validate.yaml` | SOURCE LDS against the retrained models |
+| 6 | `prep_queries.py` | 100 random validation queries |
+| 7 | `wikitext_gpt2_astra_source.yaml` | EKFAC-SOURCE and ASTRA-SOURCE (Wang et al. 2025) LDS on those queries |
+| 8 | `astra_source_lds.py` | LDS with 95% bootstrap CIs for step 7 |
 
 Step 2 runs before step 3 because it exports the trainer checkpoints to the
 HF format both steps load.
@@ -23,3 +26,17 @@ HF format both steps load.
 
 Query losses averaged over the five retrain seeds; kronfluence reports 0.44
 for EK-FAC IF on its own five-seed ground truth.
+
+Step 7 replicates Wang et al. 2025's WikiText-2 ASTRA-SOURCE result with their
+Table 3 settings: MLP layers only, 3 segments, damping 0.011 in every segment,
+and 300 ASTRA steps of batch 8 with step size equal to the damping. Both methods
+score the same 100 random validation queries against the five retrain seeds.
+
+| Method | LDS (mean Spearman over 100 queries, 95% bootstrap CI) | Wang et al. Figure 2 |
+|--------|--------------------------------------------------------|----------------------|
+| EKFAC-SOURCE | 0.489 [0.456, 0.520] | 0.47 |
+| ASTRA-SOURCE | 0.512 [0.475, 0.547] | 0.49 |
+| ASTRA-SOURCE - EKFAC-SOURCE | 0.023 [-0.001, 0.045] | 0.02 |
+
+ASTRA-SOURCE scores higher on 73 of the 100 queries. Wang et al.'s values are
+read off their bar chart.

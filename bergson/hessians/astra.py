@@ -275,7 +275,7 @@ class Astra:
             )
             return {
                 n: numpy_to_tensor(mmap[row, slice(*offsets[n])]).to(
-                    device or self.device, torch.float32
+                    device or self.device, torch.float32, copy=True
                 )
                 for n in self.names
             }

@@ -14,13 +14,14 @@ from bergson.config import (
     HessianConfig,
     HessianPipelineConfig,
     IndexConfig,
+    InversionConfig,
     PreprocessConfig,
     QuerySetConfig,
     ScoreConfig,
 )
 from bergson.data import load_gradients
 from bergson.hessians.astra import Astra, GaussNewtonProduct
-from bergson.hessians.pipeline import _run_astra, hessian_pipeline
+from bergson.hessians.pipeline import hessian_pipeline, run_astra
 from bergson.utils.logger import get_logger
 
 requires_multi_gpu = pytest.mark.skipif(
@@ -169,21 +170,21 @@ def test_astra_under_fsdp_matches_unsharded(two_gpu_kfac_run, solver):
     5-document batch split unevenly."""
     index_cfg, hessian_cfg = two_gpu_kfac_run
     run = index_cfg.run_path
-    pipeline_cfg = HessianPipelineConfig(
-        astra=AstraConfig(
-            num_steps=4, solver=solver, batch_size=5, micro_batch_size=2, lr=1e-4
-        ),
+    astra_cfg = AstraConfig(
+        num_steps=4, solver=solver, batch_size=5, micro_batch_size=2, lr=1e-4
     )
     solutions = {}
     for fsdp in (False, True):
         out = f"{run}/astra_{solver}_{fsdp}"
-        _run_astra(
+        run_astra(
             replace(index_cfg, fsdp=fsdp),
-            hessian_cfg,
-            pipeline_cfg,
             f"{run}/query",
             f"{run}/kfac_query",
             out,
+            f"{run}/hessian/kfac",
+            InversionConfig(),
+            astra_cfg,
+            hessian_cfg.ev_correction,
         )
         solutions[fsdp] = torch.from_numpy(load_gradients(out).astype("float32"))
 
@@ -205,21 +206,21 @@ def test_astra_factors_on_cpu_matches_gpu_factors(two_gpu_kfac_run, solver, fsdp
     solutions = {}
     for on_cpu in (False, True):
         out = f"{run}/astra_on_cpu_{solver}_{fsdp}_{on_cpu}"
-        _run_astra(
+        run_astra(
             replace(index_cfg, fsdp=fsdp),
-            hessian_cfg,
-            HessianPipelineConfig(
-                astra=AstraConfig(
-                    num_steps=4,
-                    solver=solver,
-                    batch_size=5,
-                    lr=1e-4,
-                    factors_on_cpu=on_cpu,
-                ),
-            ),
             f"{run}/query",
             f"{run}/kfac_query",
             out,
+            f"{run}/hessian/kfac",
+            InversionConfig(),
+            AstraConfig(
+                num_steps=4,
+                solver=solver,
+                batch_size=5,
+                lr=1e-4,
+                factors_on_cpu=on_cpu,
+            ),
+            hessian_cfg.ev_correction,
         )
         solutions[on_cpu] = torch.from_numpy(load_gradients(out).astype("float32"))
 

@@ -7,9 +7,11 @@ from copy import deepcopy
 from ..build import build_query
 from ..cli.commands import Score
 from ..config.config import (
+    AstraConfig,
     HessianConfig,
     HessianPipelineConfig,
     IndexConfig,
+    InversionConfig,
     PreprocessConfig,
     ScoreConfig,
 )
@@ -150,13 +152,15 @@ def hessian_pipeline(
         astra_query_path = f"{run_path}/astra_query"
         if not _step_complete(astra_query_path, resume):
             with _timed("step3_astra", durations):
-                _run_astra(
+                run_astra(
                     index_cfg,
-                    hessian_cfg,
-                    hessian_pipeline_cfg,
                     query_path,
                     transformed_query_path,
                     astra_query_path,
+                    f"{hessian_path}/{method}",
+                    hessian_pipeline_cfg.inversion_cfg,
+                    astra_cfg,
+                    hessian_cfg.ev_correction,
                 )
         transformed_query_path = astra_query_path
 
@@ -181,13 +185,15 @@ def hessian_pipeline(
         print(f"Step timings (s): {durations} | total {total:.1f}s")
 
 
-def _run_astra(
+def run_astra(
     index_cfg: IndexConfig,
-    hessian_cfg: HessianConfig,
-    hessian_pipeline_cfg: HessianPipelineConfig,
     query_path: str,
     init_path: str,
     out_path: str,
+    hessian_path: str,
+    inversion_cfg: InversionConfig,
+    astra_cfg: AstraConfig,
+    ev_correction: bool,
 ):
     """Refine the solutions in ``init_path`` and write them to ``out_path``."""
     if index_cfg.distributed.nnode > 1:
@@ -205,19 +211,13 @@ def _run_astra(
     paths = AstraPaths(
         query_path=query_path,
         init_path=init_path,
-        hessian_path=f"{index_cfg.run_path}/hessian/{hessian_cfg.method}",
+        hessian_path=hessian_path,
         run_path=str(part),
     )
     launch_distributed_run(
         "astra",
         astra_worker,
-        [
-            paths,
-            index_cfg,
-            hessian_pipeline_cfg.inversion_cfg,
-            hessian_pipeline_cfg.astra,
-            hessian_cfg.ev_correction,
-        ],
+        [paths, index_cfg, inversion_cfg, astra_cfg, ev_correction],
         index_cfg.distributed,
     )
     promote_step(out_path)

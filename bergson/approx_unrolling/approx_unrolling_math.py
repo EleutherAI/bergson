@@ -2,16 +2,19 @@ import json
 import re
 import shutil
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable
 
 import numpy as np
 import torch
 from torch import Tensor
+from transformers import AutoModelForCausalLM
 
 from bergson.cli.commands import Score
 from bergson.config.config import (
     ApproxUnrollingConfig,
+    AstraConfig,
     DistributedConfig,
     IndexConfig,
     InversionConfig,
@@ -21,9 +24,11 @@ from bergson.config.config import (
 from bergson.config.config_io import load_subconfig, save_run_config
 from bergson.data import load_scores
 from bergson.distributed import init_dist, launch_distributed_run
-from bergson.hessians.apply_hessian import EkfacApplicator, EkfacConfig
+from bergson.hessians.apply_hessian import EkfacApplicator, EkfacConfig, apply_worker
+from bergson.hessians.pipeline import run_astra
 from bergson.score.score import score_dataset
 from bergson.score.score_writer import save_sequence_scores, save_token_scores
+from bergson.utils.step_state import partial_path, promote_step
 
 from ..magic.trainer import LR_HISTORY_FILENAME
 from .train_cfg_io import lr_history_path
@@ -274,6 +279,91 @@ def walk_query_phase2(
             preconditioner_path=preconditioner_paths[l] if preconditioner_paths else "",
             # The EK-FAC inverse of the Adam variant (Bae et al. App. D).
             inversion_cfg=inversion_cfg if preconditioner_paths else None,
+        )
+        query_grad_segment_paths.append(dst)
+
+    return query_grad_segment_paths
+
+
+def average_checkpoints(checkpoints: list[str], out_path: Path) -> None:
+    """Save the mean of the checkpoints' floating-point weights to ``out_path``."""
+    model = AutoModelForCausalLM.from_pretrained(checkpoints[0], dtype=torch.float32)
+    total = {k: v.clone() for k, v in model.state_dict().items()}
+    for ckpt in checkpoints[1:]:
+        other = AutoModelForCausalLM.from_pretrained(ckpt, dtype=torch.float32)
+        for k, v in other.state_dict().items():
+            if v.is_floating_point():
+                total[k] += v
+        del other
+    model.load_state_dict(
+        {
+            k: v / len(checkpoints) if v.is_floating_point() else v
+            for k, v in total.items()
+        }
+    )
+    part = partial_path(out_path)
+    if part.exists():
+        shutil.rmtree(part)
+    model.save_pretrained(part)
+    promote_step(out_path)
+
+
+def walk_query_phase2_astra(
+    index_cfg: IndexConfig,
+    method: str,
+    lr_times_steps_per_segment: list[float],
+    query_grad_paths: list[Path],
+    segment_checkpoints: list[list[str]],
+    astra_cfg: AstraConfig,
+) -> list[Path]:
+    """Phase 2 of ASTRA-SOURCE: solve ``(G_l + 1 / (lr K)_l) x = query_grad_l``
+    with ASTRA, ``G_l`` the Gauss-Newton Hessian at the mean of segment ``l``'s
+    checkpoint weights, starting from the segment's damped EKFAC inverse. The
+    step size is ``astra_cfg.lr / (lr K)_l``."""
+    base = Path(index_cfg.run_path)
+    query_grad_segment_paths: list[Path] = []
+
+    for l, ckpts in enumerate(segment_checkpoints):
+        segment_dir = base / f"segment_{l}"
+        hessian_path = segment_dir / method
+        damping = 1.0 / lr_times_steps_per_segment[l]
+        inversion_cfg = InversionConfig(
+            inversion="absolute_damped_inverse", damping_factor=damping
+        )
+
+        init_path = segment_dir / "query_grad_segment_init"
+        launch_distributed_run(
+            "apply_hessian",
+            apply_worker,
+            [
+                EkfacConfig(
+                    hessian_method_path=str(hessian_path),
+                    gradient_path=str(query_grad_paths[l]),
+                    run_path=str(init_path),
+                    ev_correction=True,
+                ),
+                inversion_cfg,
+            ],
+            index_cfg.distributed,
+        )
+
+        model_path = segment_dir / "averaged_model"
+        average_checkpoints(ckpts, model_path)
+
+        astra_index_cfg = deepcopy(index_cfg)
+        astra_index_cfg.model = str(model_path)
+        astra_index_cfg.tokenizer = index_cfg.tokenizer or index_cfg.model
+        astra_index_cfg.projection_dim = 0
+        dst = segment_dir / "query_grad_segment"
+        run_astra(
+            astra_index_cfg,
+            str(query_grad_paths[l]),
+            str(init_path),
+            str(dst),
+            str(hessian_path),
+            inversion_cfg,
+            replace(astra_cfg, lr=astra_cfg.lr * damping),
+            ev_correction=True,
         )
         query_grad_segment_paths.append(dst)
 
