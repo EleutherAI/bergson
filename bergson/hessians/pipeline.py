@@ -3,6 +3,7 @@ import shutil
 import time
 from contextlib import contextmanager
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 
 from ..build import build_query
@@ -70,11 +71,14 @@ def hessian_pipeline(
             "only ever fits and applies a factored (kfac/tkfac/shampoo) "
             "Hessian."
         )
-    if index_cfg.projection_dim > 0 and index_cfg.projection_target == "global":
-        raise ValueError(
-            "projection_target='global' is not supported with Kronecker-factored "
-            "Hessians; the factors are projected per module."
-        )
+    # With a global projection the factors and query stay unprojected, keyed per
+    # module, and only the transformed query is projected.
+    global_projection = (
+        index_cfg.projection_dim > 0 and index_cfg.projection_target == "global"
+    )
+    precondition_index = hessian_pipeline_cfg.precondition_index
+    if precondition_index and not global_projection:
+        raise ValueError("precondition_index needs projection_target='global'.")
 
     run_path = index_cfg.run_path
     method = hessian_cfg.method
@@ -103,6 +107,8 @@ def hessian_pipeline(
             # The factors are projected to match the query.
             query_cfg = deepcopy(index_cfg)
             query_cfg.run_path = query_path
+            if global_projection:
+                query_cfg.projection_dim = 0
             _validate(query_cfg)
             build_query(query_cfg, query_set_cfg, PreprocessConfig())
 
@@ -114,6 +120,8 @@ def hessian_pipeline(
             # approximate_hessians writes to this exact path; step 3 reads it
             # back from `{hessian_path}/{method}`.
             hessian_index_cfg.run_path = f"{hessian_path}/{method}"
+            if global_projection:
+                hessian_index_cfg.projection_dim = 0
             _validate(hessian_index_cfg)
 
             approximate_hessians(hessian_index_cfg, hessian_cfg)
@@ -128,6 +136,8 @@ def hessian_pipeline(
             gradient_path=query_path,
             run_path=str(partial_path(transformed_query_path)),
             ev_correction=hessian_cfg.ev_correction,
+            power=-0.5 if precondition_index else -1.0,
+            rotate_back=not precondition_index,
             projection_dim=index_cfg.projection_dim,
             projection_target=index_cfg.projection_target,
             projection_type=index_cfg.projection_type,
@@ -168,6 +178,13 @@ def hessian_pipeline(
         score_index_cfg.run_path = scores_path
         score_cfg.query_path = transformed_query_path
         score_cfg.higher_is_better = True
+        if precondition_index:
+            preprocess_cfg = replace(
+                preprocess_cfg,
+                hessian_path=f"{hessian_path}/{method}",
+                ev_correction=hessian_cfg.ev_correction,
+                inversion_cfg=hessian_pipeline_cfg.inversion_cfg,
+            )
         _validate(score_index_cfg)
 
         save_run_config(

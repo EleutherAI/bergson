@@ -56,7 +56,20 @@ The ASTRA lr should be tuned on the query.
 
 LiSSA is `lissa.yaml`, the influence function of Bae et al. (2022): each query's damped Gauss-Newton Hessian inverse `(G + 0.01 I)^-1 q`, estimated by LiSSA with the paper's Transformer settings (5,000 terms, 5 repeats) on fresh 8-chunk batches, with each chunk's loss the mean over its tokens as in the paper; the scale 50 is the smallest of the paper's grid (10 to 500) that stays bounded over 5,000 terms (10 and 25 diverge on some queries). At depth 5,000 the estimates have not fully converged: their norm still changes by 5.8% (median) over the last 500 terms. It ran 25.4 h on 8 A40s.
 
-KFAC (projection 64) is `kfac_p64.yaml`: the same factors and damping with the gradients random-projected per module to 64 dimensions as in the TrackStar rows. The Kronecker factors are projected with the same matrices and inverted in the projected space.
+KFAC (P-SIFT, SRHT projection 131072) and EKFAC (P-SIFT, SRHT projection 131072) are `kfac_psift.yaml` and `ekfac_psift.yaml`: the factors and damping of `kfac.yaml` and `ekfac.yaml`, with `H^-1/2` applied to both the training and query gradients, each module's result sketched by a subsampled randomized Hadamard transform and summed into one 131072-entry vector, and the two sketches scored by their dot product. Without projection these scores equal the KFAC and EKFAC scores (largest difference 1.3e-7 of the largest score).
+
+The sketch adds noise of standard deviation `sqrt(E(z,z) E(q,q) / k)` to each influence `E(z,q) = g_z^T H^-1 g_q`, so the projection size needed depends on the normalized influence `rho(z,q) = E(z,q) / sqrt(E(z,z) E(q,q))`. Over the 4,608 training chunks and 50 queries, `|rho|` has median 0.00074 (KFAC) and 0.00063 (EKFAC), 99.9th percentile 0.012 and maximum 0.072 for both. A query's top 1% of chunks by influence have median `|rho|` 0.0052 [0.0048, 0.0057] (KFAC) and 0.0050 [0.0046, 0.0055] (EKFAC), 95% CIs over queries. The table gives, for each projection size k, the fraction of each query's top 1% whose `|rho|` exceeds the Bonferroni threshold `z_{1-0.05/(2N)} sqrt((1 + rho^2) / k)` with `N = 4,608`, and the measured LDS. The measured noise matched the prediction at every k (ratio of standard deviations 0.995 to 1.003).
+
+| k | KFAC: top 1% detected | KFAC LDS | EKFAC: top 1% detected | EKFAC LDS |
+|---|---|---|---|---|
+| 4096 | 0.000 [0.000, 0.001] | 0.070 [0.040, 0.099] | 0.000 [0.000, 0.001] | 0.051 [0.023, 0.077] |
+| 16384 | 0.005 [0.002, 0.009] | 0.098 [0.066, 0.127] | 0.005 [0.002, 0.009] | 0.099 [0.071, 0.125] |
+| 65536 | 0.044 [0.029, 0.062] | 0.165 [0.138, 0.190] | 0.042 [0.027, 0.059] | 0.138 [0.109, 0.163] |
+| 131072 | 0.090 [0.063, 0.120] | 0.195 [0.167, 0.221] | 0.087 [0.061, 0.117] | 0.189 [0.160, 0.216] |
+| 262144 | 0.176 [0.130, 0.225] | 0.244 [0.211, 0.273] | 0.170 [0.124, 0.219] | 0.237 [0.206, 0.266] |
+| 1048576 | 0.633 [0.550, 0.714] | 0.362 [0.333, 0.389] | 0.578 [0.496, 0.660] | 0.353 [0.323, 0.379] |
+
+Unprojected KFAC and EKFAC have LDS 0.420 [0.391, 0.446] and 0.454 [0.426, 0.479]. The index stores one 131072-entry float32 vector per chunk (2.4 GB). Applying `H^-1` to the query only and storing the raw training gradients makes the noise scale with `||g_z|| ||H^-1 g_q||` instead: at k = 1048576 that detects 0.084 [0.058, 0.112] of the top 1% and reaches LDS 0.195 [0.168, 0.221].
 
 TrackStar is swept over projection dims 16/32/64 (per-module random projection of the gradients), plain and Adam-normalized.
 
@@ -84,7 +97,8 @@ bergson examples/gpt2_wikitext_leaderboard/ekfac_astra_scores.yaml
 bergson examples/gpt2_wikitext_leaderboard/lissa.yaml
 bergson examples/gpt2_wikitext_leaderboard/shampoo_astra.yaml
 bergson examples/gpt2_wikitext_leaderboard/kfac.yaml
-bergson examples/gpt2_wikitext_leaderboard/kfac_p64.yaml
+bergson examples/gpt2_wikitext_leaderboard/kfac_psift.yaml
+bergson examples/gpt2_wikitext_leaderboard/ekfac_psift.yaml
 bergson examples/gpt2_wikitext_leaderboard/shampoo.yaml
 bergson examples/gpt2_wikitext_leaderboard/trackstar.yaml       # projection 16/32/64
 bergson examples/gpt2_wikitext_leaderboard/trackstar_adam.yaml  # projection 16/32/64
@@ -102,12 +116,12 @@ done
 for p in 0 64; do   # writes baselines/activation_ekfac_scores and baselines/activation_ekfac_p64_scores
   python -m examples.gpt2_wikitext_leaderboard.gradient_free_baselines.activation_baseline --bank runs/compare_wikitext/random --query_split "test[0:50]" --out runs/compare_wikitext/baselines --hessian runs/compare_wikitext/ekfac/hessian/kfac --projection_dim $p
 done
-for f in magic magic_seed43 unrolled_gauss_newton ekfac lissa ekfac_astra_cg ekfac_astra_exact_replication ekfac_astra kfac kfac_p64 shampoo trak_ens gradient_dot trackstar trackstar_adam source gradient_cosine bm25 semantic qwen3 sae activation activation_ekfac activation_ekfac_p64; do
+for f in magic magic_seed43 unrolled_gauss_newton ekfac lissa ekfac_astra_cg ekfac_astra_exact_replication ekfac_astra kfac kfac_psift ekfac_psift shampoo trak_ens gradient_dot trackstar trackstar_adam source gradient_cosine bm25 semantic qwen3 sae activation activation_ekfac activation_ekfac_p64; do
   bergson examples/gpt2_wikitext_leaderboard/filters/filter_$f.yaml
 done
 python examples/gpt2_wikitext_leaderboard/lds_from_bank.py --validation runs/compare_wikitext/random/validation.csv --out runs/compare_wikitext/lds_magic.json
 python examples/gpt2_wikitext_leaderboard/lds_from_bank.py --validation runs/compare_wikitext/magic_seed43/validation.csv --out runs/compare_wikitext/lds_magic_seed43.json
-for m in ekfac lissa ekfac_astra_cg ekfac_astra_exact_replication ekfac_astra kfac kfac_p64 shampoo trackstar_p16 trackstar_p32 trackstar_p64 trackstar_adam_p16 trackstar_adam_p32 trackstar_adam_p64 gradient_cosine gradient_cosine_projected gradient_dot; do python examples/gpt2_wikitext_leaderboard/lds_from_bank.py --sign grad --scores runs/compare_wikitext/$m/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_$m.json; done
+for m in ekfac lissa ekfac_astra_cg ekfac_astra_exact_replication ekfac_astra kfac kfac_psift ekfac_psift shampoo trackstar_p16 trackstar_p32 trackstar_p64 trackstar_adam_p16 trackstar_adam_p32 trackstar_adam_p64 gradient_cosine gradient_cosine_projected gradient_dot; do python examples/gpt2_wikitext_leaderboard/lds_from_bank.py --sign grad --scores runs/compare_wikitext/$m/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_$m.json; done
 python examples/gpt2_wikitext_leaderboard/lds_from_bank.py --sign grad --scores runs/compare_wikitext/trak/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_trak_ens.json
 for b in bm25 semantic qwen3 sae activation activation_ekfac activation_ekfac_p64; do python examples/gpt2_wikitext_leaderboard/lds_from_bank.py --sign loss --scores runs/compare_wikitext/baselines/${b}_scores/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_$b.json; done
 for m in unrolled_gauss_newton source source_adam; do python examples/gpt2_wikitext_leaderboard/lds_from_bank.py --sign loss --scores runs/compare_wikitext/$m/scores --bank runs/compare_wikitext/random --out runs/compare_wikitext/lds_$m.json; done
