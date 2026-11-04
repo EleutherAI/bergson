@@ -44,6 +44,8 @@ Setting ``astra.solver: cg`` enables an alternative to the canonical ASTRA imple
 
 The ASTRA solver learning rate should be tuned to minimize solver error. The ASTRA paper tunes the solver using a learning rate sweep over 10⁰, . . . , 10⁻⁵ in steps of one order of magnitude, and selects the best learning rate based on the average training loss performance on the same query point over the last 10 iterations. The paper runs ASTRA for 300 iterations, and notes that it tends to converge within 200 iterations.
 
+The ASTRA paper sets the damping to one over the product of the mean training learning rate and the number of training examples processed.
+
 Setting ``astra.factors_on_cpu: true`` holds the Kronecker factors in CPU memory and preconditions one module at a time, for models where the factors and the model don't fit on one GPU together.
 
 See ``examples/replications/bae_approx_unrolling_source_replication/wikitext_gpt2_astra.yaml`` and ``examples/gpt2_wikitext_leaderboard/ekfac_astra_cg.yaml``.
