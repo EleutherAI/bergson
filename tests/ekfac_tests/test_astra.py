@@ -236,6 +236,7 @@ def kfac_run(tmp_path_factory):
         data=DataConfig(dataset=str(root / "data")),
         token_batch_size=256,
         precision="fp32",
+        distributed=DistributedConfig(nproc_per_node=1),
     )
     hessian_cfg = HessianConfig(method="kfac", ev_correction=True)
     hessian_pipeline(
