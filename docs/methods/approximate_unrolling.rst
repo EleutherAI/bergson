@@ -12,6 +12,13 @@ SOURCE is particularly suitable for attributing over multi-stage training pipeli
 
 See ``examples/tiny_method_demonstrations/approx_unrolling_pythia.yaml`` and the ``approxunrolling`` entry in :doc:`../cli`.
 
+ASTRA-SOURCE
+~~~~~~~~~~~~
+
+`ASTRA-SOURCE <https://arxiv.org/abs/2507.14740>`_ replaces each segment's :math:`(1 - e^{-\eta K G}) G^{-1}` with :math:`(G + D)^{-1}`, :math:`D = 1 / (\eta K)`, and solves it with :ref:`ASTRA <methods/influence-functions:Refine a Preconditioner with ASTRA>`. :math:`G` is the Gauss-Newton Hessian at the mean of the segment's checkpoint weights, and the segment's EKFAC factors precondition each step. Enable it by setting ``approx_unrolling_cfg.astra.num_steps``. Each segment's ASTRA step size is ``astra.lr`` times its damping. It supports the SGD variant of SOURCE.
+
+See ``examples/replications/bae_approx_unrolling_source_replication/wikitext_gpt2_astra_source.yaml``.
+
 Gauss-Newton Unrolling
 ----------------------
 

@@ -924,81 +924,6 @@ class ScoreConfig(Serializable):
 
 
 @dataclass
-class ApproxUnrollingConfig(Serializable):
-    """Config for approximate unrolling of the influence function."""
-
-    checkpoints: list[str] = field(default_factory=list)
-    """List of training checkpoint paths (HF model ids or local dirs) to use for
-    approximating."""
-
-    model_path: str | None = None
-    """Path to the model used for the training checkpoints."""
-
-    segments: int = 3
-    """Number of segments to split the training trajectory into for approximation.
-    Must divide len(checkpoints)."""
-
-    lr: float = 1e-5
-    """Learning rate to use for the approximate unrolling optimization."""
-
-    lr_list: list[float] = field(default_factory=list)
-    """Per-segment average LR; length must == segments. If empty,
-    inferred from the training run's log_history.json."""
-
-    step_size_list: list[int] = field(default_factory=list)
-    """Per-segment optimizer step count; length must == segments. If
-    empty, inferred from per-checkpoint step counts."""
-
-    momentum: float | None = None
-    """SGD heavy-ball momentum beta; scales lr*steps by 1/(1-beta) (Bae et al.
-    2024, App. D.2). When ``None`` it's derived from the run if present or set
-    to 0.0."""
-
-    use_adam_preconditioner: bool = False
-    """Optimizer-preconditioned SOURCE (Bae et al. 2024, App. C): set when the
-    run was trained with Adam/AdamW. Needs each checkpoint dir's
-    ``optimizer.pt``."""
-
-    inversion_cfg: InversionConfig = field(default_factory=InversionConfig)
-    """Inversion for the Adam SOURCE variant's EK-FAC inverse - the SGD
-    variant has no inversion."""
-
-    query: QuerySetConfig = field(default_factory=QuerySetConfig)
-    """Query dataset and aggregation; gradients are computed at the final
-    checkpoint. ``none`` produces one score column per query."""
-
-    query_batch_size: int | None = None
-    """Batch size for per-segment query scoring (see
-    ScoreConfig.query_batch_size)."""
-
-
-@dataclass
-class HessianConfig(Serializable):
-    """Config for reducing the gradients."""
-
-    method: Literal["kfac", "tkfac", "shampoo", "autocorrelation"]
-    """Method for approximating the Hessian."""
-
-    ev_correction: bool = False
-    """Whether to additionally compute eigenvalue correction."""
-
-    hessian_dtype: Literal["bf16", "fp16", "fp32", "fp64"] = "fp32"
-    """Precision (dtype) for Hessian-approximation accumulation: the covariance
-    collectors and the EK-FAC eigenvalue-correction (lambda) collector both
-    accumulate in this dtype. Eigendecomposition always runs internally in
-    fp64 and stores results in this dtype."""
-
-    use_dataset_labels: bool = False
-    """Whether to use dataset labels for Hessian (empirical Fisher) approximation.
-    If false, labels are sampled from the model's predictions at the positions
-    that have a dataset label."""
-
-    module_partitions: int = 1
-    """Fit the factored methods in this many module groups, one pass per group,
-    merging the shard files afterwards; raise it when the factors do not fit."""
-
-
-@dataclass
 class AstraConfig(Serializable):
     """Refine a Kronecker-factored approximate Hessian's
     inverse-Hessian-vector products with ASTRA
@@ -1046,6 +971,87 @@ class AstraConfig(Serializable):
 
     seed: int = 0
     """Seeds the training batches, which are drawn separately for each query."""
+
+
+@dataclass
+class ApproxUnrollingConfig(Serializable):
+    """Config for approximate unrolling of the influence function."""
+
+    checkpoints: list[str] = field(default_factory=list)
+    """List of training checkpoint paths (HF model ids or local dirs) to use for
+    approximating."""
+
+    model_path: str | None = None
+    """Path to the model used for the training checkpoints."""
+
+    segments: int = 3
+    """Number of segments to split the training trajectory into for approximation.
+    Must divide len(checkpoints)."""
+
+    lr: float = 1e-5
+    """Learning rate to use for the approximate unrolling optimization."""
+
+    lr_list: list[float] = field(default_factory=list)
+    """Per-segment average LR; length must == segments. If empty,
+    inferred from the training run's log_history.json."""
+
+    step_size_list: list[int] = field(default_factory=list)
+    """Per-segment optimizer step count; length must == segments. If
+    empty, inferred from per-checkpoint step counts."""
+
+    momentum: float | None = None
+    """SGD heavy-ball momentum beta; scales lr*steps by 1/(1-beta) (Bae et al.
+    2024, App. D.2). When ``None`` it's derived from the run if present or set
+    to 0.0."""
+
+    use_adam_preconditioner: bool = False
+    """Optimizer-preconditioned SOURCE (Bae et al. 2024, App. C): set when the
+    run was trained with Adam/AdamW. Needs each checkpoint dir's
+    ``optimizer.pt``."""
+
+    inversion_cfg: InversionConfig = field(default_factory=InversionConfig)
+    """Inversion for the Adam SOURCE variant's EK-FAC inverse - the SGD
+    variant has no inversion."""
+
+    query: QuerySetConfig = field(default_factory=QuerySetConfig)
+    """Query dataset and aggregation; gradients are computed at the final
+    checkpoint. ``none`` produces one score column per query."""
+
+    query_batch_size: int | None = None
+    """Batch size for per-segment query scoring (see
+    ScoreConfig.query_batch_size)."""
+
+    astra: AstraConfig = field(default_factory=AstraConfig)
+    """ASTRA-SOURCE (Wang et al. 2025, App. C) when ``num_steps > 0``: each
+    segment's ``(1 - exp(-lr K G)) G^-1`` becomes ``(G + 1 / (lr K))^-1``, solved
+    by ASTRA at the mean of the segment's checkpoint weights. ``astra.lr``
+    multiplies each segment's damping ``1 / (lr K)`` to give its step size."""
+
+
+@dataclass
+class HessianConfig(Serializable):
+    """Config for reducing the gradients."""
+
+    method: Literal["kfac", "tkfac", "shampoo", "autocorrelation"]
+    """Method for approximating the Hessian."""
+
+    ev_correction: bool = False
+    """Whether to additionally compute eigenvalue correction."""
+
+    hessian_dtype: Literal["bf16", "fp16", "fp32", "fp64"] = "fp32"
+    """Precision (dtype) for Hessian-approximation accumulation: the covariance
+    collectors and the EK-FAC eigenvalue-correction (lambda) collector both
+    accumulate in this dtype. Eigendecomposition always runs internally in
+    fp64 and stores results in this dtype."""
+
+    use_dataset_labels: bool = False
+    """Whether to use dataset labels for Hessian (empirical Fisher) approximation.
+    If false, labels are sampled from the model's predictions at the positions
+    that have a dataset label."""
+
+    module_partitions: int = 1
+    """Fit the factored methods in this many module groups, one pass per group,
+    merging the shard files afterwards; raise it when the factors do not fit."""
 
 
 @dataclass

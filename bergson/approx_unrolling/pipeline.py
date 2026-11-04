@@ -18,7 +18,8 @@ Pipeline steps
 query_grad_0.. query_grad_{L-1} and save at
    ``<run>/segment_{l}/query_grad/`` (query_grad_{L-1} is just the top-level query).
 7. Phase 2: Apply per-segment F_segment on query_grad_l to build query_grad_segment at
-   ``<run>/segment_{l}/query_grad_segment/``.
+   ``<run>/segment_{l}/query_grad_segment/``, or with ``approx_unrolling_cfg.astra``
+   solve ``(G_l + 1 / (lr K)_l)^-1 query_grad_l`` with ASTRA (ASTRA-SOURCE).
 8. Phase 3: per-segment scores at ``<run>/segment_{l}/scores/``, summed
    into ``<run>/scores/``.
 """
@@ -46,6 +47,7 @@ from .approx_unrolling_math import (
     score_per_segment_and_aggregate,
     walk_query_phase1,
     walk_query_phase2,
+    walk_query_phase2_astra,
 )
 from .precompute_checkpoints import (
     precompute_checkpoint_averaged_lambdas,
@@ -107,6 +109,13 @@ def approx_unrolling_pipeline(
     assert hessian_cfg.ev_correction, "Approximate unrolling pipeline currently only "
     "supports EV correction on."
 
+    astra_cfg = approx_unrolling_cfg.astra
+    if astra_cfg.num_steps > 0:
+        if approx_unrolling_cfg.use_adam_preconditioner:
+            raise ValueError("ASTRA-SOURCE supports the SGD variant only.")
+        if index_cfg.distributed.nnode > 1:
+            raise ValueError("ASTRA runs on a single node.")
+
     if approx_unrolling_cfg.use_adam_preconditioner:
         for ckpt in approx_unrolling_cfg.checkpoints:
             state_path = Path(ckpt) / OPTIMIZER_STATE_FILE
@@ -119,6 +128,20 @@ def approx_unrolling_pipeline(
     lr_times_steps_per_segment = compute_lr_times_steps_per_segment(
         approx_unrolling_cfg
     )
+    if astra_cfg.num_steps > 0 and min(lr_times_steps_per_segment) <= 0:
+        raise ValueError(
+            "ASTRA-SOURCE damps each segment by 1 / (lr K), which needs lr K > 0; "
+            f"got {lr_times_steps_per_segment}."
+        )
+    segment_checkpoints = [
+        [
+            str(c)
+            for c in approx_unrolling_cfg.checkpoints[
+                l * (n_ckpts // n_segments) : (l + 1) * (n_ckpts // n_segments)
+            ]
+        ]
+        for l in range(n_segments)
+    ]
 
     logger.info("=" * 70)
     logger.info(f"approximate unrolling pipeline -> {index_cfg.run_path}")
@@ -253,15 +276,25 @@ def approx_unrolling_pipeline(
         f"Phase 2 -- per-segment F_segment on query_grad_l to build "
         f"query_grad_segment_0..query_grad_segment_(L-1)..."
     )
-    query_grad_segment_paths = walk_query_phase2(
-        run_path=index_cfg.run_path,
-        method=hessian_cfg.method,
-        lr_times_steps_per_segment=lr_times_steps_per_segment,
-        query_grad_paths=query_grad_paths,
-        distributed=index_cfg.distributed,
-        preconditioner_paths=[str(p) for p in preconditioner_paths] or None,
-        inversion_cfg=approx_unrolling_cfg.inversion_cfg,
-    )
+    if astra_cfg.num_steps > 0:
+        query_grad_segment_paths = walk_query_phase2_astra(
+            index_cfg=index_cfg,
+            method=hessian_cfg.method,
+            lr_times_steps_per_segment=lr_times_steps_per_segment,
+            query_grad_paths=query_grad_paths,
+            segment_checkpoints=segment_checkpoints,
+            astra_cfg=astra_cfg,
+        )
+    else:
+        query_grad_segment_paths = walk_query_phase2(
+            run_path=index_cfg.run_path,
+            method=hessian_cfg.method,
+            lr_times_steps_per_segment=lr_times_steps_per_segment,
+            query_grad_paths=query_grad_paths,
+            distributed=index_cfg.distributed,
+            preconditioner_paths=[str(p) for p in preconditioner_paths] or None,
+            inversion_cfg=approx_unrolling_cfg.inversion_cfg,
+        )
 
     # ── Step 8: Phase 3 -- per-segment scoring + sum
     logger.info(
@@ -270,15 +303,7 @@ def approx_unrolling_pipeline(
     out_path = score_per_segment_and_aggregate(
         index_cfg=index_cfg,
         query_grad_segment_paths=query_grad_segment_paths,
-        segment_checkpoints=[
-            [
-                str(c)
-                for c in approx_unrolling_cfg.checkpoints[
-                    l * (n_ckpts // n_segments) : (l + 1) * (n_ckpts // n_segments)
-                ]
-            ]
-            for l in range(n_segments)
-        ],
+        segment_checkpoints=segment_checkpoints,
         query_batch_size=approx_unrolling_cfg.query_batch_size,
     )
     logger.info(f"[approximate unrolling pipeline] DONE. Final scores at {out_path}")
