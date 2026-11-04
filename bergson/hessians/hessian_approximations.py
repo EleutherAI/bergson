@@ -355,6 +355,7 @@ def fit_factored_hessians(
 
     eigenvectors = None
     num_positions = None
+    eigen_saves = BackgroundSaves()
     if isinstance(collector, CovarianceCollector):
         num_positions = collector.num_positions
         # Each rank still holds the covariances it owns, so skip the files.
@@ -366,7 +367,7 @@ def fit_factored_hessians(
             os.path.join(path, "eigen_activation_sharded"),
             collector.dtype,
             num_positions=num_positions,
-            saves=saves,
+            saves=eigen_saves,
         )
         eigenvectors_g, eigenvalues_g = eigendecompose_owned(
             collector.S_cov_dict,
@@ -376,7 +377,7 @@ def fit_factored_hessians(
             os.path.join(path, "eigen_gradient_sharded"),
             collector.dtype,
             num_positions=num_positions,
-            saves=saves,
+            saves=eigen_saves,
         )
         eigenvectors = (eigenvectors_a, eigenvectors_g)
     else:
@@ -400,10 +401,14 @@ def fit_factored_hessians(
         world_size=world_size,
         num_documents=len(data),
         num_positions=num_positions,
-        saves=saves,
+        saves=eigen_saves,
     )
 
     if hessian_cfg.ev_correction:
+        # The covariances are on disk before the correction pass, so a crash in
+        # it keeps them for a rerun from the eigendecomposition; the
+        # eigenvectors keep writing during the pass.
+        saves.wait()
         collect_hessians(
             **kwargs,
             ev_correction=True,
@@ -411,6 +416,7 @@ def fit_factored_hessians(
             eigenvectors=eigenvectors,
         )
         _release_device_memory()
+    eigen_saves.wait()
     saves.wait()
 
 

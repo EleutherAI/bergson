@@ -1,6 +1,7 @@
+import math
 import threading
 from collections import deque
-from typing import Callable
+from typing import Callable, Hashable, TypeVar
 
 import safetensors.torch
 import torch
@@ -9,6 +10,8 @@ from jaxtyping import Float
 from torch import Tensor
 
 from bergson.utils.utils import get_device
+
+K = TypeVar("K", bound=Hashable)
 
 
 def shard_bounds(dim: int, rank: int, world_size: int) -> tuple[int, int]:
@@ -57,9 +60,10 @@ def gather_batch_shapes(*sizes: int, device: str | torch.device) -> list[list[in
     return gathered.view(dist.get_world_size(), len(sizes)).tolist()
 
 
-def local_modules(sizes: dict[str, int], budget: float) -> set[str]:
-    """The modules whose factors every rank keeps, smallest first while their
-    ``sizes`` in bytes fit in ``budget``. Every rank computes the same set."""
+def local_modules(sizes: dict[K, int], budget: float) -> set[K]:
+    """The keys of ``sizes`` whose factors every rank keeps, smallest first
+    while their sizes in bytes fit in ``budget``. Every rank computes the same
+    set."""
     kept, used = set(), 0
     for name in sorted(sizes, key=lambda n: (sizes[n], n)):
         if used + sizes[name] > budget:
@@ -121,51 +125,73 @@ def owned_to_row_shards(
     owners: dict[str, int],
     dtype: torch.dtype,
     device: str | torch.device,
-    max_bytes: int = 1 << 30,
+    max_bytes: int = 1 << 31,
 ) -> dict[str, Tensor]:
     """This rank's row shard of every matrix, on the CPU, from ``owned``, the
-    matrices this rank owns in full. Each owner sends every rank its rows, in
-    scatters sent without waiting for them to arrive, with at most ``max_bytes``
-    of rows waiting at once."""
+    matrices this rank owns in full. The matrices go in groups of at most
+    ``max_bytes``, each one all-to-all exchange of every owner's rows for every
+    rank."""
     rank, world_size = dist.get_rank(), dist.get_world_size()
+    itemsize = torch.empty((), dtype=dtype).element_size()
     shards: dict[str, Tensor] = {}
-    pending: deque = deque()
-    waiting = 0
 
-    def finish():
-        nonlocal waiting
-        name, work, received, _, nbytes = pending.popleft()
-        work.wait()
-        waiting -= nbytes
-        start, end = shard_bounds(shapes[name][0], rank, world_size)
-        shards[name] = received[: end - start].cpu()
+    def bounds(name: str, r: int) -> tuple[int, int]:
+        return shard_bounds(shapes[name][0], r, world_size)
 
+    def numel(name: str, r: int) -> int:
+        start, end = bounds(name, r)
+        return (end - start) * math.prod(shapes[name][1:])
+
+    groups, group, group_bytes = [], [], 0
     for name, shape in shapes.items():
-        owner = owners[name]
-        # Rank 0's shard is the largest; the others are padded to its size so
-        # every rank receives the same shape.
-        _, rows = shard_bounds(shape[0], 0, world_size)
-        received = torch.empty((rows, *shape[1:]), device=device, dtype=dtype)
-        blocks = None
-        if rank == owner:
-            full = owned[name].to(device, dtype).contiguous()
-            blocks = []
-            for r in range(world_size):
-                block = full[slice(*shard_bounds(shape[0], r, world_size))]
-                if len(block) < rows:
-                    block = torch.cat(
-                        [block, block.new_zeros(rows - len(block), *shape[1:])]
-                    )
-                blocks.append(block)
-        work = dist.scatter(received, blocks, src=owner, async_op=True)
-        # The blocks stay referenced until their scatter has read them.
-        pending.append((name, work, received, blocks, received.nbytes))
-        waiting += received.nbytes
-        while waiting > max_bytes and len(pending) > 1:
-            finish()
-    while pending:
-        finish()
-    return shards
+        nbytes = math.prod(shape) * itemsize
+        if group and group_bytes + nbytes > max_bytes:
+            groups.append(group)
+            group, group_bytes = [], 0
+        group.append(name)
+        group_bytes += nbytes
+    if group:
+        groups.append(group)
+
+    for group in groups:
+        mine = {
+            name: owned[name].to(device, dtype)
+            for name in group
+            if owners[name] == rank
+        }
+        send = [
+            matrix[slice(*bounds(name, r))].flatten()
+            for r in range(world_size)
+            for name, matrix in mine.items()
+        ]
+        send_sizes = [sum(numel(name, r) for name in mine) for r in range(world_size)]
+        recv_names = [
+            [name for name in group if owners[name] == src] for src in range(world_size)
+        ]
+        recv_sizes = [sum(numel(name, rank) for name in names) for names in recv_names]
+        received = torch.empty(sum(recv_sizes), device=device, dtype=dtype)
+        dist.all_to_all_single(
+            received,
+            torch.cat(send) if send else received.new_empty(0),
+            recv_sizes,
+            send_sizes,
+        )
+        del send, mine
+        received = received.cpu()
+        offset = 0
+        for names in recv_names:
+            for name in names:
+                start, end = bounds(name, rank)
+                count = numel(name, rank)
+                # A copy of its own, since safetensors won't save shared storage
+                shards[name] = (
+                    received[offset : offset + count]
+                    .view(end - start, *shapes[name][1:])
+                    .clone()
+                )
+                offset += count
+    # Every shard in the order of ``shapes``, as before
+    return {name: shards[name] for name in shapes}
 
 
 class BackgroundSaves:
@@ -190,7 +216,8 @@ class BackgroundSaves:
             except BaseException as e:
                 self.errors.append(e)
 
-        thread = threading.Thread(target=write, daemon=True)
+        # Not a daemon, so a crash elsewhere leaves the file to finish
+        thread = threading.Thread(target=write)
         thread.start()
         self.threads.append(thread)
 

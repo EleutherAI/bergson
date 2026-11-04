@@ -233,8 +233,8 @@ def fit_small(rank: int, world_size: int, port: int, root: str, local_bytes: flo
         dist.destroy_process_group()
 
 
-# Every module gathered to its owner, the smallest kept on every rank (two
-# modules' covariances and one's corrections), and every module kept
+# Every module gathered to its owner, the smallest kept on every rank (four
+# covariances and one module's corrections), and every module kept
 @pytest.mark.parametrize("local_bytes", [0, 1000, float("inf")])
 def test_gloo_ranks_match_one_process_on_cpu(
     tmp_path: Path, monkeypatch, local_bytes: float
