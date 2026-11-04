@@ -298,17 +298,16 @@ class Astra:
                 : self.cfg.batch_size
             ].tolist()
             hx = self.hvp(x, indices)
-            if step % 50 == 0 or step == self.cfg.num_steps - 1:
-                objective = torch.stack(
-                    [
-                        (x[n] @ (hx[n] + self.damping[n] * x[n])) / 2
-                        - x[n] @ q[n].to(self.device)
-                        for n in self.names
-                    ]
-                ).sum()
-                self.logger.info(
-                    f"query {row} step {step}: objective {objective.item():.6g}"
-                )
+            objective = torch.stack(
+                [
+                    (x[n] @ (hx[n] + self.damping[n] * x[n])) / 2
+                    - x[n] @ q[n].to(self.device)
+                    for n in self.names
+                ]
+            ).sum()
+            self.logger.info(
+                f"query {row} step {step}: objective {objective.item():.6g}"
+            )
             for n in self.names:
                 residual = hx.pop(n) + self.damping[n] * x[n] - q[n].to(self.device)
                 direction = self.preconditioner.apply({n: residual[None]})[n][0]
@@ -342,10 +341,9 @@ class Astra:
         p = {n: z[n].clone() for n in self.names}
         rz = self._dot(r, z)
         for step in range(self.cfg.num_steps):
-            if step % 50 == 0 or step == self.cfg.num_steps - 1:
-                # With r = q - (H_B + D) x, the objective is -(q + r)^T x / 2.
-                objective = -(self._dot(q, x) + self._dot(r, x)) / 2
-                self.logger.info(f"query {row} step {step}: objective {objective:.6g}")
+            # With r = q - (H_B + D) x, the objective is -(q + r)^T x / 2.
+            objective = -(self._dot(q, x) + self._dot(r, x)) / 2
+            self.logger.info(f"query {row} step {step}: objective {objective:.6g}")
             ap = self._damped_product(p, indices)
             pap = self._dot(p, ap)
             if pap <= 0:
