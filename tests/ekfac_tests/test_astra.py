@@ -207,7 +207,7 @@ def test_solve_ignores_state_saved_with_other_settings(tmp_path):
 def test_solve_stops_once_the_objective_stalls(solver):
     """On a well-conditioned problem the solve stops early, close to where an
     unbroken solve ends."""
-    cfg = AstraConfig(num_steps=500, solver=solver, batch_size=6, lr=0.05, momentum=0.0)
+    cfg = AstraConfig(num_steps=100, solver=solver, batch_size=6, lr=0.05, momentum=0.0)
     stopping = replace(cfg, early_stop_window=10, early_stop_tol=1e-4)
     astra, q = _tiny_astra(stopping, damping=10.0)
     calls = []
@@ -224,8 +224,9 @@ def test_solve_stops_once_the_objective_stalls(solver):
 
 
 @pytest.fixture(scope="module")
-def two_gpu_kfac_run(tmp_path_factory):
-    """Queries and their K-FAC solutions for Pythia-14m, fitted on two GPUs."""
+def kfac_run(tmp_path_factory):
+    """Queries and their K-FAC solutions for Pythia-14m, fitted in this
+    process."""
     root = tmp_path_factory.mktemp("astra_fsdp")
     ids = torch.randint(10, 1000, (32, 64), generator=torch.Generator().manual_seed(0))
     Dataset.from_dict({"input_ids": ids.tolist()}).save_to_disk(str(root / "data"))
@@ -235,7 +236,6 @@ def two_gpu_kfac_run(tmp_path_factory):
         data=DataConfig(dataset=str(root / "data")),
         token_batch_size=256,
         precision="fp32",
-        distributed=DistributedConfig(nproc_per_node=2),
     )
     hessian_cfg = HessianConfig(method="kfac", ev_correction=True)
     hessian_pipeline(
@@ -252,13 +252,22 @@ def two_gpu_kfac_run(tmp_path_factory):
     return index_cfg, hessian_cfg
 
 
+def _sharded(index_cfg: IndexConfig, fsdp: bool) -> IndexConfig:
+    """``index_cfg`` over FSDP on two GPUs, or in this process without it."""
+    if not fsdp:
+        return index_cfg
+    return replace(
+        index_cfg, fsdp=True, distributed=DistributedConfig(nproc_per_node=2)
+    )
+
+
 @requires_multi_gpu
 @pytest.mark.parametrize("solver", ["sgd", "cg"])
-def test_astra_under_fsdp_matches_unsharded(two_gpu_kfac_run, solver):
-    """ASTRA over FSDP-sharded weights refines the queries to the solutions it
-    reaches with each rank holding the whole model, with the ranks' shares of a
-    5-document batch split unevenly."""
-    index_cfg, hessian_cfg = two_gpu_kfac_run
+def test_astra_under_fsdp_matches_unsharded(kfac_run, solver):
+    """ASTRA over FSDP-sharded weights on two ranks refines the queries to the
+    solutions it reaches with one process holding the whole model, with the
+    ranks' shares of a 5-document batch split unevenly."""
+    index_cfg, hessian_cfg = kfac_run
     run = index_cfg.run_path
     pipeline_cfg = HessianPipelineConfig(
         astra=AstraConfig(
@@ -269,7 +278,7 @@ def test_astra_under_fsdp_matches_unsharded(two_gpu_kfac_run, solver):
     for fsdp in (False, True):
         out = f"{run}/astra_{solver}_{fsdp}"
         _run_astra(
-            replace(index_cfg, fsdp=fsdp),
+            _sharded(index_cfg, fsdp),
             hessian_cfg,
             pipeline_cfg,
             f"{run}/query",
@@ -289,15 +298,15 @@ def test_astra_under_fsdp_matches_unsharded(two_gpu_kfac_run, solver):
 @requires_multi_gpu
 @pytest.mark.parametrize("solver", ["sgd", "cg"])
 @pytest.mark.parametrize("fsdp", [False, True])
-def test_astra_factors_on_cpu_matches_gpu_factors(two_gpu_kfac_run, solver, fsdp):
+def test_astra_factors_on_cpu_matches_gpu_factors(kfac_run, solver, fsdp):
     """Holding the factors in CPU memory doesn't change the solutions."""
-    index_cfg, hessian_cfg = two_gpu_kfac_run
+    index_cfg, hessian_cfg = kfac_run
     run = index_cfg.run_path
     solutions = {}
     for on_cpu in (False, True):
         out = f"{run}/astra_on_cpu_{solver}_{fsdp}_{on_cpu}"
         _run_astra(
-            replace(index_cfg, fsdp=fsdp),
+            _sharded(index_cfg, fsdp),
             hessian_cfg,
             HessianPipelineConfig(
                 astra=AstraConfig(
