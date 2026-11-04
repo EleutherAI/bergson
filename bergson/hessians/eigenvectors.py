@@ -81,6 +81,16 @@ def fair_distribute_by_cost(
     return result
 
 
+def rotate_documents(grads: Tensor, eigen_g: Tensor, eigen_a: Tensor) -> Tensor:
+    """``eigen_g^T @ G @ eigen_a`` for each document's gradient ``G`` in
+    ``grads`` [N, O, I], as two matrix products that each read their
+    eigenvectors once for all the documents."""
+    n, o, i = grads.shape
+    left = eigen_g.mT @ grads.transpose(0, 1).reshape(o, n * i)  # [O, N I]
+    left = left.view(o, n, i).transpose(0, 1).reshape(n * o, i)  # [N O, I]
+    return (left @ eigen_a).view(n, o, i)
+
+
 @dataclass(kw_only=True)
 class LambdaCollector(HookCollectorBase):
     """
@@ -354,7 +364,9 @@ class LambdaCollector(HookCollectorBase):
 
             def rotate_and_correct(stacked: Tensor):
                 # Padding documents are zero, so they add nothing.
-                rotated = self.eigen_g[name].mT @ stacked @ self.eigen_a[name]
+                rotated = rotate_documents(
+                    stacked, self.eigen_g[name], self.eigen_a[name]
+                )
                 self.eigenvalue_corrections[name].add_((rotated**2).sum(dim=0))
 
             self.gathers.send(grads, docs, self.owners[name], rotate_and_correct)
