@@ -103,6 +103,7 @@ class CovarianceCollector(HookCollectorBase):
         """Each module whose input an earlier module took, and that module."""
         self._inputs: dict[tuple, tuple[str, Tensor | None, Tensor]] = {}
         self._batches = 0
+        self._mask_index: tuple[Tensor, Tensor] | None = None
         for name, (_, (out_dim, in_dim), collect_bias) in self.target_info.items():
             self.A_shapes[name] = (in_dim + collect_bias,) * 2
             self.S_shapes[name] = (out_dim, out_dim)
@@ -171,7 +172,7 @@ class CovarianceCollector(HookCollectorBase):
             return
 
         # a: [N, S, I], collection mask: [N, S] -> select gradient-carrying positions
-        a_bi = a[mask]  # [num_valid, I]
+        a_bi = self._select(a, mask)  # [num_valid, I]
         self.num_positions[name] += a_bi.shape[0]
 
         # Augment with a ones column so A matches the [O, I+1] gradient layout
@@ -182,6 +183,16 @@ class CovarianceCollector(HookCollectorBase):
             )  # [num_valid, I+1]
 
         self._accumulate("A", name, a_bi)
+
+    def _select(self, x: Tensor, mask: Tensor) -> Tensor:
+        """The rows of ``x`` [N, S, D] at ``mask``'s positions. The batch's mask
+        becomes indices once, so the hooks don't each wait for the GPU to count
+        its positions."""
+        if mask is not self._current_collection_mask:
+            return x[mask]
+        if self._mask_index is None or self._mask_index[0] is not mask:
+            self._mask_index = (mask, mask.flatten().nonzero().squeeze(1))
+        return x.reshape(-1, x.shape[-1]).index_select(0, self._mask_index[1])
 
     def _takes_earlier_input(
         self, name: str, module: nn.Module, a: Tensor, mask: Tensor
@@ -216,7 +227,7 @@ class CovarianceCollector(HookCollectorBase):
         self._inputs.clear()
 
         # g: [N, S, O], mask: [N, S] -> select gradient-carrying positions
-        g_bo = g[mask]  # [num_valid, O]
+        g_bo = self._select(g, mask)  # [num_valid, O]
 
         self._accumulate("S", name, g_bo)
 
