@@ -349,7 +349,8 @@ class Astra:
         w = self.cfg.early_stop_window
         if not w or len(objectives) < 2 * w:
             return False
-        before, last = np.mean(objectives[-2 * w : -w]), np.mean(objectives[-w:])
+        before = float(np.mean(objectives[-2 * w : -w]))
+        last = float(np.mean(objectives[-w:]))
         return before - last <= self.cfg.early_stop_tol * abs(before)
 
     def _settings(self) -> dict:

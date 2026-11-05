@@ -203,12 +203,13 @@ def _run_astra(
     create_index(part, init.shape[0], grad_sizes, init.dtype)
     shutil.copy(f"{init_path}/processor_config.yaml", part)
 
+    checkpoints = Path(f"{out_path}.checkpoints")
     paths = AstraPaths(
         query_path=query_path,
         init_path=init_path,
         hessian_path=f"{index_cfg.run_path}/hessian/{hessian_cfg.method}",
         run_path=str(part),
-        checkpoint_path=f"{out_path}.checkpoints",
+        checkpoint_path=str(checkpoints),
     )
     launch_distributed_run(
         "astra",
@@ -223,5 +224,5 @@ def _run_astra(
         index_cfg.distributed,
     )
     promote_step(out_path)
-    if Path(paths.checkpoint_path).is_dir():
-        shutil.rmtree(paths.checkpoint_path)
+    if checkpoints.is_dir():
+        shutil.rmtree(checkpoints)
