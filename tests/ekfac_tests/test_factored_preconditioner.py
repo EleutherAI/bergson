@@ -354,19 +354,6 @@ def test_apply_hessian_projects_factors(tmp_path):
         )
 
 
-def test_apply_hessian_rejects_global_projection(tmp_path):
-    cfg = EkfacConfig(
-        hessian_method_path=str(tmp_path),
-        gradient_path=str(tmp_path),
-        run_path=str(tmp_path / "out"),
-        ev_correction=False,
-        projection_dim=4,
-        projection_target="global",
-    )
-    with pytest.raises(ValueError, match="global"):
-        EkfacApplicator(cfg, inversion_cfg=InversionConfig())
-
-
 def test_apply_hessian_compression_matches_collector(tmp_path, model, dataset):
     """The projected factors must use the same projection matrices as the
     gradient collector, including with a non-default type, scale and seed.

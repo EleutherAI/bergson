@@ -632,8 +632,9 @@ class IndexConfig(AttributionConfig, Serializable):
     reshape_to_square: bool = False
     """Whether to reshape the gradients to a square matrix."""
 
-    projection_type: Literal["normal", "rademacher"] = "rademacher"
-    """Type of random projections to use for the gradients."""
+    projection_type: Literal["normal", "rademacher", "hadamard"] = "rademacher"
+    """Type of random projections to use for the gradients. ``hadamard`` needs
+    ``projection_target: global``; see :mod:`bergson.collector.hadamard`."""
 
     # TODO Lucia Quirke: remove row_norm option in October 2026
     projection_scale: Literal["jl", "row_norm"] = "jl"
@@ -1117,6 +1118,11 @@ class HessianPipelineConfig:
 
     resume: bool = False
     """Skip pipeline steps whose output directory already exists."""
+
+    precondition_index: bool = False
+    """Apply ``H^-1/2`` to both the training and query gradients before they are
+    projected, and score by their dot product (P-SIFT). Needs
+    ``projection_target: global``."""
 
 
 @dataclass

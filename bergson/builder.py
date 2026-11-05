@@ -157,6 +157,11 @@ class Builder:
         indices: list[int],
         mod_grads: dict[str, torch.Tensor],
     ) -> None:
+        # The collector moves gradients to the CPU without blocking, so wait for
+        # the copies before reading them.
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
         grads = _preprocess(
             mod_grads,
             self.grad_sizes,
@@ -170,9 +175,6 @@ class Builder:
                 dtype=torch.float32, device=self.in_memory_grad_buffer.device
             )
             return
-
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
 
         self._scatter_flat(indices, grads)
 

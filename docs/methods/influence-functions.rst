@@ -127,7 +127,22 @@ Compress Gradients
 
 The Kronecker factors are projected with the same matrices as the gradients, and the inverse of :math:`(P_l G P_l^\top) \otimes (P_r A P_r^\top)` is applied to the projected query, where :math:`G` and :math:`A` are the gradient and activation factors. The damping is relative to the mean eigenvalue of the projected factors.
 
-``projection_target: global`` isn't supported. EKFAC (``ev_correction``) doesn't support projection.
+With ``projection_target: global`` each module's gradient is projected and the results are summed into one ``[projection_dim]`` vector. ``projection_type: hadamard`` projects each module with a subsampled randomized Hadamard transform (SRHT): random signs, a fast Walsh-Hadamard transform and ``projection_dim`` sampled entries, so no projection matrix is formed. ``hessian_pipeline_cfg.precondition_index`` applies :math:`H^{-1/2}` to both the training and query gradients before they are projected, and scores them by their dot product (P-SIFT), which supports EKFAC:
+
+.. code-block:: yaml
+
+   steps:
+     - influence:
+         index_cfg:
+           projection_dim: 131072
+           projection_type: hadamard
+           projection_target: global
+         hessian_cfg: {method: kfac, ev_correction: true}
+         hessian_pipeline_cfg: {precondition_index: true}
+
+The projected scores are unbiased, with an error of about :math:`\sqrt{E(z,z) E(q,q) / \text{projection\_dim}}` for an influence :math:`E(z,q) = g_z^\top H^{-1} g_q`. Without ``precondition_index`` the inverse is applied to the query only, and the error scales with :math:`\|g_z\| \|H^{-1} g_q\|` instead.
+
+EKFAC (``ev_correction``) supports only ``precondition_index``.
 
 Method details
 --------------

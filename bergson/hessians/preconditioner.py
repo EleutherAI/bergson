@@ -387,12 +387,16 @@ class FactoredPreconditioner:
                 )
         self.shard_computer.scale_rows_in_place(g, inverse_eigvals)
 
-    def apply(self, grads: dict[str, Tensor]) -> dict[str, Tensor]:
+    def apply(
+        self, grads: dict[str, Tensor], rotate_back: bool = True
+    ) -> dict[str, Tensor]:
         """Return ``grads`` with the factored inverse Hessian applied per module.
 
         Each ``grads[name]`` is a flat ``[n, O*I]`` block; it is reshaped to
         ``[n, O, I]``, rotated into the eigenbasis (``Q_G^T G Q_A``), scaled, and
-        rotated back. Modules absent from the Hessian pass through unchanged.
+        rotated back unless ``rotate_back`` is False, which leaves inner products
+        between results unchanged. Modules absent from the Hessian pass through
+        unchanged.
         """
         out: dict[str, Tensor] = {}
         for name, flat in grads.items():
@@ -415,6 +419,9 @@ class FactoredPreconditioner:
 
             self._scale(name, g)
             self.logger.debug("%s: scaled by inverse eigenvalues", name)
+            if not rotate_back:
+                out[name] = g.reshape(flat.shape[0], -1).to(flat.dtype)
+                continue
 
             # Rotate back: Q_G @ G' @ Q_A^T
             g = self.shard_computer._transpose_matmul(

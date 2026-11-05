@@ -72,12 +72,15 @@ Indicative performance of data attribution methods in the finetuning regime.
    * - TrackStar (no optimizer correction, projection 64)
      - 0.045 [0.036, 0.055]
      - 0.276 [0.252, 0.299]
-   * - KFAC (projection 64)
-     - 0.045 [0.036, 0.055]
-     - 0.244 [0.216, 0.270]
    * - TrackStar (Adam, projection 64)
      - 0.043 [0.034, 0.052]
      - 0.242 [0.216, 0.267]
+   * - KFAC (P-SIFT, SRHT projection 131072)
+     - 0.041 [0.031, 0.052]
+     - 0.195 [0.167, 0.221]
+   * - EKFAC (P-SIFT, SRHT projection 131072)
+     - 0.041 [0.031, 0.052]
+     - 0.189 [0.160, 0.216]
    * - TrackStar (no optimizer correction, projection 32)
      - 0.035 [0.027, 0.044]
      - 0.194 [0.171, 0.216]
@@ -201,7 +204,7 @@ LiSSA
    The influence function of `Bae et al. <https://arxiv.org/abs/2209.05364>`_: the damped Gauss-Newton Hessian inverse applied to each query by the LiSSA solver. Unlike ASTRA, it doesn't precondition with an existing Hessian approximation, and costs significantly more per query.
 
 KFAC
-   A classic influence function in the form ``g_t H^{-1} g_q``. KFAC supports gradient compression with ``projection_dim``, enabling a highly efficient variant based on a reusable gradient store, suitable for the retrieval stage of a data attribution pipeline, at the cost of some LDS/QLD.
+   A classic influence function in the form ``g_t H^{-1} g_q``. KFAC and EKFAC support gradient compression with P-SIFT: ``H^{-1/2}`` is applied to the training and query gradients, which are each sketched by a subsampled randomized Hadamard transform into one ``projection_dim`` vector and scored by their dot product. The compressed index suits the retrieval stage of a data attribution pipeline, at the cost of some LDS/QLD that shrinks as ``projection_dim`` grows.
 
 Eigenvalue-corrected Shampoo
    A novel influence function in the form ``g_t H^{-1} g_q`` using the Shampoo preconditioner as the H. Its mathematical relationship with the true Hessian is somewhere between "null" and "extremely tenuous" but it performs well anyway. It uses an eigenvalue correction similar to EKFAC's, and to the procedure in SOAP optimization.
