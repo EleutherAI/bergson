@@ -1049,7 +1049,7 @@ class AstraConfig(Serializable):
 
     checkpoint_interval: int = 0
     """Steps between saves of each query's solver state. Enables resuming runs.
-    Resuming the run with ``num_steps`` updated to be <= the saved step 
+    Resuming the run with ``num_steps`` updated to be <= the saved step
     saves the solution."""
 
     early_stop_window: int = 0
