@@ -1100,6 +1100,10 @@ class LissaConfig(Serializable):
     resume: bool = False
     """Skip pipeline steps whose output directory already exists."""
 
+    checkpoint_interval: int = 0
+    """Checkpoint the fit's accumulator state every N batches, so it can
+    resume if interrupted. 0 disables it. Only honored by the kfac method."""
+
 
 @dataclass
 class HessianPipelineConfig:
