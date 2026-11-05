@@ -1,6 +1,15 @@
 # CHANGELOG
 
 
+## v2.10.1 (2026-11-05)
+
+### Bug Fixes
+
+- Wait for gradient copies before the builder reads them
+  ([#615](https://github.com/EleutherAI/bergson/pull/615),
+  [`c5142ff`](https://github.com/EleutherAI/bergson/commit/c5142ff9616aec892ba9450a9b862743ee2719e7))
+
+
 ## v2.10.0 (2026-11-05)
 
 ### Documentation
