@@ -187,6 +187,16 @@ class FactoredPreconditioner:
         # logger to DEBUG to surface the apply's progress trace.
         self.logger = get_logger("FactoredPreconditioner")
 
+    def to_devices(self, devices: dict[str, torch.device]):
+        """Move each module's factors to ``devices[name]``, where ``apply`` then
+        works on them."""
+        for factors in (self.eigen_a, self.eigen_g, self.lambdas):
+            for name, device in devices.items():
+                factors[name] = factors[name].to(device)
+        for factors in (self.factor_eig_a, self.factor_eig_g):
+            for name in set(factors) & set(devices):
+                factors[name] = factors[name].to(devices[name])
+
     @classmethod
     def from_path(
         cls,
@@ -198,13 +208,14 @@ class FactoredPreconditioner:
         ev_correction: bool = False,
         device: str | torch.device = "cpu",
         compute_device: str | torch.device | None = None,
+        modules: Iterable[str] | None = None,
     ) -> "FactoredPreconditioner":
-        """Load the full factors (concatenating any shards); each rank applies
-        them locally. ``compute_device`` applies them there one module at a time,
-        so that only one module's factors leave ``device``."""
+        """Load the full factors (concatenating any shards), or only ``modules``;
+        each rank applies them locally. ``compute_device`` applies them there one
+        module at a time, so that only one module's factors leave ``device``."""
 
         def load(sub):
-            return _load_full(hessian_path, sub, device)
+            return _load_full(hessian_path, sub, device, modules)
 
         def load_replicated(sub):
             # The eigenvalue grid λ is [O, I] and is row-sharded along O, so only
@@ -212,7 +223,7 @@ class FactoredPreconditioner:
             # shards; the I-indexed activation factor (factor_eig_a, [I]) rides
             # the unsharded column dim and is written in full to every shard.
             # So load a single shard rather than concatenating across shards.
-            return _load_shard(hessian_path, sub, 0, device)
+            return _load_shard(hessian_path, sub, 0, device, modules)
 
         preconditioner = cls._from_loaded(
             load,
@@ -687,3 +698,26 @@ def _load_shard(
         with safe_open(path, framework="pt", device=str(device)) as f:
             shard = {k: f.get_tensor(k) for k in modules}
     return {k: v.to(torch.float32) for k, v in shard.items()}
+
+
+def load_eigenvalues(
+    hessian_path: str | Path, ev_correction: bool, device: str | torch.device = "cpu"
+) -> dict[str, Tensor]:
+    """Every module's full ``[O, I]`` eigenvalue grid, corrected if
+    ``ev_correction``."""
+    sub = "eigenvalue_correction_sharded" if ev_correction else "eigenvalue_sharded"
+    return _load_full(hessian_path, sub, device)
+
+
+def factor_shapes(hessian_path: str | Path, subdir: str) -> dict[str, tuple[int, int]]:
+    """Each module's full ``(O, I)`` from the row-sharded ``[O, I]`` grids under
+    ``hessian_path/subdir``, read from the shards' headers."""
+    shapes: dict[str, tuple[int, int]] = {}
+    for s in sorted(
+        glob(os.path.join(str(hessian_path), subdir, "shard_*.safetensors"))
+    ):
+        with safe_open(s, framework="pt") as f:
+            for k in f.keys():
+                o, i = f.get_slice(k).get_shape()
+                shapes[k] = (shapes.get(k, (0, i))[0] + o, i)
+    return shapes

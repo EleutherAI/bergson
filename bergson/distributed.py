@@ -142,7 +142,10 @@ def launch_distributed_run(
     worker,
     const_worker_args: list[Any],
     dist_config: DistributedConfig | None = None,
+    gpus_per_process: int = 1,
 ):
+    """Run ``worker`` in ``nproc_per_node`` processes, each seeing its own
+    ``gpus_per_process`` consecutive visible GPUs."""
     if dist_config is None:
         dist_config = DistributedConfig()
 
@@ -164,16 +167,17 @@ def launch_distributed_run(
         # GPU, so every child gets it too and runs on the CPU.
         parent_cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
         if parent_cuda_visible_devices is None:
-            parent_cvd = [str(j) for j in range(local_world_size)]
+            parent_cvd = [str(j) for j in range(local_world_size * gpus_per_process)]
         elif not parent_cuda_visible_devices.strip():
-            parent_cvd = [""] * local_world_size
+            parent_cvd = [""] * local_world_size * gpus_per_process
         else:
             parent_cvd = [
                 d.strip() for d in parent_cuda_visible_devices.split(",") if d.strip()
             ]
-        assert len(parent_cvd) >= local_world_size, (
+        assert len(parent_cvd) >= local_world_size * gpus_per_process, (
             f"CUDA_VISIBLE_DEVICES has {len(parent_cvd)} entries "
             f"({parent_cuda_visible_devices!r}) but nproc_per_node={local_world_size}"
+            f" with {gpus_per_process} GPUs each"
         )
 
         # Multi-node environment
@@ -200,7 +204,8 @@ def launch_distributed_run(
         children = []
         try:
             for i in range(local_world_size):
-                os.environ["CUDA_VISIBLE_DEVICES"] = parent_cvd[i]
+                group = parent_cvd[i * gpus_per_process : (i + 1) * gpus_per_process]
+                os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(d for d in group if d)
                 p = spawn_ctx.Process(
                     target=dist_worker,
                     args=(

@@ -4,6 +4,8 @@ import time
 from contextlib import contextmanager
 from copy import deepcopy
 
+import torch
+
 from ..build import build_query
 from ..cli.commands import Score
 from ..config.config import (
@@ -219,5 +221,11 @@ def _run_astra(
             hessian_cfg.ev_correction,
         ],
         index_cfg.distributed,
+        # Under device_map_auto each process's model spans its share of the GPUs
+        gpus_per_process=(
+            max(1, torch.cuda.device_count() // index_cfg.distributed.nproc_per_node)
+            if hessian_pipeline_cfg.astra.device_map_auto
+            else 1
+        ),
     )
     promote_step(out_path)
