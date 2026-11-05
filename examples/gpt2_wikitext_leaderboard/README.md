@@ -27,8 +27,9 @@ Every method scores the same 50 test chunks (`test[0:50]`). We report the QLD an
 | [Qwen3-Embedding-8B](https://huggingface.co/spaces/mteb/leaderboard) semantic search | 0.049 | [0.038, 0.061] | 0.132 | [0.093, 0.169] | 0.132 | -0.119 | 0.483 | 17/50 |
 | Jina v5 semantic search | 0.046 | [0.035, 0.059] | 0.124 | [0.087, 0.160] | 0.115 | -0.108 | 0.483 | 11/50 |
 | TrackStar (no optimizer correction, projection 64) | 0.045 | [0.036, 0.055] | 0.276 | [0.252, 0.299] | 0.280 | -0.017 | 0.487 | 42/50 |
-| KFAC (projection 64) | 0.045 | [0.036, 0.055] | 0.244 | [0.216, 0.270] | 0.244 | -0.060 | 0.445 | 36/50 |
 | TrackStar (Adam, projection 64) | 0.043 | [0.034, 0.052] | 0.242 | [0.216, 0.267] | 0.249 | -0.072 | 0.392 | 36/50 |
+| KFAC (P-SIFT, SRHT projection 131072) | 0.041 | [0.031, 0.052] | 0.195 | [0.167, 0.221] | 0.198 | -0.110 | 0.464 | 26/50 |
+| EKFAC (P-SIFT, SRHT projection 131072) | 0.041 | [0.031, 0.052] | 0.189 | [0.160, 0.216] | 0.200 | -0.106 | 0.444 | 25/50 |
 | TrackStar (no optimizer correction, projection 32) | 0.035 | [0.027, 0.044] | 0.194 | [0.171, 0.216] | 0.195 | -0.098 | 0.455 | 25/50 |
 | TrackStar (Adam, projection 32) | 0.032 | [0.025, 0.041] | 0.182 | [0.156, 0.209] | 0.191 | -0.074 | 0.458 | 24/50 |
 | TRAK (8-model ensemble) | 0.032 | [0.024, 0.040] | 0.138 | [0.111, 0.165] | 0.141 | -0.131 | 0.430 | 13/50 |
