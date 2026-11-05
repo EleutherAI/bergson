@@ -19,7 +19,7 @@ from bergson.config import (
     ScoreConfig,
 )
 from bergson.data import load_gradients
-from bergson.hessians.astra import Astra, GaussNewtonProduct
+from bergson.hessians.astra import Astra, AstraPaths, GaussNewtonProduct
 from bergson.hessians.pipeline import _run_astra, hessian_pipeline
 from bergson.utils.logger import get_logger
 
@@ -132,9 +132,101 @@ def test_cg_reaches_the_damped_solution():
     assert (actual - expected).norm() / expected.norm() < 1e-6
 
 
+def _tiny_astra(
+    cfg: AstraConfig, checkpoint_path: str | None = None, damping: float = 0.1
+):
+    """An Astra on a one-layer GPT-2 with an identity preconditioner, and a
+    query for it."""
+    torch.manual_seed(0)
+    model = GPT2LMHeadModel(
+        GPT2Config(
+            vocab_size=11,
+            n_positions=8,
+            n_embd=8,
+            n_layer=1,
+            n_head=2,
+            attn_implementation="eager",
+        )
+    ).double()
+    model.eval().requires_grad_(False)
+    data = Dataset.from_dict({"input_ids": torch.randint(11, (6, 5)).tolist()})
+    names = ["h.0.attn.c_proj", "h.0.mlp.c_fc"]
+    astra = Astra.__new__(Astra)
+    astra.cfg = cfg
+    astra.paths = AstraPaths("query", "init", "hessian", "run", checkpoint_path)
+    astra.names, astra.num_docs = names, len(data)
+    astra.hvp = GaussNewtonProduct(model, data, IndexConfig(run_path=""), names)
+    astra.damping = {n: damping for n in names}
+    astra.preconditioner = _Identity()
+    astra.logger = get_logger("Astra")
+    astra.device = astra.store_device = "cpu"
+    sizes = {"h.0.attn.c_proj": 8 * 8, "h.0.mlp.c_fc": 32 * 8}
+    q = {n: torch.randn(sizes[n], dtype=torch.float64) for n in names}
+    return astra, q
+
+
+def _zeros(q: dict[str, Tensor]) -> dict[str, Tensor]:
+    return {n: torch.zeros_like(v) for n, v in q.items()}
+
+
+@pytest.mark.parametrize("solver", ["sgd", "cg"])
+def test_solve_resumes_from_saved_state(tmp_path, solver):
+    """A solve stopped at a save and rerun ends where an unbroken solve does."""
+    cfg = AstraConfig(
+        num_steps=12, solver=solver, batch_size=3, lr=0.05, lr_decay_interval=5
+    )
+    astra, q = _tiny_astra(cfg)
+    expected = astra.refine(q, _zeros(q), 0)
+
+    saving = replace(cfg, checkpoint_interval=4)
+    astra, q = _tiny_astra(replace(saving, num_steps=8), str(tmp_path))
+    astra.refine(q, _zeros(q), 0)
+    assert torch.load(tmp_path / "query_0.pt")["step"] == 8
+
+    # A rerun that stops at the save returns the saved solution without a step
+    astra, q = _tiny_astra(replace(saving, num_steps=8), str(tmp_path))
+    stopped = astra.refine(q, _zeros(q), 0)
+
+    astra, q = _tiny_astra(saving, str(tmp_path))
+    actual = astra.refine(q, _zeros(q), 0)
+    for n in q:
+        torch.testing.assert_close(actual[n], expected[n], rtol=0, atol=0)
+        assert not torch.equal(stopped[n], expected[n])
+
+
+def test_solve_ignores_state_saved_with_other_settings(tmp_path):
+    cfg = AstraConfig(num_steps=6, batch_size=3, lr=0.05, checkpoint_interval=3)
+    astra, q = _tiny_astra(cfg, str(tmp_path))
+    astra.refine(q, _zeros(q), 0)
+
+    astra, q = _tiny_astra(replace(cfg, lr=0.01), str(tmp_path))
+    assert astra._load_state(0) is None
+
+
+@pytest.mark.parametrize("solver", ["sgd", "cg"])
+def test_solve_stops_once_the_objective_stalls(solver):
+    """On a well-conditioned problem the solve stops early, close to where an
+    unbroken solve ends."""
+    cfg = AstraConfig(num_steps=100, solver=solver, batch_size=6, lr=0.05, momentum=0.0)
+    stopping = replace(cfg, early_stop_window=10, early_stop_tol=1e-4)
+    astra, q = _tiny_astra(stopping, damping=10.0)
+    calls = []
+    hvp = astra.hvp
+    astra.hvp = lambda v, indices: calls.append(1) or hvp(v, indices)
+    stopped = astra.refine(q, _zeros(q), 0)
+    assert 20 <= len(calls) < cfg.num_steps
+
+    astra, q = _tiny_astra(cfg, damping=10.0)
+    full = astra.refine(q, _zeros(q), 0)
+    num = sum((stopped[n] - full[n]).norm() ** 2 for n in q) ** 0.5
+    den = sum(full[n].norm() ** 2 for n in q) ** 0.5
+    assert num / den < 1e-3
+
+
 @pytest.fixture(scope="module")
-def two_gpu_kfac_run(tmp_path_factory):
-    """Queries and their K-FAC solutions for Pythia-14m, fitted on two GPUs."""
+def kfac_run(tmp_path_factory):
+    """Queries and their K-FAC solutions for Pythia-14m, fitted in this
+    process."""
     root = tmp_path_factory.mktemp("astra_fsdp")
     ids = torch.randint(10, 1000, (32, 64), generator=torch.Generator().manual_seed(0))
     Dataset.from_dict({"input_ids": ids.tolist()}).save_to_disk(str(root / "data"))
@@ -144,7 +236,7 @@ def two_gpu_kfac_run(tmp_path_factory):
         data=DataConfig(dataset=str(root / "data")),
         token_batch_size=256,
         precision="fp32",
-        distributed=DistributedConfig(nproc_per_node=2),
+        distributed=DistributedConfig(nproc_per_node=1),
     )
     hessian_cfg = HessianConfig(method="kfac", ev_correction=True)
     hessian_pipeline(
@@ -161,69 +253,68 @@ def two_gpu_kfac_run(tmp_path_factory):
     return index_cfg, hessian_cfg
 
 
-@requires_multi_gpu
-@pytest.mark.parametrize("solver", ["sgd", "cg"])
-def test_astra_under_fsdp_matches_unsharded(two_gpu_kfac_run, solver):
-    """ASTRA over FSDP-sharded weights refines the queries to the solutions it
-    reaches with each rank holding the whole model, with the ranks' shares of a
-    5-document batch split unevenly."""
-    index_cfg, hessian_cfg = two_gpu_kfac_run
-    run = index_cfg.run_path
-    pipeline_cfg = HessianPipelineConfig(
-        astra=AstraConfig(
-            num_steps=4, solver=solver, batch_size=5, micro_batch_size=2, lr=1e-4
-        ),
-    )
-    solutions = {}
-    for fsdp in (False, True):
-        out = f"{run}/astra_{solver}_{fsdp}"
-        _run_astra(
-            replace(index_cfg, fsdp=fsdp),
-            hessian_cfg,
-            pipeline_cfg,
-            f"{run}/query",
-            f"{run}/kfac_query",
-            out,
-        )
-        solutions[fsdp] = torch.from_numpy(load_gradients(out).astype("float32"))
+@pytest.fixture(scope="module")
+def solve(kfac_run):
+    """Refine the queries once per solver, FSDP and factor placement: over FSDP
+    on two GPUs or in this process, with the factors on the GPU or the CPU."""
+    index_cfg, hessian_cfg = kfac_run
+    run, cache = index_cfg.run_path, {}
+
+    def refine(solver: str, fsdp: bool, on_cpu: bool) -> Tensor:
+        if (solver, fsdp, on_cpu) not in cache:
+            out = f"{run}/astra_{solver}_{fsdp}_{on_cpu}"
+            cfg = index_cfg
+            if fsdp:
+                cfg = replace(
+                    cfg, fsdp=True, distributed=DistributedConfig(nproc_per_node=2)
+                )
+            astra_cfg = AstraConfig(
+                num_steps=4,
+                solver=solver,
+                batch_size=5,
+                micro_batch_size=2,
+                lr=1e-4,
+                factors_on_cpu=on_cpu,
+            )
+            _run_astra(
+                cfg,
+                hessian_cfg,
+                HessianPipelineConfig(astra=astra_cfg),
+                f"{run}/query",
+                f"{run}/kfac_query",
+                out,
+            )
+            cache[solver, fsdp, on_cpu] = torch.from_numpy(
+                load_gradients(out).astype("float32")
+            )
+        return cache[solver, fsdp, on_cpu]
 
     init = torch.from_numpy(load_gradients(f"{run}/kfac_query").astype("float32"))
-    moved = (solutions[False] - init).norm()
+    return refine, init
+
+
+@requires_multi_gpu
+@pytest.mark.parametrize("solver", ["sgd", "cg"])
+def test_astra_under_fsdp_matches_unsharded(solve, solver):
+    """ASTRA over FSDP-sharded weights on two ranks refines the queries to the
+    solutions it reaches with one process holding the whole model, with the
+    ranks' shares of a 5-document batch split unevenly."""
+    refine, init = solve
+    unsharded, sharded = refine(solver, False, False), refine(solver, True, False)
+    moved = (unsharded - init).norm()
     assert moved > 0
     # The ranks sum the documents in another order, which moves a product
     # about as much as changing its micro-batch size does
-    assert (solutions[True] - solutions[False]).norm() < 1e-2 * moved
+    assert (sharded - unsharded).norm() < 1e-2 * moved
 
 
 @requires_multi_gpu
 @pytest.mark.parametrize("solver", ["sgd", "cg"])
 @pytest.mark.parametrize("fsdp", [False, True])
-def test_astra_factors_on_cpu_matches_gpu_factors(two_gpu_kfac_run, solver, fsdp):
+def test_astra_factors_on_cpu_matches_gpu_factors(solve, solver, fsdp):
     """Holding the factors in CPU memory doesn't change the solutions."""
-    index_cfg, hessian_cfg = two_gpu_kfac_run
-    run = index_cfg.run_path
-    solutions = {}
-    for on_cpu in (False, True):
-        out = f"{run}/astra_on_cpu_{solver}_{fsdp}_{on_cpu}"
-        _run_astra(
-            replace(index_cfg, fsdp=fsdp),
-            hessian_cfg,
-            HessianPipelineConfig(
-                astra=AstraConfig(
-                    num_steps=4,
-                    solver=solver,
-                    batch_size=5,
-                    lr=1e-4,
-                    factors_on_cpu=on_cpu,
-                ),
-            ),
-            f"{run}/query",
-            f"{run}/kfac_query",
-            out,
-        )
-        solutions[on_cpu] = torch.from_numpy(load_gradients(out).astype("float32"))
-
-    init = torch.from_numpy(load_gradients(f"{run}/kfac_query").astype("float32"))
-    moved = (solutions[False] - init).norm()
+    refine, init = solve
+    on_gpu, on_cpu = refine(solver, fsdp, False), refine(solver, fsdp, True)
+    moved = (on_gpu - init).norm()
     assert moved > 0
-    assert (solutions[True] - solutions[False]).norm() < 1e-5 * moved
+    assert (on_cpu - on_gpu).norm() < 1e-5 * moved

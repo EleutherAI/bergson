@@ -19,6 +19,13 @@ def pytest_configure(config) -> None:
     """
     worker = os.environ.get("PYTEST_XDIST_WORKER", "")
     if not worker.startswith("gw"):
+        # Torch's intra-op pool defaults to every core, and on a many-core
+        # machine its startup and sync cost swamps the tests' small products:
+        # one ASTRA test took 126 s on 96 threads and 2.3 s on 8.
+        if "OMP_NUM_THREADS" not in os.environ:
+            threads = min(8, os.cpu_count() or 8)
+            os.environ["OMP_NUM_THREADS"] = str(threads)
+            torch.set_num_threads(threads)
         return
 
     # Torch's intra-op pool defaults to all cores in every worker (and in
