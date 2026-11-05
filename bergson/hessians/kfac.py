@@ -15,6 +15,8 @@ from bergson.hessians.sharded_computation import (
     assign_module_owners,
     gather_batch_shapes,
     local_modules,
+    numa_copies,
+    numa_groups,
     owned_to_row_shards,
     save_shards,
 )
@@ -87,6 +89,11 @@ class CovarianceCollector(HookCollectorBase):
     """Bytes of covariances each rank may keep, smallest first. Each is chosen
     on its own, so a module's small factor can stay local while its large one
     goes to its owner."""
+    numa_bytes: float = 0
+    """Bytes of covariances each rank may hold for another rank's module on
+    behalf of its NUMA node, smallest first. Each NUMA node then sums its own
+    ranks' rows for those covariances, which then cross between nodes once, at
+    teardown, instead of every step."""
     saves: BackgroundSaves | None = None
     """Thread the shards are saved on; without one, teardown saves them
     before it returns."""
@@ -103,6 +110,10 @@ class CovarianceCollector(HookCollectorBase):
         """Each module whose input an earlier module took, and that module."""
         self._inputs: dict[tuple, tuple[str, Tensor | None, Tensor]] = {}
         self._batches = 0
+        self.copies: dict[tuple[str, str], list[int]] = {}
+        """Each covariance summed per NUMA node, with the rank summing it in
+        each node's group of ranks."""
+        self.partials: dict[tuple[str, str], Tensor] = {}
         self._mask_index: tuple[Tensor, Tensor] | None = None
         for name, (_, (out_dim, in_dim), collect_bias) in self.target_info.items():
             self.A_shapes[name] = (in_dim + collect_bias,) * 2
@@ -123,21 +134,44 @@ class CovarianceCollector(HookCollectorBase):
         self._rows = 0  # set per batch by with_batch
         self.gathers = OwnerGathers()
         itemsize = torch.empty((), dtype=self.dtype).element_size()
-        self.local = local_modules(
-            {
-                (name, kind): math.prod(shapes[name]) * itemsize
-                for name in self.owners
-                for kind, shapes in (("A", self.A_shapes), ("S", self.S_shapes))
-            },
-            self.local_bytes,
-        )
+        self.local = local_modules(self._sizes(itemsize), self.local_bytes)
+        groups = numa_groups()
+        if len(groups) > 1 and self.numa_bytes > 0:
+            self.groups = groups
+            self.group = next(i for i, group in enumerate(groups) if self.rank in group)
+            sizes = {
+                key: size
+                for key, size in self._sizes(itemsize).items()
+                if key not in self.local
+            }
+            self.copies = numa_copies(
+                sizes,
+                {key: self.owners[key[0]] for key in sizes},
+                groups,
+                self.numa_bytes,
+            )
         device = self.shard_computer.device
+        for key, holders in self.copies.items():
+            name, kind = key
+            if self.rank in holders and self.rank != self.owners[name]:
+                shapes = self.A_shapes if kind == "A" else self.S_shapes
+                self.partials[key] = torch.zeros(
+                    shapes[name], device=device, dtype=self.dtype
+                )
         for name, owner in self.owners.items():
             for kind, covariances, shapes in self._kinds():
                 if owner == self.rank or (name, kind) in self.local:
                     covariances[name] = torch.zeros(
                         shapes[name], device=device, dtype=self.dtype
                     )
+
+    def _sizes(self, itemsize: int) -> dict[tuple[str, str], int]:
+        """Bytes of each covariance, as ``(module, "A" or "S")``."""
+        return {
+            (name, kind): math.prod(shapes[name]) * itemsize
+            for name in self.target_info
+            for kind, shapes in (("A", self.A_shapes), ("S", self.S_shapes))
+        }
 
     def _kinds(self):
         """Each kind of covariance with its storage and shapes."""
@@ -207,6 +241,7 @@ class CovarianceCollector(HookCollectorBase):
         if self._batches == 1 and earlier is not None:
             self.aliases[name] = earlier
             self.A_cov_dict.pop(name, None)
+            self.partials.pop((name, "A"), None)
             return True
         if name in self.aliases:
             assert earlier == self.aliases[name], (
@@ -243,8 +278,41 @@ class CovarianceCollector(HookCollectorBase):
             # Padding rows are zero, so they add nothing.
             add_gram(covariances[name], stacked)
 
+        holders = self.copies.get((name, kind))
+        if holders is not None:
+            holder = holders[self.group]
+
+            def add_here(stacked: Tensor):
+                if holder == self.owners[name]:
+                    add_gram(covariances[name], stacked)
+                else:
+                    add_gram(self.partials[(name, kind)], stacked)
+
+            self.gathers.send(
+                x, self._rows, holder, add_here, ranks=self.groups[self.group]
+            )
+            return
+
         # Sent in the model's dtype and cast on the owner, which moves less data.
         self.gathers.send(x, self._rows, self.owners[name], add)
+
+    def _add_partials(self) -> None:
+        """Add each NUMA node's sums to the owner's covariance."""
+        for key, holders in sorted(self.copies.items()):
+            name, kind = key
+            if kind == "A" and name in self.aliases:
+                continue
+            owner = self.owners[name]
+            covariances = self.A_cov_dict if kind == "A" else self.S_cov_dict
+            for holder in holders:
+                if holder == owner:
+                    continue
+                if self.rank == holder:
+                    dist.send(self.partials.pop(key), owner)
+                elif self.rank == owner:
+                    received = torch.empty_like(covariances[name])
+                    dist.recv(received, holder)
+                    covariances[name].add_(received)
 
     def _copy_aliases(self) -> None:
         """Give each alias's owner its earlier module's activation covariance."""
@@ -274,6 +342,7 @@ class CovarianceCollector(HookCollectorBase):
         """Save covariance matrices to disk."""
         if self.owners is not None:
             self.gathers.flush()
+            self._add_partials()
         for covariances in (self.A_cov_dict, self.S_cov_dict):
             for covariance in covariances.values():
                 mirror_upper(covariance)

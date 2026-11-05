@@ -1,6 +1,7 @@
 import math
+import socket
 import threading
-from collections import deque
+from collections import defaultdict, deque
 from typing import Callable, Hashable, TypeVar
 
 import safetensors.torch
@@ -49,6 +50,57 @@ def assign_module_owners(
     return owners
 
 
+def numa_groups() -> list[list[int]]:
+    """The ranks whose GPUs share a NUMA node of the same machine, in rank
+    order; every rank in one group when a GPU's node can't be read."""
+    node = -1
+    if torch.cuda.is_available():
+        p = torch.cuda.get_device_properties(torch.cuda.current_device())
+        bus = f"{p.pci_domain_id:04x}:{p.pci_bus_id:02x}:{p.pci_device_id:02x}.0"
+        try:
+            with open(f"/sys/bus/pci/devices/{bus}/numa_node") as f:
+                node = int(f.read())
+        except (OSError, ValueError):
+            pass
+    keys: list = [None] * dist.get_world_size()
+    dist.all_gather_object(keys, (socket.gethostname(), node))
+    if any(node < 0 for _, node in keys):
+        return [list(range(len(keys)))]
+    groups: dict = {}
+    for rank, key in enumerate(keys):
+        groups.setdefault(key, []).append(rank)
+    return sorted(groups.values())
+
+
+def numa_copies(
+    sizes: dict[K, int],
+    owners: dict[K, int],
+    groups: list[list[int]],
+    budget: float,
+) -> dict[K, list[int]]:
+    """For each key given a copy, the rank in each NUMA group that sums that
+    group's rows: the owner in its own group and the rank at the owner's
+    position in each other group. Keys are taken smallest first while each
+    rank's copies fit in ``budget`` bytes. Every rank computes the same result."""
+    group_of = {rank: i for i, group in enumerate(groups) for rank in group}
+    used: dict[int, int] = defaultdict(int)
+    copies = {}
+    for key in sorted(sizes, key=lambda k: (sizes[k], k)):
+        owner = owners[key]
+        position = groups[group_of[owner]].index(owner)
+        holders = [
+            owner if i == group_of[owner] else group[position % len(group)]
+            for i, group in enumerate(groups)
+        ]
+        others = [rank for rank in holders if rank != owner]
+        if any(used[rank] + sizes[key] > budget for rank in others):
+            continue
+        for rank in others:
+            used[rank] += sizes[key]
+        copies[key] = holders
+    return copies
+
+
 def gather_batch_shapes(*sizes: int, device: str | torch.device) -> list[list[int]]:
     """Every rank's ``sizes`` for the current batch, in rank order."""
     local = torch.tensor(sizes, device=device, dtype=torch.int64)
@@ -73,6 +125,17 @@ def local_modules(sizes: dict[K, int], budget: float) -> set[K]:
     return kept
 
 
+class _AllWorks:
+    """Waits for every work in a list."""
+
+    def __init__(self, works: list):
+        self.works = works
+
+    def wait(self) -> None:
+        for work in self.works:
+            work.wait()
+
+
 class OwnerGathers:
     """Gathers of every rank's rows to a module's owner, sent without waiting
     for them to arrive, so ranks don't stop for each other at every module.
@@ -86,20 +149,43 @@ class OwnerGathers:
         self.bytes = 0
 
     def send(
-        self, x: Tensor, rows: int, owner: int, then: Callable[[Tensor], None]
+        self,
+        x: Tensor,
+        rows: int,
+        owner: int,
+        then: Callable[[Tensor], None],
+        ranks: list[int] | None = None,
     ) -> None:
         """Send ``x`` padded with zero rows to ``rows``, so the ranks send the
-        same shape."""
+        same shape, to ``owner`` from every rank in ``ranks`` (all ranks by
+        default). A subset's rows go point to point on the default process
+        group, so every transfer shares one communicator."""
         padded = x.new_zeros(rows, *x.shape[1:])
         padded[: x.shape[0]] = x
         stacked = None
-        if dist.get_rank() == owner:
-            stacked = padded.new_empty(dist.get_world_size() * rows, *x.shape[1:])
-            work = dist.gather(
-                padded, list(stacked.split(rows)), dst=owner, async_op=True
-            )
+        rank = dist.get_rank()
+        if ranks is None:
+            if rank == owner:
+                stacked = padded.new_empty(dist.get_world_size() * rows, *x.shape[1:])
+                work = dist.gather(
+                    padded, list(stacked.split(rows)), dst=owner, async_op=True
+                )
+            else:
+                work = dist.gather(padded, dst=owner, async_op=True)
         else:
-            work = dist.gather(padded, dst=owner, async_op=True)
+            if rank == owner:
+                stacked = padded.new_empty(len(ranks) * rows, *x.shape[1:])
+                parts = stacked.split(rows)
+                ops = []
+                for part, sender in zip(parts, ranks):
+                    if sender == owner:
+                        part.copy_(padded)
+                    else:
+                        ops.append(dist.P2POp(dist.irecv, part, sender))
+            else:
+                ops = [dist.P2POp(dist.isend, padded, owner)]
+            works = dist.batch_isend_irecv(ops) if ops else []
+            work = _AllWorks(works)
         nbytes = padded.nbytes + (stacked.nbytes if stacked is not None else 0)
         self.pending.append((work, padded, stacked, then, nbytes))
         self.bytes += nbytes
