@@ -82,15 +82,18 @@ def test_sketch_follows_the_identifier():
 
 
 def test_more_entries_than_the_transform_has():
-    """Inner products stay unbiased once ``m`` exceeds the padded size."""
+    """Past the padded size every entry is kept equally often: a multiple of it gives
+    exact inner products, and other sizes stay unbiased."""
     x, y = torch.randn(2, 1, 3, 2)
+    exact = (x * y).sum()
+    sx, sy = (hadamard_project("m/0", v, 40) for v in (x, y))
+    torch.testing.assert_close((sx * sy).sum(), exact)
     estimates = []
     for seed in range(2000):
-        sx, sy = (hadamard_project(f"m/{seed}", v, 40) for v in (x, y))
+        sx, sy = (hadamard_project(f"m/{seed}", v, 42) for v in (x, y))
         estimates.append((sx * sy).sum())
     estimates = torch.stack(estimates)
-    exact = (x * y).sum()
-    assert abs(estimates.mean() - exact) < 4 * estimates.std() / 2000**0.5
+    assert abs(estimates.mean() - exact) < 4 * estimates.std() / 2000**0.5 + 1e-6
 
 
 def test_hadamard_needs_a_global_target():
