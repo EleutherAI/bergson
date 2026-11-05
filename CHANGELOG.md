@@ -1,6 +1,23 @@
 # CHANGELOG
 
 
+## v2.10.0 (2026-11-05)
+
+### Documentation
+
+- Suggest lowering the learning rate to improve metasmoothness
+  ([#605](https://github.com/EleutherAI/bergson/pull/605),
+  [`7c9c4f3`](https://github.com/EleutherAI/bergson/commit/7c9c4f3e34d3506ebf1749bb995c19a5d9391d28))
+
+- The ASTRA paper's learning rate sweep ([#607](https://github.com/EleutherAI/bergson/pull/607),
+  [`a1774da`](https://github.com/EleutherAI/bergson/commit/a1774da77552bd2af2b09b3f696ffe693b7c07c9))
+
+### Features
+
+- Checkpoint and early-stop ASTRA solves ([#610](https://github.com/EleutherAI/bergson/pull/610),
+  [`b095e23`](https://github.com/EleutherAI/bergson/commit/b095e23cd1a7faf5e220a0b1420bba49fa9ab9f8))
+
+
 ## v2.9.1 (2026-11-03)
 
 ### Bug Fixes
