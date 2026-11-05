@@ -1048,14 +1048,14 @@ class AstraConfig(Serializable):
     """Seeds the training batches, which are drawn separately for each query."""
 
     checkpoint_interval: int = 0
-    """Steps between saves of each query's solver state. A rerun with the same
-    settings resumes from the latest save, and a rerun with ``num_steps`` at or
-    below the saved step writes the saved solution. 0 saves nothing."""
+    """Steps between saves of each query's solver state. Enables resuming runs.
+    Resuming the run with ``num_steps`` updated to be <= the saved step 
+    saves the solution."""
 
     early_stop_window: int = 0
     """Stop a query once the mean objective over the last ``early_stop_window``
     steps is no more than ``early_stop_tol`` of its magnitude below the mean
-    over the window before. 0 runs every step."""
+    over the window before."""
 
     early_stop_tol: float = 0.01
 
