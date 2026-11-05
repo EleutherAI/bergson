@@ -1000,6 +1000,13 @@ class HessianConfig(Serializable):
     module's factors on-device to avoid gathers and improve speed. Raise to
     increase speed (0.2 is a reasonable value) and lower to reduce memory usage."""
 
+    numa_factor_memory: float = 0.0
+    """Fraction of each GPU's memory a K-FAC or EK-FAC fit on several GPUs may
+    use to sum covariances for the GPUs on its own NUMA node, smallest first.
+    Those covariances' rows then cross between NUMA nodes once, at the end of
+    the covariance pass, instead of every step. Raise it on machines whose GPUs
+    sit on several NUMA nodes when the fit is slow and memory is spare."""
+
 
 @dataclass
 class AstraConfig(Serializable):
