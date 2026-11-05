@@ -1028,6 +1028,16 @@ class AstraConfig(Serializable):
     only to precondition it, lowering peak GPU memory for slower steps. ``sgd`` also
     holds the query and momentum there."""
 
+    device_map_auto: bool = False
+    """Spread each process's model evenly over its GPUs, the visible GPUs split
+    evenly among ``nproc_per_node`` processes, for models too large for one GPU's
+    forward and backward."""
+
+    share_documents: bool = False
+    """The processes refine every query together, each holding a model replica
+    that takes a share of every batch's documents and the factors of a share of
+    the modules. Otherwise (outside FSDP) the processes split the queries."""
+
     lr: float = 0.01
     """Step size. Too large a step diverges; tune it by the logged objective."""
 

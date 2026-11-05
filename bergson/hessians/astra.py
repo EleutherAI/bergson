@@ -5,7 +5,7 @@ SGD preconditioned by that same inverse."""
 import json
 import math
 import warnings
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -22,7 +22,11 @@ from bergson.config import AstraConfig, IndexConfig, InversionConfig
 from bergson.data import column_offsets, load_gradients, pad_and_tensor
 from bergson.distributed import init_dist
 from bergson.gradients import LayerAdapter
-from bergson.hessians.preconditioner import FactoredPreconditioner
+from bergson.hessians.preconditioner import (
+    FactoredPreconditioner,
+    factor_shapes,
+    load_eigenvalues,
+)
 from bergson.utils.logger import get_logger
 from bergson.utils.utils import get_device, numpy_to_tensor
 from bergson.utils.worker_utils import setup_data_pipeline, setup_model_and_peft
@@ -64,7 +68,6 @@ class GaussNewtonProduct:
         self.names = names
         self.mean_reduction = (loss_reduction or index_cfg.loss_reduction) == "mean"
         self.micro_batch_size = micro_batch_size
-        self.fsdp = index_cfg.fsdp
         self.device = next(model.parameters()).device
 
         param_names = {id(p): n for n, p in model.named_parameters()}
@@ -123,7 +126,7 @@ class GaussNewtonProduct:
             scale = 1.0 if chunk else 0.0
             chunk = chunk or indices[:1]
             for name, h in self._product(v, chunk, len(indices), scale).items():
-                out[name] += h
+                out[name] += h.to(out[name].device)
         if self.world_size > 1:
             for h in out.values():
                 dist.all_reduce(h)
@@ -145,20 +148,17 @@ class GaussNewtonProduct:
         for name in self.names:
             tangents.update(self._to_params(name, v[name]))
 
-        # FSDP's hooks take no tangents in a forward that records a graph, so
-        # under FSDP the JVP's forward records none and a second forward does
-        grad_mode = torch.no_grad() if self.fsdp else nullcontext()
-        with fwAD.dual_level(), grad_mode, self._forward_params(tangents) as params:
-            out = self.model(x).logits[:, :-1]
-            logits, jvp = fwAD.unpack_dual(out)
+        # The JVP's forward records no graph, which would also hold the
+        # tangents' activations (and FSDP's hooks take no tangents in a forward
+        # that records one); a second forward records the graph for the backward.
+        with fwAD.dual_level(), torch.no_grad(), self._forward_params(tangents):
+            jvp = fwAD.unpack_dual(self.model(x).logits[:, :-1]).tangent
             assert jvp is not None
-            jvp = jvp.detach()
-        if self.fsdp:
-            with self._forward_params() as params:
-                logits = self.model(x).logits[:, :-1]
+        with self._forward_params() as params:
+            logits = self.model(x).logits[:, :-1]
 
         # Cross-entropy's Hessian in the logits, diag(p) - p p^T, per position.
-        mask = (y[:, 1:] != -100).to(logits.dtype)
+        mask = (y[:, 1:] != -100).to(logits.device, logits.dtype)
         weight = mask / batch_size * scale
         if self.mean_reduction:
             weight = weight / mask.sum(1, keepdim=True).clamp_min(1)
@@ -188,7 +188,7 @@ class GaussNewtonProduct:
                 for attr, key in attrs[name]:
                     p = originals[name, attr] = layer._parameters[attr]
                     if tangents is not None:
-                        p = fwAD.make_dual(p, tangents[key].to(p.dtype))
+                        p = fwAD.make_dual(p, tangents[key].to(p.device, p.dtype))
                     layer._parameters[attr] = params[key] = p
 
             return hook
@@ -235,25 +235,63 @@ class Astra:
         self.device = device
         self.store_device = "cpu" if astra_cfg.factors_on_cpu else device
 
+        # Ranks that refine every query together each hold and apply the
+        # factors of a share of the modules, balanced by the factors' sizes
+        self.shared = dist.is_initialized() and dist.get_world_size() > 1
+        lambda_dir = (
+            "eigenvalue_correction_sharded" if ev_correction else "eigenvalue_sharded"
+        )
+        shapes = factor_shapes(paths.hessian_path, lambda_dir)
+        self.names = list(shapes)
+        world_size = dist.get_world_size() if self.shared else 1
+        loads = [0] * world_size
+        self.owner = {}
+        for n in sorted(self.names, key=lambda n: -sum(d * d for d in shapes[n])):
+            self.owner[n] = loads.index(min(loads))
+            loads[self.owner[n]] += sum(d * d for d in shapes[n])
+        rank = dist.get_rank() if self.shared else 0
+        self.owned = [n for n in self.names if self.owner[n] == rank]
+
+        # Under device_map_auto each module's factors go to its layer's GPU
         self.preconditioner = FactoredPreconditioner.from_path(
             paths.hessian_path,
             inversion_cfg=inversion_cfg,
             ev_correction=ev_correction,
-            device=self.store_device,
+            device="cpu" if astra_cfg.device_map_auto else self.store_device,
             compute_device=self.device if astra_cfg.factors_on_cpu else None,
+            modules=self.owned,
         )
-        self.names = list(self.preconditioner.lambdas)
-        self.damping = {
-            n: inversion_cfg.damping_factor
-            * (
-                1.0
-                if inversion_cfg.inversion == "absolute_damped_inverse"
-                else lam.to(device).mean()
-            )
-            for n, lam in self.preconditioner.lambdas.items()
-        }
+        if inversion_cfg.inversion == "absolute_damped_inverse":
+            self.damping = {n: inversion_cfg.damping_factor for n in self.names}
+        else:
+            lambdas = load_eigenvalues(paths.hessian_path, ev_correction)
+            self.damping = {
+                n: inversion_cfg.damping_factor * lam.to(device).mean()
+                for n, lam in lambdas.items()
+            }
 
-        model, _ = setup_model_and_peft(index_cfg, attn_implementation="eager")
+        model_kwargs = {}
+        if astra_cfg.device_map_auto and torch.cuda.device_count() > 1:
+            model_dir = Path(index_cfg.model)
+            if (model_dir / "adapter_config.json").exists():
+                # A PEFT adapter: the base model holds nearly all the weights
+                with open(model_dir / "adapter_config.json") as f:
+                    model_dir = Path(json.load(f)["base_model_name_or_path"])
+            weights = sorted(model_dir.glob("*.safetensors"))
+            if weights:
+                # "auto" fills GPUs in order; an even share per GPU spreads the
+                # layers, and so their activations, over all of them.
+                share = sum(f.stat().st_size for f in weights)
+                share /= torch.cuda.device_count()
+                model_kwargs["max_memory"] = {
+                    i: int(1.2 * share) for i in range(torch.cuda.device_count())
+                }
+        model, _ = setup_model_and_peft(
+            index_cfg,
+            device_map_auto=astra_cfg.device_map_auto,
+            attn_implementation="eager",
+            **model_kwargs,
+        )
         model.eval()
         data, _ = setup_data_pipeline(index_cfg)
         self.hvp = GaussNewtonProduct(
@@ -264,6 +302,10 @@ class Astra:
             astra_cfg.loss_reduction,
             astra_cfg.micro_batch_size,
         )
+        if astra_cfg.device_map_auto and not astra_cfg.factors_on_cpu:
+            self.preconditioner.to_devices(
+                {n: self.hvp.layers[n].weight.device for n in self.owned}
+            )
         self.num_docs = len(data)
 
     def _read_row(
@@ -308,14 +350,37 @@ class Astra:
             self.logger.info(
                 f"query {row} step {step}: objective {objective.item():.6g}"
             )
-            for n in self.names:
-                residual = hx.pop(n) + self.damping[n] * x[n] - q[n].to(self.device)
-                direction = self.preconditioner.apply({n: residual[None]})[n][0]
+            residuals = (
+                hx.pop(n) + self.damping[n] * x[n] - q[n].to(self.device)
+                for n in self.names
+            )
+            for n, direction in zip(self.names, self._directions(residuals)):
                 velocity = buf[n].to(self.device).mul_(self.cfg.momentum)
                 velocity.add_(direction)
                 x[n].sub_(velocity, alpha=lr)
                 buf[n] = velocity.to(self.store_device)
         return x
+
+    def _directions(self, residuals):
+        """The preconditioned residuals, in the order of ``self.names``, from
+        ``residuals`` in that order. Shared ranks each precondition their own
+        modules, then each module's owner sends its direction to the rest."""
+        if not self.shared:
+            for n, r in zip(self.names, residuals):
+                yield self.preconditioner.apply({n: r[None]})[n][0].to(r.device)
+            return
+        mine, shapes = {}, {}
+        for n, r in zip(self.names, residuals):
+            shapes[n] = r.shape
+            if self.owner[n] == dist.get_rank():
+                mine[n] = self.preconditioner.apply({n: r[None]})[n][0].to(r.device)
+            del r
+        for n in self.names:
+            d = mine.pop(n, None)
+            if d is None:
+                d = torch.empty(shapes[n], device=self.device)
+            dist.broadcast(d, src=self.owner[n])
+            yield d
 
     def _damped_product(
         self, v: dict[str, Tensor], indices: list[int]
@@ -325,8 +390,8 @@ class Astra:
         return {n: hv[n] + self.damping[n] * v[n] for n in self.names}
 
     def _precondition(self, r: dict[str, Tensor]) -> dict[str, Tensor]:
-        out = self.preconditioner.apply({n: r[n][None] for n in self.names})
-        return {n: out[n][0] for n in self.names}
+        directions = self._directions(r[n] for n in self.names)
+        return dict(zip(self.names, directions))
 
     def _dot(self, u: dict[str, Tensor], v: dict[str, Tensor]) -> float:
         return sum((u[n].double() @ v[n].double()).item() for n in self.names)
@@ -396,15 +461,18 @@ def astra_worker(
     ev_correction: bool,
 ):
     """Refine this rank's share of the queries; each rank holds the full
-    factors. Under FSDP the ranks refine every query together, each taking a
-    share of every batch's documents."""
-    device = get_device(local_rank)
+    factors. Under FSDP or ``share_documents`` the ranks refine every query
+    together, each taking a share of every batch's documents and holding the
+    factors of a share of the modules."""
+    # Under device_map_auto a rank's model spans its own GPUs, from cuda:0
+    gpu = 0 if astra_cfg.device_map_auto else local_rank
+    device = get_device(gpu)
     if torch.cuda.is_available():
         torch.cuda.set_device(device)
 
     num_queries = load_gradients(paths.init_path).shape[0]
-    if index_cfg.fsdp:
-        init_dist(rank, local_rank, world_size)
+    if index_cfg.fsdp or astra_cfg.share_documents:
+        init_dist(rank, gpu, world_size)
         rows = range(num_queries)
     else:
         per_rank = math.ceil(num_queries / world_size)

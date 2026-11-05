@@ -27,6 +27,10 @@ requires_multi_gpu = pytest.mark.skipif(
     not torch.cuda.is_available() or torch.cuda.device_count() < 2,
     reason="Requires at least 2 CUDA devices",
 )
+requires_four_gpus = pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.device_count() < 4,
+    reason="Requires at least 4 CUDA devices",
+)
 
 
 @pytest.mark.parametrize("loss_reduction", [None, "mean"])
@@ -122,7 +126,7 @@ def test_cg_reaches_the_damped_solution():
     astra.cfg = AstraConfig(num_steps=60, batch_size=len(data), solver="cg")
     astra.names, astra.hvp, astra.num_docs = names, hvp, len(data)
     astra.damping = {n: damping for n in names}
-    astra.preconditioner = _Identity()
+    astra.preconditioner, astra.shared = _Identity(), False
     astra.logger = get_logger("Astra")
 
     q = torch.randn(dim, dtype=torch.float64)
@@ -161,38 +165,71 @@ def two_gpu_kfac_run(tmp_path_factory):
     return index_cfg, hessian_cfg
 
 
+def _astra_solutions(index_cfg, hessian_cfg, out, **astra):
+    """Refine the fixture's queries over 4 steps on 5-document batches."""
+    run = index_cfg.run_path
+    _run_astra(
+        index_cfg,
+        hessian_cfg,
+        HessianPipelineConfig(
+            astra=AstraConfig(num_steps=4, batch_size=5, lr=1e-4, **astra)
+        ),
+        f"{run}/query",
+        f"{run}/kfac_query",
+        f"{run}/{out}",
+    )
+    return torch.from_numpy(load_gradients(f"{run}/{out}").astype("float32"))
+
+
 @requires_multi_gpu
 @pytest.mark.parametrize("solver", ["sgd", "cg"])
-def test_astra_under_fsdp_matches_unsharded(two_gpu_kfac_run, solver):
-    """ASTRA over FSDP-sharded weights refines the queries to the solutions it
-    reaches with each rank holding the whole model, with the ranks' shares of a
-    5-document batch split unevenly."""
+@pytest.mark.parametrize("sharing", ["fsdp", "share_documents"])
+def test_astra_sharing_documents_matches_unshared(two_gpu_kfac_run, solver, sharing):
+    """Ranks that refine every query together, each taking an uneven share of a
+    5-document batch and preconditioning a share of the modules, reach the
+    solutions of ranks that split the queries."""
     index_cfg, hessian_cfg = two_gpu_kfac_run
-    run = index_cfg.run_path
-    pipeline_cfg = HessianPipelineConfig(
-        astra=AstraConfig(
-            num_steps=4, solver=solver, batch_size=5, micro_batch_size=2, lr=1e-4
-        ),
+    unshared = _astra_solutions(
+        index_cfg, hessian_cfg, f"astra_{solver}", solver=solver, micro_batch_size=2
     )
-    solutions = {}
-    for fsdp in (False, True):
-        out = f"{run}/astra_{solver}_{fsdp}"
-        _run_astra(
-            replace(index_cfg, fsdp=fsdp),
-            hessian_cfg,
-            pipeline_cfg,
-            f"{run}/query",
-            f"{run}/kfac_query",
-            out,
-        )
-        solutions[fsdp] = torch.from_numpy(load_gradients(out).astype("float32"))
-
-    init = torch.from_numpy(load_gradients(f"{run}/kfac_query").astype("float32"))
-    moved = (solutions[False] - init).norm()
+    shared = _astra_solutions(
+        replace(index_cfg, fsdp=sharing == "fsdp"),
+        hessian_cfg,
+        f"astra_{solver}_{sharing}",
+        solver=solver,
+        micro_batch_size=2,
+        share_documents=sharing == "share_documents",
+    )
+    init = torch.from_numpy(
+        load_gradients(f"{index_cfg.run_path}/kfac_query").astype("float32")
+    )
+    moved = (unshared - init).norm()
     assert moved > 0
     # The ranks sum the documents in another order, which moves a product
     # about as much as changing its micro-batch size does
-    assert (solutions[True] - solutions[False]).norm() < 1e-2 * moved
+    assert (shared - unshared).norm() < 1e-2 * moved
+
+
+@requires_four_gpus
+@pytest.mark.parametrize("nproc", [1, 2])
+def test_astra_device_map_auto_matches_one_gpu(two_gpu_kfac_run, nproc):
+    """A model spread over its process's share of the GPUs, in one process or in
+    two that share the documents, reaches the solutions of one GPU per process."""
+    index_cfg, hessian_cfg = two_gpu_kfac_run
+    one_gpu = _astra_solutions(index_cfg, hessian_cfg, f"astra_one_gpu_{nproc}")
+    spread = _astra_solutions(
+        replace(index_cfg, distributed=DistributedConfig(nproc_per_node=nproc)),
+        hessian_cfg,
+        f"astra_device_map_{nproc}",
+        device_map_auto=True,
+        share_documents=nproc > 1,
+    )
+    init = torch.from_numpy(
+        load_gradients(f"{index_cfg.run_path}/kfac_query").astype("float32")
+    )
+    moved = (one_gpu - init).norm()
+    assert moved > 0
+    assert (spread - one_gpu).norm() < 1e-2 * moved
 
 
 @requires_multi_gpu
