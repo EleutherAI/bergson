@@ -25,12 +25,13 @@ from .astra import AstraPaths, astra_worker
 from .hessian_approximations import approximate_hessians
 
 
-def _step_complete(path: str, resume: bool) -> bool:
+def _step_complete(path: str, resume: bool, resumable: bool = False) -> bool:
     """Whether the step writing to `path` is already done and can be skipped.
 
-    Clears any interrupted ``.part`` output so the step restarts cleanly.
+    Clears any interrupted ``.part`` output so the step restarts cleanly,
+    unless the step is `resumable` and `resume` is set.
     """
-    if prepare_step(path, resume=resume):
+    if prepare_step(path, resume=resume, resumable=resumable):
         return False
     print(f"  Skipping (already complete at {path})")
     return True
@@ -108,7 +109,9 @@ def hessian_pipeline(
 
     # ── Step 2: Fit Hessian factors on training data ──────────────────────
     print(f"Step 2/4: Fitting {method} factors on training data...")
-    if not _step_complete(f"{hessian_path}/{method}", resume):
+    # A checkpointed fit picks up from its interrupted output.
+    fit_resumable = hessian_cfg.checkpoint_interval > 0
+    if not _step_complete(f"{hessian_path}/{method}", resume, fit_resumable):
         with _timed("step2_fit_hessian", durations):
             hessian_index_cfg = deepcopy(index_cfg)
             # approximate_hessians writes to this exact path; step 3 reads it

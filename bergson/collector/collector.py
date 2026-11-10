@@ -730,6 +730,22 @@ class HookCollectorBase(ContextDecorator, ABC):
         pass
 
 
+def rng_state(device: torch.device) -> dict[str, Tensor]:
+    """The RNG states sampled labels draw from, so a resumed run samples the
+    same ones."""
+    state = {"cpu": torch.get_rng_state()}
+    if device.type == "cuda":
+        state["cuda"] = torch.cuda.get_rng_state(device)
+    return state
+
+
+def set_rng_state(state: dict[str, Tensor], device: torch.device) -> None:
+    """Restore RNG states saved by :func:`rng_state`."""
+    torch.set_rng_state(state["cpu"])
+    if "cuda" in state:
+        torch.cuda.set_rng_state(state["cuda"], device)
+
+
 class CollectorComputer:
     """
     Orchestrates gradient collection by running forward/backward passes over a dataset.
@@ -949,11 +965,8 @@ class CollectorComputer:
             "batches_done": batches_done,
             "total_processed": total_processed,
             "collector": self.collector.state_dict(),
-            # Sampled labels draw from these, so a resume samples the same ones.
-            "cpu_rng": torch.get_rng_state(),
+            "rng": rng_state(self.device),
         }
-        if self.device.type == "cuda":
-            state["cuda_rng"] = torch.cuda.get_rng_state(self.device)
 
         # Every rank finishes writing before any replaces its previous save.
         torch.save(state, file + ".tmp")
@@ -977,9 +990,7 @@ class CollectorComputer:
                     f"Cannot resume from {file}: {', '.join(changed)} changed"
                 )
             self.collector.load_state_dict(state["collector"])
-            torch.set_rng_state(state["cpu_rng"])
-            if "cuda_rng" in state:
-                torch.cuda.set_rng_state(state["cuda_rng"], self.device)
+            set_rng_state(state["rng"], self.device)
             start, processed = state["batches_done"], state["total_processed"]
             self.logger.info(f"Resuming from batch {start} of {len(self.batches)}")
 
