@@ -1,12 +1,16 @@
 """An interrupted Hessian fit resumes to the same factors as an uninterrupted one."""
 
 import os
+import socket
 from pathlib import Path
 
 import pytest
 import torch
+import torch.distributed as dist
+import torch.multiprocessing as mp
 from datasets import Dataset
 from safetensors.torch import load_file
+from transformers import AutoConfig, AutoModelForCausalLM
 
 import bergson.hessians.hessian_approximations as approximations
 from bergson.config import HessianConfig, IndexConfig
@@ -123,8 +127,8 @@ def _count_batches(monkeypatch) -> list[int]:
     return counts
 
 
-def _fit_ekfac(model, run_path, seed=0):
-    ds = Dataset.from_dict({"input_ids": DOCS, "length": [len(d) for d in DOCS]})
+def _fit_ekfac(model, run_path, seed=0, docs=DOCS, batches=None):
+    ds = Dataset.from_dict({"input_ids": docs, "length": [len(d) for d in docs]})
     index_cfg = IndexConfig(run_path=str(run_path), include_bias=False)
     index_cfg.partial_run_path.mkdir(parents=True, exist_ok=True)
     target_modules = {
@@ -143,7 +147,7 @@ def _fit_ekfac(model, run_path, seed=0):
         ),
         target_modules=target_modules,
         attention_cfgs={},
-        batches=[[i] for i in range(len(DOCS))],
+        batches=batches or [[i] for i in range(len(docs))],
         path=str(index_cfg.partial_run_path),
         do_eigendecomposition=True,
     )
@@ -196,6 +200,72 @@ def test_fit_resumed_in_each_phase_matches_uninterrupted(
     )
 
     expected, got = _factors(full), _factors(resumed)
+    assert got.keys() == expected.keys()
+    for key in expected:
+        torch.testing.assert_close(got[key], expected[key], rtol=0, atol=0, msg=key)
+
+
+# Two ranks with four one-document batches each.
+WORLD_SIZE = 2
+DIST_DOCS = DOCS + [[19, 20], [21, 22, 23], [24], [25, 26, 27, 28]]
+
+
+def _resume_worker(rank, port, root, phase, results):
+    dist.init_process_group(
+        "gloo",
+        init_method=f"tcp://localhost:{port}",
+        rank=rank,
+        world_size=WORLD_SIZE,
+    )
+    torch.manual_seed(42)
+    config = AutoConfig.from_pretrained("trl-internal-testing/tiny-Phi3ForCausalLM-3")
+    model = AutoModelForCausalLM.from_config(config, torch_dtype=torch.float32)
+    batches = [[i] for i in range(rank, len(DIST_DOCS), WORLD_SIZE)]
+    fit = {"docs": DIST_DOCS, "batches": batches}
+
+    _fit_ekfac(model, Path(root, "full"), **fit)
+    with pytest.MonkeyPatch.context() as m:
+        if phase == "covariance":
+            _crash_after(m, 2)
+        elif phase == "eigendecomposition":
+            _crash_in_eigendecomposition(m)
+        else:
+            _crash_after(m, 2, num_passes=1)
+        # Every rank stops at the same batch, so none waits on the others.
+        with pytest.raises(RuntimeError, match="interrupted"):
+            _fit_ekfac(model, Path(root, "resumed"), **fit)
+    with pytest.MonkeyPatch.context() as m:
+        counts = _count_batches(m)
+        _fit_ekfac(model, Path(root, "resumed"), seed=1, **fit)
+    results[rank] = counts
+    dist.destroy_process_group()
+
+
+@pytest.mark.parametrize("phase", ["covariance", "eigendecomposition", "ev_correction"])
+def test_distributed_fit_resumes_to_uninterrupted(tmp_path, monkeypatch, phase):
+    # gloo can't communicate CUDA tensors.
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+    with socket.socket() as s:
+        s.bind(("", 0))
+        port = s.getsockname()[1]
+    results = mp.Manager().dict()
+    mp.spawn(
+        _resume_worker,
+        args=(port, str(tmp_path), phase, results),
+        nprocs=WORLD_SIZE,
+    )
+
+    expected_counts = {
+        "covariance": [2, 4],
+        "eigendecomposition": [4],
+        "ev_correction": [2],
+    }[phase]
+    assert [results[rank] for rank in range(WORLD_SIZE)] == [
+        expected_counts
+    ] * WORLD_SIZE
+
+    expected = _factors(tmp_path / "full.part")
+    got = _factors(tmp_path / "resumed.part")
     assert got.keys() == expected.keys()
     for key in expected:
         torch.testing.assert_close(got[key], expected[key], rtol=0, atol=0, msg=key)
