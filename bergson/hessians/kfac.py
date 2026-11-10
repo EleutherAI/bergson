@@ -14,6 +14,7 @@ from bergson.hessians.sharded_computation import (
     gather_batch_shapes,
     gather_to_owner,
     owned_to_row_shards,
+    restore_sums,
 )
 from bergson.utils.utils import assert_type
 
@@ -146,16 +147,8 @@ class CovarianceCollector(HookCollectorBase):
     def load_state_dict(self, state: dict) -> None:
         """Restore sums saved by :meth:`state_dict` into the tensors ``setup``
         made, so a fit with different modules or sharding is an error."""
-        for key, covariances in (
-            ("A_cov", self.A_cov_dict),
-            ("S_cov", self.S_cov_dict),
-        ):
-            if state[key].keys() != covariances.keys():
-                raise ValueError(f"Saved {key} modules do not match this fit")
-            for name, saved in state[key].items():
-                if saved.shape != covariances[name].shape:
-                    raise ValueError(f"Saved {key} for {name} has another shape")
-                covariances[name].copy_(saved)
+        restore_sums("A_cov", state["A_cov"], self.A_cov_dict)
+        restore_sums("S_cov", state["S_cov"], self.S_cov_dict)
         self.num_positions = dict(state["num_positions"])
 
     def process_batch(self, indices: list[int], **kwargs) -> None:

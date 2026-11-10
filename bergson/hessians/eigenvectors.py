@@ -17,6 +17,7 @@ from bergson.hessians.sharded_computation import (
     gather_batch_shapes,
     gather_to_owner,
     owned_to_row_shards,
+    restore_sums,
     shard_bounds,
 )
 from bergson.utils.logger import get_logger
@@ -274,6 +275,25 @@ class LambdaCollector(HookCollectorBase):
             self.eigenvalue_corrections[name] = self.eigenvalue_corrections[name].to(
                 device="cpu", non_blocking=False
             )
+
+    def state_dict(self) -> dict:
+        """The running corrections this rank holds, so an interrupted pass can
+        resume."""
+        return {"eigenvalue_corrections": self.eigenvalue_corrections}
+
+    def load_state_dict(self, state: dict) -> None:
+        """Restore corrections saved by :meth:`state_dict`."""
+        saved = state["eigenvalue_corrections"]
+        if self.owners is not None:
+            restore_sums("eigenvalue_corrections", saved, self.eigenvalue_corrections)
+            return
+        # A single process creates each module's correction, on the CPU, the
+        # first time its hooks run.
+        if not saved.keys() <= self.target_info.keys():
+            raise ValueError("Saved eigenvalue_corrections modules do not match")
+        self.eigenvalue_corrections = {
+            name: tensor.to("cpu", self.dtype) for name, tensor in saved.items()
+        }
 
     def process_batch(self, indices: list[int], **kwargs) -> None:
         """No per-batch processing needed for lambda collection."""

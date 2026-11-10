@@ -524,16 +524,18 @@ def collect_hessians(
     else:
         collector = HESSIAN_APPROXIMATIONS[hessian_cfg.method](**collector_args)
 
-    # The eigenvalue correction pass cannot be checkpointed yet.
-    checkpoint_interval = 0 if ev_correction else hessian_cfg.checkpoint_interval
     computer = CollectorComputer(
         model=model,  # type: ignore
         data=data,
         collector=collector,
         batches=batches,
         cfg=index_cfg,
-        checkpoint_path=os.path.join(collector_args["path"], "checkpoint"),
-        checkpoint_interval=checkpoint_interval,
+        checkpoint_path=os.path.join(
+            collector_args["path"],
+            "checkpoint",
+            "ev_correction" if ev_correction else "covariance",
+        ),
+        checkpoint_interval=hessian_cfg.checkpoint_interval,
         checkpoint_settings={
             "model": index_cfg.model,
             "method": hessian_cfg.method,

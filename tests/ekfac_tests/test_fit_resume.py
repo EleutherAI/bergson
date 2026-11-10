@@ -66,10 +66,11 @@ def _crash_after(monkeypatch, num_batches, num_passes=0):
     monkeypatch.setattr(approximations, "fwd_bwd_hessian_factory", crashing_factory)
 
 
-def test_resumed_covariances_match_uninterrupted(tmp_path, model, monkeypatch):
+@pytest.mark.parametrize("method", ["kfac", "tkfac", "shampoo"])
+def test_resumed_covariances_match_uninterrupted(tmp_path, model, monkeypatch, method):
     model = model.to(get_device(0))
     # Labels are sampled, so this also checks the RNG state is restored.
-    cfg = HessianConfig(method="kfac", checkpoint_interval=1)
+    cfg = HessianConfig(method=method, checkpoint_interval=1)
 
     full = _fit(model, tmp_path / "full", cfg)
 
@@ -87,7 +88,7 @@ def test_resumed_covariances_match_uninterrupted(tmp_path, model, monkeypatch):
         torch.load(resumed / "total_processed.pt", weights_only=True),
         torch.load(full / "total_processed.pt", weights_only=True),
     )
-    assert not os.path.exists(resumed / "checkpoint" / "rank_0.pt")
+    assert not os.path.exists(resumed / "checkpoint" / "covariance" / "rank_0.pt")
 
 
 def test_resume_with_other_settings_is_an_error(tmp_path, model, monkeypatch):
@@ -100,6 +101,26 @@ def test_resume_with_other_settings_is_an_error(tmp_path, model, monkeypatch):
     other = HessianConfig(method="kfac", checkpoint_interval=1, hessian_dtype="fp64")
     with pytest.raises(ValueError, match="hessian_dtype changed"):
         _fit(model, tmp_path, other)
+
+
+def _count_batches(monkeypatch) -> list[int]:
+    """Count the forward-backward calls of each pass the fit runs."""
+    factory = approximations.fwd_bwd_hessian_factory
+    counts: list[int] = []
+
+    def counting_factory(*args, **kwargs):
+        fwd_bwd = factory(*args, **kwargs)
+        counts.append(0)
+        this_pass = len(counts) - 1
+
+        def wrapped(*a, **kw):
+            counts[this_pass] += 1
+            return fwd_bwd(*a, **kw)
+
+        return wrapped
+
+    monkeypatch.setattr(approximations, "fwd_bwd_hessian_factory", counting_factory)
+    return counts
 
 
 def _fit_ekfac(model, run_path, seed=0):
@@ -160,7 +181,19 @@ def test_fit_resumed_in_each_phase_matches_uninterrupted(
             _crash_after(m, 2, num_passes=1)
         with pytest.raises(RuntimeError, match="interrupted"):
             _fit_ekfac(model, tmp_path / "resumed")
-    resumed = _fit_ekfac(model, tmp_path / "resumed", seed=1)
+    with monkeypatch.context() as m:
+        counts = _count_batches(m)
+        resumed = _fit_ekfac(model, tmp_path / "resumed", seed=1)
+    # Only the batches after the last save are run again: two of the four in
+    # the interrupted pass, none in a pass that finished.
+    assert (
+        counts
+        == {
+            "covariance": [2, 4],
+            "eigendecomposition": [4],
+            "ev_correction": [2],
+        }[phase]
+    )
 
     expected, got = _factors(full), _factors(resumed)
     assert got.keys() == expected.keys()
