@@ -997,6 +997,10 @@ class HessianConfig(Serializable):
     """Fit the factored methods in this many module groups, one pass per group,
     merging the shard files afterwards; raise it when the factors do not fit."""
 
+    checkpoint_interval: int = 0
+    """Documents between saves of the fit's running sums. Enables resuming an
+    interrupted fit with ``--resume``; 0 disables saving."""
+
 
 @dataclass
 class AstraConfig(Serializable):

@@ -573,6 +573,14 @@ class HookCollectorBase(ContextDecorator, ABC):
         """
         pass
 
+    def state_dict(self) -> dict:
+        """The running state a checkpointed run saves between batches."""
+        raise NotImplementedError(f"{type(self).__name__} cannot be checkpointed")
+
+    def load_state_dict(self, state: dict) -> None:
+        """Restore state saved by :meth:`state_dict`."""
+        raise NotImplementedError(f"{type(self).__name__} cannot be checkpointed")
+
     def forward_hook(self, module: nn.Module, a: Float[Tensor, "N S I"]) -> None:
         """
         Cache activations for gradient computation with normalizer preprocessing
@@ -739,6 +747,9 @@ class CollectorComputer:
         collector: HookCollectorBase,
         batches: list[list[int]] | None = None,
         cfg: IndexConfig,
+        checkpoint_path: str | None = None,
+        checkpoint_interval: int = 0,
+        checkpoint_settings: dict | None = None,
     ):
         """
         Initialize the CollectorComputer.
@@ -751,6 +762,12 @@ class CollectorComputer:
             batches: List of index lists defining how to batch the data. If None,
                 defaults to batch size 1 (each sample processed individually).
             cfg: IndexConfig controlling all other hyperparameters.
+            checkpoint_path: Directory each rank saves the collector's state to,
+                and resumes from when a saved state is there.
+            checkpoint_interval: Documents, over all ranks, between saves. 0
+                disables saving.
+            checkpoint_settings: Settings the saved state depends on; resuming
+                with different ones is an error.
         """
         # Model
         self.model = model
@@ -767,6 +784,12 @@ class CollectorComputer:
 
         # Collector
         self.collector = collector
+
+        # Checkpointing
+        self.checkpoint_path = checkpoint_path
+        self.checkpoint_interval = checkpoint_interval
+        # This rank's batches change with the dataset, token budget and world size.
+        self.checkpoint_settings = {**(checkpoint_settings or {}), "batches": batches}
 
         # Other
         self.cfg = cfg
@@ -822,13 +845,25 @@ class CollectorComputer:
         Args:
             desc: Optional description string for the tqdm progress bar.
         """
-        total_processed = torch.tensor(0, device=self.device)
+        if self.checkpoint_interval:
+            # Fail before the first batch, not at the first save.
+            self.collector.state_dict()
+        start, processed = (
+            self._load_checkpoint() if self.checkpoint_interval else (0, 0)
+        )
+        total_processed = torch.tensor(processed, device=self.device)
+        docs_since_save = 0
         prof = self._setup_profiler()
         step = 0
         with prof:
-            for indices in tqdm(
-                self.batches,
-                desc=f"Computing {desc}",
+            for batches_done, indices in enumerate(
+                tqdm(
+                    self.batches[start:],
+                    desc=f"Computing {desc}",
+                    initial=start,
+                    total=len(self.batches),
+                ),
+                start=start + 1,
             ):
                 batch = self.data[indices]
 
@@ -873,6 +908,17 @@ class CollectorComputer:
 
                 self.collector.process_batch(indices, losses=losses)
 
+                if self.checkpoint_interval and batches_done < len(self.batches):
+                    # Ranks' batches hold different numbers of documents, so
+                    # count them over all ranks for every rank to save together.
+                    docs = torch.tensor(len(indices), device=self.device)
+                    if dist.is_initialized():
+                        dist.all_reduce(docs, op=dist.ReduceOp.SUM)
+                    docs_since_save += int(docs)
+                    if docs_since_save >= self.checkpoint_interval:
+                        self._save_checkpoint(batches_done, int(total_processed))
+                        docs_since_save = 0
+
         self.collector.teardown()
 
         if dist.is_initialized():
@@ -884,6 +930,65 @@ class CollectorComputer:
                 os.path.join(self.cfg.partial_run_path, "total_processed.pt"),
             )
         self.logger.info(f"Total processed: {total_processed.item()}")
+
+        if self.checkpoint_interval:
+            dist.barrier() if dist.is_initialized() else None
+            if os.path.exists(self._checkpoint_file()):
+                os.remove(self._checkpoint_file())
+
+    def _checkpoint_file(self) -> str:
+        assert self.checkpoint_path is not None, "checkpoint_interval needs a path"
+        return os.path.join(self.checkpoint_path, f"rank_{self.rank}.pt")
+
+    def _save_checkpoint(self, batches_done: int, total_processed: int) -> None:
+        """Save this rank's progress after ``batches_done`` batches."""
+        file = self._checkpoint_file()
+        os.makedirs(os.path.dirname(file), exist_ok=True)
+        state = {
+            "settings": self.checkpoint_settings,
+            "batches_done": batches_done,
+            "total_processed": total_processed,
+            "collector": self.collector.state_dict(),
+            # Sampled labels draw from these, so a resume samples the same ones.
+            "cpu_rng": torch.get_rng_state(),
+        }
+        if self.device.type == "cuda":
+            state["cuda_rng"] = torch.cuda.get_rng_state(self.device)
+
+        # Every rank finishes writing before any replaces its previous save.
+        torch.save(state, file + ".tmp")
+        dist.barrier() if dist.is_initialized() else None
+        os.replace(file + ".tmp", file)
+
+    def _load_checkpoint(self) -> tuple[int, int]:
+        """Restore this rank's saved progress, if any, returning the batches
+        done and positions counted."""
+        file = self._checkpoint_file()
+        start, processed = 0, 0
+        if os.path.exists(file):
+            state = torch.load(file, map_location="cpu", weights_only=True)
+            changed = [
+                key
+                for key, value in self.checkpoint_settings.items()
+                if state["settings"].get(key) != value
+            ]
+            if changed:
+                raise ValueError(
+                    f"Cannot resume from {file}: {', '.join(changed)} changed"
+                )
+            self.collector.load_state_dict(state["collector"])
+            torch.set_rng_state(state["cpu_rng"])
+            if "cuda_rng" in state:
+                torch.cuda.set_rng_state(state["cuda_rng"], self.device)
+            start, processed = state["batches_done"], state["total_processed"]
+            self.logger.info(f"Resuming from batch {start} of {len(self.batches)}")
+
+        if dist.is_initialized():
+            starts = [None] * self.world_size
+            dist.all_gather_object(starts, start)
+            if len(set(starts)) > 1:
+                raise RuntimeError(f"Ranks saved different batch counts: {starts}")
+        return start, processed
 
 
 def token_losses(
