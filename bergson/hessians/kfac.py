@@ -135,6 +135,29 @@ class CovarianceCollector(HookCollectorBase):
             stacked = stacked.to(self.dtype)
             covariances[name].addmm_(stacked.mT, stacked)
 
+    def state_dict(self) -> dict:
+        """The running sums this rank holds, so an interrupted fit can resume."""
+        return {
+            "A_cov": self.A_cov_dict,
+            "S_cov": self.S_cov_dict,
+            "num_positions": self.num_positions,
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        """Restore sums saved by :meth:`state_dict` into the tensors ``setup``
+        made, so a fit with different modules or sharding is an error."""
+        for key, covariances in (
+            ("A_cov", self.A_cov_dict),
+            ("S_cov", self.S_cov_dict),
+        ):
+            if state[key].keys() != covariances.keys():
+                raise ValueError(f"Saved {key} modules do not match this fit")
+            for name, saved in state[key].items():
+                if saved.shape != covariances[name].shape:
+                    raise ValueError(f"Saved {key} for {name} has another shape")
+                covariances[name].copy_(saved)
+        self.num_positions = dict(state["num_positions"])
+
     def process_batch(self, indices: list[int], **kwargs) -> None:
         """No per-batch processing needed for covariance collection."""
         pass
