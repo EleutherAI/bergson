@@ -136,7 +136,7 @@ def _count_batches(monkeypatch) -> list[int]:
     return counts
 
 
-def _fit_ekfac(model, run_path, seed=0, docs=DOCS, batches=None):
+def _fit_ekfac(model, run_path, seed=0, docs=DOCS, batches=None, hessian_dtype="fp32"):
     ds = Dataset.from_dict({"input_ids": docs, "length": [len(d) for d in docs]})
     index_cfg = IndexConfig(run_path=str(run_path), include_bias=False)
     index_cfg.partial_run_path.mkdir(parents=True, exist_ok=True)
@@ -152,7 +152,10 @@ def _fit_ekfac(model, run_path, seed=0, docs=DOCS, batches=None):
         data=ds,
         index_cfg=index_cfg,
         hessian_cfg=HessianConfig(
-            method="kfac", ev_correction=True, checkpoint_interval=1
+            method="kfac",
+            ev_correction=True,
+            checkpoint_interval=1,
+            hessian_dtype=hessian_dtype,
         ),
         target_modules=target_modules,
         attention_cfgs={},
@@ -176,6 +179,19 @@ def _crash_in_eigendecomposition(monkeypatch):
         raise RuntimeError("interrupted")
 
     monkeypatch.setattr(approximations, "save_uncorrected_eigenvalues", crash)
+
+
+def test_resume_after_a_phase_with_other_settings_is_an_error(
+    tmp_path, model, monkeypatch
+):
+    model = model.to(get_device(0))
+    with monkeypatch.context() as m:
+        _crash_in_eigendecomposition(m)
+        with pytest.raises(RuntimeError, match="interrupted"):
+            _fit_ekfac(model, tmp_path)
+
+    with pytest.raises(ValueError, match="hessian_dtype changed"):
+        _fit_ekfac(model, tmp_path, hessian_dtype="fp64")
 
 
 @pytest.mark.parametrize("phase", ["covariance", "eigendecomposition", "ev_correction"])

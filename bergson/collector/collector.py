@@ -998,7 +998,10 @@ class CollectorComputer:
             starts = [None] * self.world_size
             dist.all_gather_object(starts, start)
             if len(set(starts)) > 1:
-                raise RuntimeError(f"Ranks saved different batch counts: {starts}")
+                raise RuntimeError(
+                    f"Ranks saved different batch counts: {starts}. Delete "
+                    f"{self.checkpoint_path} to rerun this pass."
+                )
         return start, processed
 
 
