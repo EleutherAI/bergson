@@ -995,7 +995,7 @@ class CollectorComputer:
             self.logger.info(f"Resuming from batch {start} of {len(self.batches)}")
 
         if dist.is_initialized():
-            starts = [None] * self.world_size
+            starts: list[int | None] = [None] * self.world_size
             dist.all_gather_object(starts, start)
             if len(set(starts)) > 1:
                 raise RuntimeError(
