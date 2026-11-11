@@ -157,6 +157,11 @@ def approximate_hessians(
             f"projection; got index_cfg.projection_dim={index_cfg.projection_dim}. "
             "Set projection_dim=0."
         )
+    if hessian_cfg.method == "autocorrelation" and hessian_cfg.checkpoint_interval:
+        raise ValueError(
+            "The autocorrelation Hessian can't be checkpointed; "
+            "set checkpoint_interval=0."
+        )
 
     if hessian_cfg.method == "autocorrelation" and index_cfg.projection_dim == 0:
         warnings.warn(

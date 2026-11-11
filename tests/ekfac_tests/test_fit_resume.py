@@ -107,6 +107,15 @@ def test_resume_with_other_settings_is_an_error(tmp_path, model, monkeypatch):
         _fit(model, tmp_path, other)
 
 
+def test_autocorrelation_checkpointing_is_an_error(tmp_path):
+    cfg = HessianConfig(method="autocorrelation", checkpoint_interval=1)
+    with pytest.raises(ValueError, match="checkpoint_interval=0"):
+        approximations.approximate_hessians(
+            IndexConfig(run_path=str(tmp_path / "run")), cfg
+        )
+    assert not (tmp_path / "run.part").exists()
+
+
 def _count_batches(monkeypatch) -> list[int]:
     """Count the forward-backward calls of each pass the fit runs."""
     factory = approximations.fwd_bwd_hessian_factory
