@@ -132,11 +132,12 @@ class GradientProcessor:
     This is useful when the matrix-valued parameters are far from square, like in the
     case of LoRA adapters."""
 
-    projection_type: Literal["normal", "rademacher"] = "rademacher"
+    projection_type: Literal["normal", "rademacher", "hadamard"] = "rademacher"
     """
-    Type of random projection to use for compressing gradients. Can be either "normal"
-    for Gaussian projections or "rademacher" for Rademacher projections, which use a
-    uniform distribution over {-1, 1}.
+    Type of random projection to use for compressing gradients. Can be "normal"
+    for Gaussian projections, "rademacher" for Rademacher projections, which use a
+    uniform distribution over {-1, 1}, or "hadamard" for subsampled randomized
+    Hadamard transforms (SRHT, global projections only).
     """
 
     projection_target: Literal["per_module", "global"] = "per_module"
@@ -165,6 +166,10 @@ class GradientProcessor:
             self.projection_dim = None
         if self.projection_dim is None:
             self.projection_target = "per_module"
+        elif self.projection_type == "hadamard" and self.projection_target != "global":
+            raise ValueError(
+                "projection_type='hadamard' needs projection_target='global'."
+            )
         self._projection_matrices: dict[
             tuple[str, Literal["left", "right", "single"], torch.device], Tensor
         ] = {}

@@ -1,6 +1,6 @@
 import math
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import torch
 import torch.distributed as dist
@@ -13,6 +13,10 @@ from bergson.builder import Builder
 from bergson.collector.collector import HookCollectorBase
 from bergson.config import IndexConfig, PreprocessConfig
 from bergson.gradients import OuterProductGradients
+from bergson.hessians.preconditioner import (
+    FactoredPreconditioner,
+    is_factored_hessian,
+)
 from bergson.score.scorer import Scorer
 from bergson.utils.utils import get_gradient_dtype
 
@@ -82,13 +86,22 @@ class GradientCollector(HookCollectorBase):
         # Compute whether we need to save the index
         self.save_index = self.scorer is None and not self.skip_index
 
+        builder_cfg = self.preprocess_cfg
+        if self.processor.projection_target == "global" and builder_cfg.hessian_path:
+            # Precondition each module with H^-1/2 before it is projected; the
+            # projected gradients need nothing more.
+            self.projection_preconditioner = load_projection_preconditioner(
+                builder_cfg, self.model.device
+            )
+            builder_cfg = replace(builder_cfg, hessian_path=None)
+
         if self.save_index:
             grad_sizes = {name: math.prod(s) for name, s in self.shapes().items()}
             self.builder = Builder(
                 self.data,
                 grad_sizes,
                 self.save_dtype,
-                self.preprocess_cfg,
+                builder_cfg,
                 attribute_tokens=self.cfg.attribute_tokens,
                 span_column=self.span_column,
                 path=self.cfg.partial_run_path,
@@ -250,3 +263,27 @@ class StreamingGradientCollector(HookCollectorBase):
         self.mod_grads[name] = P.to(
             device="cpu", dtype=self.save_dtype, non_blocking=True
         )
+
+
+def load_projection_preconditioner(
+    preprocess_cfg: PreprocessConfig, device: torch.device
+) -> FactoredPreconditioner:
+    """``H^-1/2`` of the factored Hessian at ``preprocess_cfg.hessian_path``, for
+    preconditioning gradients before a global projection."""
+    assert preprocess_cfg.hessian_path
+    if not is_factored_hessian(preprocess_cfg.hessian_path):
+        raise ValueError(
+            "A global projection is preconditioned with a factored Hessian, but "
+            f"{preprocess_cfg.hessian_path} is dense."
+        )
+    if preprocess_cfg.unit_normalize:
+        raise ValueError(
+            "unit_normalize is not supported with a preconditioned global projection."
+        )
+    return FactoredPreconditioner.from_path(
+        preprocess_cfg.hessian_path,
+        inversion_cfg=preprocess_cfg.inversion_cfg,
+        power=-0.5,
+        ev_correction=preprocess_cfg.ev_correction,
+        device=device,
+    )

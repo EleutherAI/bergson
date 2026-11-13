@@ -26,6 +26,7 @@ from torch.utils.hooks import RemovableHandle
 from tqdm.auto import tqdm
 from transformers import PreTrainedModel
 
+from bergson.collector.hadamard import hadamard_project
 from bergson.collector.projection_matrix import random_matrix
 from bergson.config import AttentionConfig, HessianConfig, IndexConfig
 from bergson.data import compute_num_token_grads, get_span_rows, pad_and_tensor
@@ -36,6 +37,7 @@ from bergson.gradients import (
     LayerAdapter,
     OuterProductGradients,
 )
+from bergson.hessians.preconditioner import FactoredPreconditioner
 from bergson.moe import ExpertLinear
 from bergson.spans import span_gather
 from bergson.utils.logger import get_logger
@@ -105,6 +107,10 @@ class HookCollectorBase(ContextDecorator, ABC):
 
     save_dtype: torch.dtype = torch.float32
     """Dtype gradients are cast to on the way out. Set in subclass ``setup()``."""
+
+    projection_preconditioner: FactoredPreconditioner | None = None
+    """Applied to each module's gradient before a global projection, leaving the
+    result in the Hessian's eigenbasis."""
 
     logger = get_logger("HookCollectorBase", level="INFO")
 
@@ -372,6 +378,8 @@ class HookCollectorBase(ContextDecorator, ABC):
         if key in self.processor._projection_matrices:
             return self.processor._projection_matrices[key]
 
+        # Hadamard projections are global, so they never form module matrices.
+        assert self.processor.projection_type != "hadamard"
         A = create_module_projection_matrix(
             name,
             role,
@@ -401,6 +409,11 @@ class HookCollectorBase(ContextDecorator, ABC):
             return False
 
         assert self.processor.projection_dim is not None
+        if self.projection_preconditioner is not None:
+            G = P.materialize() if isinstance(P, OuterProductGradients) else P
+            P = self.projection_preconditioner.apply(
+                {name: G.flatten(1)}, rotate_back=False
+            )[name]
         projected = project_global(
             self.projection_identifier(name, "single", self.processor.projection_seed),
             P,
@@ -1043,16 +1056,24 @@ def project_global(
     identifier: str,
     P: Tensor | OuterProductGradients,
     m: int,
-    projection_type: Literal["normal", "rademacher"] = "normal",
+    projection_type: Literal["normal", "rademacher", "hadamard"] = "normal",
     projection_scale: Literal["jl", "row_norm"] = "jl",
 ) -> Tensor:
     """``P @ R.T`` for the ``[m, n]`` projection matrix named ``identifier``,
-    where ``P`` is ``[N, n]``, streaming ``R`` in column blocks.
+    where ``P`` is ``[N, n]`` or ``[N, O, W]``, streaming ``R`` in column blocks.
 
     Matches :func:`create_projection_matrix` in its scaling: ``jl`` divides by
     ``sqrt(m)``; ``row_norm`` divides each output column by the norm of the
     corresponding row of ``R`` (``sqrt(n)`` exactly for Rademacher entries).
+
+    ``hadamard`` sketches each module with :func:`hadamard_project` instead.
     """
+    if projection_type == "hadamard":
+        if projection_scale != "jl":
+            raise ValueError("Hadamard sketches only support projection_scale='jl'.")
+        return hadamard_project(identifier, P, m)
+    if not isinstance(P, OuterProductGradients) and P.ndim == 3:
+        P = P.flatten(1)
     if isinstance(P, OuterProductGradients):
         n = P.g.shape[-1] * P.a.shape[-1]
         out = P.g.new_zeros(P.g.shape[0], m)

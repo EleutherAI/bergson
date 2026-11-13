@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -362,12 +363,19 @@ def score_worker(
             for start in range(0, num_queries, qbs)
         ]
 
+    scorer_cfg = preprocess_cfg
+    if index_cfg.projection_target == "global" and preprocess_cfg.hessian_path:
+        # The collector preconditions the gradients before projecting them, as the
+        # query was.
+        kwargs["preprocess_cfg"] = preprocess_cfg
+        scorer_cfg = replace(preprocess_cfg, hessian_path=None)
+
     for query_range in query_ranges:
         kwargs["scorer"] = create_scorer(
             index_cfg.partial_run_path,
             ds,
             score_cfg,
-            preprocess_cfg,
+            scorer_cfg,
             device=score_device,
             dtype=score_dtype,
             attribute_tokens=index_cfg.attribute_tokens,
@@ -511,10 +519,12 @@ def score_dataset(
     preprocess_cfg : PreprocessConfig
         Preprocessing configuration for gradient normalization/preconditioning.
     """
-    # A factored (EKFAC) preconditioner needs full, unprojected gradients.
+    # A factored (EKFAC) preconditioner needs full, unprojected gradients, which
+    # a global projection preconditions before projecting them.
     if (
         preprocess_cfg.hessian_path
         and index_cfg.projection_dim != 0
+        and index_cfg.projection_target != "global"
         and is_factored_hessian(preprocess_cfg.hessian_path)
     ):
         if preprocess_cfg.unit_normalize:
