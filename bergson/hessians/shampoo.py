@@ -8,7 +8,7 @@ from safetensors.torch import save_file
 from torch import Tensor
 
 from bergson.collector.collector import HookCollectorBase
-from bergson.hessians.sharded_computation import ShardedMul
+from bergson.hessians.sharded_computation import ShardedMul, restore_sums
 from bergson.utils.utils import assert_type
 
 
@@ -95,6 +95,15 @@ class ShampooCollector(HookCollectorBase):
         # Accumulate
         S_shampoo_po.add_(update_slice_po)
         A_shampoo_ki.add_(update_slice_ki)
+
+    def state_dict(self) -> dict:
+        """The running sums this rank holds, so an interrupted fit can resume."""
+        return {"A_shampoo": self.A_shampoo_dict, "S_shampoo": self.S_shampoo_dict}
+
+    def load_state_dict(self, state: dict) -> None:
+        """Restore sums saved by :meth:`state_dict`."""
+        restore_sums("A_shampoo", state["A_shampoo"], self.A_shampoo_dict)
+        restore_sums("S_shampoo", state["S_shampoo"], self.S_shampoo_dict)
 
     def process_batch(self, indices: list[int], **kwargs) -> None:
         """No per-batch processing needed for covariance collection."""

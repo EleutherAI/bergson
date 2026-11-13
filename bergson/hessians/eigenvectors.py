@@ -17,6 +17,7 @@ from bergson.hessians.sharded_computation import (
     gather_batch_shapes,
     gather_to_owner,
     owned_to_row_shards,
+    restore_sums,
     shard_bounds,
 )
 from bergson.utils.logger import get_logger
@@ -275,6 +276,25 @@ class LambdaCollector(HookCollectorBase):
                 device="cpu", non_blocking=False
             )
 
+    def state_dict(self) -> dict:
+        """The running corrections this rank holds, so an interrupted pass can
+        resume."""
+        return {"eigenvalue_corrections": self.eigenvalue_corrections}
+
+    def load_state_dict(self, state: dict) -> None:
+        """Restore corrections saved by :meth:`state_dict`."""
+        saved = state["eigenvalue_corrections"]
+        if self.owners is not None:
+            restore_sums("eigenvalue_corrections", saved, self.eigenvalue_corrections)
+            return
+        # A single process creates each module's correction, on the CPU, the
+        # first time its hooks run.
+        if not saved.keys() <= self.target_info.keys():
+            raise ValueError("Saved eigenvalue_corrections modules do not match")
+        self.eigenvalue_corrections = {
+            name: tensor.to("cpu", self.dtype) for name, tensor in saved.items()
+        }
+
     def process_batch(self, indices: list[int], **kwargs) -> None:
         """No per-batch processing needed for lambda collection."""
         pass
@@ -441,6 +461,7 @@ def eigendecompose_owned(
 def compute_eigendecomposition(
     covariance_path: str,
     total_processed: int | Tensor,
+    num_positions: dict[str, int] | None = None,
 ) -> dict[str, Tensor]:
     """
     Compute eigendecomposition from covariance matrices (Eq. 18 from paper).
@@ -453,6 +474,9 @@ def compute_eigendecomposition(
     Args:
         covariance_path: Full path to the covariance sharded directory.
         total_processed: Number of samples used to compute covariance.
+        num_positions: Positions each module's covariances summed, as in
+            :func:`eigendecompose_owned`, when they differ from
+            ``total_processed``.
 
     Returns:
         Per-key eigenvalue shards (rows per shard_bounds) on CPU. The
@@ -499,7 +523,8 @@ def compute_eigendecomposition(
             world_size=world_size,
         )
 
-        eigenvalues, eigenvectors = _eigh(key, matrix, total_processed, original_dtype)
+        count = _module_count(key, total_processed, num_positions)
+        eigenvalues, eigenvectors = _eigh(key, matrix, count, original_dtype)
         del matrix
         covariance_eigenvectors[key] = eigenvectors.cpu()
         covariance_eigenvalues[key] = eigenvalues.cpu()
