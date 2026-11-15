@@ -1,19 +1,22 @@
+import math
 import os
 from dataclasses import dataclass
 
 import torch
 import torch.distributed as dist
 import torch.nn as nn
-from safetensors.torch import save_file
 from torch import Tensor
 
 from bergson.collector.collector import HookCollectorBase
 from bergson.hessians.sharded_computation import (
+    BackgroundSaves,
+    OwnerGathers,
     ShardedMul,
     assign_module_owners,
     gather_batch_shapes,
-    gather_to_owner,
+    local_modules,
     owned_to_row_shards,
+    save_shards,
 )
 from bergson.utils.utils import assert_type
 
@@ -29,8 +32,11 @@ class CovarianceCollector(HookCollectorBase):
 
     where X is input activations [N*S, I] and G is output gradients [N*S, O].
 
-    Distributed, each module's covariances belong to one rank, which receives
-    every rank's positions for that module; teardown saves the usual row shards.
+    Distributed, each module's covariances belong to one rank. Every rank keeps
+    the covariances of the modules in ``local``, summing its own positions and
+    sending the sums to their owners at teardown; owners receive every rank's
+    positions for the other modules each step. Teardown saves the usual row
+    shards.
     Teardown leaves the covariances this rank owns, in full, on its device in
     ``A_cov_dict`` and ``S_cov_dict`` for the eigendecomposition.
 
@@ -42,6 +48,11 @@ class CovarianceCollector(HookCollectorBase):
 
     dtype: torch.dtype
     path: str
+    local_bytes: float = 0
+    """Bytes of covariances each rank may keep, smallest modules first."""
+    saves: BackgroundSaves | None = None
+    """Thread the shards are saved on; without one, teardown saves them
+    before it returns."""
 
     def setup(self) -> None:
         """Initialize covariance storage dictionaries."""
@@ -49,7 +60,8 @@ class CovarianceCollector(HookCollectorBase):
         self.S_cov_dict = {}
         self.num_positions: dict[str, int] = dict.fromkeys(self.target_info, 0)
         self.shard_computer = ShardedMul()
-        self.A_shapes, self.S_shapes = {}, {}
+        self.A_shapes: dict[str, tuple[int, ...]] = {}
+        self.S_shapes: dict[str, tuple[int, ...]] = {}
         for name, (_, (out_dim, in_dim), collect_bias) in self.target_info.items():
             self.A_shapes[name] = (in_dim + collect_bias,) * 2
             self.S_shapes[name] = (out_dim, out_dim)
@@ -67,9 +79,19 @@ class CovarianceCollector(HookCollectorBase):
 
         self.owners = assign_module_owners(self.target_info, self.world_size)
         self._rows = 0  # set per batch by with_batch
+        self.gathers = OwnerGathers()
+        itemsize = torch.empty((), dtype=self.dtype).element_size()
+        self.local = local_modules(
+            {
+                name: (math.prod(self.A_shapes[name]) + math.prod(self.S_shapes[name]))
+                * itemsize
+                for name in self.owners
+            },
+            self.local_bytes,
+        )
         device = self.shard_computer.device
         for name, owner in self.owners.items():
-            if owner == self.rank:
+            if owner == self.rank or name in self.local:
                 self.A_cov_dict[name] = torch.zeros(
                     self.A_shapes[name], device=device, dtype=self.dtype
                 )
@@ -123,17 +145,18 @@ class CovarianceCollector(HookCollectorBase):
     def _accumulate(self, covariances: dict[str, Tensor], name: str, x: Tensor):
         """Add ``X^T @ X`` to ``name``'s covariance, where ``X`` stacks every
         rank's ``x``, in the accumulation dtype."""
-        if self.owners is None:
+        if self.owners is None or name in self.local:
             x = x.to(self.dtype)
             covariances[name].addmm_(x.mT, x)
             return
 
-        # Sent in the model's dtype and cast on the owner, which moves less data.
-        stacked = gather_to_owner(x, self._rows, self.owners[name])
-        if stacked is not None:
+        def add(stacked: Tensor):
             # Padding rows are zero, so they add nothing.
             stacked = stacked.to(self.dtype)
             covariances[name].addmm_(stacked.mT, stacked)
+
+        # Sent in the model's dtype and cast on the owner, which moves less data.
+        self.gathers.send(x, self._rows, self.owners[name], add)
 
     def process_batch(self, indices: list[int], **kwargs) -> None:
         """No per-batch processing needed for covariance collection."""
@@ -141,6 +164,14 @@ class CovarianceCollector(HookCollectorBase):
 
     def teardown(self) -> None:
         """Save covariance matrices to disk."""
+        if self.owners is not None:
+            self.gathers.flush()
+            for name in sorted(self.local):
+                owner = self.owners[name]
+                for covariances in (self.A_cov_dict, self.S_cov_dict):
+                    dist.reduce(covariances[name], dst=owner)
+                    if owner != self.rank:
+                        del covariances[name]
         activation_path = os.path.join(self.path, "activation_sharded")
         gradient_path = os.path.join(self.path, "gradient_sharded")
 
@@ -164,7 +195,9 @@ class CovarianceCollector(HookCollectorBase):
                 )
             else:
                 shards = covariances
-            save_file(shards, os.path.join(path, f"shard_{self.rank}.safetensors"))
+            save_shards(
+                shards, os.path.join(path, f"shard_{self.rank}.safetensors"), self.saves
+            )
             del shards
 
         if dist.is_initialized():

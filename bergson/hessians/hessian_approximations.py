@@ -33,6 +33,7 @@ from bergson.hessians.eigenvectors import (
 )
 from bergson.hessians.kfac import CovarianceCollector
 from bergson.hessians.shampoo import ShampooCollector
+from bergson.hessians.sharded_computation import BackgroundSaves
 from bergson.hessians.tkfac import TraceCovarianceCollector
 from bergson.utils.utils import (
     convert_precision_to_torch,
@@ -326,6 +327,10 @@ def fit_factored_hessians(
         "path": path,
     }
 
+    # The shards are written while the fit goes on
+    saves = BackgroundSaves()
+    kwargs["saves"] = saves
+
     collector = collect_hessians(**kwargs)
     if not do_eigendecomposition and isinstance(collector, CovarianceCollector):
         # Only the eigendecomposition reads the covariances kept in memory.
@@ -339,6 +344,7 @@ def fit_factored_hessians(
     world_size = dist.get_world_size() if dist.is_initialized() else 1
 
     if not do_eigendecomposition:
+        saves.wait()
         return
 
     total_processed = torch.load(
@@ -360,6 +366,7 @@ def fit_factored_hessians(
             os.path.join(path, "eigen_activation_sharded"),
             collector.dtype,
             num_positions=num_positions,
+            saves=saves,
         )
         eigenvectors_g, eigenvalues_g = eigendecompose_owned(
             collector.S_cov_dict,
@@ -369,6 +376,7 @@ def fit_factored_hessians(
             os.path.join(path, "eigen_gradient_sharded"),
             collector.dtype,
             num_positions=num_positions,
+            saves=saves,
         )
         eigenvectors = (eigenvectors_a, eigenvectors_g)
     else:
@@ -392,6 +400,7 @@ def fit_factored_hessians(
         world_size=world_size,
         num_documents=len(data),
         num_positions=num_positions,
+        saves=saves,
     )
 
     if hessian_cfg.ev_correction:
@@ -402,6 +411,7 @@ def fit_factored_hessians(
             eigenvectors=eigenvectors,
         )
         _release_device_memory()
+    saves.wait()
 
 
 def _release_device_memory():
@@ -427,12 +437,14 @@ def collect_hessians(
     path: str | None = None,
     num_documents: int = 1,
     eigenvectors: tuple[dict[str, Tensor], dict[str, Tensor]] | None = None,
+    saves: BackgroundSaves | None = None,
 ) -> HookCollectorBase:
     """
     Compute Hessian approximations using the hooks specified in the collector.
     If ev_correction is True, uses LambdaCollector to compute eigenvalue corrections.
     ``path`` overrides where the collector writes. ``eigenvectors`` are passed to
-    the LambdaCollector. Returns the finished collector.
+    the LambdaCollector. The K-FAC collectors save their shards on ``saves``'
+    thread when given. Returns the finished collector.
     """
 
     hessian_dtype = convert_precision_to_torch(hessian_cfg.hessian_dtype)
@@ -446,16 +458,26 @@ def collect_hessians(
         "processor": GradientProcessor(include_bias=index_cfg.include_bias),
         "dtype": hessian_dtype,
     }
+    local_bytes = 0.0
+    if torch.cuda.is_available():
+        total = torch.cuda.get_device_properties(torch.cuda.current_device())
+        local_bytes = hessian_cfg.local_factor_memory * total.total_memory
     desc = f"Approximating Hessians with {hessian_cfg.method}"
     if ev_correction:
         collector = LambdaCollector(
             **collector_args,
+            local_bytes=local_bytes,
             eigen_path=eigen_path,
             output_subdir=output_subdir,
             num_documents=num_documents,
             eigenvectors=eigenvectors,
+            saves=saves,
         )
         desc += " (eigenvalue correction)"
+    elif hessian_cfg.method == "kfac":
+        collector = CovarianceCollector(
+            **collector_args, local_bytes=local_bytes, saves=saves
+        )
     else:
         collector = HESSIAN_APPROXIMATIONS[hessian_cfg.method](**collector_args)
 
