@@ -14,6 +14,7 @@ from bergson.hessians.sharded_computation import (
     gather_batch_shapes,
     gather_to_owner,
     owned_to_row_shards,
+    restore_sums,
 )
 from bergson.utils.utils import assert_type
 
@@ -134,6 +135,21 @@ class CovarianceCollector(HookCollectorBase):
             # Padding rows are zero, so they add nothing.
             stacked = stacked.to(self.dtype)
             covariances[name].addmm_(stacked.mT, stacked)
+
+    def state_dict(self) -> dict:
+        """The running sums this rank holds, so an interrupted fit can resume."""
+        return {
+            "A_cov": self.A_cov_dict,
+            "S_cov": self.S_cov_dict,
+            "num_positions": self.num_positions,
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        """Restore sums saved by :meth:`state_dict` into the tensors ``setup``
+        made, so a fit with different modules or sharding is an error."""
+        restore_sums("A_cov", state["A_cov"], self.A_cov_dict)
+        restore_sums("S_cov", state["S_cov"], self.S_cov_dict)
+        self.num_positions = dict(state["num_positions"])
 
     def process_batch(self, indices: list[int], **kwargs) -> None:
         """No per-batch processing needed for covariance collection."""

@@ -8,7 +8,7 @@ from safetensors.torch import save_file
 from torch import Tensor
 
 from bergson.collector.collector import HookCollectorBase
-from bergson.hessians.sharded_computation import ShardedMul
+from bergson.hessians.sharded_computation import ShardedMul, restore_sums
 from bergson.utils.utils import assert_type
 
 
@@ -102,6 +102,15 @@ class TraceCovarianceCollector(HookCollectorBase):
         # Accumulate
         S_tcov_po.add_(update_slice_po)
         A_tcov_ki.add_(update_slice_ki)
+
+    def state_dict(self) -> dict:
+        """The running sums this rank holds, so an interrupted fit can resume."""
+        return {"A_tcov": self.A_tcov_dict, "S_tcov": self.S_tcov_dict}
+
+    def load_state_dict(self, state: dict) -> None:
+        """Restore sums saved by :meth:`state_dict`."""
+        restore_sums("A_tcov", state["A_tcov"], self.A_tcov_dict)
+        restore_sums("S_tcov", state["S_tcov"], self.S_tcov_dict)
 
     def process_batch(self, indices: list[int], **kwargs) -> None:
         """No per-batch processing needed for covariance collection."""

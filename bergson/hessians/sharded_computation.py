@@ -102,6 +102,18 @@ def owned_to_row_shards(
     return shards
 
 
+def restore_sums(label: str, saved: dict[str, Tensor], sums: dict[str, Tensor]):
+    """Copy a checkpoint's ``saved`` running sums into ``sums`` in place, so a
+    fit with different modules or sharding is an error."""
+    if saved.keys() != sums.keys():
+        raise ValueError(f"Saved {label} modules do not match this fit")
+    for name, tensor in saved.items():
+        # copy_ would broadcast a single saved row into the whole sum.
+        if tensor.shape != sums[name].shape:
+            raise ValueError(f"Saved {label} for {name} has another shape")
+        sums[name].copy_(tensor)
+
+
 class ShardedMul:
     """Distributed-aware linear-algebra primitives for applying a factored Hessian:
     eigenbasis rotations and in-place eigenvalue scaling.

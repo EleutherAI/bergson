@@ -45,6 +45,22 @@ def test_resume_skips_only_completed_steps(tmp_path):
     assert (out / "out.bin").exists()
 
 
+def test_resumable_step_keeps_its_partial_output_on_resume(tmp_path):
+    out = tmp_path / "step"
+    _write(partial_path(out), "half.bin")
+
+    assert prepare_step(out, resume=True, resumable=True) is True
+    assert (partial_path(out) / "half.bin").exists()
+
+
+def test_resumable_step_restarts_without_resume(tmp_path):
+    out = tmp_path / "step"
+    _write(partial_path(out), "half.bin")
+
+    assert prepare_step(out, resume=False, resumable=True) is True
+    assert not partial_path(out).exists()
+
+
 def test_overwrite_reruns_but_keeps_output_until_promote(tmp_path):
     out = tmp_path / "step"
     _write(partial_path(out), "old.bin")

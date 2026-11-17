@@ -1,4 +1,5 @@
 import gc
+import json
 import os
 import shutil
 import warnings
@@ -16,6 +17,8 @@ from bergson.collector.collector import (
     CollectorComputer,
     HookCollectorBase,
     fwd_bwd_hessian_factory,
+    rng_state,
+    set_rng_state,
 )
 from bergson.config.config import AttentionConfig, HessianConfig, IndexConfig
 from bergson.data import allocate_batches
@@ -154,6 +157,11 @@ def approximate_hessians(
             f"projection; got index_cfg.projection_dim={index_cfg.projection_dim}. "
             "Set projection_dim=0."
         )
+    if hessian_cfg.method == "autocorrelation" and hessian_cfg.checkpoint_interval:
+        raise ValueError(
+            "The autocorrelation Hessian can't be checkpointed; "
+            "set checkpoint_interval=0."
+        )
 
     if hessian_cfg.method == "autocorrelation" and index_cfg.projection_dim == 0:
         warnings.warn(
@@ -180,6 +188,11 @@ def approximate_hessians(
     rank = index_cfg.distributed.rank
     if rank == 0:
         shutil.move(index_cfg.partial_run_path, index_cfg.run_path)
+        if hessian_cfg.checkpoint_interval:
+            # The finished fit no longer needs what a resume reads.
+            shutil.rmtree(
+                os.path.join(index_cfg.run_path, "checkpoint"), ignore_errors=True
+            )
 
     return index_cfg.run_path
 
@@ -326,12 +339,26 @@ def fit_factored_hessians(
         "path": path,
     }
 
-    collector = collect_hessians(**kwargs)
-    if not do_eigendecomposition and isinstance(collector, CovarianceCollector):
-        # Only the eigendecomposition reads the covariances kept in memory.
-        collector.A_cov_dict.clear()
-        collector.S_cov_dict.clear()
-    _release_device_memory()
+    # A resumed fit only reruns the phases its marker does not record.
+    settings = None
+    if hessian_cfg.checkpoint_interval > 0:
+        settings = _checkpoint_settings(index_cfg, hessian_cfg)
+    device = torch.device(model.device)  # type: ignore[attr-defined]
+    done = _load_phase(path, settings, device) if settings else None
+    finished = FIT_PHASES.index(done["phase"]) + 1 if done else 0
+    num_positions = done["num_positions"] if done else None
+
+    collector = None
+    if finished < 1:
+        collector = collect_hessians(**kwargs)
+        if not do_eigendecomposition and isinstance(collector, CovarianceCollector):
+            # Only the eigendecomposition reads the covariances kept in memory.
+            collector.A_cov_dict.clear()
+            collector.S_cov_dict.clear()
+        if isinstance(collector, CovarianceCollector):
+            num_positions = collector.num_positions
+        _release_device_memory()
+        _save_phase(path, "covariance", num_positions, settings, device)
 
     dist.barrier() if dist.is_initialized() else None
 
@@ -348,53 +375,56 @@ def fit_factored_hessians(
     )
 
     eigenvectors = None
-    num_positions = None
-    if isinstance(collector, CovarianceCollector):
-        num_positions = collector.num_positions
-        # Each rank still holds the covariances it owns, so skip the files.
-        eigenvectors_a, eigenvalues_a = eigendecompose_owned(
-            collector.A_cov_dict,
-            collector.A_shapes,
-            collector.owners,
-            total_processed,
-            os.path.join(path, "eigen_activation_sharded"),
-            collector.dtype,
+    if finished < 2:
+        if isinstance(collector, CovarianceCollector):
+            # Each rank still holds the covariances it owns, so skip the files.
+            eigenvectors_a, eigenvalues_a = eigendecompose_owned(
+                collector.A_cov_dict,
+                collector.A_shapes,
+                collector.owners,
+                total_processed,
+                os.path.join(path, "eigen_activation_sharded"),
+                collector.dtype,
+                num_positions=num_positions,
+            )
+            eigenvectors_g, eigenvalues_g = eigendecompose_owned(
+                collector.S_cov_dict,
+                collector.S_shapes,
+                collector.owners,
+                total_processed,
+                os.path.join(path, "eigen_gradient_sharded"),
+                collector.dtype,
+                num_positions=num_positions,
+            )
+            eigenvectors = (eigenvectors_a, eigenvectors_g)
+        else:
+            eigenvalues_a = compute_eigendecomposition(
+                os.path.join(path, "activation_sharded"),
+                total_processed=total_processed,
+                num_positions=num_positions,
+            )
+            eigenvalues_g = compute_eigendecomposition(
+                os.path.join(path, "gradient_sharded"),
+                total_processed=total_processed,
+                num_positions=num_positions,
+            )
+
+        dist.barrier() if dist.is_initialized() else None
+
+        save_uncorrected_eigenvalues(
+            partial_run_path=path,
+            eigenvalues_a=eigenvalues_a,
+            eigenvalues_g=eigenvalues_g,
+            total_processed=total_processed,
+            rank=rank,
+            world_size=world_size,
+            num_documents=len(data),
             num_positions=num_positions,
         )
-        eigenvectors_g, eigenvalues_g = eigendecompose_owned(
-            collector.S_cov_dict,
-            collector.S_shapes,
-            collector.owners,
-            total_processed,
-            os.path.join(path, "eigen_gradient_sharded"),
-            collector.dtype,
-            num_positions=num_positions,
-        )
-        eigenvectors = (eigenvectors_a, eigenvectors_g)
-    else:
-        eigenvalues_a = compute_eigendecomposition(
-            os.path.join(path, "activation_sharded"),
-            total_processed=total_processed,
-        )
-        eigenvalues_g = compute_eigendecomposition(
-            os.path.join(path, "gradient_sharded"),
-            total_processed=total_processed,
-        )
+        _save_phase(path, "eigendecomposition", num_positions, settings, device)
 
-    dist.barrier() if dist.is_initialized() else None
-
-    save_uncorrected_eigenvalues(
-        partial_run_path=path,
-        eigenvalues_a=eigenvalues_a,
-        eigenvalues_g=eigenvalues_g,
-        total_processed=total_processed,
-        rank=rank,
-        world_size=world_size,
-        num_documents=len(data),
-        num_positions=num_positions,
-    )
-
-    if hessian_cfg.ev_correction:
+    if hessian_cfg.ev_correction and finished < 3:
+        # Without eigenvectors in memory, the collector reads them from `path`.
         collect_hessians(
             **kwargs,
             ev_correction=True,
@@ -402,6 +432,68 @@ def fit_factored_hessians(
             eigenvectors=eigenvectors,
         )
         _release_device_memory()
+        _save_phase(path, "ev_correction", num_positions, settings, device)
+
+
+FIT_PHASES = ("covariance", "eigendecomposition", "ev_correction")
+
+
+def _save_phase(
+    path: str,
+    phase: str,
+    num_positions: dict[str, int] | None,
+    settings: dict | None,
+    device: torch.device,
+):
+    """Record that the fit under ``path`` finished ``phase``, with the counts
+    the later phases divide by and each rank's RNG state, so a resume can start
+    after it. ``settings`` is None when the fit is not checkpointed."""
+    if settings is None:
+        return
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    # Named by phase so it always matches the marker, even if a crash comes
+    # between writing the two.
+    rng_file = os.path.join(path, "checkpoint", f"rng_{phase}_rank_{rank}.pt")
+    os.makedirs(os.path.dirname(rng_file), exist_ok=True)
+    torch.save(rng_state(device), rng_file + ".tmp")
+    os.replace(rng_file + ".tmp", rng_file)
+
+    dist.barrier() if dist.is_initialized() else None
+    if rank == 0:
+        file = os.path.join(path, "checkpoint", "fit_phase.json")
+        marker = {"phase": phase, "num_positions": num_positions, **settings}
+        with open(file + ".tmp", "w") as f:
+            json.dump(marker, f)
+        os.replace(file + ".tmp", file)
+    dist.barrier() if dist.is_initialized() else None
+
+
+def _load_phase(path: str, settings: dict, device: torch.device) -> dict | None:
+    """The last phase the fit under ``path`` recorded, if any, restoring this
+    rank's RNG state from then. A fit recorded with other ``settings`` is an
+    error."""
+    file = os.path.join(path, "checkpoint", "fit_phase.json")
+    if not os.path.exists(file):
+        return None
+    with open(file) as f:
+        done = json.load(f)
+    changed = [key for key, value in settings.items() if done.get(key) != value]
+    if changed:
+        raise ValueError(f"Cannot resume from {file}: {', '.join(changed)} changed")
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    rng_file = os.path.join(path, "checkpoint", f"rng_{done['phase']}_rank_{rank}.pt")
+    set_rng_state(torch.load(rng_file, weights_only=True), device)
+    return done
+
+
+def _checkpoint_settings(index_cfg: IndexConfig, hessian_cfg: HessianConfig) -> dict:
+    """The settings a fit's saved sums depend on."""
+    return {
+        "model": index_cfg.model,
+        "method": hessian_cfg.method,
+        "hessian_dtype": hessian_cfg.hessian_dtype,
+        "use_dataset_labels": hessian_cfg.use_dataset_labels,
+    }
 
 
 def _release_device_memory():
@@ -465,6 +557,13 @@ def collect_hessians(
         collector=collector,
         batches=batches,
         cfg=index_cfg,
+        checkpoint_path=os.path.join(
+            collector_args["path"],
+            "checkpoint",
+            "ev_correction" if ev_correction else "covariance",
+        ),
+        checkpoint_interval=hessian_cfg.checkpoint_interval,
+        checkpoint_settings=_checkpoint_settings(index_cfg, hessian_cfg),
     )
 
     computer.forward_backward = fwd_bwd_hessian_factory(index_cfg, hessian_cfg)
