@@ -1,6 +1,14 @@
 # CHANGELOG
 
 
+## v2.11.0 (2026-11-17)
+
+### Features
+
+- Resume an interrupted Hessian fit ([#617](https://github.com/EleutherAI/bergson/pull/617),
+  [`99fc121`](https://github.com/EleutherAI/bergson/commit/99fc121d18980ec786e66815d9233060530750ba))
+
+
 ## v2.10.1 (2026-11-05)
 
 ### Bug Fixes
