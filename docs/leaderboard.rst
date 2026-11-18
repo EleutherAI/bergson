@@ -24,13 +24,10 @@ Indicative performance of data attribution methods in the finetuning regime.
    * - EKFAC + CG
      - 0.077 [0.066, 0.089]
      - 0.685 [0.664, 0.702]
-   * - EKFAC + ASTRA
-     - 0.076 [0.064, 0.089]
-     - 0.605 [0.581, 0.625]
    * - Eigenvalue-corrected Shampoo + ASTRA
      - 0.072 [0.061, 0.085]
      - 0.625 [0.604, 0.643]
-   * - EKFAC + ASTRA (exact replication)
+   * - EKFAC + ASTRA
      - 0.071 [0.060, 0.084]
      - 0.629 [0.607, 0.647]
    * - Eigenvalue-corrected Shampoo
@@ -198,13 +195,13 @@ Unrolled Gauss-Newton
    ``bergson gnh-unroll`` backpropagates through the AdamW training run on the weights of the linear layers, with each step's loss Hessian replaced by its Gauss-Newton matrix. Unlike MAGIC it supports query batching.
 
 ASTRA
-   ASTRA refines a Kronecker-factored inverse Hessian vector product such as EKFAC's, so it adds a constant amount of compute to each query on top of EKFAC's. Our mainline ASTRA result uses a learning rate tuned via a small grid search against the ASTRA objective, and identically scaled EKFAC and Gauss-Newton Hessians. We also include a reference result matching the implementation in the original paper, which uses a Gauss-Newton Hessian 1/511th the scale of the EKFAC Hessian. Results on this benchmark could likely be improved with careful per-query learning rate tuning - we recommend always tuning ASTRA's learning rate.
+   ASTRA refines a Kronecker-factored inverse Hessian vector product such as EKFAC's, so it adds a constant amount of compute to each query on top of EKFAC's. Our mainline ASTRA result uses a learning rate tuned via a small grid search against the ASTRA objective. Results on this benchmark could likely be improved with careful per-query learning rate tuning - we recommend always tuning ASTRA's learning rate.
 
 LiSSA
    The influence function of `Bae et al. <https://arxiv.org/abs/2209.05364>`_: the damped Gauss-Newton Hessian inverse applied to each query by the LiSSA solver. Unlike ASTRA, it doesn't precondition with an existing Hessian approximation, and costs significantly more per query.
 
 KFAC
-   A classic influence function in the form ``g_t H^{-1} g_q``. KFAC and EKFAC support gradient compression with P-SIFT: ``H^{-1/2}`` is applied to the training and query gradients, which are each sketched by a subsampled randomized Hadamard transform into one ``projection_dim`` vector and scored by their dot product. The compressed index suits the retrieval stage of a data attribution pipeline, at the cost of some LDS/QLD that shrinks as ``projection_dim`` grows.
+   A classic influence function in the form ``g_t H^{-1} g_q``. KFAC and EKFAC support gradient compression with P-SIFT: ``H^{-1/2}`` is applied to the training and query gradients, which are each sketched by a subsampled randomized Hadamard transform into one ``projection_dim`` vector. The compressed index suits the retrieval stage of a data attribution pipeline, at the cost of some LDS/QLD that shrinks as ``projection_dim`` grows.
 
 Eigenvalue-corrected Shampoo
    A novel influence function in the form ``g_t H^{-1} g_q`` using the Shampoo preconditioner as the H. Its mathematical relationship with the true Hessian is somewhere between "null" and "extremely tenuous" but it performs well anyway. It uses an eigenvalue correction similar to EKFAC's, and to the procedure in SOAP optimization.
