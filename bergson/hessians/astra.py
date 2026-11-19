@@ -295,12 +295,15 @@ class Astra:
         q = {n: q[n].to(self.store_device) for n in self.names}
         buf = {n: torch.zeros_like(q[n]) for n in self.names}
         lr, start, objectives = self.cfg.lr, 0, []
+        best: dict | None = None
         state = self._load_state(row)
         if state is not None:
             start, lr, objectives = state["step"], state["lr"], state["objectives"]
             gen.set_state(state["generator"])
             x = {n: state["x"][n].to(x[n]) for n in self.names}
             buf = {n: state["momentum"][n].to(buf[n]) for n in self.names}
+            if "best_x" in state:
+                best = {k: state[f"best_{k}"] for k in ("step", "objective", "x")}
             self.logger.info(f"query {row}: resuming from step {start}")
         for step in range(start, self.cfg.num_steps):
             if step > 0 and step % self.cfg.lr_decay_interval == 0:
@@ -309,15 +312,29 @@ class Astra:
                 : self.cfg.batch_size
             ].tolist()
             hx = self.hvp(x, indices)
-            objective = torch.stack(
-                [
-                    (x[n] @ (hx[n] + self.damping[n] * x[n])) / 2
-                    - x[n] @ q[n].to(self.device)
-                    for n in self.names
-                ]
-            ).sum()
-            objectives.append(objective.item())
-            self.logger.info(f"query {row} step {step}: objective {objectives[-1]:.6g}")
+            curv = sum(
+                (x[n] @ (hx[n] + self.damping[n] * x[n])).item() for n in self.names
+            )
+            qx = sum((x[n] @ q[n].to(self.device)).item() for n in self.names)
+            objectives.append(curv / 2 - qx)
+            # the objective at the best rescaling of x, -(q.x)^2 / (2 x.(H+D)x):
+            # independent of the scale of x, which scoring also ignores
+            scale_free = -(qx * qx) / (2 * curv) if curv > 0 else float("nan")
+            self.logger.info(
+                f"query {row} step {step}: objective {objectives[-1]:.6g}, "
+                f"scale-free objective {scale_free:.6g}"
+            )
+            w = self.cfg.best_window
+            if w and len(objectives) >= w:
+                mean = float(np.mean(objectives[-w:]))
+                if best is None or mean < best["objective"]:
+                    best = {
+                        "step": step,
+                        "objective": mean,
+                        "x": {
+                            n: x[n].detach().to("cpu", copy=True) for n in self.names
+                        },
+                    }
             for n in self.names:
                 residual = hx.pop(n) + self.damping[n] * x[n] - q[n].to(self.device)
                 direction = self.preconditioner.apply({n: residual[None]})[n][0]
@@ -340,7 +357,15 @@ class Astra:
                     momentum=buf,
                     lr=lr,
                     generator=gen.get_state(),
+                    **({f"best_{k}": v for k, v in best.items()} if best else {}),
                 )
+        if best is not None and best["step"] < len(objectives) - 1:
+            self.logger.info(
+                f"query {row}: keeping the iterate of step {best['step']} (mean "
+                f"objective {best['objective']:.6g} over the {self.cfg.best_window} "
+                f"steps ending there)"
+            )
+            x = {n: best["x"][n].to(x[n]) for n in self.names}
         return x
 
     def _stalled(self, objectives: list[float]) -> bool:
