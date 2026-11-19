@@ -1064,6 +1064,12 @@ class AstraConfig(Serializable):
 
     early_stop_tol: float = 0.01
 
+    best_window: int = 5
+    """Return the iterate at the step whose mean objective over the
+    ``best_window`` steps ending there is lowest. The objective is estimated on
+    a batch per step, and a step size that is a little too large climbs again
+    after reaching a good solution. 0 returns the last iterate."""
+
 
 @dataclass
 class LissaConfig(Serializable):
