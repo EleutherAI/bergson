@@ -44,6 +44,7 @@ from ..process_grads import mix_autocorrelation_matrices
 from ..query.query_index import query
 from ..recall.recall import run_recall
 from ..score.score import score_dataset
+from ..utils.step_state import prepare_step
 from ..utils.worker_utils import validate_run_path
 from ..validate import evaluate_retrained
 
@@ -168,9 +169,21 @@ class Hessian(Serializable):
     hessian_cfg: HessianConfig
     index_cfg: IndexConfig
 
+    resume: bool = False
+    """Skip the fit when its output exists, and continue an interrupted fit
+    saved with ``checkpoint_interval``."""
+
     def execute(self):
         """Compute Hessian approximation."""
-        validate_run_path(self.index_cfg)
+        run_path = self.index_cfg.run_path
+        if self.resume:
+            # A checkpointed fit picks up from its interrupted output.
+            resumable = self.hessian_cfg.checkpoint_interval > 0
+            if not prepare_step(run_path, resume=True, resumable=resumable):
+                print(f"Skipping (already complete at {run_path})")
+                return
+        else:
+            validate_run_path(self.index_cfg)
         save_run_config(self, self.index_cfg.partial_run_path)
         approximate_hessians(self.index_cfg, self.hessian_cfg)
 
