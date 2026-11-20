@@ -1186,6 +1186,10 @@ class TrackstarConfig:
     resume: bool = False
     """Skip pipeline steps whose output directory already exists."""
 
+    checkpoint_interval: int = 0
+    """Documents between saves of a Hessian fit's running sums, so ``--resume``
+    continues an interrupted fit; 0 disables saving."""
+
 
 @dataclass
 class TrakConfig:
@@ -1221,3 +1225,7 @@ class TrakConfig:
 
     resume: bool = False
     """Skip pipeline steps whose output directory already exists."""
+
+    checkpoint_interval: int = 0
+    """Documents between saves of the Gram's running sums, so ``--resume``
+    continues an interrupted fit; 0 disables saving."""
