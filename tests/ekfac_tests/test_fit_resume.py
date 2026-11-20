@@ -12,10 +12,13 @@ from datasets import Dataset
 from safetensors.torch import load_file
 from transformers import AutoConfig, AutoModelForCausalLM
 
+import bergson.collector.collector as collection
 import bergson.hessians.hessian_approximations as approximations
 from bergson.config import HessianConfig, IndexConfig
+from bergson.gradients import GradientProcessor
 from bergson.hessians.hessian_approximations import (
     collect_hessians,
+    fit_autocorrelation_hessian,
     fit_factored_hessians,
 )
 from bergson.utils.utils import get_device
@@ -47,10 +50,15 @@ def _fit(model, run_path, hessian_cfg, seed=0):
     return index_cfg.partial_run_path
 
 
-def _crash_after(monkeypatch, num_batches, num_passes=0):
+FACTORED = (approximations, "fwd_bwd_hessian_factory")
+AUTOCORRELATION = (collection, "fwd_bwd_factory")
+"""Where each kind of fit gets its forward-backward."""
+
+
+def _crash_after(monkeypatch, num_batches, num_passes=0, fit=FACTORED):
     """Make the forward-backward of the pass after ``num_passes`` finished ones
     raise once ``num_batches`` have run."""
-    factory = approximations.fwd_bwd_hessian_factory
+    factory = getattr(*fit)
     passes = {"n": 0}
 
     def crashing_factory(*args, **kwargs):
@@ -67,7 +75,7 @@ def _crash_after(monkeypatch, num_batches, num_passes=0):
 
         return wrapped
 
-    monkeypatch.setattr(approximations, "fwd_bwd_hessian_factory", crashing_factory)
+    monkeypatch.setattr(*fit, crashing_factory)
 
 
 @pytest.mark.parametrize("method", ["kfac", "tkfac", "shampoo"])
@@ -107,18 +115,9 @@ def test_resume_with_other_settings_is_an_error(tmp_path, model, monkeypatch):
         _fit(model, tmp_path, other)
 
 
-def test_autocorrelation_checkpointing_is_an_error(tmp_path):
-    cfg = HessianConfig(method="autocorrelation", checkpoint_interval=1)
-    with pytest.raises(ValueError, match="checkpoint_interval=0"):
-        approximations.approximate_hessians(
-            IndexConfig(run_path=str(tmp_path / "run")), cfg
-        )
-    assert not (tmp_path / "run.part").exists()
-
-
-def _count_batches(monkeypatch) -> list[int]:
+def _count_batches(monkeypatch, fit=FACTORED) -> list[int]:
     """Count the forward-backward calls of each pass the fit runs."""
-    factory = approximations.fwd_bwd_hessian_factory
+    factory = getattr(*fit)
     counts: list[int] = []
 
     def counting_factory(*args, **kwargs):
@@ -132,7 +131,7 @@ def _count_batches(monkeypatch) -> list[int]:
 
         return wrapped
 
-    monkeypatch.setattr(approximations, "fwd_bwd_hessian_factory", counting_factory)
+    monkeypatch.setattr(*fit, counting_factory)
     return counts
 
 
@@ -294,3 +293,130 @@ def test_distributed_fit_resumes_to_uninterrupted(tmp_path, monkeypatch, phase):
     assert got.keys() == expected.keys()
     for key in expected:
         torch.testing.assert_close(got[key], expected[key], rtol=0, atol=0, msg=key)
+
+
+def _fit_autocorrelation(
+    model, run_path, projection_target, docs=DOCS, batches=None, **index_kwargs
+):
+    ds = Dataset.from_dict({"input_ids": docs, "length": [len(d) for d in docs]})
+    index_cfg = IndexConfig(
+        run_path=str(run_path),
+        projection_dim=4,
+        projection_target=projection_target,
+        **index_kwargs,
+    )
+    index_cfg.partial_run_path.mkdir(parents=True, exist_ok=True)
+    target_modules = {
+        name
+        for name, module in model.base_model.named_modules()
+        if isinstance(module, torch.nn.Linear)
+    }
+    fit_autocorrelation_hessian(
+        model,
+        ds,
+        index_cfg,
+        HessianConfig(method="autocorrelation", checkpoint_interval=1),
+        target_modules=target_modules,
+        attention_cfgs={},
+        batches=batches or [[i] for i in range(len(docs))],
+    )
+    return index_cfg.partial_run_path
+
+
+def _assert_same_grams(got_path: Path, expected_path: Path):
+    got = GradientProcessor.load(got_path)
+    expected = GradientProcessor.load(expected_path)
+    assert expected.hessians
+    assert got.hessians.keys() == expected.hessians.keys()
+    for name in expected.hessians:
+        torch.testing.assert_close(
+            got.hessians[name], expected.hessians[name], rtol=0, atol=0, msg=name
+        )
+        for g, e in zip(got.hessians_eigen[name], expected.hessians_eigen[name]):
+            torch.testing.assert_close(g, e, rtol=0, atol=0, msg=name)
+
+
+@pytest.mark.parametrize("projection_target", ["per_module", "global"])
+def test_resumed_autocorrelation_matches_uninterrupted(
+    tmp_path, model, monkeypatch, projection_target
+):
+    model = model.to(get_device(0))
+    full = _fit_autocorrelation(model, tmp_path / "full", projection_target)
+
+    with monkeypatch.context() as m:
+        _crash_after(m, 3, fit=AUTOCORRELATION)
+        with pytest.raises(RuntimeError, match="interrupted"):
+            _fit_autocorrelation(model, tmp_path / "resumed", projection_target)
+    with monkeypatch.context() as m:
+        counts = _count_batches(m, fit=AUTOCORRELATION)
+        resumed = _fit_autocorrelation(model, tmp_path / "resumed", projection_target)
+    # Only the batch after the last save is run again.
+    assert counts == [1]
+
+    _assert_same_grams(resumed, full)
+    torch.testing.assert_close(
+        torch.load(resumed / "total_processed.pt", weights_only=True),
+        torch.load(full / "total_processed.pt", weights_only=True),
+    )
+    assert not os.path.exists(resumed / "checkpoint" / "autocorrelation" / "rank_0.pt")
+
+
+def test_autocorrelation_resume_with_another_projection_is_an_error(
+    tmp_path, model, monkeypatch
+):
+    model = model.to(get_device(0))
+    with monkeypatch.context() as m:
+        _crash_after(m, 2, fit=AUTOCORRELATION)
+        with pytest.raises(RuntimeError, match="interrupted"):
+            _fit_autocorrelation(model, tmp_path, "per_module")
+
+    with pytest.raises(ValueError, match="projection_type changed"):
+        _fit_autocorrelation(model, tmp_path, "per_module", projection_type="normal")
+
+
+def _autocorrelation_resume_worker(rank, port, root, projection_target, results):
+    # Only rank 0 saves the processor.
+    os.environ["LOCAL_RANK"] = str(rank)
+    dist.init_process_group(
+        "gloo",
+        init_method=f"tcp://localhost:{port}",
+        rank=rank,
+        world_size=WORLD_SIZE,
+    )
+    torch.manual_seed(42)
+    config = AutoConfig.from_pretrained("trl-internal-testing/tiny-Phi3ForCausalLM-3")
+    model = AutoModelForCausalLM.from_config(config, torch_dtype=torch.float32)
+    batches = [[i] for i in range(rank, len(DIST_DOCS), WORLD_SIZE)]
+    fit = {"docs": DIST_DOCS, "batches": batches}
+
+    _fit_autocorrelation(model, Path(root, "full"), projection_target, **fit)
+    with pytest.MonkeyPatch.context() as m:
+        _crash_after(m, 3, fit=AUTOCORRELATION)
+        # Every rank stops at the same batch, so none waits on the others.
+        with pytest.raises(RuntimeError, match="interrupted"):
+            _fit_autocorrelation(model, Path(root, "resumed"), projection_target, **fit)
+    with pytest.MonkeyPatch.context() as m:
+        counts = _count_batches(m, fit=AUTOCORRELATION)
+        _fit_autocorrelation(model, Path(root, "resumed"), projection_target, **fit)
+    results[rank] = counts
+    dist.destroy_process_group()
+
+
+@pytest.mark.parametrize("projection_target", ["per_module", "global"])
+def test_distributed_autocorrelation_resumes_to_uninterrupted(
+    tmp_path, monkeypatch, projection_target
+):
+    # gloo can't communicate CUDA tensors.
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+    with socket.socket() as s:
+        s.bind(("", 0))
+        port = s.getsockname()[1]
+    results = mp.Manager().dict()
+    mp.spawn(
+        _autocorrelation_resume_worker,
+        args=(port, str(tmp_path), projection_target, results),
+        nprocs=WORLD_SIZE,
+    )
+
+    assert [results[rank] for rank in range(WORLD_SIZE)] == [[1]] * WORLD_SIZE
+    _assert_same_grams(tmp_path / "resumed.part", tmp_path / "full.part")
