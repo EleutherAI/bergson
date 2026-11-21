@@ -13,7 +13,7 @@ from bergson.collector.collector import (
     project_global,
 )
 from bergson.collector.gradient_collectors import GradientCollector
-from bergson.config import IndexConfig
+from bergson.config import IndexConfig, InversionConfig, PreprocessConfig
 from bergson.data import load_module_gradients
 
 
@@ -203,3 +203,43 @@ def test_in_memory_collector_honors_global_projection(tmp_path: Path, model, dat
     assert got.shape == (len(dataset), proj_dim)
     assert torch.isfinite(got).all()
     torch.testing.assert_close(got.float(), expected.float())
+
+
+def test_global_projection_with_a_dense_gram(tmp_path: Path, model, dataset):
+    """A dense Gram over the global projection (TRAK's) is applied to the
+    projected gradients, not rejected as a non-factored Hessian."""
+    proj_dim = 16
+    gram = torch.diag(torch.arange(1.0, proj_dim + 1))
+    hessian = GradientProcessor(projection_dim=proj_dim, projection_target="global")
+    hessian.hessians = {"joint": gram}
+    hessian.save(tmp_path / "hessian")
+
+    def collect(run: str, preprocess_cfg: PreprocessConfig) -> torch.Tensor:
+        cfg = IndexConfig(
+            run_path=str(tmp_path / run),
+            projection_dim=proj_dim,
+            projection_target="global",
+        )
+        cfg.partial_run_path.mkdir(parents=True)
+        collect_gradients(
+            model=model,
+            data=dataset,
+            processor=GradientProcessor(
+                projection_dim=proj_dim, projection_target="global"
+            ),
+            cfg=cfg,
+            preprocess_cfg=preprocess_cfg,
+        )
+        return torch.from_numpy(
+            load_module_gradients(cfg.partial_run_path)["gradients"].astype("float32")
+        )
+
+    plain = collect("plain", PreprocessConfig())
+    whitened = collect(
+        "whitened",
+        PreprocessConfig(
+            hessian_path=str(tmp_path / "hessian"),
+            inversion_cfg=InversionConfig(damping_factor=0.0),
+        ),
+    )
+    torch.testing.assert_close(whitened, plain / torch.diag(gram))
