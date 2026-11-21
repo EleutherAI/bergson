@@ -87,9 +87,14 @@ class GradientCollector(HookCollectorBase):
         self.save_index = self.scorer is None and not self.skip_index
 
         builder_cfg = self.preprocess_cfg
-        if self.processor.projection_target == "global" and builder_cfg.hessian_path:
+        if (
+            self.processor.projection_target == "global"
+            and builder_cfg.hessian_path
+            and is_factored_hessian(builder_cfg.hessian_path)
+        ):
             # Precondition each module with H^-1/2 before it is projected; the
-            # projected gradients need nothing more.
+            # projected gradients need nothing more. A dense Gram is over the
+            # projected gradients, so the builder applies it after projection.
             self.projection_preconditioner = load_projection_preconditioner(
                 builder_cfg, self.model.device
             )
