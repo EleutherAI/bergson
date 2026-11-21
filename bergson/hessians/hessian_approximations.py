@@ -157,11 +157,6 @@ def approximate_hessians(
             f"projection; got index_cfg.projection_dim={index_cfg.projection_dim}. "
             "Set projection_dim=0."
         )
-    if hessian_cfg.method == "autocorrelation" and hessian_cfg.checkpoint_interval:
-        raise ValueError(
-            "The autocorrelation Hessian can't be checkpointed; "
-            "set checkpoint_interval=0."
-        )
 
     if hessian_cfg.method == "autocorrelation" and index_cfg.projection_dim == 0:
         warnings.warn(
@@ -245,30 +240,14 @@ def hessian_worker(
     # one over the global projection, so it computes in one pass and skips the
     # factored eigendecomposition.
     if hessian_cfg.method == "autocorrelation":
-        processor = create_processor(model, index_cfg, target_modules)
-        collector_cls = (
-            JointAutocorrelationCollector
-            if processor.projection_target == "global"
-            else AutocorrelationCollector
-        )
-        collector = collector_cls(
-            model=model.base_model,  # type: ignore
-            data=ds,
-            path=str(index_cfg.partial_run_path),
-            processor=processor,
+        fit_autocorrelation_hessian(
+            model,  # type: ignore
+            ds,
+            index_cfg,
+            hessian_cfg,
             target_modules=target_modules,
             attention_cfgs=attention_cfgs,
-            filter_modules=index_cfg.filter_modules,
-        )
-        computer = CollectorComputer(
-            model=model,  # type: ignore
-            data=ds,
-            collector=collector,
             batches=batches,
-            cfg=index_cfg,
-        )
-        computer.run_with_collector_hooks(
-            desc=f"Approximating {hessian_cfg.method} Hessian"
         )
         return
 
@@ -307,6 +286,57 @@ def hessian_worker(
 
     rank = dist.get_rank() if dist.is_initialized() else 0
     merge_partitions(index_cfg.partial_run_path, len(groups), rank)
+
+
+def fit_autocorrelation_hessian(
+    model: PreTrainedModel,
+    data: Dataset,
+    index_cfg: IndexConfig,
+    hessian_cfg: HessianConfig,
+    *,
+    target_modules: set[str] | None,
+    attention_cfgs: dict[str, AttentionConfig],
+    batches: list[list[int]],
+):
+    """Fit the gradient Gram of ``target_modules``, one per module or one over
+    the global projection, saving the processor that holds it under
+    ``index_cfg.partial_run_path``."""
+    processor = create_processor(model, index_cfg, target_modules)
+    collector_cls = (
+        JointAutocorrelationCollector
+        if processor.projection_target == "global"
+        else AutocorrelationCollector
+    )
+    collector = collector_cls(
+        model=model.base_model,  # type: ignore
+        data=data,
+        path=str(index_cfg.partial_run_path),
+        processor=processor,
+        target_modules=target_modules,
+        attention_cfgs=attention_cfgs,
+        filter_modules=index_cfg.filter_modules,
+    )
+
+    # The Gram is over the projected gradients, so it depends on the projection.
+    settings = _checkpoint_settings(index_cfg, hessian_cfg)
+    for key in PROJECTION_SETTINGS:
+        settings[key] = getattr(index_cfg, key)
+
+    computer = CollectorComputer(
+        model=model,  # type: ignore
+        data=data,
+        collector=collector,
+        batches=batches,
+        cfg=index_cfg,
+        checkpoint_path=os.path.join(
+            index_cfg.partial_run_path, "checkpoint", "autocorrelation"
+        ),
+        checkpoint_interval=hessian_cfg.checkpoint_interval,
+        checkpoint_settings=settings,
+    )
+    computer.run_with_collector_hooks(
+        desc=f"Approximating {hessian_cfg.method} Hessian"
+    )
 
 
 def fit_factored_hessians(
@@ -436,6 +466,15 @@ def fit_factored_hessians(
 
 
 FIT_PHASES = ("covariance", "eigendecomposition", "ev_correction")
+
+
+PROJECTION_SETTINGS = (
+    "projection_dim",
+    "projection_type",
+    "projection_scale",
+    "projection_target",
+    "projection_seed",
+)
 
 
 def _save_phase(

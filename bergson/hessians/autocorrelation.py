@@ -49,15 +49,38 @@ class AutocorrelationCollector(HookCollectorBase):
         """No per-batch output; the Gram accumulates directly on the processor."""
         return
 
+    def grad_sizes(self) -> dict[str, int]:
+        """The side length of each Gram, by key."""
+        return {name: math.prod(s) for name, s in self.shapes().items()}
+
+    def state_dict(self) -> dict:
+        """The running Grams this rank holds, so an interrupted pass can
+        resume."""
+        return {"hessians": self.processor.hessians}
+
+    def load_state_dict(self, state: dict) -> None:
+        """Restore Grams saved by :meth:`state_dict`."""
+        saved, sizes = state["hessians"], self.grad_sizes()
+        # Each Gram is created, on the model's device, the first time its
+        # hooks run.
+        if not saved.keys() <= sizes.keys():
+            raise ValueError("Saved hessians modules do not match this fit")
+        for name, gram in saved.items():
+            if gram.shape != (sizes[name], sizes[name]):
+                raise ValueError(f"Saved hessians for {name} has another shape")
+        device = next(self.model.parameters()).device
+        self.processor.hessians = {
+            name: gram.to(device) for name, gram in saved.items()
+        }
+
     def teardown(self):
         """Reduce/eigendecompose the accumulated Grams and save the processor."""
-        grad_sizes = {name: math.prod(s) for name, s in self.shapes().items()}
         if self.processor.hessians:
             process_autocorrelation_matrices(
                 self.processor,
                 self.processor.hessians,
                 self.num_rows(self.data),
-                grad_sizes,
+                self.grad_sizes(),
                 self.rank,
             )
         if self.rank == 0:
@@ -94,16 +117,6 @@ class JointAutocorrelationCollector(AutocorrelationCollector):
             self.processor.hessians["joint"] = G.mT @ G
         self.mod_grads.clear()
 
-    def teardown(self):
-        """Reduce/eigendecompose the joint Gram and save it."""
-        dim = sum(math.prod(s) for s in self.shapes().values())
-        if self.processor.hessians:
-            process_autocorrelation_matrices(
-                self.processor,
-                self.processor.hessians,
-                self.num_rows(self.data),
-                {"joint": dim},
-                self.rank,
-            )
-        if self.rank == 0:
-            self.processor.save(Path(self.path))
+    def grad_sizes(self) -> dict[str, int]:
+        """The side length of the joint Gram."""
+        return {"joint": sum(math.prod(s) for s in self.shapes().values())}

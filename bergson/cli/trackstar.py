@@ -58,7 +58,10 @@ def trackstar(index_cfg: IndexConfig, trackstar_cfg: TrackstarConfig):
     scores_path = f"{run_path}/scores"
     resume = trackstar_cfg.resume
 
-    hess_cfg = HessianConfig(method="autocorrelation")
+    hess_cfg = HessianConfig(
+        method="autocorrelation",
+        checkpoint_interval=trackstar_cfg.checkpoint_interval,
+    )
 
     def _validate(cfg: IndexConfig):
         """Validate run path, skipping when resume would preserve partial output."""
